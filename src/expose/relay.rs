@@ -269,6 +269,7 @@ pub async fn relay_up(
                 names.health_check
             ),
             false,
+            &names.owner(),
         )
         .await?;
         client.wait_operation(&op).await?;

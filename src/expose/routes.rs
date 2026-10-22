@@ -190,6 +190,7 @@ pub async fn add_route(
                     names.health_check
                 ),
                 target.private,
+                &names.owner(),
             )
             .await?;
             client.wait_operation(&op).await?;

@@ -46,6 +46,12 @@ impl Names {
     }
 
     // The backend service that serves one tunnel
+    // Written into every resource gtunnel creates that lives in a shared
+    // namespace, so a later cleanup deletes only its own
+    pub fn owner(&self) -> String {
+        format!("gtunnel:{}", self.account)
+    }
+
     pub fn backend(&self, tunnel: &str) -> String {
         trim(format!("gt-{}-{tunnel}", self.account), MAX_NAME)
     }

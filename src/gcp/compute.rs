@@ -504,6 +504,8 @@ pub struct BackendService {
     pub name: String,
     pub port_name: Option<String>,
     pub iap_enabled: bool,
+    // gtunnel writes its owner tag here; anything else is not ours to delete
+    pub description: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -513,6 +515,8 @@ struct RawBackendService {
     port_name: Option<String>,
     #[serde(default)]
     iap: Option<RawIap>,
+    #[serde(default)]
+    description: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -527,6 +531,7 @@ impl From<RawBackendService> for BackendService {
             name: r.name,
             port_name: r.port_name,
             iap_enabled: r.iap.map(|i| i.enabled).unwrap_or(false),
+            description: r.description,
         }
     }
 }
@@ -565,6 +570,7 @@ pub async fn get_backend_service(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn insert_backend_service(
     client: &GcpClient,
     project: &str,
@@ -573,6 +579,7 @@ pub async fn insert_backend_service(
     instance_group: &str,
     health_check: &str,
     iap: bool,
+    owner: &str,
 ) -> Result<Operation> {
     let url = format!(
         "{}/projects/{project}/global/backendServices",
@@ -580,6 +587,7 @@ pub async fn insert_backend_service(
     );
     let mut body = json!({
         "name": name,
+        "description": owner,
         "loadBalancingScheme": "EXTERNAL_MANAGED",
         "protocol": "HTTP",
         "portName": port_name,
