@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use std::future::Future;
 
 use crate::config::{Account, ExposeConfig};
@@ -134,4 +134,352 @@ pub async fn remove_route(
     .await?;
 
     Ok(removal)
+}
+
+// Everything one Expose tunnel needs on the relay: its named port, its backend
+// service, its host rule and its DNS record
+pub async fn add_route(
+    client: &GcpClient,
+    acct: &Account,
+    ex: &ExposeConfig,
+    t: &PersistentTunnel,
+) -> Result<()> {
+    let target = route_target(acct, t)?;
+    let project = &acct.project;
+    let names = &target.names;
+    let zone = &ex.relay_zone;
+    let group = &names.instance_group;
+    let port_name = target.named_port.clone();
+    let relay_port = target.relay_port;
+
+    retry_on_precondition(FINGERPRINT_ATTEMPTS, || async {
+        let (ports, fingerprint) = compute::get_named_ports(client, project, zone, group).await?;
+        if ports
+            .iter()
+            .any(|p| p.name == port_name && p.port == relay_port)
+        {
+            return Ok(());
+        }
+        let merged = compute::merge_named_port(&ports, &port_name, relay_port);
+        let op = compute::set_named_ports(
+            client,
+            project,
+            zone,
+            group,
+            &merged,
+            fingerprint.as_deref(),
+        )
+        .await?;
+        client.wait_operation(&op).await
+    })
+    .await?;
+
+    let group_url = compute::get_instance_group(client, project, zone, group)
+        .await?
+        .with_context(|| format!("Instance group '{group}' is missing. Run `gtunnel relay up`"))?;
+    if compute::get_backend_service(client, project, &target.backend)
+        .await?
+        .is_none()
+    {
+        let op = compute::insert_backend_service(
+            client,
+            project,
+            &target.backend,
+            &target.named_port,
+            &group_url,
+            &format!(
+                "projects/{project}/global/healthChecks/{}",
+                names.health_check
+            ),
+            target.private,
+        )
+        .await?;
+        client.wait_operation(&op).await?;
+    }
+
+    let backend_url = format!(
+        "projects/{project}/global/backendServices/{}",
+        target.backend
+    );
+    let host = target.hostname.clone();
+    retry_on_precondition(FINGERPRINT_ATTEMPTS, || async {
+        let map = compute::get_url_map(client, project, &names.url_map)
+            .await?
+            .with_context(|| {
+                format!(
+                    "Url map '{}' is missing. Run `gtunnel relay up`",
+                    names.url_map
+                )
+            })?;
+        let updated = compute::with_host_rule(&map, &host, &backend_url);
+        if updated == map {
+            return Ok(());
+        }
+        let op = compute::update_url_map(client, project, &names.url_map, &updated).await?;
+        client.wait_operation(&op).await
+    })
+    .await?;
+
+    let domain = ex.domain(Some(&target.domain))?;
+    let record = format!("{}.", target.hostname);
+    let existing = dns::list_record_sets(client, project, &domain.managed_zone).await?;
+    if !existing.iter().any(|r| r.name == record && r.rtype == "A") {
+        let ip = compute::get_global_address(client, project, &names.address)
+            .await?
+            .with_context(|| {
+                format!(
+                    "Address '{}' is missing. Run `gtunnel relay up`",
+                    names.address
+                )
+            })?;
+        dns::create_record_set(
+            client,
+            project,
+            &domain.managed_zone,
+            &dns::RecordSet {
+                name: record,
+                rtype: "A".to_string(),
+                ttl: 60,
+                rrdatas: vec![ip],
+            },
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
+// start and restart call this so a route deleted outside gtunnel comes back
+pub async fn ensure_route(
+    client: &GcpClient,
+    acct: &Account,
+    ex: &ExposeConfig,
+    t: &PersistentTunnel,
+) -> Result<()> {
+    add_route(client, acct, ex, t).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{Account, DomainConfig};
+    use crate::gcp::{Endpoints, GcpClient, TokenSource};
+    use crate::state::{PersistentTunnel, TunnelSpec};
+    use wiremock::matchers::{method, path_regex};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn client(server: &MockServer) -> GcpClient {
+        GcpClient::new(
+            TokenSource::Static("tok".to_string()),
+            Endpoints::single(&server.uri()),
+        )
+    }
+
+    fn account() -> Account {
+        Account {
+            name: "dev".to_string(),
+            gcloud_configuration: "dev".to_string(),
+            project: "p".to_string(),
+            default_zone: "europe-west1-b".to_string(),
+            impersonate_service_account: None,
+            expose: Some(expose()),
+        }
+    }
+
+    fn expose() -> ExposeConfig {
+        ExposeConfig {
+            relay_instance: "gt-dev-relay".to_string(),
+            relay_zone: "europe-west1-b".to_string(),
+            network: "default".to_string(),
+            default_domain: "dev.example.com".to_string(),
+            domains: vec![DomainConfig {
+                domain: "dev.example.com".to_string(),
+                managed_zone: "example".to_string(),
+            }],
+        }
+    }
+
+    fn tunnel() -> PersistentTunnel {
+        PersistentTunnel {
+            name: "api".to_string(),
+            account_name: "dev".to_string(),
+            auto_start: true,
+            spec: TunnelSpec::Expose {
+                local_target: "3000".to_string(),
+                domain: "dev.example.com".to_string(),
+                hostname: "api.dev.example.com".to_string(),
+                relay_port: 30001,
+                private: false,
+            },
+        }
+    }
+
+    fn url_map_body() -> serde_json::Value {
+        serde_json::json!({
+            "name": "gt-dev-urlmap",
+            "fingerprint": "fp-1",
+            "defaultService": "projects/p/global/backendServices/gt-dev-default",
+            "hostRules": [],
+            "pathMatchers": []
+        })
+    }
+
+    fn done_op() -> serde_json::Value {
+        serde_json::json!({"name": "op-1", "status": "DONE"})
+    }
+
+    fn precondition_failed() -> ResponseTemplate {
+        ResponseTemplate::new(412).set_body_json(serde_json::json!({
+            "error": {"code": 412, "message": "fingerprint mismatch"}
+        }))
+    }
+
+    async fn count(server: &MockServer, verb: &str, needle: &str) -> usize {
+        server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .iter()
+            .filter(|r| r.method.as_str().eq_ignore_ascii_case(verb))
+            .filter(|r| r.url.path().contains(needle))
+            .count()
+    }
+
+    // Common mocks: the instance group, the backend service and DNS all behave
+    async fn base_mocks(server: &MockServer) {
+        Mock::given(method("GET"))
+            .and(path_regex(r".*/urlMaps/.*"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(url_map_body()))
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path_regex(r".*/instanceGroups/.*"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "name": "gt-dev-ig",
+                "fingerprint": "fp-ig",
+                "namedPorts": [{"name": "gt-default", "port": 30999}]
+            })))
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path_regex(r".*/backendServices/.*"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                "error": {"code": 404, "message": "not found"}
+            })))
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path_regex(r".*/addresses/.*"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "name": "gt-dev-ip",
+                "address": "34.1.2.3"
+            })))
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path_regex(r".*/rrsets.*"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"rrsets": []})),
+            )
+            .mount(server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(done_op()))
+            .mount(server)
+            .await;
+    }
+
+    // Review Focus 4: two gtunnel runs editing the url map at once get a 412,
+    // and the loser has to re-read the fingerprint instead of failing
+    #[tokio::test]
+    async fn add_route_retries_the_url_map_after_a_fingerprint_mismatch() {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .respond_with(precondition_failed())
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(done_op()))
+            .mount(&server)
+            .await;
+        base_mocks(&server).await;
+
+        add_route(&client(&server), &account(), &expose(), &tunnel())
+            .await
+            .expect("add route");
+
+        assert_eq!(count(&server, "GET", "/urlMaps/").await, 2);
+        assert_eq!(count(&server, "PUT", "/urlMaps/").await, 2);
+    }
+
+    #[tokio::test]
+    async fn add_route_gives_up_after_five_fingerprint_mismatches() {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .respond_with(precondition_failed())
+            .mount(&server)
+            .await;
+        base_mocks(&server).await;
+
+        let err = add_route(&client(&server), &account(), &expose(), &tunnel())
+            .await
+            .expect_err("should give up");
+        assert!(err.to_string().contains("fingerprint"), "{err}");
+        assert_eq!(count(&server, "PUT", "/urlMaps/").await, 5);
+    }
+
+    #[tokio::test]
+    async fn add_route_creates_the_dns_record_and_the_backend() {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(done_op()))
+            .mount(&server)
+            .await;
+        base_mocks(&server).await;
+
+        add_route(&client(&server), &account(), &expose(), &tunnel())
+            .await
+            .expect("add route");
+
+        assert_eq!(count(&server, "POST", "/rrsets").await, 1);
+        assert_eq!(count(&server, "POST", "/backendServices").await, 1);
+        assert_eq!(count(&server, "POST", "/setNamedPorts").await, 1);
+    }
+
+    // ytunnel v1.0 lesson: a DNS delete that failed must never be reported as
+    // done, and the resources behind it must stay put
+    #[tokio::test]
+    async fn remove_route_stops_when_the_dns_delete_fails() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_regex(r".*/rrsets.*"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "rrsets": [{
+                    "name": "api.dev.example.com.",
+                    "type": "A",
+                    "ttl": 60,
+                    "rrdatas": ["34.1.2.3"]
+                }]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
+                "error": {"code": 500, "message": "backend error"}
+            })))
+            .mount(&server)
+            .await;
+        base_mocks(&server).await;
+
+        let err = remove_route(&client(&server), &account(), &expose(), &tunnel())
+            .await
+            .expect_err("should fail");
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("500") || message.contains("backend error"),
+            "{message}"
+        );
+        assert_eq!(count(&server, "DELETE", "/backendServices").await, 0);
+    }
 }

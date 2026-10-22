@@ -57,12 +57,14 @@ pub async fn create_record_set(
     project: &str,
     zone: &str,
     record: &RecordSet,
-) -> Result<RecordSet> {
+) -> Result<()> {
     let url = format!(
         "{}/projects/{project}/managedZones/{zone}/rrsets",
         client.endpoints.dns
     );
-    client.post(&url, record).await
+    // The created record is echoed back, and no caller needs it
+    let _: serde_json::Value = client.post(&url, record).await?;
+    Ok(())
 }
 
 // Deleting a record that is already gone is the desired end state, not an error
