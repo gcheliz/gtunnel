@@ -177,24 +177,32 @@ pub async fn add_route(
     let group_url = compute::get_instance_group(client, project, zone, group)
         .await?
         .with_context(|| format!("Instance group '{group}' is missing. Run `gtunnel relay up`"))?;
-    if compute::get_backend_service(client, project, &target.backend)
-        .await?
-        .is_none()
-    {
-        let op = compute::insert_backend_service(
-            client,
-            project,
-            &target.backend,
-            &target.named_port,
-            &group_url,
-            &format!(
-                "projects/{project}/global/healthChecks/{}",
-                names.health_check
-            ),
-            target.private,
-        )
-        .await?;
-        client.wait_operation(&op).await?;
+    match compute::get_backend_service(client, project, &target.backend).await? {
+        None => {
+            let op = compute::insert_backend_service(
+                client,
+                project,
+                &target.backend,
+                &target.named_port,
+                &group_url,
+                &format!(
+                    "projects/{project}/global/healthChecks/{}",
+                    names.health_check
+                ),
+                target.private,
+            )
+            .await?;
+            client.wait_operation(&op).await?;
+        }
+        // A backend that predates the tunnel's current --private setting would
+        // otherwise keep serving under the old access rule
+        Some(existing) if existing.iap_enabled != target.private => {
+            let op =
+                compute::set_backend_service_iap(client, project, &target.backend, target.private)
+                    .await?;
+            client.wait_operation(&op).await?;
+        }
+        Some(_) => {}
     }
 
     let backend_url = format!(
@@ -481,5 +489,68 @@ mod tests {
             "{message}"
         );
         assert_eq!(count(&server, "DELETE", "/backendServices").await, 0);
+    }
+    // A tunnel re-added with --private must not keep serving publicly because
+    // its backend service already existed without IAP
+    #[tokio::test]
+    async fn add_route_turns_iap_on_for_a_backend_that_predates_private() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_regex(r".*/backendServices/gt-dev-api"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "name": "gt-dev-api",
+                "portName": "gt-api",
+                "iap": {"enabled": false}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(done_op()))
+            .mount(&server)
+            .await;
+        Mock::given(method("PATCH"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(done_op()))
+            .mount(&server)
+            .await;
+        base_mocks(&server).await;
+
+        let mut private = tunnel();
+        if let TunnelSpec::Expose { private: p, .. } = &mut private.spec {
+            *p = true;
+        }
+        add_route(&client(&server), &account(), &expose(), &private)
+            .await
+            .expect("add route");
+
+        assert_eq!(
+            count(&server, "PATCH", "/backendServices/gt-dev-api").await,
+            1
+        );
+        assert_eq!(count(&server, "POST", "/backendServices").await, 0);
+    }
+
+    #[tokio::test]
+    async fn add_route_leaves_a_backend_whose_iap_already_matches() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_regex(r".*/backendServices/gt-dev-api"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "name": "gt-dev-api",
+                "portName": "gt-api",
+                "iap": {"enabled": false}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(done_op()))
+            .mount(&server)
+            .await;
+        base_mocks(&server).await;
+
+        add_route(&client(&server), &account(), &expose(), &tunnel())
+            .await
+            .expect("add route");
+
+        assert_eq!(count(&server, "PATCH", "/backendServices").await, 0);
     }
 }

@@ -592,6 +592,22 @@ pub async fn insert_backend_service(
     client.post(&url, &body).await
 }
 
+// IAP is set per backend service, so a tunnel that changes between public and
+// private has to flip it on the backend that already exists
+pub async fn set_backend_service_iap(
+    client: &GcpClient,
+    project: &str,
+    name: &str,
+    enabled: bool,
+) -> Result<Operation> {
+    let url = format!(
+        "{}/projects/{project}/global/backendServices/{name}",
+        client.endpoints.compute
+    );
+    let body = json!({"iap": {"enabled": enabled}});
+    client.patch(&url, &body).await
+}
+
 pub async fn delete_backend_service(
     client: &GcpClient,
     project: &str,
