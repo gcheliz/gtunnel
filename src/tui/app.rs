@@ -2,7 +2,6 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::time::Duration;
 
 use crate::discovery::ExternalTunnel;
-use crate::gcp::monitoring::LbStats;
 use crate::probe::{HealthStatus, MetricsHistory, TunnelMetrics};
 use crate::state::{PersistentTunnel, TunnelSpec, TunnelStatus};
 
@@ -225,6 +224,8 @@ pub struct App {
     pub selected: usize,
     pub logs: Vec<String>,
     pub status: Option<String>,
+    // The last operation failed, so the status line says so in red
+    pub status_error: bool,
     pub input_mode: InputMode,
     pub spinner: Spinner,
     pub should_quit: bool,
@@ -252,6 +253,7 @@ impl App {
             selected: 0,
             logs: Vec::new(),
             status: None,
+            status_error: false,
             input_mode: InputMode::Normal,
             spinner: Spinner::new(),
             should_quit: false,
@@ -273,28 +275,15 @@ impl App {
         self.entries.get(self.selected)
     }
 
-    pub fn selected_metrics(&self) -> Option<&TunnelMetrics> {
-        self.selected_entry().and_then(|e| e.metrics.as_ref())
-    }
-
-    pub fn selected_lb(&self) -> Option<&LbStats> {
-        self.selected_metrics().and_then(|m| m.lb.as_ref())
-    }
-
     pub fn selected_sparkline(&self) -> Vec<u64> {
         self.selected_entry()
             .map(|e| e.history.samples())
             .unwrap_or_default()
     }
 
-    pub fn selected_health(&self) -> HealthStatus {
-        self.selected_entry()
-            .map(|e| e.health)
-            .unwrap_or(HealthStatus::Unknown)
-    }
-
     pub fn set_status(&mut self, message: impl Into<String>) {
         self.status = Some(message.into());
+        self.status_error = false;
     }
 
     fn move_selection(&mut self, delta: isize) {
@@ -720,6 +709,7 @@ impl App {
     pub fn apply(&mut self, result: OpResult) {
         self.spinner.stop();
         self.set_status(result.message);
+        self.status_error = !result.ok;
         if result.reload {
             self.force_refresh = true;
         }

@@ -458,6 +458,50 @@ mod tests {
         );
     }
 
+    // A failed operation and a successful one both end up on the status line,
+    // so the line has to say which one it is
+    #[test]
+    fn a_failed_operation_marks_the_status_line() {
+        let mut app = app_with_two();
+        app.apply(OpResult {
+            message: "permission denied".to_string(),
+            ok: false,
+            reload: false,
+        });
+        assert_eq!(app.status.as_deref(), Some("permission denied"));
+        assert!(app.status_error, "a failure must be marked");
+
+        app.apply(OpResult {
+            message: "db starting".to_string(),
+            ok: true,
+            reload: true,
+        });
+        assert!(!app.status_error, "success must clear the mark");
+    }
+
+    // A sparkline with no scale cannot be read: 60 bars of "some latency" say
+    // nothing without the number the tallest one stands for
+    #[test]
+    fn the_sparkline_is_labelled_with_its_peak() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut app = app_with_two();
+        for sample in [12u64, 31, 18, 44, 22] {
+            app.entries[0].history.record(sample);
+        }
+        let mut terminal = Terminal::new(TestBackend::new(120, 38)).unwrap();
+        terminal.draw(|f| ui::render(f, &app)).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("peak 44"), "{text}");
+    }
+
     #[test]
     fn semicolon_cycles_to_the_next_account() {
         let mut app = app_with_two();

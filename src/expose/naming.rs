@@ -101,10 +101,6 @@ impl Names {
             MAX_NAME,
         )
     }
-
-    pub fn hostname(&self, tunnel: &str, domain: &str) -> String {
-        format!("{tunnel}.{domain}")
-    }
 }
 
 #[cfg(test)]

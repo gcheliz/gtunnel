@@ -266,13 +266,25 @@ fn render_metrics(f: &mut Frame, app: &App, area: Rect) {
         .split(inner);
     f.render_widget(Paragraph::new(lines), chunks[0]);
 
+    // A sparkline carries no scale of its own, so the tallest bar is named
     let samples = app.selected_sparkline();
-    if !samples.is_empty() {
+    if !entry.history.is_empty() {
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(0)])
+            .split(chunks[1]);
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!("  peak {}", entry.history.peak()),
+                Style::default().fg(Color::DarkGray),
+            ))),
+            rows[0],
+        );
         f.render_widget(
             Sparkline::default()
                 .data(samples)
                 .style(Style::default().fg(Color::Cyan)),
-            chunks[1],
+            rows[1],
         );
     }
 }
@@ -307,7 +319,12 @@ fn render_status_line(f: &mut Frame, app: &App, area: Rect) {
             spans.push(Span::raw(message.clone()));
         }
     } else if let Some(status) = &app.status {
-        spans.push(Span::raw(format!(" {status}")));
+        let style = if app.status_error {
+            Style::default().fg(Color::Red)
+        } else {
+            Style::default()
+        };
+        spans.push(Span::styled(format!(" {status}"), style));
     }
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }

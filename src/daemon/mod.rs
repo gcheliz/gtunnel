@@ -79,15 +79,11 @@ pub fn platform_label(account: &str, name: &str) -> String {
 // The platform backend every command calls; consumers land in Task 10
 #[allow(unused_imports)]
 #[cfg(target_os = "macos")]
-pub use launchd::{
-    install, is_running, runtime_info, set_auto_start, start, status, stop, uninstall,
-};
+pub use launchd::{install, runtime_info, set_auto_start, start, status, stop, uninstall};
 
 #[allow(unused_imports)]
 #[cfg(not(target_os = "macos"))]
-pub use systemd::{
-    install, is_running, runtime_info, set_auto_start, start, status, stop, uninstall,
-};
+pub use systemd::{install, runtime_info, set_auto_start, start, status, stop, uninstall};
 
 #[cfg(test)]
 mod tests {

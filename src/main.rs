@@ -1,6 +1,3 @@
-// TODO: remove once every module is wired into a command (Task 18 checks this)
-#![allow(dead_code)]
-
 mod cli;
 mod commands;
 mod config;

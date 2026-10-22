@@ -632,15 +632,6 @@ pub async fn delete_backend_service(
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UrlMap(pub serde_json::Value);
 
-impl UrlMap {
-    pub fn fingerprint(&self) -> Option<String> {
-        self.0
-            .get("fingerprint")
-            .and_then(|f| f.as_str())
-            .map(|s| s.to_string())
-    }
-}
-
 // A path matcher name derived from the host; GCP names must be DNS labels
 fn matcher_name(host: &str) -> String {
     let slug: String = host
@@ -1087,11 +1078,6 @@ mod tests {
         );
         let pruned = without_host_rule(&map, "nope.example.com");
         assert_eq!(pruned.0["hostRules"], map.0["hostRules"]);
-    }
-
-    #[test]
-    fn url_map_fingerprint_is_readable() {
-        assert_eq!(empty_url_map().fingerprint().as_deref(), Some("abc123"));
     }
 
     #[test]

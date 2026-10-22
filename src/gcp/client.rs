@@ -22,6 +22,7 @@ const OPERATION_TIMEOUT: Duration = Duration::from_secs(600);
 #[derive(Debug, Clone)]
 pub enum TokenSource {
     Gcloud(Box<Account>),
+    #[cfg(test)]
     Static(String),
 }
 
@@ -46,6 +47,7 @@ impl Endpoints {
     }
 
     // Point every API at one base, so a mock server can serve them all
+    #[cfg(test)]
     pub fn single(base: &str) -> Self {
         Self {
             compute: base.to_string(),
@@ -140,6 +142,7 @@ impl GcpClient {
 
     async fn token(&self) -> Result<String> {
         match &self.source {
+            #[cfg(test)]
             TokenSource::Static(t) => Ok(t.clone()),
             TokenSource::Gcloud(acct) => {
                 let mut cached = self.cached.lock().await;

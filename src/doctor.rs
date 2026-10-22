@@ -233,6 +233,42 @@ pub fn find_expose_orphans(
 }
 
 // Everything gtunnel can see about one account, without changing anything
+// `gcloud info` prints one value per line, and an unset location is blank
+pub fn python_location(stdout: &str) -> Option<String> {
+    let line = stdout.lines().next()?.trim();
+    (!line.is_empty()).then(|| line.to_string())
+}
+
+// Without numpy gcloud falls back to a pure-Python socket loop, and an IAP
+// tunnel runs several times slower. A probe that cannot run reports nothing:
+// a finding nobody can act on is worse than silence
+async fn numpy_is_missing() -> bool {
+    let Some(gcloud_path) = gcloud::find_gcloud() else {
+        return false;
+    };
+    let Ok(info) = tokio::process::Command::new(&gcloud_path)
+        .args(["info", "--format=value(basic.python_location)"])
+        .output()
+        .await
+    else {
+        return false;
+    };
+    if !info.status.success() {
+        return false;
+    }
+    let Some(python) = python_location(&String::from_utf8_lossy(&info.stdout)) else {
+        return false;
+    };
+    match tokio::process::Command::new(python)
+        .args(["-c", "import numpy"])
+        .output()
+        .await
+    {
+        Ok(out) => !out.status.success(),
+        Err(_) => false,
+    }
+}
+
 pub async fn run_doctor(
     cfg: &Config,
     state: &TunnelState,
@@ -242,6 +278,8 @@ pub async fn run_doctor(
 
     if gcloud::find_gcloud().is_none() {
         out.push((String::new(), Finding::GcloudMissing));
+    } else if numpy_is_missing().await {
+        out.push((String::new(), Finding::NumpyMissing));
     }
 
     for (record, alive) in list_ephemeral().unwrap_or_default() {
@@ -334,6 +372,17 @@ async fn account_findings(_cfg: &Config, state: &TunnelState, acct: &Account) ->
                             }
                         }
                         Err(_) => {}
+                    }
+                } else if let AccessTarget::DestGroup { region, group, .. } = target {
+                    // Without this arm a destination-group tunnel got no IAM check
+                    // at all, and a missing role looked healthy
+                    if let Ok(false) =
+                        iap::can_tunnel_dest_group(&client, &acct.project, region, group).await
+                    {
+                        findings.push(Finding::IamMissing {
+                            tunnel: tunnel.name.clone(),
+                            role: TUNNEL_ROLE,
+                        });
                     }
                 }
             }

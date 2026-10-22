@@ -1,3 +1,7 @@
+// Only `platform_label` reaches this module on macOS, where the rest is
+// compiled for its tests and never called
+#![cfg_attr(target_os = "macos", allow(dead_code))]
+
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 use std::process::Stdio;

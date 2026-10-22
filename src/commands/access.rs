@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 use std::time::Duration;
 
-use super::{confirm, find_tunnel, format_list_row, list_header, resolve, tunnel_status};
+use super::{find_tunnel, format_list_row, list_header, resolve, tunnel_status};
 use crate::config::Account;
 use crate::daemon;
 use crate::expose::routes;
@@ -318,11 +318,6 @@ pub async fn cmd_zones(account: Option<&str>, default: Option<&str>) -> Result<(
     crate::config::save_config(&config)?;
     println!("Default zone for '{}' is now {zone}", acct.name);
     Ok(())
-}
-
-// Shared by `delete` and the TUI: ask before removing a tunnel
-pub fn confirm_delete(name: &str, assume_yes: bool) -> Result<bool> {
-    confirm(&format!("Delete tunnel '{name}'?"), assume_yes)
 }
 
 #[cfg(test)]

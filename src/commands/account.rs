@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 
-use super::{confirm, prompt, resolve};
-use crate::config::{config_dir, load_config, save_config, validate_account_name, Account, Config};
+use super::{confirm, prompt};
+use crate::config::{config_dir, load_config, save_config, validate_account_name, Account};
 use crate::gcp::{compute, gcloud, GcpClient};
 
 // First run: turn a gcloud configuration into a gtunnel account
@@ -123,9 +123,4 @@ pub fn cmd_account_remove(name: &str, assume_yes: bool) -> Result<()> {
     save_config(&config)?;
     println!("Removed account '{name}'");
     Ok(())
-}
-
-// The account every command falls back to
-pub fn selected_account(account: Option<&str>) -> Result<(Config, Account)> {
-    resolve(account)
 }

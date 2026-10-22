@@ -211,13 +211,6 @@ impl MetricsHistory {
         self.samples.push_back(value);
     }
 
-    // Expose tunnels report a running total, so the sample is the delta
-    pub fn record_total(&mut self, total: u64, previous_total: &mut u64) {
-        let delta = total.saturating_sub(*previous_total);
-        *previous_total = total;
-        self.record(delta);
-    }
-
     pub fn samples(&self) -> Vec<u64> {
         self.samples.iter().copied().collect()
     }
