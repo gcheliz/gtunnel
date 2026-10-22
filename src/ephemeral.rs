@@ -99,10 +99,13 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
+// Every record counts, alive or not: a record is removed only once its relay
+// route is gone, so a dead one's port must not be handed to a new tunnel that
+// would then share the old hostname's named port
 fn ephemeral_ports(account: &str, relay: bool) -> Result<std::collections::HashSet<u16>> {
     let mut used = std::collections::HashSet::new();
-    for (record, alive) in list_ephemeral()? {
-        if !alive || record.account_name != account {
+    for (record, _alive) in list_ephemeral()? {
+        if record.account_name != account {
             continue;
         }
         match (&record.spec, relay) {
@@ -116,6 +119,73 @@ fn ephemeral_ports(account: &str, relay: bool) -> Result<std::collections::HashS
         }
     }
     Ok(used)
+}
+
+// Ctrl+C, SIGTERM and SIGHUP all have to reach teardown: a route left behind
+// keeps resolving for everyone
+#[cfg(unix)]
+async fn stop_signal() {
+    use tokio::signal::unix::{signal, SignalKind};
+    let mut term = match signal(SignalKind::terminate()) {
+        Ok(stream) => stream,
+        Err(_) => {
+            let _ = tokio::signal::ctrl_c().await;
+            return;
+        }
+    };
+    let mut hup = match signal(SignalKind::hangup()) {
+        Ok(stream) => stream,
+        Err(_) => {
+            let _ = tokio::signal::ctrl_c().await;
+            return;
+        }
+    };
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        _ = term.recv() => {}
+        _ = hup.recv() => {}
+    }
+}
+
+#[cfg(not(unix))]
+async fn stop_signal() {
+    let _ = tokio::signal::ctrl_c().await;
+}
+
+// Spawn gcloud and write the run record; both have to succeed together
+fn start_child(
+    gcloud_path: &std::path::Path,
+    acct: &crate::config::Account,
+    expose_config: &Option<crate::config::ExposeConfig>,
+    tunnel: &PersistentTunnel,
+    spec: TunnelSpec,
+    name: &str,
+) -> Result<(tokio::process::Child, EphemeralRecord)> {
+    let argv = match expose_config {
+        Some(expose) => expose_argv(acct, expose, tunnel)?,
+        None => access_argv(acct, tunnel)?,
+    };
+
+    let mut child = Command::new(gcloud_path)
+        .args(&argv)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("Failed to run {}", gcloud_path.display()))?;
+
+    let record = EphemeralRecord {
+        name: name.to_string(),
+        account_name: acct.name.clone(),
+        pid: child.id().unwrap_or(0),
+        spec,
+        started_at: now_secs(),
+    };
+    if let Err(e) = record.save() {
+        let _ = child.start_kill();
+        return Err(e);
+    }
+    Ok((child, record))
 }
 
 pub async fn cmd_run(
@@ -197,28 +267,21 @@ pub async fn cmd_run(
         routes::add_route(&client, &acct, expose, &tunnel).await?;
     }
 
-    let argv = match &expose_config {
-        Some(expose) => expose_argv(&acct, expose, &tunnel)?,
-        None => access_argv(&acct, &tunnel)?,
+    let started = start_child(&gcloud_path, &acct, &expose_config, &tunnel, spec, &name);
+    let (mut child, record) = match started {
+        Ok(started) => started,
+        Err(e) => {
+            // The route is already published; leaving it would serve a
+            // hostname with nothing behind it
+            if let Some(expose) = &expose_config {
+                if let Err(cleanup) = routes::remove_route(&client, &acct, expose, &tunnel).await {
+                    eprintln!("Failed to remove the relay route: {cleanup:#}");
+                    eprintln!("Run `gtunnel doctor --fix` to clean it up");
+                }
+            }
+            return Err(e);
+        }
     };
-
-    let mut child = Command::new(&gcloud_path)
-        .args(&argv)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| format!("Failed to run {}", gcloud_path.display()))?;
-
-    let pid = child.id().unwrap_or(0);
-    let record = EphemeralRecord {
-        name: name.clone(),
-        account_name: acct.name.clone(),
-        pid,
-        spec,
-        started_at: now_secs(),
-    };
-    record.save()?;
 
     println!(
         "{}  {} -> {}",
@@ -266,7 +329,7 @@ pub async fn cmd_run(
                 }
             }
         }
-        _ = tokio::signal::ctrl_c() => {
+        _ = stop_signal() => {
             println!();
         }
     }
@@ -386,5 +449,50 @@ mod tests {
         let a = generated_name();
         let b = generated_name();
         assert_ne!(a, b);
+    }
+    // A record whose process died may still own a relay route, so its port
+    // stays reserved until teardown or doctor confirms the route is gone
+    #[test]
+    fn a_dead_records_relay_port_stays_reserved() {
+        let _temp = TempConfigDir::new();
+        let record = EphemeralRecord {
+            name: "gt-dead02".to_string(),
+            account_name: "dev".to_string(),
+            pid: 999_999,
+            spec: TunnelSpec::Expose {
+                local_target: "3000".to_string(),
+                domain: "dev.example.com".to_string(),
+                hostname: "gt-dead02.dev.example.com".to_string(),
+                relay_port: 30_123,
+                private: false,
+            },
+            started_at: 1_700_000_000,
+        };
+        record.save().expect("save");
+
+        let used = ephemeral_ports("dev", true).expect("ports");
+        assert!(used.contains(&30_123), "{used:?}");
+    }
+
+    #[test]
+    fn another_accounts_ports_are_not_reserved() {
+        let _temp = TempConfigDir::new();
+        let record = EphemeralRecord {
+            name: "gt-other1".to_string(),
+            account_name: "prod".to_string(),
+            pid: std::process::id(),
+            spec: TunnelSpec::Expose {
+                local_target: "3000".to_string(),
+                domain: "prod.example.com".to_string(),
+                hostname: "gt-other1.prod.example.com".to_string(),
+                relay_port: 30_124,
+                private: false,
+            },
+            started_at: 1_700_000_000,
+        };
+        record.save().expect("save");
+
+        let used = ephemeral_ports("dev", true).expect("ports");
+        assert!(!used.contains(&30_124), "{used:?}");
     }
 }
