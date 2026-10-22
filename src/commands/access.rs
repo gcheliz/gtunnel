@@ -267,7 +267,35 @@ pub async fn cmd_list(account: Option<&str>) -> Result<()> {
         let status = tunnel_status(tunnel).await;
         println!("{}", format_list_row(status, tunnel));
     }
+    print_external_tunnels().await;
     Ok(())
+}
+
+// IAP tunnels started outside gtunnel hold ports and confuse `doctor`, so the
+// list names them instead of pretending they are not there
+async fn print_external_tunnels() {
+    let mut managed: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    if let Ok(records) = crate::ephemeral::list_ephemeral() {
+        managed.extend(records.iter().map(|(record, _)| record.pid));
+    }
+    for external in crate::discovery::external_tunnels(&managed) {
+        let url = match external.local_port {
+            Some(port) => format!("localhost:{port}"),
+            None => "-".to_string(),
+        };
+        let target = match &external.zone {
+            Some(zone) => format!("{}:{} ({zone})", external.target, external.remote_port),
+            None => format!("{}:{}", external.target, external.remote_port),
+        };
+        println!(
+            "{} {:<8} {:<16} {:<7} {:<32} {target}  [not managed by gtunnel]",
+            TunnelStatus::Running.symbol(),
+            "running",
+            format!("pid {}", external.pid),
+            "access",
+            url
+        );
+    }
 }
 
 pub async fn cmd_zones(account: Option<&str>, default: Option<&str>) -> Result<()> {

@@ -5,9 +5,12 @@ mod cli;
 mod commands;
 mod config;
 mod daemon;
+mod discovery;
 mod ephemeral;
 mod expose;
 mod gcp;
+mod notify;
+mod probe;
 mod state;
 mod tunnel;
 
