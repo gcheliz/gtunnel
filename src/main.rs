@@ -6,6 +6,7 @@ mod commands;
 mod config;
 mod daemon;
 mod discovery;
+mod doctor;
 mod ephemeral;
 mod expose;
 mod gcp;
@@ -132,7 +133,9 @@ async fn main() -> Result<()> {
                 commands::account::cmd_account_remove(&name, yes)
             }
         },
-        Some(Commands::Doctor { .. }) => bail!("not implemented: doctor"),
+        Some(Commands::Doctor { fix, yes, all }) => {
+            doctor::cmd_doctor(account, fix, yes, all).await
+        }
         Some(Commands::Reset { .. }) => bail!("not implemented: reset"),
         Some(Commands::Demo) => bail!("not implemented: demo"),
         Some(Commands::Update { .. }) => bail!("not implemented: update"),

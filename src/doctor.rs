@@ -1,0 +1,763 @@
+use anyhow::Result;
+use std::collections::HashSet;
+
+use crate::commands::{confirm, resolve};
+use crate::config::{Account, Config};
+use crate::ephemeral::list_ephemeral;
+use crate::expose::naming::Names;
+use crate::expose::routes;
+use crate::gcp::compute::{BackendService, NamedPort, UrlMap};
+use crate::gcp::dns::RecordSet;
+use crate::gcp::{certmanager, compute, dns, gcloud, iap, GcpClient};
+use crate::state::{local_port_is_free, AccessTarget, TunnelSpec, TunnelState};
+
+pub const TUNNEL_ROLE: &str = "roles/iap.tunnelResourceAccessor";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Finding {
+    GcloudMissing,
+    GcloudAuth { account: String },
+    NumpyMissing,
+    StaleState { tunnel: String },
+    MissingInstance { tunnel: String },
+    FirewallMissing { tunnel: String, command: String },
+    IamMissing { tunnel: String, role: &'static str },
+    PortConflict { tunnel: String, port: u16 },
+    DeadEphemeral { name: String },
+    RelayMissing { account: String },
+    CertNotActive { domain: String, state: String },
+    OrphanDns { zone: String, fqdn: String },
+    OrphanBackend { name: String },
+    OrphanHostRule { host: String },
+    OrphanNamedPort { name: String },
+}
+
+impl Finding {
+    // gtunnel removes only what it created; everything else is explained so the
+    // person decides
+    pub fn fixable(&self) -> bool {
+        matches!(
+            self,
+            Finding::StaleState { .. }
+                | Finding::DeadEphemeral { .. }
+                | Finding::OrphanDns { .. }
+                | Finding::OrphanBackend { .. }
+                | Finding::OrphanHostRule { .. }
+                | Finding::OrphanNamedPort { .. }
+        )
+    }
+
+    pub fn describe(&self) -> String {
+        match self {
+            Finding::GcloudMissing => {
+                "gcloud is not on PATH. Install the Google Cloud SDK".to_string()
+            }
+            Finding::GcloudAuth { account } => format!(
+                "gcloud has no usable credentials for account '{account}'. Run `gcloud auth login`"
+            ),
+            Finding::NumpyMissing => {
+                "gcloud's Python is missing numpy, which makes IAP tunnels slow. Run \
+                 `gcloud components reinstall`"
+                    .to_string()
+            }
+            Finding::StaleState { tunnel } => {
+                format!("Tunnel '{tunnel}' is in tunnels.toml but has no service installed")
+            }
+            Finding::MissingInstance { tunnel } => {
+                format!("Tunnel '{tunnel}' points at an instance that no longer exists")
+            }
+            Finding::FirewallMissing { tunnel, command } => {
+                format!("Tunnel '{tunnel}' has no firewall rule for IAP:\n    {command}")
+            }
+            Finding::IamMissing { tunnel, role } => {
+                format!("Tunnel '{tunnel}' needs {role} on the instance or project")
+            }
+            Finding::PortConflict { tunnel, port } => {
+                format!("Tunnel '{tunnel}' wants local port {port}, which is already in use")
+            }
+            Finding::DeadEphemeral { name } => {
+                format!("Run record '{name}' belongs to a process that is gone")
+            }
+            Finding::RelayMissing { account } => format!(
+                "Account '{account}' has Expose tunnels but no relay. Run `gtunnel relay up`"
+            ),
+            Finding::CertNotActive { domain, state } => {
+                format!("Certificate for {domain} is {state}, so HTTPS does not work yet")
+            }
+            Finding::OrphanDns { zone, fqdn } => {
+                format!("DNS record {fqdn} in zone {zone} points at the relay but has no tunnel")
+            }
+            Finding::OrphanBackend { name } => {
+                format!("Backend service {name} has no tunnel")
+            }
+            Finding::OrphanHostRule { host } => {
+                format!("Load balancer host rule for {host} has no tunnel")
+            }
+            Finding::OrphanNamedPort { name } => {
+                format!("Named port {name} on the relay has no tunnel")
+            }
+        }
+    }
+}
+
+// The exact command that makes an Access tunnel's port reachable through IAP
+pub fn firewall_fix_command(acct: &Account, network: &str, port: u16) -> String {
+    format!(
+        "gcloud compute firewall-rules create gt-allow-iap-{port} --project={} \
+         --network={network} --direction=INGRESS --allow=tcp:{port} \
+         --source-ranges=35.235.240.0/20",
+        acct.project
+    )
+}
+
+fn host_rules(map: &UrlMap) -> Vec<String> {
+    map.0
+        .get("hostRules")
+        .and_then(|r| r.as_array())
+        .map(|rules| {
+            rules
+                .iter()
+                .filter_map(|rule| rule.get("hosts").and_then(|h| h.as_array()))
+                .flatten()
+                .filter_map(|host| host.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+// Relay resources whose tunnel is gone. Only resources gtunnel named are
+// considered, so a hand-made record or backend is never touched
+#[allow(clippy::too_many_arguments)]
+pub fn find_expose_orphans(
+    state_hostnames: &HashSet<String>,
+    state_names: &HashSet<String>,
+    relay_ip: &str,
+    records: &[(String, RecordSet)],
+    backends: &[BackendService],
+    url_map: &UrlMap,
+    named_ports: &[NamedPort],
+    names: &Names,
+) -> Vec<Finding> {
+    let mut findings = Vec::new();
+
+    for (zone, record) in records {
+        if record.rtype != "A" || record.rrdatas != [relay_ip.to_string()] {
+            continue;
+        }
+        let hostname = record.name.trim_end_matches('.');
+        if state_hostnames.contains(hostname) {
+            continue;
+        }
+        findings.push(Finding::OrphanDns {
+            zone: zone.clone(),
+            fqdn: record.name.clone(),
+        });
+    }
+
+    let backend_prefix = format!("gt-{}-", names.account);
+    for backend in backends {
+        let Some(tunnel) = backend.name.strip_prefix(&backend_prefix) else {
+            continue;
+        };
+        if backend.name == names.default_backend || state_names.contains(tunnel) {
+            continue;
+        }
+        findings.push(Finding::OrphanBackend {
+            name: backend.name.clone(),
+        });
+    }
+
+    for host in host_rules(url_map) {
+        if !state_hostnames.contains(&host) {
+            findings.push(Finding::OrphanHostRule { host });
+        }
+    }
+
+    let default_port = names.default_named_port();
+    for port in named_ports {
+        let Some(tunnel) = port.name.strip_prefix("gt-") else {
+            continue;
+        };
+        if port.name == default_port || state_names.contains(tunnel) {
+            continue;
+        }
+        findings.push(Finding::OrphanNamedPort {
+            name: port.name.clone(),
+        });
+    }
+
+    findings
+}
+
+// Everything gtunnel can see about one account, without changing anything
+pub async fn run_doctor(
+    cfg: &Config,
+    state: &TunnelState,
+    accounts: &[&Account],
+) -> Vec<(String, Finding)> {
+    let mut out = Vec::new();
+
+    if gcloud::find_gcloud().is_none() {
+        out.push((String::new(), Finding::GcloudMissing));
+    }
+
+    for (record, alive) in list_ephemeral().unwrap_or_default() {
+        if !alive {
+            out.push((
+                record.account_name.clone(),
+                Finding::DeadEphemeral { name: record.name },
+            ));
+        }
+    }
+
+    for acct in accounts {
+        out.extend(
+            account_findings(cfg, state, acct)
+                .await
+                .into_iter()
+                .map(|f| (acct.name.clone(), f)),
+        );
+    }
+    out
+}
+
+async fn account_findings(_cfg: &Config, state: &TunnelState, acct: &Account) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    let client = GcpClient::for_account(acct);
+
+    if gcloud::print_access_token(acct).await.is_err() {
+        findings.push(Finding::GcloudAuth {
+            account: acct.name.clone(),
+        });
+        // Without a token nothing else can be checked against GCP
+        return findings;
+    }
+
+    let tunnels = state.tunnels_for_account(&acct.name);
+    let firewalls = compute::list_firewalls(&client, &acct.project)
+        .await
+        .unwrap_or_default();
+
+    for tunnel in &tunnels {
+        let label = crate::daemon::platform_label(&acct.name, &tunnel.name);
+        if crate::daemon::status(&label).await == crate::state::TunnelStatus::Stopped
+            && !service_installed(&label)
+        {
+            findings.push(Finding::StaleState {
+                tunnel: tunnel.name.clone(),
+            });
+        }
+
+        match &tunnel.spec {
+            TunnelSpec::Access {
+                target,
+                remote_port,
+                local_port,
+            } => {
+                if !local_port_is_free(*local_port)
+                    && crate::daemon::status(&label).await != crate::state::TunnelStatus::Running
+                {
+                    findings.push(Finding::PortConflict {
+                        tunnel: tunnel.name.clone(),
+                        port: *local_port,
+                    });
+                }
+                if let AccessTarget::Instance { instance, zone } = target {
+                    match compute::get_instance(&client, &acct.project, zone, instance).await {
+                        Ok(None) => findings.push(Finding::MissingInstance {
+                            tunnel: tunnel.name.clone(),
+                        }),
+                        Ok(Some(found)) => {
+                            let network = found.network.clone().unwrap_or_else(|| "default".into());
+                            if !compute::firewall_allows_iap(
+                                &firewalls,
+                                &network,
+                                &found.tags,
+                                *remote_port,
+                            ) {
+                                findings.push(Finding::FirewallMissing {
+                                    tunnel: tunnel.name.clone(),
+                                    command: firewall_fix_command(acct, &network, *remote_port),
+                                });
+                            }
+                            if let Ok(false) =
+                                iap::can_tunnel_instance(&client, &acct.project, zone, instance)
+                                    .await
+                            {
+                                findings.push(Finding::IamMissing {
+                                    tunnel: tunnel.name.clone(),
+                                    role: TUNNEL_ROLE,
+                                });
+                            }
+                        }
+                        Err(_) => {}
+                    }
+                }
+            }
+            TunnelSpec::Expose { .. } => {
+                if acct.expose.is_none() {
+                    findings.push(Finding::RelayMissing {
+                        account: acct.name.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    if let Some(expose) = &acct.expose {
+        findings.extend(relay_findings(&client, acct, expose, &tunnels).await);
+    }
+
+    findings
+}
+
+fn service_installed(label: &str) -> bool {
+    let Some(home) = dirs::home_dir() else {
+        return true;
+    };
+    #[cfg(target_os = "macos")]
+    let path = home
+        .join("Library/LaunchAgents")
+        .join(format!("{label}.plist"));
+    #[cfg(not(target_os = "macos"))]
+    let path = home.join(".config/systemd/user").join(label);
+    path.exists()
+}
+
+async fn relay_findings(
+    client: &GcpClient,
+    acct: &Account,
+    expose: &crate::config::ExposeConfig,
+    tunnels: &[&crate::state::PersistentTunnel],
+) -> Vec<Finding> {
+    let names = Names::new(&acct.name);
+    let mut findings = Vec::new();
+
+    for domain in &expose.domains {
+        if let Ok(state) = certmanager::certificate_state(
+            client,
+            &acct.project,
+            &names.certificate(&domain.domain),
+        )
+        .await
+        {
+            if state != "ACTIVE" {
+                findings.push(Finding::CertNotActive {
+                    domain: domain.domain.clone(),
+                    state,
+                });
+            }
+        }
+    }
+
+    let Ok(Some(relay_ip)) =
+        compute::get_global_address(client, &acct.project, &names.address).await
+    else {
+        return findings;
+    };
+
+    let state_hostnames: HashSet<String> = tunnels
+        .iter()
+        .filter_map(|t| match &t.spec {
+            TunnelSpec::Expose { hostname, .. } => Some(hostname.clone()),
+            _ => None,
+        })
+        .collect();
+    let state_names: HashSet<String> = tunnels
+        .iter()
+        .filter(|t| t.is_expose())
+        .map(|t| t.name.clone())
+        .collect();
+
+    let mut records = Vec::new();
+    for domain in &expose.domains {
+        if let Ok(found) = dns::list_record_sets(client, &acct.project, &domain.managed_zone).await
+        {
+            records.extend(
+                found
+                    .into_iter()
+                    .map(|record| (domain.managed_zone.clone(), record)),
+            );
+        }
+    }
+    let backends = compute::list_backend_services(client, &acct.project)
+        .await
+        .unwrap_or_default();
+    let url_map = compute::get_url_map(client, &acct.project, &names.url_map)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(UrlMap(serde_json::json!({})));
+    let (named_ports, _) = compute::get_named_ports(
+        client,
+        &acct.project,
+        &expose.relay_zone,
+        &names.instance_group,
+    )
+    .await
+    .unwrap_or_default();
+
+    findings.extend(find_expose_orphans(
+        &state_hostnames,
+        &state_names,
+        &relay_ip,
+        &records,
+        &backends,
+        &url_map,
+        &named_ports,
+        &names,
+    ));
+    findings
+}
+
+pub async fn cmd_doctor(
+    account: Option<&str>,
+    fix: bool,
+    assume_yes: bool,
+    all: bool,
+) -> Result<()> {
+    let (config, acct) = resolve(account)?;
+    let state = TunnelState::load()?;
+    let accounts: Vec<&Account> = if all {
+        config.accounts.iter().collect()
+    } else {
+        vec![config
+            .accounts
+            .iter()
+            .find(|a| a.name == acct.name)
+            .unwrap_or(&acct)]
+    };
+
+    let findings = run_doctor(&config, &state, &accounts).await;
+    if findings.is_empty() {
+        println!("Nothing to report");
+        return Ok(());
+    }
+
+    let mut current = None;
+    for (account_name, finding) in &findings {
+        if current.as_deref() != Some(account_name.as_str()) {
+            if account_name.is_empty() {
+                println!("gtunnel:");
+            } else {
+                println!("account {account_name}:");
+            }
+            current = Some(account_name.clone());
+        }
+        let marker = if finding.fixable() { "-" } else { "!" };
+        println!("  {marker} {}", finding.describe());
+    }
+
+    if !fix {
+        let fixable = findings.iter().filter(|(_, f)| f.fixable()).count();
+        if fixable > 0 {
+            println!("\n{fixable} of these can be removed with `gtunnel doctor --fix`");
+        }
+        return Ok(());
+    }
+
+    let fixable: Vec<(String, Finding)> =
+        findings.into_iter().filter(|(_, f)| f.fixable()).collect();
+    if fixable.is_empty() {
+        println!("\nNothing here is gtunnel's to remove");
+        return Ok(());
+    }
+    if !confirm(
+        &format!("\nRemove {} leftover(s)?", fixable.len()),
+        assume_yes,
+    )? {
+        println!("Cancelled");
+        return Ok(());
+    }
+
+    let mut state = TunnelState::load()?;
+    for (account_name, finding) in fixable {
+        match apply_fix(&config, &mut state, &account_name, &finding).await {
+            Ok(()) => println!("  removed: {}", finding.describe()),
+            Err(e) => eprintln!("  failed: {} ({e:#})", finding.describe()),
+        }
+    }
+    state.save()?;
+    Ok(())
+}
+
+async fn apply_fix(
+    config: &Config,
+    state: &mut TunnelState,
+    account_name: &str,
+    finding: &Finding,
+) -> Result<()> {
+    let acct = config.get_account(Some(account_name)).ok();
+    match finding {
+        Finding::StaleState { tunnel } => {
+            state.remove_for_account(tunnel, account_name);
+            Ok(())
+        }
+        Finding::DeadEphemeral { name } => {
+            let path = crate::ephemeral::run_dir()?.join(format!("{account_name}-{name}.json"));
+            if path.exists() {
+                std::fs::remove_file(path)?;
+            }
+            Ok(())
+        }
+        Finding::OrphanDns { zone, fqdn } => {
+            let acct = acct.ok_or_else(|| anyhow::anyhow!("Account '{account_name}' not found"))?;
+            let client = GcpClient::for_account(acct);
+            dns::delete_record_set(&client, &acct.project, zone, fqdn, "A").await
+        }
+        Finding::OrphanBackend { name } => {
+            let acct = acct.ok_or_else(|| anyhow::anyhow!("Account '{account_name}' not found"))?;
+            let client = GcpClient::for_account(acct);
+            if let Some(op) = compute::delete_backend_service(&client, &acct.project, name).await? {
+                client.wait_operation(&op).await?;
+            }
+            Ok(())
+        }
+        Finding::OrphanHostRule { host } => {
+            let acct = acct.ok_or_else(|| anyhow::anyhow!("Account '{account_name}' not found"))?;
+            let client = GcpClient::for_account(acct);
+            let names = Names::new(&acct.name);
+            routes::retry_on_precondition(routes::FINGERPRINT_ATTEMPTS, || async {
+                let Some(map) =
+                    compute::get_url_map(&client, &acct.project, &names.url_map).await?
+                else {
+                    return Ok(());
+                };
+                let updated = compute::without_host_rule(&map, host);
+                if updated == map {
+                    return Ok(());
+                }
+                let op = compute::update_url_map(&client, &acct.project, &names.url_map, &updated)
+                    .await?;
+                client.wait_operation(&op).await
+            })
+            .await
+        }
+        Finding::OrphanNamedPort { name } => {
+            let acct = acct.ok_or_else(|| anyhow::anyhow!("Account '{account_name}' not found"))?;
+            let expose = acct
+                .expose
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Account '{account_name}' has no relay"))?;
+            let client = GcpClient::for_account(acct);
+            let names = Names::new(&acct.name);
+            routes::retry_on_precondition(routes::FINGERPRINT_ATTEMPTS, || async {
+                let (ports, fingerprint) = compute::get_named_ports(
+                    &client,
+                    &acct.project,
+                    &expose.relay_zone,
+                    &names.instance_group,
+                )
+                .await?;
+                if !ports.iter().any(|p| p.name == *name) {
+                    return Ok(());
+                }
+                let kept = compute::remove_named_port(&ports, name);
+                let op = compute::set_named_ports(
+                    &client,
+                    &acct.project,
+                    &expose.relay_zone,
+                    &names.instance_group,
+                    &kept,
+                    fingerprint.as_deref(),
+                )
+                .await?;
+                client.wait_operation(&op).await
+            })
+            .await
+        }
+        _ => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Account;
+    use crate::gcp::compute::{BackendService, NamedPort, UrlMap};
+    use crate::gcp::dns::RecordSet;
+
+    const RELAY_IP: &str = "34.1.2.3";
+
+    fn account() -> Account {
+        Account {
+            name: "dev".to_string(),
+            gcloud_configuration: "dev".to_string(),
+            project: "proj-1".to_string(),
+            default_zone: "europe-west1-b".to_string(),
+            impersonate_service_account: None,
+            expose: None,
+        }
+    }
+
+    fn record(name: &str, ip: &str) -> (String, RecordSet) {
+        (
+            "example".to_string(),
+            RecordSet {
+                name: format!("{name}.dev.example.com."),
+                rtype: "A".to_string(),
+                ttl: 60,
+                rrdatas: vec![ip.to_string()],
+            },
+        )
+    }
+
+    fn backend(name: &str) -> BackendService {
+        BackendService {
+            name: name.to_string(),
+            port_name: Some("gt-x".to_string()),
+            iap_enabled: false,
+        }
+    }
+
+    fn url_map(hosts: &[&str]) -> UrlMap {
+        let mut map = UrlMap(serde_json::json!({"name": "gt-dev-urlmap"}));
+        for host in hosts {
+            map = crate::gcp::compute::with_host_rule(&map, host, "projects/p/x");
+        }
+        map
+    }
+
+    #[test]
+    fn expose_orphans_are_exactly_the_resources_state_does_not_know() {
+        let names = Names::new("dev");
+        let state_hostnames: HashSet<String> =
+            ["api.dev.example.com".to_string()].into_iter().collect();
+        let state_names: HashSet<String> = ["api".to_string()].into_iter().collect();
+        let records = vec![
+            record("api", RELAY_IP),
+            record("old", RELAY_IP),
+            // Another service's record, pointing somewhere else entirely
+            record("www", "203.0.113.9"),
+        ];
+        let backends = vec![
+            backend("gt-dev-api"),
+            backend("gt-dev-old"),
+            backend("gt-dev-default"),
+        ];
+        let map = url_map(&["api.dev.example.com"]);
+        let ports = vec![
+            NamedPort {
+                name: "gt-api".to_string(),
+                port: 30001,
+            },
+            NamedPort {
+                name: "gt-default".to_string(),
+                port: 30999,
+            },
+        ];
+
+        let findings = find_expose_orphans(
+            &state_hostnames,
+            &state_names,
+            RELAY_IP,
+            &records,
+            &backends,
+            &map,
+            &ports,
+            &names,
+        );
+
+        assert_eq!(findings.len(), 2, "{findings:?}");
+        assert!(findings.iter().any(
+            |f| matches!(f, Finding::OrphanDns { fqdn, .. } if fqdn == "old.dev.example.com.")
+        ));
+        assert!(findings
+            .iter()
+            .any(|f| matches!(f, Finding::OrphanBackend { name } if name == "gt-dev-old")));
+    }
+
+    #[test]
+    fn an_orphan_host_rule_and_named_port_are_reported() {
+        let names = Names::new("dev");
+        let findings = find_expose_orphans(
+            &HashSet::new(),
+            &HashSet::new(),
+            RELAY_IP,
+            &[],
+            &[],
+            &url_map(&["gone.dev.example.com"]),
+            &[NamedPort {
+                name: "gt-gone".to_string(),
+                port: 30002,
+            }],
+            &names,
+        );
+        assert!(findings.iter().any(
+            |f| matches!(f, Finding::OrphanHostRule { host } if host == "gone.dev.example.com")
+        ));
+        assert!(findings
+            .iter()
+            .any(|f| matches!(f, Finding::OrphanNamedPort { name } if name == "gt-gone")));
+    }
+
+    #[test]
+    fn the_firewall_fix_command_is_exact() {
+        assert_eq!(
+            firewall_fix_command(&account(), "default", 5432),
+            "gcloud compute firewall-rules create gt-allow-iap-5432 --project=proj-1 \
+             --network=default --direction=INGRESS --allow=tcp:5432 \
+             --source-ranges=35.235.240.0/20"
+        );
+    }
+
+    // What gtunnel created, it may remove; what it only found, it explains
+    #[test]
+    fn only_gtunnels_own_leftovers_are_fixable() {
+        assert!(Finding::StaleState {
+            tunnel: "db".to_string()
+        }
+        .fixable());
+        assert!(Finding::DeadEphemeral {
+            name: "gt-abc123".to_string()
+        }
+        .fixable());
+        assert!(Finding::OrphanDns {
+            zone: "example".to_string(),
+            fqdn: "old.dev.example.com.".to_string()
+        }
+        .fixable());
+        assert!(!Finding::FirewallMissing {
+            tunnel: "db".to_string(),
+            command: "gcloud ...".to_string()
+        }
+        .fixable());
+        assert!(!Finding::IamMissing {
+            tunnel: "db".to_string(),
+            role: "roles/iap.tunnelResourceAccessor"
+        }
+        .fixable());
+        assert!(!Finding::GcloudMissing.fixable());
+    }
+
+    #[test]
+    fn every_finding_describes_itself_without_panicking() {
+        let findings = vec![
+            Finding::GcloudMissing,
+            Finding::GcloudAuth {
+                account: "dev".to_string(),
+            },
+            Finding::NumpyMissing,
+            Finding::StaleState {
+                tunnel: "db".to_string(),
+            },
+            Finding::MissingInstance {
+                tunnel: "db".to_string(),
+            },
+            Finding::PortConflict {
+                tunnel: "db".to_string(),
+                port: 15432,
+            },
+            Finding::RelayMissing {
+                account: "dev".to_string(),
+            },
+            Finding::CertNotActive {
+                domain: "dev.example.com".to_string(),
+                state: "PROVISIONING".to_string(),
+            },
+        ];
+        for finding in findings {
+            assert!(!finding.describe().is_empty());
+        }
+    }
+}
