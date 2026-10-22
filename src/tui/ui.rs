@@ -4,7 +4,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Sparkline};
 use ratatui::Frame;
 
-use super::app::{App, InputMode};
+use super::app::{App, InputMode, TunnelMode};
 use crate::probe::{HealthStatus, LB_WINDOW_MINUTES};
 use crate::state::{TunnelSpec, TunnelStatus};
 use crate::tunnel::diagnose_log_line;
@@ -41,7 +41,7 @@ pub fn render(f: &mut Frame, app: &App) {
 
     let content = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+        .constraints([Constraint::Percentage(46), Constraint::Percentage(54)])
         .split(main[0]);
 
     render_tunnels(f, app, content[0]);
@@ -70,8 +70,18 @@ pub fn render(f: &mut Frame, app: &App) {
     render_status_line(f, app, main[1]);
     render_help_bar(f, main[2]);
 
-    if app.input_mode == InputMode::Help {
-        render_help_modal(f);
+    match app.input_mode {
+        InputMode::Normal => {}
+        InputMode::Help => render_help_modal(f),
+        InputMode::ChooseMode => render_choose_mode(f),
+        InputMode::Confirm => {
+            if let Some(message) = &app.confirm_message {
+                render_dialog(f, "Confirm", vec![Line::raw(message.clone())], 50, 20);
+            }
+        }
+        InputMode::AddInstance => render_instance_picker(f, app),
+        InputMode::AddDomain => render_domain_picker(f, app),
+        mode => render_prompt(f, app, mode),
     }
 }
 
@@ -402,4 +412,136 @@ fn render_help_modal(f: &mut Frame) {
         Style::default().fg(Color::DarkGray),
     ));
     f.render_widget(Paragraph::new(lines), inner);
+}
+
+fn render_dialog(f: &mut Frame, title: &str, lines: Vec<Line>, width: u16, height: u16) {
+    let area = centered_rect(width, height, f.area());
+    f.render_widget(Clear, area);
+    let block = Block::default()
+        .title(format!(" {title} "))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+fn render_choose_mode(f: &mut Frame) {
+    render_dialog(
+        f,
+        "New tunnel",
+        vec![
+            Line::from(vec![
+                Span::styled("  1  ", Style::default().fg(Color::Cyan)),
+                Span::raw("Access - forward a remote port to localhost over IAP"),
+            ]),
+            Line::from(vec![
+                Span::styled("  2  ", Style::default().fg(Color::Cyan)),
+                Span::raw("Public - publish a local service at an HTTPS URL"),
+            ]),
+            Line::raw(""),
+            Line::styled("  Esc to cancel", Style::default().fg(Color::DarkGray)),
+        ],
+        60,
+        25,
+    );
+}
+
+fn render_prompt(f: &mut Frame, app: &App, mode: InputMode) {
+    let title = match app.draft.mode {
+        TunnelMode::Access => "New access tunnel",
+        TunnelMode::Public => "New public URL",
+    };
+    let title = if mode == InputMode::EditTarget {
+        "Edit"
+    } else {
+        title
+    };
+    render_dialog(
+        f,
+        title,
+        vec![
+            Line::styled(mode.prompt(), Style::default().fg(Color::Yellow)),
+            Line::raw(""),
+            Line::from(vec![
+                Span::raw(format!("  {}", app.input)),
+                Span::styled("_", Style::default().fg(Color::Cyan)),
+            ]),
+            Line::raw(""),
+            Line::styled(
+                "  Enter to continue, Esc to cancel",
+                Style::default().fg(Color::DarkGray),
+            ),
+        ],
+        60,
+        25,
+    );
+}
+
+fn picker_lines<'a>(
+    prompt: &'a str,
+    filter: &str,
+    rows: Vec<String>,
+    selected: usize,
+) -> Vec<Line<'a>> {
+    let mut lines = vec![
+        Line::styled(prompt, Style::default().fg(Color::Yellow)),
+        Line::from(vec![
+            Span::raw(format!("  {filter}")),
+            Span::styled("_", Style::default().fg(Color::Cyan)),
+        ]),
+        Line::raw(""),
+    ];
+    if rows.is_empty() {
+        lines.push(Line::styled(
+            "  nothing matches",
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    for (i, row) in rows.into_iter().enumerate() {
+        let style = if i == selected {
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .fg(Color::Cyan)
+        } else {
+            Style::default()
+        };
+        lines.push(Line::styled(format!("  {row}"), style));
+    }
+    lines
+}
+
+fn render_instance_picker(f: &mut Frame, app: &App) {
+    let rows: Vec<String> = app
+        .filtered_instances()
+        .iter()
+        .map(|i| format!("{:<30} {}", i.name, i.zone))
+        .collect();
+    render_dialog(
+        f,
+        "Instance",
+        picker_lines(
+            InputMode::AddInstance.prompt(),
+            &app.input,
+            rows,
+            app.instance_selected,
+        ),
+        70,
+        60,
+    );
+}
+
+fn render_domain_picker(f: &mut Frame, app: &App) {
+    render_dialog(
+        f,
+        "Domain",
+        picker_lines(
+            InputMode::AddDomain.prompt(),
+            "",
+            app.domains.clone(),
+            app.domain_selected,
+        ),
+        60,
+        40,
+    );
 }

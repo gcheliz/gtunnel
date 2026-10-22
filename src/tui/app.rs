@@ -88,20 +88,32 @@ pub enum Op {
     Edit(EditTunnel),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TunnelMode {
+    #[default]
+    Access,
+    Public,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NewTunnel {
     pub account: String,
     pub name: String,
-    pub target: String,
-    pub zone: Option<String>,
+    pub mode: TunnelMode,
+    pub instance: String,
+    pub zone: String,
+    pub remote_port: u16,
+    pub local_port: u16,
+    pub local_target: String,
+    pub domain: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EditTunnel {
     pub account: String,
     pub name: String,
-    pub target: String,
-    pub zone: Option<String>,
+    // "<remote>:<local>" for Access, a local target or "private"/"public" for Expose
+    pub value: String,
 }
 
 // What an Op produced, handed back to the UI thread
@@ -116,7 +128,50 @@ pub struct OpResult {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputMode {
     Normal,
+    ChooseMode,
+    AddName,
+    AddInstance,
+    AddRemotePort,
+    AddLocalPort,
+    AddLocalTarget,
+    AddDomain,
+    EditTarget,
+    Confirm,
     Help,
+}
+
+impl InputMode {
+    // The modes that read a line of text rather than a single key
+    pub fn is_text(&self) -> bool {
+        matches!(
+            self,
+            InputMode::AddName
+                | InputMode::AddRemotePort
+                | InputMode::AddLocalPort
+                | InputMode::AddLocalTarget
+                | InputMode::EditTarget
+        )
+    }
+
+    pub fn prompt(&self) -> &'static str {
+        match self {
+            InputMode::AddName => "Name:",
+            InputMode::AddInstance => "Instance (type to filter):",
+            InputMode::AddRemotePort => "Remote port:",
+            InputMode::AddLocalPort => "Local port (Enter keeps the suggestion):",
+            InputMode::AddLocalTarget => "Local target (e.g. localhost:3000):",
+            InputMode::AddDomain => "Domain:",
+            InputMode::EditTarget => "New value:",
+            _ => "",
+        }
+    }
+}
+
+// An instance the picker offers, as list_instances reports it
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstanceChoice {
+    pub name: String,
+    pub zone: String,
 }
 
 // Braille dots, shown while an Op is in flight
@@ -174,6 +229,16 @@ pub struct App {
     pub spinner: Spinner,
     pub should_quit: bool,
     pub suspend: bool,
+    pub input: String,
+    pub draft: NewTunnel,
+    pub instances: Vec<InstanceChoice>,
+    pub instance_selected: usize,
+    pub domains: Vec<String>,
+    pub domain_selected: usize,
+    pub confirm_message: Option<String>,
+    pub has_relay: bool,
+    // Set when the instance picker opens, so the loop knows to fetch the list
+    pub want_instances: bool,
     // Set by `r`, cleared once the event loop has rescheduled every timer
     pub force_refresh: bool,
 }
@@ -191,6 +256,15 @@ impl App {
             spinner: Spinner::new(),
             should_quit: false,
             suspend: false,
+            input: String::new(),
+            draft: NewTunnel::default(),
+            instances: Vec::new(),
+            instance_selected: 0,
+            domains: Vec::new(),
+            domain_selected: 0,
+            confirm_message: None,
+            has_relay: false,
+            want_instances: false,
             force_refresh: false,
         }
     }
@@ -288,14 +362,23 @@ impl App {
             }
         }
 
-        if self.input_mode == InputMode::Help {
-            if matches!(
-                key.code,
-                KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q')
-            ) {
-                self.input_mode = InputMode::Normal;
+        match self.input_mode {
+            InputMode::Normal => {}
+            InputMode::Help => {
+                if matches!(
+                    key.code,
+                    KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q')
+                ) {
+                    self.input_mode = InputMode::Normal;
+                }
+                return None;
             }
-            return None;
+            InputMode::ChooseMode => return self.choose_mode(key.code),
+            InputMode::Confirm => return self.confirm(key.code),
+            InputMode::AddInstance => return self.pick_instance(key.code),
+            InputMode::AddDomain => return self.pick_domain(key.code),
+            mode if mode.is_text() => return self.type_line(key.code),
+            _ => return None,
         }
 
         match key.code {
@@ -311,12 +394,14 @@ impl App {
             KeyCode::Char('s') => return self.op_for("start", Op::Start),
             KeyCode::Char('S') => return self.op_for("stop", Op::Stop),
             KeyCode::Char('R') => return self.op_for("restart", Op::Restart),
-            KeyCode::Char('d') => return self.op_for("delete", Op::Delete),
+            KeyCode::Char('d') => self.ask_delete(),
             KeyCode::Char('A') => return self.op_for("auto-start", Op::ToggleAutoStart),
             KeyCode::Char('m') => return self.import_op(),
             KeyCode::Char('c') => self.copy_url(),
             KeyCode::Char('o') => self.open_url(),
             KeyCode::Char('h') => self.force_health(),
+            KeyCode::Char('a') => self.open_add(),
+            KeyCode::Char('e') => self.open_edit(),
             _ => {}
         }
         None
@@ -373,6 +458,263 @@ impl App {
             Ok(()) => self.set_status(format!("opened {url}")),
             Err(e) => self.set_status(format!("could not open {url}: {e}")),
         }
+    }
+
+    // --- dialogs ---
+
+    fn cancel_dialog(&mut self) {
+        self.input_mode = InputMode::Normal;
+        self.input.clear();
+        self.confirm_message = None;
+    }
+
+    fn open_add(&mut self) {
+        self.draft = NewTunnel {
+            account: self.account.clone(),
+            ..NewTunnel::default()
+        };
+        self.input.clear();
+        self.input_mode = InputMode::ChooseMode;
+    }
+
+    fn choose_mode(&mut self, code: KeyCode) -> Option<Op> {
+        match code {
+            KeyCode::Char('1') => {
+                self.draft.mode = TunnelMode::Access;
+                self.input_mode = InputMode::AddName;
+            }
+            KeyCode::Char('2') => {
+                if !self.has_relay {
+                    self.cancel_dialog();
+                    self.set_status(
+                        "This account has no relay. Run `gtunnel relay up` before publishing a URL",
+                    );
+                    return None;
+                }
+                self.draft.mode = TunnelMode::Public;
+                self.input_mode = InputMode::AddName;
+            }
+            KeyCode::Esc => self.cancel_dialog(),
+            _ => {}
+        }
+        None
+    }
+
+    fn ask_delete(&mut self) {
+        let Some(entry) = self.selected_entry() else {
+            return;
+        };
+        if entry.kind == TunnelKind::External {
+            self.refuse_external("delete");
+            return;
+        }
+        self.confirm_message = Some(format!("Delete {}? (y/n)", entry.name()));
+        self.input_mode = InputMode::Confirm;
+    }
+
+    fn confirm(&mut self, code: KeyCode) -> Option<Op> {
+        match code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                self.cancel_dialog();
+                self.op_for("delete", Op::Delete)
+            }
+            _ => {
+                self.cancel_dialog();
+                None
+            }
+        }
+    }
+
+    fn open_edit(&mut self) {
+        let Some(entry) = self.selected_entry() else {
+            return;
+        };
+        if entry.kind == TunnelKind::External {
+            self.refuse_external("edit");
+            return;
+        }
+        self.input = match &entry.tunnel.spec {
+            TunnelSpec::Access {
+                remote_port,
+                local_port,
+                ..
+            } => format!("{remote_port}:{local_port}"),
+            TunnelSpec::Expose { local_target, .. } => local_target.clone(),
+        };
+        self.input_mode = InputMode::EditTarget;
+    }
+
+    // The next free port in gtunnel's own range, so the suggestion never
+    // collides with a tunnel already on screen
+    pub fn suggested_local_port(&self) -> u16 {
+        let taken: std::collections::HashSet<u16> = self
+            .entries
+            .iter()
+            .filter_map(|e| match e.tunnel.spec {
+                TunnelSpec::Access { local_port, .. } => Some(local_port),
+                _ => None,
+            })
+            .collect();
+        (15_000..16_000)
+            .find(|port| !taken.contains(port))
+            .unwrap_or(15_000)
+    }
+
+    fn type_line(&mut self, code: KeyCode) -> Option<Op> {
+        match code {
+            KeyCode::Esc => {
+                self.cancel_dialog();
+                None
+            }
+            KeyCode::Backspace => {
+                self.input.pop();
+                None
+            }
+            KeyCode::Char(c) => {
+                self.input.push(c);
+                None
+            }
+            KeyCode::Enter => self.advance(),
+            _ => None,
+        }
+    }
+
+    fn advance(&mut self) -> Option<Op> {
+        let value = std::mem::take(&mut self.input);
+        match self.input_mode {
+            InputMode::AddName => {
+                if value.trim().is_empty() {
+                    self.input = value;
+                    return None;
+                }
+                self.draft.name = value.trim().to_string();
+                self.input_mode = match self.draft.mode {
+                    TunnelMode::Access => {
+                        self.want_instances = true;
+                        self.instance_selected = 0;
+                        InputMode::AddInstance
+                    }
+                    TunnelMode::Public => InputMode::AddLocalTarget,
+                };
+                None
+            }
+            InputMode::AddRemotePort => match value.trim().parse::<u16>() {
+                Ok(port) => {
+                    self.draft.remote_port = port;
+                    self.draft.local_port = self.suggested_local_port();
+                    self.input_mode = InputMode::AddLocalPort;
+                    None
+                }
+                Err(_) => {
+                    self.set_status(format!("{value:?} is not a port"));
+                    None
+                }
+            },
+            InputMode::AddLocalPort => {
+                if !value.trim().is_empty() {
+                    match value.trim().parse::<u16>() {
+                        Ok(port) => self.draft.local_port = port,
+                        Err(_) => {
+                            self.set_status(format!("{value:?} is not a port"));
+                            return None;
+                        }
+                    }
+                }
+                let draft = std::mem::take(&mut self.draft);
+                self.cancel_dialog();
+                self.spinner.start(&format!("create {}", draft.name));
+                Some(Op::Create(draft))
+            }
+            InputMode::AddLocalTarget => {
+                if value.trim().is_empty() {
+                    return None;
+                }
+                self.draft.local_target = value.trim().to_string();
+                self.domain_selected = 0;
+                self.input_mode = InputMode::AddDomain;
+                None
+            }
+            InputMode::EditTarget => {
+                let name = self.selected_entry()?.name().to_string();
+                let edit = EditTunnel {
+                    account: self.account.clone(),
+                    name: name.clone(),
+                    value: value.trim().to_string(),
+                };
+                self.cancel_dialog();
+                self.spinner.start(&format!("edit {name}"));
+                Some(Op::Edit(edit))
+            }
+            _ => None,
+        }
+    }
+
+    // The picker filters as you type, so a long instance list stays usable
+    pub fn filtered_instances(&self) -> Vec<&InstanceChoice> {
+        let needle = self.input.to_lowercase();
+        self.instances
+            .iter()
+            .filter(|i| needle.is_empty() || i.name.to_lowercase().contains(&needle))
+            .collect()
+    }
+
+    fn pick_instance(&mut self, code: KeyCode) -> Option<Op> {
+        match code {
+            KeyCode::Esc => self.cancel_dialog(),
+            KeyCode::Backspace => {
+                self.input.pop();
+                self.instance_selected = 0;
+            }
+            KeyCode::Char(c) => {
+                self.input.push(c);
+                self.instance_selected = 0;
+            }
+            KeyCode::Down => {
+                let last = self.filtered_instances().len().saturating_sub(1);
+                self.instance_selected = (self.instance_selected + 1).min(last);
+            }
+            KeyCode::Up => self.instance_selected = self.instance_selected.saturating_sub(1),
+            KeyCode::Enter => {
+                let chosen = self
+                    .filtered_instances()
+                    .get(self.instance_selected)
+                    .map(|i| (*i).clone());
+                let Some(chosen) = chosen else {
+                    self.set_status("No instance matches that filter");
+                    return None;
+                };
+                self.draft.instance = chosen.name;
+                self.draft.zone = chosen.zone;
+                self.input.clear();
+                self.input_mode = InputMode::AddRemotePort;
+            }
+            _ => {}
+        }
+        None
+    }
+
+    fn pick_domain(&mut self, code: KeyCode) -> Option<Op> {
+        match code {
+            KeyCode::Esc => self.cancel_dialog(),
+            KeyCode::Down => {
+                let last = self.domains.len().saturating_sub(1);
+                self.domain_selected = (self.domain_selected + 1).min(last);
+            }
+            KeyCode::Up => self.domain_selected = self.domain_selected.saturating_sub(1),
+            KeyCode::Enter => {
+                let Some(domain) = self.domains.get(self.domain_selected).cloned() else {
+                    self.set_status("This account has no domain. Run `gtunnel domains add`");
+                    return None;
+                };
+                self.draft.domain = domain;
+                let draft = std::mem::take(&mut self.draft);
+                self.cancel_dialog();
+                self.spinner.start(&format!("create {}", draft.name));
+                return Some(Op::Create(draft));
+            }
+            _ => {}
+        }
+        None
     }
 
     pub fn apply(&mut self, result: OpResult) {

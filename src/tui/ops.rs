@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use std::collections::HashSet;
 
-use super::app::{Op, OpResult, TunnelEntry, TunnelKind};
+use super::app::{EditTunnel, NewTunnel, Op, OpResult, TunnelEntry, TunnelKind, TunnelMode};
 use crate::commands::{find_tunnel, resolve};
 use crate::config::load_config;
 use crate::daemon;
@@ -85,6 +85,23 @@ fn external_as_tunnel(account: &str, external: &ExternalTunnel) -> PersistentTun
     }
 }
 
+// Every instance the account can reach, for the picker
+pub async fn load_instances(account: &str) -> Result<Vec<super::app::InstanceChoice>> {
+    let (_, acct) = resolve(Some(account))?;
+    let client = GcpClient::for_account(&acct);
+    let mut out: Vec<super::app::InstanceChoice> =
+        crate::gcp::compute::list_instances(&client, &acct.project)
+            .await?
+            .into_iter()
+            .map(|i| super::app::InstanceChoice {
+                name: i.name,
+                zone: i.zone,
+            })
+            .collect();
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
+}
+
 pub fn read_logs(tunnel: &PersistentTunnel, lines: usize) -> Vec<String> {
     let Ok(path) = tunnel.log_path() else {
         return Vec::new();
@@ -152,10 +169,91 @@ async fn run(account: &str, op: &Op) -> Result<String> {
         Op::Delete(name) => delete(account, name).await,
         Op::ToggleAutoStart(name) => toggle_auto_start(account, name).await,
         Op::Import(name) => import(account, name).await,
-        Op::Create(_) | Op::Edit(_) => {
-            anyhow::bail!("creating and editing tunnels is done from the dialogs")
+        Op::Create(new) => create(new).await,
+        Op::Edit(edit) => edit_tunnel(edit).await,
+    }
+}
+
+// The CLI commands are the only place that knows how to validate a target and
+// build a relay route, so the TUI calls them rather than keeping a second copy
+async fn create(new: &NewTunnel) -> Result<String> {
+    match new.mode {
+        TunnelMode::Access => {
+            crate::commands::access::cmd_add(
+                Some(&new.account),
+                &new.name,
+                &format!("{}:{}", new.instance, new.remote_port),
+                Some(&new.zone),
+                Some(new.local_port),
+                None,
+                None,
+                None,
+                true,
+            )
+            .await?
+        }
+        TunnelMode::Public => {
+            crate::commands::expose::cmd_expose(
+                Some(&new.account),
+                &new.name,
+                &new.local_target,
+                Some(&new.domain),
+                false,
+                true,
+            )
+            .await?
         }
     }
+    Ok(format!("created {}", new.name))
+}
+
+async fn edit_tunnel(edit: &EditTunnel) -> Result<String> {
+    let (config, acct) = resolve(Some(&edit.account))?;
+    let mut state = TunnelState::load()?;
+    let tunnel = state
+        .find_for_account_mut(&edit.name, &acct.name)
+        .with_context(|| format!("No tunnel named '{}'", edit.name))?;
+
+    match &mut tunnel.spec {
+        TunnelSpec::Access {
+            remote_port,
+            local_port,
+            ..
+        } => {
+            let (remote, local) = edit
+                .value
+                .split_once(':')
+                .context("Write the new ports as <remote>:<local>")?;
+            *remote_port = remote.trim().parse().context("Remote port is not a port")?;
+            *local_port = local.trim().parse().context("Local port is not a port")?;
+        }
+        TunnelSpec::Expose {
+            local_target,
+            private,
+            ..
+        } => match edit.value.trim() {
+            "private" => *private = true,
+            "public" => *private = false,
+            other => *local_target = other.to_string(),
+        },
+    }
+
+    let updated = tunnel.clone();
+    state.save()?;
+
+    // A public tunnel's access rule lives on the backend, not in tunnels.toml
+    if let (true, Some(expose)) = (updated.is_expose(), acct.expose.clone()) {
+        let client = GcpClient::for_account(&acct);
+        routes::ensure_route(&client, &acct, &expose, &updated).await?;
+    }
+
+    let spec = daemon::service_spec(&config, &updated)?;
+    let was_running = daemon::status(&spec.label).await == TunnelStatus::Running;
+    daemon::install(&spec).await?;
+    if was_running {
+        daemon::start(&spec.label).await?;
+    }
+    Ok(format!("{} updated", edit.name))
 }
 
 async fn start(account: &str, name: &str) -> Result<String> {
@@ -227,6 +325,12 @@ async fn import(account: &str, name: &str) -> Result<String> {
     state.add(tunnel.clone())?;
     state.save()?;
     daemon::install(&daemon::service_spec(&config, &tunnel)?).await?;
+    // The run holds the local port and, for a public tunnel, the relay port;
+    // the managed service cannot take over until it lets go
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(record.pid as libc::pid_t, libc::SIGTERM);
+    }
     record.remove()?;
     Ok(format!("{name} is now managed"))
 }

@@ -138,7 +138,7 @@ async fn main() -> Result<()> {
             doctor::cmd_doctor(account, fix, yes, all).await
         }
         Some(Commands::Reset { .. }) => bail!("not implemented: reset"),
-        Some(Commands::Demo) => bail!("not implemented: demo"),
+        Some(Commands::Demo) => tui::run_demo().await,
         Some(Commands::Update { .. }) => bail!("not implemented: update"),
     }
 }

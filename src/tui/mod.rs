@@ -1,4 +1,5 @@
 pub mod app;
+pub mod demo;
 pub mod ops;
 pub mod ui;
 
@@ -17,6 +18,7 @@ const TICK: Duration = Duration::from_millis(120);
 // What the event loop reacts to; everything slow arrives as a message
 enum Msg {
     Key(crossterm::event::KeyEvent),
+    Instances(Vec<app::InstanceChoice>),
     Tick,
     Entries(Vec<TunnelEntry>),
     Metrics(Vec<(String, crate::probe::TunnelMetrics)>),
@@ -31,6 +33,7 @@ pub async fn run_tui(initial_account: Option<&str>) -> Result<()> {
 
     let mut app = App::new(&account);
     app.accounts = config.accounts.iter().map(|a| a.name.clone()).collect();
+    set_relay(&mut app, &config);
 
     let (tx, mut rx) = mpsc::unbounded_channel::<Msg>();
     spawn_input(tx.clone());
@@ -40,6 +43,65 @@ pub async fn run_tui(initial_account: Option<&str>) -> Result<()> {
     let result = event_loop(&mut terminal, &mut app, &tx, &mut rx).await;
     ratatui::restore();
     result
+}
+
+// The Public flow and the domain picker only make sense with a relay
+fn set_relay(app: &mut App, config: &crate::config::Config) {
+    let expose = config
+        .accounts
+        .iter()
+        .find(|a| a.name == app.account)
+        .and_then(|a| a.expose.as_ref());
+    app.has_relay = expose.is_some();
+    app.domains = expose
+        .map(|e| e.domains.iter().map(|d| d.domain.clone()).collect())
+        .unwrap_or_default();
+}
+
+pub async fn run_demo() -> Result<()> {
+    let mut app = App::new_demo();
+    let (tx, mut rx) = mpsc::unbounded_channel::<Msg>();
+    spawn_input(tx.clone());
+    spawn_ticker(tx.clone());
+
+    let mut terminal = ratatui::init();
+    let result = demo_loop(&mut terminal, &mut app, &mut rx).await;
+    ratatui::restore();
+    result
+}
+
+// The demo draws and reacts to keys, but never schedules work
+async fn demo_loop(
+    terminal: &mut ratatui::DefaultTerminal,
+    app: &mut App,
+    rx: &mut mpsc::UnboundedReceiver<Msg>,
+) -> Result<()> {
+    terminal.draw(|f| ui::render(f, app))?;
+    while let Some(msg) = rx.recv().await {
+        match msg {
+            Msg::Key(key) => {
+                if let Some(op) = app.handle_key(key) {
+                    app.apply(OpResult {
+                        message: format!("demo: {op:?} does nothing here"),
+                        ok: true,
+                        reload: false,
+                    });
+                }
+                if app.should_quit {
+                    break;
+                }
+            }
+            Msg::Tick => {
+                app.force_refresh = false;
+                if app.spinner.is_running() {
+                    app.spinner.tick();
+                }
+            }
+            _ => {}
+        }
+        terminal.draw(|f| ui::render(f, app))?;
+    }
+    Ok(())
 }
 
 fn spawn_input(tx: mpsc::UnboundedSender<Msg>) {
@@ -136,6 +198,16 @@ async fn event_loop(
                     timers.force();
                     logs_for = None;
                 }
+                if app.want_instances {
+                    app.want_instances = false;
+                    let account = app.account.clone();
+                    let tx = tx.clone();
+                    tokio::spawn(async move {
+                        if let Ok(instances) = ops::load_instances(&account).await {
+                            let _ = tx.send(Msg::Instances(instances));
+                        }
+                    });
+                }
                 schedule(app, &mut timers, tx);
                 // The logs panel follows the selection, so it reloads with it
                 let selected = app.selected_entry().map(|e| e.tunnel.clone());
@@ -174,7 +246,15 @@ async fn event_loop(
                     app.logs = lines;
                 }
             }
-            Msg::OpDone(result) => app.apply(result),
+            Msg::Instances(instances) => {
+                app.instances = instances;
+                app.instance_selected = 0;
+            }
+            Msg::OpDone(result) => {
+                app.apply(result);
+                // The CLI commands this ran print to the same terminal
+                terminal.clear()?;
+            }
         }
         terminal.draw(|f| ui::render(f, app))?;
     }
@@ -405,5 +485,86 @@ mod tests {
         for wanted in ["Tunnels (2)", "localhost:15432", "https://api.example.com"] {
             assert!(rendered.contains(wanted), "missing {wanted:?}");
         }
+    }
+
+    fn keys(app: &mut App, sequence: &str) -> Option<Op> {
+        let mut last = None;
+        for c in sequence.chars() {
+            let code = match c {
+                '\n' => KeyCode::Enter,
+                '\u{2193}' => KeyCode::Down,
+                other => KeyCode::Char(other),
+            };
+            if let Some(op) = app.handle_key(key(code)) {
+                last = Some(op);
+            }
+        }
+        last
+    }
+
+    #[test]
+    fn adding_an_access_tunnel_walks_the_prompts_and_creates_it() {
+        let mut app = app_with_two();
+        app.instances = vec![InstanceChoice {
+            name: "my-vm".to_string(),
+            zone: "europe-west1-b".to_string(),
+        }];
+
+        let op = keys(&mut app, "a1db\n\n5432\n\n");
+        assert_eq!(
+            op,
+            Some(Op::Create(NewTunnel {
+                account: "dev".to_string(),
+                name: "db".to_string(),
+                mode: TunnelMode::Access,
+                instance: "my-vm".to_string(),
+                zone: "europe-west1-b".to_string(),
+                remote_port: 5432,
+                local_port: 15000,
+                ..NewTunnel::default()
+            }))
+        );
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn publishing_a_url_without_a_relay_says_to_run_relay_up() {
+        let mut app = app_with_two();
+        app.has_relay = false;
+        assert_eq!(keys(&mut app, "a2"), None);
+        assert_eq!(app.input_mode, InputMode::Normal);
+        let status = app.status.clone().expect("a status message");
+        assert!(status.contains("relay up"), "{status}");
+    }
+
+    #[test]
+    fn delete_asks_first_and_n_cancels() {
+        let mut app = app_with_two();
+        assert_eq!(keys(&mut app, "d"), None);
+        assert_eq!(app.input_mode, InputMode::Confirm);
+        assert_eq!(keys(&mut app, "n"), None);
+        assert_eq!(app.input_mode, InputMode::Normal);
+
+        assert_eq!(keys(&mut app, "d"), None);
+        assert_eq!(keys(&mut app, "y"), Some(Op::Delete("db".to_string())));
+    }
+
+    #[test]
+    fn the_demo_needs_no_config_and_shows_every_kind_of_tunnel() {
+        let app = App::new_demo();
+        assert_eq!(app.entries.len(), 4);
+        assert_eq!(
+            app.entries
+                .iter()
+                .filter(|e| e.kind == TunnelKind::External)
+                .count(),
+            1
+        );
+        assert_eq!(
+            app.entries.iter().filter(|e| e.tunnel.is_expose()).count(),
+            2
+        );
+        assert!(!app.logs.is_empty());
+        assert!(app.entries.iter().any(|e| e.metrics.is_some()));
     }
 }
