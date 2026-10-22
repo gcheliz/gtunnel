@@ -5,6 +5,7 @@ mod cli;
 mod commands;
 mod config;
 mod daemon;
+mod ephemeral;
 mod expose;
 mod gcp;
 mod state;
@@ -56,7 +57,23 @@ async fn main() -> Result<()> {
             commands::expose::cmd_expose(account, &name, &target, domain.as_deref(), private, start)
                 .await
         }
-        Some(Commands::Run { .. }) => bail!("not implemented: run"),
+        Some(Commands::Run {
+            args: run_args,
+            zone,
+            local_port,
+            public,
+            domain,
+        }) => {
+            ephemeral::cmd_run(
+                account,
+                &run_args,
+                zone.as_deref(),
+                local_port,
+                public,
+                domain.as_deref(),
+            )
+            .await
+        }
         Some(Commands::Start { name }) => commands::access::cmd_start(account, &name).await,
         Some(Commands::Stop { name }) => commands::access::cmd_stop(account, &name).await,
         Some(Commands::Restart { name }) => commands::access::cmd_restart(account, &name).await,
