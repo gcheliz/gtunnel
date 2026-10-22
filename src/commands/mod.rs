@@ -1,6 +1,7 @@
 pub mod access;
 pub mod account;
 pub mod expose;
+pub mod maint;
 
 use anyhow::{Context, Result};
 use std::io::Write;

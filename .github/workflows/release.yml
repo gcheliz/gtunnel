@@ -1,0 +1,81 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      # musl targets cross-compile from glibc runners, so they need a linker
+      - name: Install cross linker
+        if: endsWith(matrix.target, '-musl')
+        run: |
+          cargo install cross --locked --version 0.2.5
+          echo "CARGO=cross" >> "$GITHUB_ENV"
+      - name: Build
+        run: ${CARGO:-cargo} build --release --locked --target ${{ matrix.target }}
+      # The self-updater downloads gtunnel-<target>.tar.gz and verifies it
+      # against gtunnel-<target>.tar.gz.sha256, so both names are fixed
+      - name: Package
+        run: |
+          set -euo pipefail
+          asset="gtunnel-${{ matrix.target }}.tar.gz"
+          tar -czf "$asset" -C "target/${{ matrix.target }}/release" gtunnel
+          if command -v sha256sum >/dev/null; then
+            sha256sum "$asset" > "$asset.sha256"
+          else
+            shasum -a 256 "$asset" > "$asset.sha256"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gtunnel-${{ matrix.target }}
+          path: |
+            gtunnel-${{ matrix.target }}.tar.gz
+            gtunnel-${{ matrix.target }}.tar.gz.sha256
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            assets/*

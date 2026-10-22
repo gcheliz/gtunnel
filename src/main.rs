@@ -15,8 +15,9 @@ mod probe;
 mod state;
 mod tui;
 mod tunnel;
+mod update;
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 use clap::Parser;
 
 use cli::{AccountCommands, Cli, Commands, DomainsCommands, RelayCommands, ZonesCommands};
@@ -25,8 +26,10 @@ use cli::{AccountCommands, Cli, Commands, DomainsCommands, RelayCommands, ZonesC
 async fn main() -> Result<()> {
     let args = Cli::parse();
     let account = args.account.as_deref();
+    // The hint reads a cache file; `update` does the real check itself
+    let quiet = matches!(args.command, None | Some(Commands::Update { .. }));
 
-    match args.command {
+    let result = match args.command {
         None => tui::run_tui(account).await,
         Some(Commands::Init) => commands::account::cmd_init().await,
         Some(Commands::Add {
@@ -137,8 +140,13 @@ async fn main() -> Result<()> {
         Some(Commands::Doctor { fix, yes, all }) => {
             doctor::cmd_doctor(account, fix, yes, all).await
         }
-        Some(Commands::Reset { .. }) => bail!("not implemented: reset"),
+        Some(Commands::Reset { yes }) => commands::maint::cmd_reset(yes).await,
         Some(Commands::Demo) => tui::run_demo().await,
-        Some(Commands::Update { .. }) => bail!("not implemented: update"),
+        Some(Commands::Update { check }) => update::cmd_update(check).await,
+    };
+
+    if !quiet {
+        update::maybe_print_update_hint();
     }
+    result
 }
