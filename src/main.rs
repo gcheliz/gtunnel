@@ -13,6 +13,7 @@ mod gcp;
 mod notify;
 mod probe;
 mod state;
+mod tui;
 mod tunnel;
 
 use anyhow::{bail, Result};
@@ -26,7 +27,7 @@ async fn main() -> Result<()> {
     let account = args.account.as_deref();
 
     match args.command {
-        None => bail!("not implemented: TUI"),
+        None => tui::run_tui(account).await,
         Some(Commands::Init) => commands::account::cmd_init().await,
         Some(Commands::Add {
             name,

@@ -10,7 +10,7 @@ use crate::state::{PersistentTunnel, TunnelSpec, TunnelStatus};
 const HTTP_TIMEOUT: Duration = Duration::from_secs(5);
 const TCP_TIMEOUT: Duration = Duration::from_secs(2);
 // How many minutes of load balancer traffic one metrics read covers
-const LB_WINDOW_MINUTES: u32 = 5;
+pub const LB_WINDOW_MINUTES: u32 = 10;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum HealthStatus {
