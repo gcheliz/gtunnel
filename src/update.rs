@@ -185,18 +185,60 @@ pub fn parse_sha256_file(text: &str) -> Option<String> {
     text.split_whitespace().next().map(|s| s.to_string())
 }
 
-fn sha256_of(path: &Path) -> Result<String> {
+// Hashes the download in memory: a file written first and hashed afterwards
+// can be swapped in between
+fn sha256_bytes(bytes: &[u8]) -> Result<String> {
+    use std::io::Write;
     for (program, args) in [("shasum", vec!["-a", "256"]), ("sha256sum", vec![])] {
-        let mut command = std::process::Command::new(program);
-        command.args(&args).arg(path);
-        if let Ok(out) = command.output() {
-            if out.status.success() {
-                return parse_sha256_file(&String::from_utf8_lossy(&out.stdout))
-                    .context("Could not read the checksum output");
-            }
+        let spawned = std::process::Command::new(program)
+            .args(&args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        let Ok(mut child) = spawned else { continue };
+        child
+            .stdin
+            .take()
+            .context("Could not write to the checksum program")?
+            .write_all(bytes)?;
+        let out = child.wait_with_output()?;
+        if out.status.success() {
+            return parse_sha256_file(&String::from_utf8_lossy(&out.stdout))
+                .context("Could not read the checksum output");
         }
     }
     anyhow::bail!("Neither shasum nor sha256sum is on PATH")
+}
+
+// Fails if the path already exists, so a pre-created directory is never used
+fn create_private_dir(path: &Path) -> Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder
+        .create(path)
+        .with_context(|| format!("Could not create {}", path.display()))
+}
+
+// A private directory under `parent`, cleaned up when the guard drops. The
+// name is random because the staged binary is about to replace the running one
+fn staging_dir(parent: &Path) -> Result<TempDirGuard> {
+    use rand::Rng;
+    for _ in 0..8 {
+        let suffix: u64 = rand::rng().random();
+        let path = parent.join(format!(".gtunnel-update-{suffix:016x}"));
+        if create_private_dir(&path).is_ok() {
+            return Ok(TempDirGuard(path));
+        }
+    }
+    anyhow::bail!(
+        "Could not create a staging directory in {}",
+        parent.display()
+    )
 }
 
 async fn get(url: &str) -> Result<Vec<u8>> {
@@ -217,12 +259,7 @@ async fn perform_update(exe_path: &Path, version: &str) -> Result<()> {
     let base = format!("https://github.com/{REPO}/releases/download/v{version}");
 
     eprintln!("Downloading {asset}...");
-    let tmp = std::env::temp_dir().join(format!("gtunnel-update-{}", std::process::id()));
-    std::fs::create_dir_all(&tmp)?;
-    let _cleanup = TempDirGuard(tmp.clone());
-
-    let archive = tmp.join(&asset);
-    std::fs::write(&archive, &get(&format!("{base}/{asset}")).await?)?;
+    let bytes = get(&format!("{base}/{asset}")).await?;
 
     // A self-updater overwrites the binary it is running from, so the download
     // is checked against the published digest before it is trusted
@@ -230,10 +267,21 @@ async fn perform_update(exe_path: &Path, version: &str) -> Result<()> {
         &get(&format!("{base}/{asset}.sha256")).await?,
     ))
     .context("The release has no usable .sha256 file")?;
-    let actual = sha256_of(&archive)?;
+    let actual = sha256_bytes(&bytes)?;
     if !actual.eq_ignore_ascii_case(&published) {
         anyhow::bail!("Checksum mismatch for {asset}: expected {published}, got {actual}");
     }
+
+    // Staged beside the executable so the final rename is atomic, and so the
+    // directory inherits that location's permissions rather than /tmp's
+    let guard = match exe_path.parent() {
+        Some(dir) => staging_dir(dir).or_else(|_| staging_dir(&std::env::temp_dir()))?,
+        None => staging_dir(&std::env::temp_dir())?,
+    };
+    let tmp = guard.0.clone();
+
+    let archive = tmp.join(&asset);
+    std::fs::write(&archive, &bytes)?;
 
     let status = std::process::Command::new("tar")
         .args([
@@ -320,6 +368,46 @@ mod tests {
         assert_eq!(
             parse_latest_tag(200, &serde_json::json!({"tag_name": "v1.4.0"})).unwrap(),
             "1.4.0"
+        );
+    }
+
+    // The staging directory holds a binary that is about to replace the one
+    // the user runs. On a shared /tmp a predictable name lets someone else
+    // create it first and swap the contents after the digest is checked
+    #[test]
+    fn the_staging_directory_is_private_and_unguessable() {
+        let base = std::env::temp_dir().join(format!("gtunnel-test-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+
+        let first = staging_dir(&base).expect("a staging directory");
+        let second = staging_dir(&base).expect("a second staging directory");
+        assert_ne!(first.0, second.0, "two runs must not collide");
+        assert!(first.0.is_dir());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&first.0).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o700, "mode was {:o}", mode & 0o777);
+        }
+
+        // An attacker who guessed the name owns it: creating it again must fail
+        assert!(create_private_dir(&first.0).is_err());
+
+        let path = first.0.clone();
+        drop(first);
+        drop(second);
+        assert!(!path.exists(), "the guard must clean up");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // The digest is checked before any byte reaches the disk, so there is no
+    // window between verifying the archive and reading it back
+    #[test]
+    fn bytes_are_hashed_without_a_file() {
+        assert_eq!(
+            sha256_bytes(b"abc").unwrap(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
     }
 
