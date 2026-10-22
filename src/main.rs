@@ -4,6 +4,7 @@
 mod cli;
 mod config;
 mod daemon;
+mod expose;
 mod gcp;
 mod state;
 mod tunnel;

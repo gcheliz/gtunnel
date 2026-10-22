@@ -228,6 +228,22 @@ pub async fn list_firewalls(client: &GcpClient, project: &str) -> Result<Vec<Fir
     Ok(raw.items)
 }
 
+pub async fn get_firewall(
+    client: &GcpClient,
+    project: &str,
+    name: &str,
+) -> Result<Option<Firewall>> {
+    let url = format!(
+        "{}/projects/{project}/global/firewalls/{name}",
+        client.endpoints.compute
+    );
+    match client.get::<Firewall>(&url).await {
+        Ok(fw) => Ok(Some(fw)),
+        Err(e) if is_not_found(&e) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
 pub async fn insert_firewall(
     client: &GcpClient,
     project: &str,
@@ -775,6 +791,18 @@ pub async fn delete_global_address(
         client.endpoints.compute
     );
     client.delete(&url).await
+}
+
+pub async fn get_target_https_proxy(client: &GcpClient, project: &str, name: &str) -> Result<bool> {
+    let url = format!(
+        "{}/projects/{project}/global/targetHttpsProxies/{name}",
+        client.endpoints.compute
+    );
+    match client.get::<serde_json::Value>(&url).await {
+        Ok(_) => Ok(true),
+        Err(e) if is_not_found(&e) => Ok(false),
+        Err(e) => Err(e),
+    }
 }
 
 pub async fn insert_target_https_proxy(
