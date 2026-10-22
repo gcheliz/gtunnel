@@ -3,6 +3,7 @@
 
 mod cli;
 mod config;
+mod daemon;
 mod gcp;
 mod state;
 mod tunnel;
