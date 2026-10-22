@@ -1,0 +1,30 @@
+[package]
+name = "gtunnel"
+version = "0.1.0"
+edition = "2021"
+description = "TUI-first CLI for GCP IAP tunnels and public URLs via a GCP relay"
+authors = ["gcheliz"]
+license = "MIT"
+repository = "https://github.com/gcheliz/gtunnel"
+homepage = "https://github.com/gcheliz/gtunnel"
+readme = "README.md"
+keywords = ["gcp", "iap", "tunnel", "tui", "ngrok"]
+categories = ["command-line-utilities", "network-programming"]
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["full", "process"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+dirs = "6"
+anyhow = "1"
+rand = "0.9"
+ratatui = "0.30"
+crossterm = "0.29"
+libc = "0.2"
+
+[dev-dependencies]
+wiremock = "0.6"
+tempfile = "3"
