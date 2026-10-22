@@ -295,13 +295,13 @@ mod live {
     #[tokio::test]
     #[ignore = "touches the real launchd domain"]
     async fn install_start_status_stop_uninstall() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::env::set_var("GTUNNEL_CONFIG_DIR", dir.path());
+        let _temp = crate::config::testing::TempConfigDir::new();
+        let dir = _temp.path();
         let spec = ServiceSpec {
             label: "com.gtunnel.test.sleep".to_string(),
             program: std::path::PathBuf::from("/bin/sleep"),
             args: vec!["600".to_string()],
-            log_path: dir.path().join("logs/test-sleep.log"),
+            log_path: dir.join("logs/test-sleep.log"),
             env: vec![("PATH".to_string(), "/usr/bin:/bin".to_string())],
             auto_start: false,
         };
@@ -351,6 +351,5 @@ mod live {
             "an uninstalled job should not be running"
         );
         println!("after uninstall: gone");
-        std::env::remove_var("GTUNNEL_CONFIG_DIR");
     }
 }

@@ -46,7 +46,16 @@ async fn main() -> Result<()> {
             )
             .await
         }
-        Some(Commands::Expose { .. }) => bail!("not implemented: expose"),
+        Some(Commands::Expose {
+            name,
+            target,
+            domain,
+            private,
+            start,
+        }) => {
+            commands::expose::cmd_expose(account, &name, &target, domain.as_deref(), private, start)
+                .await
+        }
         Some(Commands::Run { .. }) => bail!("not implemented: run"),
         Some(Commands::Start { name }) => commands::access::cmd_start(account, &name).await,
         Some(Commands::Stop { name }) => commands::access::cmd_stop(account, &name).await,
@@ -65,14 +74,34 @@ async fn main() -> Result<()> {
             }
         },
         Some(Commands::Domains { command }) => match command {
-            None => bail!("not implemented: domains list"),
-            Some(DomainsCommands::Default { .. }) => bail!("not implemented: domains default"),
-            Some(DomainsCommands::Add { .. }) => bail!("not implemented: domains add"),
+            None => commands::expose::cmd_domains(account, None, None).await,
+            Some(DomainsCommands::Default { domain }) => {
+                commands::expose::cmd_domains(account, Some(&domain), None).await
+            }
+            Some(DomainsCommands::Add { managed_zone }) => {
+                commands::expose::cmd_domains(account, None, Some(&managed_zone)).await
+            }
         },
         Some(Commands::Relay { command }) => match command {
-            RelayCommands::Up { .. } => bail!("not implemented: relay up"),
-            RelayCommands::Down { .. } => bail!("not implemented: relay down"),
-            RelayCommands::Status => bail!("not implemented: relay status"),
+            RelayCommands::Up {
+                zone,
+                network,
+                managed_zone,
+                yes,
+            } => {
+                commands::expose::cmd_relay_up(
+                    account,
+                    zone.as_deref(),
+                    &network,
+                    managed_zone.as_deref(),
+                    yes,
+                )
+                .await
+            }
+            RelayCommands::Down { force, yes } => {
+                commands::expose::cmd_relay_down(account, force, yes).await
+            }
+            RelayCommands::Status => commands::expose::cmd_relay_status(account).await,
         },
         Some(Commands::Account { command }) => match command {
             None | Some(AccountCommands::List) => commands::account::cmd_account_list(),

@@ -174,6 +174,37 @@ fn set_owner_only(_path: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
+// Tests across several modules point GTUNNEL_CONFIG_DIR at a temp directory.
+// The variable is process-wide, so they share one lock and one guard type.
+#[cfg(test)]
+pub mod testing {
+    static CONFIG_DIR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    pub struct TempConfigDir {
+        dir: tempfile::TempDir,
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl TempConfigDir {
+        pub fn new() -> Self {
+            let guard = CONFIG_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let dir = tempfile::tempdir().expect("tempdir");
+            std::env::set_var("GTUNNEL_CONFIG_DIR", dir.path());
+            Self { dir, _guard: guard }
+        }
+
+        pub fn path(&self) -> &std::path::Path {
+            self.dir.path()
+        }
+    }
+
+    impl Drop for TempConfigDir {
+        fn drop(&mut self) {
+            std::env::remove_var("GTUNNEL_CONFIG_DIR");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,14 +221,8 @@ mod tests {
     }
 
     fn with_temp_dir<T>(f: impl FnOnce() -> T) -> T {
-        // Serialize the env var across tests, which share a process
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::env::set_var("GTUNNEL_CONFIG_DIR", dir.path());
-        let out = f();
-        std::env::remove_var("GTUNNEL_CONFIG_DIR");
-        out
+        let _temp = testing::TempConfigDir::new();
+        f()
     }
 
     #[test]
