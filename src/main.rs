@@ -3,6 +3,7 @@
 
 mod cli;
 mod config;
+mod state;
 
 use anyhow::{bail, Result};
 use clap::Parser;
