@@ -2,6 +2,7 @@
 #![allow(dead_code)]
 
 mod cli;
+mod commands;
 mod config;
 mod daemon;
 mod expose;
@@ -17,24 +18,51 @@ use cli::{AccountCommands, Cli, Commands, DomainsCommands, RelayCommands, ZonesC
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Cli::parse();
-    // Consumed by every command implementation from Task 10 onward
-    let _account = args.account.as_deref();
+    let account = args.account.as_deref();
 
     match args.command {
         None => bail!("not implemented: TUI"),
-        Some(Commands::Init) => bail!("not implemented: init"),
-        Some(Commands::Add { .. }) => bail!("not implemented: add"),
+        Some(Commands::Init) => commands::account::cmd_init().await,
+        Some(Commands::Add {
+            name,
+            target,
+            zone,
+            local_port,
+            dest_group,
+            region,
+            network,
+            start,
+        }) => {
+            commands::access::cmd_add(
+                account,
+                &name,
+                &target,
+                zone.as_deref(),
+                local_port,
+                dest_group.as_deref(),
+                region.as_deref(),
+                network.as_deref(),
+                start,
+            )
+            .await
+        }
         Some(Commands::Expose { .. }) => bail!("not implemented: expose"),
         Some(Commands::Run { .. }) => bail!("not implemented: run"),
-        Some(Commands::Start { .. }) => bail!("not implemented: start"),
-        Some(Commands::Stop { .. }) => bail!("not implemented: stop"),
-        Some(Commands::Restart { .. }) => bail!("not implemented: restart"),
-        Some(Commands::Logs { .. }) => bail!("not implemented: logs"),
-        Some(Commands::List) => bail!("not implemented: list"),
-        Some(Commands::Delete { .. }) => bail!("not implemented: delete"),
+        Some(Commands::Start { name }) => commands::access::cmd_start(account, &name).await,
+        Some(Commands::Stop { name }) => commands::access::cmd_stop(account, &name).await,
+        Some(Commands::Restart { name }) => commands::access::cmd_restart(account, &name).await,
+        Some(Commands::Logs {
+            name,
+            follow,
+            lines,
+        }) => commands::access::cmd_logs(account, &name, follow, lines).await,
+        Some(Commands::List) => commands::access::cmd_list(account).await,
+        Some(Commands::Delete { name }) => commands::access::cmd_delete(account, &name).await,
         Some(Commands::Zones { command }) => match command {
-            None => bail!("not implemented: zones list"),
-            Some(ZonesCommands::Default { .. }) => bail!("not implemented: zones default"),
+            None => commands::access::cmd_zones(account, None).await,
+            Some(ZonesCommands::Default { zone }) => {
+                commands::access::cmd_zones(account, Some(&zone)).await
+            }
         },
         Some(Commands::Domains { command }) => match command {
             None => bail!("not implemented: domains list"),
@@ -47,12 +75,13 @@ async fn main() -> Result<()> {
             RelayCommands::Status => bail!("not implemented: relay status"),
         },
         Some(Commands::Account { command }) => match command {
-            None => bail!("not implemented: account list"),
-            Some(AccountCommands::List) => bail!("not implemented: account list"),
-            Some(AccountCommands::Select { .. }) | Some(AccountCommands::Default { .. }) => {
-                bail!("not implemented: account select")
+            None | Some(AccountCommands::List) => commands::account::cmd_account_list(),
+            Some(AccountCommands::Select { name }) | Some(AccountCommands::Default { name }) => {
+                commands::account::cmd_account_select(&name)
             }
-            Some(AccountCommands::Remove { .. }) => bail!("not implemented: account remove"),
+            Some(AccountCommands::Remove { name, yes }) => {
+                commands::account::cmd_account_remove(&name, yes)
+            }
         },
         Some(Commands::Doctor { .. }) => bail!("not implemented: doctor"),
         Some(Commands::Reset { .. }) => bail!("not implemented: reset"),
