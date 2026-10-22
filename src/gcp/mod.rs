@@ -1,5 +1,10 @@
+pub mod certmanager;
 pub mod client;
+pub mod compute;
+pub mod dns;
 pub mod gcloud;
+pub mod iap;
+pub mod monitoring;
 
 // Re-exported for the resource APIs and commands in Tasks 7-14
 #[allow(unused_imports)]
