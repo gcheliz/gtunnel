@@ -3,7 +3,9 @@
 
 mod cli;
 mod config;
+mod gcp;
 mod state;
+mod tunnel;
 
 use anyhow::{bail, Result};
 use clap::Parser;
