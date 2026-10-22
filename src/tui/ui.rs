@@ -260,31 +260,30 @@ fn render_metrics(f: &mut Frame, app: &App, area: Rect) {
         lines.push(Line::from(vec![Span::raw(format!("  {classes}"))]));
     }
 
+    // A sparkline carries no scale of its own, so the tallest bar is named
+    // here rather than on a row of its own, which the bars need
+    if !entry.history.is_empty() {
+        lines.push(Line::from(vec![
+            field("Peak"),
+            Span::styled(
+                format!("{} ms", entry.history.peak()),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]));
+    }
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(lines.len() as u16), Constraint::Min(0)])
         .split(inner);
     f.render_widget(Paragraph::new(lines), chunks[0]);
 
-    // A sparkline carries no scale of its own, so the tallest bar is named
-    let samples = app.selected_sparkline();
     if !entry.history.is_empty() {
-        let rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Min(0)])
-            .split(chunks[1]);
-        f.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                format!("  peak {}", entry.history.peak()),
-                Style::default().fg(Color::DarkGray),
-            ))),
-            rows[0],
-        );
         f.render_widget(
             Sparkline::default()
-                .data(samples)
+                .data(app.selected_sparkline())
                 .style(Style::default().fg(Color::Cyan)),
-            rows[1],
+            chunks[1],
         );
     }
 }

@@ -499,7 +499,7 @@ mod tests {
             .iter()
             .map(|c| c.symbol())
             .collect();
-        assert!(text.contains("peak 44"), "{text}");
+        assert!(text.contains("Peak: 44 ms"), "{text}");
     }
 
     #[test]
