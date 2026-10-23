@@ -2,11 +2,11 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Sparkline, Wrap,
+    Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Sparkline, Wrap,
 };
 use ratatui::Frame;
 
-use super::app::{App, InputMode, TunnelEntry, TunnelMode, NAME_CELLS};
+use super::app::{App, InputMode, TunnelEntry, TunnelMode};
 use super::theme;
 use crate::probe::{HealthStatus, LB_WINDOW_MINUTES};
 use crate::state::{TunnelSpec, TunnelStatus};
@@ -15,10 +15,11 @@ use crate::tunnel::diagnose_log_line;
 pub const LOG_LINES: usize = 200;
 
 /// The lockup, the name beneath it, and the rule that closes the header off
-/// from the panes. One size at every width: the design draws the same eleven
+/// from the panes, straight under the account box: the rule is what keeps the
+/// header from reading as another pane, so no blank row is spent on it. One size at every width: the design draws the same eleven
 /// cells on a 1200-pixel board as on a narrow one, and a mark that grows with
 /// the terminal is a second mark, not a responsive one.
-pub const HEADER_HEIGHT_FULL: u16 = 5;
+pub const HEADER_HEIGHT_FULL: u16 = 4;
 /// One row, for a terminal too narrow to hold the lockup without breaking it.
 pub const HEADER_HEIGHT_COMPACT: u16 = 1;
 
@@ -271,16 +272,7 @@ pub fn header_lines(width: u16, _height: u16, account: &str) -> Vec<Line<'static
     }
     let [r0, r1, r2] = rows;
 
-    // A blank row below the lockup. The header is the one part of the screen
-    // that is not working data, and crowded against the panes it read as
-    // another pane rather than as the program's name.
-    vec![
-        Line::from(r0),
-        Line::from(r1),
-        Line::from(r2),
-        Line::default(),
-        rule_line(w),
-    ]
+    vec![Line::from(r0), Line::from(r1), Line::from(r2), rule_line(w)]
 }
 
 /// How many rows the header takes here. Derived from `header_lines` rather than
@@ -445,6 +437,14 @@ fn status_style(status: TunnelStatus) -> Style {
     }
 }
 
+/// The terminal width below which the list stacks above the other panes. At 100
+/// columns the list's 46 percent is 46 cells, enough for a name, the mode and a
+/// url of the usual length; below it the url is what gets cut.
+const STACK_BELOW: u16 = 100;
+/// The fewest rows a stacked list gets: its border, its title, its header and
+/// two entries.
+const LIST_MIN_ROWS: u16 = 5;
+
 pub fn render(f: &mut Frame, app: &App) {
     // A terminal short enough that the header would cost the list its last row
     // keeps the list: the header says what the app is, the list is the app
@@ -474,36 +474,28 @@ pub fn render(f: &mut Frame, app: &App) {
         );
     }
 
-    let content = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(46), Constraint::Percentage(54)])
-        .split(main[1]);
-
-    render_tunnels(f, app, content[0]);
-
-    let metrics_height = match app.selected_entry() {
-        Some(entry) if entry.tunnel.is_expose() => 9,
-        Some(_) => 7,
-        None => 0,
-    };
-    if metrics_height == 0 {
-        render_logs(f, app, content[1]);
-    } else {
-        let details_height = app
-            .selected_entry()
-            .map_or(0, |e| detail_lines(e).len() as u16 + DETAILS_CHROME);
-        let right = Layout::default()
+    // Side by side, the list at 80 columns is 32 cells wide and the url is the
+    // first thing it loses. Below `STACK_BELOW` the list takes the full width
+    // above the other panes instead, trading rows for the columns it needs.
+    let (list_area, right_area) = if f.area().width < STACK_BELOW {
+        let total = main[1].height;
+        let list_height = (total * 40 / 100).max(LIST_MIN_ROWS).min(total);
+        let rows = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(details_height),
-                Constraint::Min(0),
-                Constraint::Length(metrics_height),
-            ])
-            .split(content[1]);
-        render_details(f, app, right[0]);
-        render_logs(f, app, right[1]);
-        render_metrics(f, app, right[2]);
-    }
+            .constraints([Constraint::Length(list_height), Constraint::Min(0)])
+            .split(main[1]);
+        (rows[0], rows[1])
+    } else {
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(46), Constraint::Percentage(54)])
+            .split(main[1]);
+        (cols[0], cols[1])
+    };
+
+    render_tunnels(f, app, list_area);
+
+    render_right(f, app, right_area);
 
     render_help_bar(f, main[3], app);
 
@@ -522,15 +514,53 @@ pub fn render(f: &mut Frame, app: &App) {
     }
 }
 
-// Cells the list spends before the url: the status symbol and its air, the
-// name column and its air, the mode and its air. Every mode is six characters.
+// Cells the list spends around the two columns that flex: the status symbol and
+// its air, the air after the name, the mode and its air, the air after the url.
+// Every mode is six characters.
 const LEAD_CELLS: usize = 2;
 const MODE_CELLS: usize = 6;
-const PREFIX_CELLS: usize = LEAD_CELLS + NAME_CELLS + 1 + MODE_CELLS + 1;
-// One cell for the auto-start flag, one for the health warning, and the air
-// before them. The flags used to follow the url, so they landed in a different
-// column on every row; a fixed pair of cells is what makes the column a column.
+// One cell for the auto-start flag, one for the health warning. The flags used
+// to follow the url, so they landed in a different column on every row; a fixed
+// pair of cells is what makes the column a column.
 const FLAG_CELLS: usize = 2;
+const FIXED_CELLS: usize = LEAD_CELLS + 1 + MODE_CELLS + 1 + 1 + FLAG_CELLS;
+/// Below this the name is cut to make room for the url, never further: a name
+/// of eight cells still tells most rows apart, a url of none tells nothing.
+const NAME_FLOOR: usize = 8;
+/// The url the list defends: it is what the list exists to show, so the name
+/// shrinks to leave it this much before the url starts to give way.
+const URL_MIN: usize = 12;
+
+/// How wide the two flexing columns are, in cells.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Columns {
+    pub name: usize,
+    pub url: usize,
+}
+
+/// Splits a pane's width between the name and the url. Each gets what its
+/// longest value needs while both fit; otherwise the name gives way first, down
+/// to `NAME_FLOOR`, and only then the url. A cap on the name used to stand in
+/// for this and cut names the pane had room for.
+pub fn fit_columns(names: &[usize], urls: &[usize], width: usize) -> Columns {
+    let name_want = names.iter().copied().max().unwrap_or(0).max("NAME".len());
+    let url_want = urls.iter().copied().max().unwrap_or(0).max("URL".len());
+    let room = width.saturating_sub(FIXED_CELLS);
+    if name_want + url_want <= room {
+        return Columns {
+            name: name_want,
+            url: url_want,
+        };
+    }
+    let name = name_want
+        .min(room.saturating_sub(URL_MIN.min(url_want)))
+        .max(NAME_FLOOR.min(name_want))
+        .min(room);
+    Columns {
+        name,
+        url: url_want.min(room - name),
+    }
+}
 
 /// Cuts `text` to `width` cells, marking the cut. A name or url that overflows
 /// is clipped at the pane's edge otherwise, which reads as a shorter value.
@@ -558,27 +588,27 @@ fn render_tunnels(f: &mut Frame, app: &App, area: Rect) {
         .constraints([Constraint::Length(1), Constraint::Min(0)])
         .split(inner);
 
-    // The url is the one column that can be wider than the pane: it takes what
-    // the name, mode and flags leave, and gives way before any of them does
-    let longest_url = app
+    let names: Vec<usize> = app
         .entries
         .iter()
-        .map(|e| e.url().chars().count())
-        .max()
-        .unwrap_or(0)
-        .max("URL".len());
-    let room = (inner.width as usize).saturating_sub(PREFIX_CELLS + 1 + FLAG_CELLS);
-    let url_cells = longest_url.min(room);
+        .map(|e| e.display_name().chars().count())
+        .collect();
+    let urls: Vec<usize> = app
+        .entries
+        .iter()
+        .map(|e| e.url_cell().chars().count())
+        .collect();
+    let cols = fit_columns(&names, &urls, inner.width as usize);
 
     let muted = Style::default().fg(theme::MUTED);
     let header = format!(
         "{:lead$}{:<name$} {:<mode$} {}",
         "",
-        "NAME",
+        fit("NAME", cols.name),
         "MODE",
-        fit("URL", url_cells),
+        fit("URL", cols.url),
         lead = LEAD_CELLS,
-        name = NAME_CELLS,
+        name = cols.name,
         mode = MODE_CELLS,
     );
     f.render_widget(Paragraph::new(Span::styled(header, muted)), parts[0]);
@@ -594,7 +624,11 @@ fn render_tunnels(f: &mut Frame, app: &App, area: Rect) {
                     status_style(entry.status),
                 ),
                 Span::styled(
-                    format!("{:<width$} ", entry.display_name(), width = NAME_CELLS),
+                    format!(
+                        "{:<width$} ",
+                        fit(&entry.display_name(), cols.name),
+                        width = cols.name
+                    ),
                     if i == app.selected {
                         Style::default().add_modifier(Modifier::BOLD)
                     } else {
@@ -607,8 +641,8 @@ fn render_tunnels(f: &mut Frame, app: &App, area: Rect) {
                 ),
                 Span::raw(format!(
                     "{:<width$} ",
-                    fit(&entry.url(), url_cells),
-                    width = url_cells
+                    fit(&entry.url_cell(), cols.url),
+                    width = cols.url
                 )),
                 Span::styled(
                     if entry.tunnel.auto_start {
@@ -627,7 +661,11 @@ fn render_tunnels(f: &mut Frame, app: &App, area: Rect) {
                     Style::default().fg(theme::WARN),
                 ),
             ];
-            if let Some(tag) = entry.tag() {
+            // An unmanaged row already says so in the URL column
+            if let Some(tag) = entry
+                .tag()
+                .filter(|_| entry.kind != crate::tui::TunnelKind::External)
+            {
                 spans.push(Span::styled(format!(" {tag}"), muted));
             }
             let style = if i == app.selected {
@@ -639,21 +677,94 @@ fn render_tunnels(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
-    f.render_widget(List::new(items), parts[1]);
+    // The list follows the selection through a state, so a selection past the
+    // pane's last row scrolls into view. The state is rebuilt every draw: the
+    // offset is then a function of the selection and the height alone, which is
+    // what lets a resize keep the selected row on screen with nothing stored.
+    // Row styling stays on the rows; the state is only asked to scroll.
+    let mut state = ListState::default();
+    if !app.entries.is_empty() {
+        state.select(Some(app.selected.min(app.entries.len() - 1)));
+    }
+    f.render_stateful_widget(List::new(items), parts[1], &mut state);
 }
 
-/// The rows Details shows for an entry. The pane's height is derived from this
-/// count: a fixed height was sized for an Access tunnel and clipped `started by`
+/// Rows of border and title around the metrics figures, and the two the chart
+/// wants under them.
+const METRICS_CHROME: u16 = 3;
+const SPARKLINE_ROWS: u16 = 2;
+/// Fewest rows Logs keeps: its border, its title and one line. Fewer and the
+/// pane that explains a failure is a frame with nothing inside it.
+const LOGS_MIN: u16 = 4;
+/// Fewest rows Metrics is drawn in: its frame, its title and one row of figures.
+/// A pane of three would show only its own name, which is worse than the room.
+const METRICS_MIN: u16 = 4;
+
+/// Splits the right-hand column between Details, Logs and Metrics, each given
+/// what it wants and the column's height as the limit.
+///
+/// The order they give way in is the order they matter in. Logs keeps
+/// `LOGS_MIN` before anyone else is served, because a failing tunnel is
+/// diagnosed there. Details is next and is cut only for that minimum, so a
+/// value is never lost while another pane has rows to spare. Metrics gets the
+/// remainder, and is dropped whole rather than drawn too short to show a figure.
+/// Logs takes whatever is left, which is most of a tall terminal.
+pub fn right_heights(avail: u16, details: u16, metrics: u16) -> (u16, u16, u16) {
+    let logs_floor = LOGS_MIN.min(avail);
+    let details = details.min(avail - logs_floor);
+    let spare = avail - details - logs_floor;
+    let metrics = if metrics.min(spare) >= METRICS_MIN {
+        metrics.min(spare)
+    } else {
+        0
+    };
+    (details, avail - details - metrics, metrics)
+}
+
+/// Cells inside a pane: its border and the cell of air `pane` leaves each side.
+fn pane_text_width(area_width: u16) -> usize {
+    (area_width as usize).saturating_sub(4)
+}
+
+fn render_right(f: &mut Frame, app: &App, area: Rect) {
+    let Some(entry) = app.selected_entry() else {
+        render_logs(f, app, area);
+        return;
+    };
+    let width = pane_text_width(area.width);
+    let details = detail_lines(entry, width).len() as u16 + DETAILS_CHROME;
+    let metrics =
+        METRICS_CHROME + wrapped_rows(&metrics_lines(entry, width), width as u16) + SPARKLINE_ROWS;
+    let (details, logs, metrics) = right_heights(area.height, details, metrics);
+    let right = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(details),
+            Constraint::Length(logs),
+            Constraint::Length(metrics),
+        ])
+        .split(area);
+    if details > 0 {
+        render_details(f, app, right[0]);
+    }
+    render_logs(f, app, right[1]);
+    if metrics > 0 {
+        render_metrics(f, app, right[2]);
+    }
+}
+
+/// The rows Details shows for an entry at `width` cells, long values wrapped. The
+/// pane's height is derived from this count: a fixed height was sized for an Access tunnel and clipped `started by`
 /// off every public one, and a `name` row would have clipped one more.
-fn detail_lines(entry: &TunnelEntry) -> Vec<Line<'static>> {
-    let mut lines = vec![
+fn detail_lines(entry: &TunnelEntry, width: usize) -> Vec<Line<'static>> {
+    let mut rows: Vec<(&'static str, String)> = vec![
         // The list cuts long names and drops the account suffix; this row is
         // where the stored name, the one every command takes, can be read
-        detail("name", entry.name()),
+        ("name", entry.name().to_string()),
         // The list already reads an unknown port as "-"; the details pane said
         // `localhost:0`, which reads as a port the tunnel actually holds
-        detail("url", &entry.url()),
-        detail("target", &entry.tunnel.display_target()),
+        ("url", entry.url()),
+        ("target", entry.tunnel.display_target()),
     ];
     match &entry.tunnel.spec {
         // An Access tunnel adds nothing here. Its zone is already inside the
@@ -668,33 +779,35 @@ fn detail_lines(entry: &TunnelEntry) -> Vec<Line<'static>> {
             private,
             ..
         } => {
-            lines.push(detail(
+            rows.push((
                 "relay",
-                &format!("{domain}{}", if *private { " (private)" } else { "" }),
+                format!("{domain}{}", if *private { " (private)" } else { "" }),
             ));
-            lines.push(detail("relay port", &relay_port.to_string()));
+            rows.push(("relay port", relay_port.to_string()));
         }
     }
 
     // Status says a tunnel is running; these two say since when, and whether
     // anything brought it up without being asked
     let metrics = entry.metrics.clone().unwrap_or_default();
-    lines.push(detail(
+    rows.push((
         "started",
-        &match metrics.uptime {
+        match metrics.uptime {
             Some(up) => format!("{} ago", format_uptime(up)),
             None => "-".to_string(),
         },
     ));
-    lines.push(detail(
+    rows.push((
         "started by",
-        &match entry.status {
+        match entry.status {
             TunnelStatus::Running => started_by(metrics.restarts, entry.tunnel.auto_start),
             _ => "-".to_string(),
         },
     ));
 
-    lines
+    rows.iter()
+        .flat_map(|(label, value)| wrap_detail(label, value, width))
+        .collect()
 }
 
 /// Rows of border and title around the detail rows
@@ -706,7 +819,10 @@ fn render_details(f: &mut Frame, app: &App, area: Rect) {
         return;
     };
     let inner = pane(f, area, "Details", None);
-    f.render_widget(Paragraph::new(detail_lines(entry)), inner);
+    f.render_widget(
+        Paragraph::new(detail_lines(entry, inner.width as usize)),
+        inner,
+    );
 }
 
 /// Who started the process that is running now. The service manager counts
@@ -730,11 +846,65 @@ pub fn started_by(restarts: u32, auto_start: bool) -> String {
     }
 }
 
+/// Cells the label column takes, so the value starts at the same cell on every
+/// row and a continuation row can be indented to it.
+const LABEL_CELLS: usize = 11;
+/// A value column narrower than this is not worth wrapping into: it would break
+/// every word. The row is cut with `…` instead, which at least says it is cut.
+const VALUE_MIN: usize = 4;
+
 fn detail(label: &'static str, value: &str) -> Line<'static> {
     Line::from(vec![
-        Span::styled(format!("{label:<11}"), Style::default().fg(theme::MUTED)),
+        Span::styled(
+            format!("{label:<width$}", width = LABEL_CELLS),
+            Style::default().fg(theme::MUTED),
+        ),
         Span::raw(value.to_string()),
     ])
+}
+
+/// Greedy word wrap: a word moves to the next row rather than being split, and
+/// is split only when it is longer than a row by itself, as a url usually is.
+fn wrap_words(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut rows: Vec<String> = Vec::new();
+    let mut row = String::new();
+    let mut used = 0;
+    for word in text.split_whitespace() {
+        let cells = word.chars().count();
+        if used > 0 && used + 1 + cells <= width {
+            row.push(' ');
+            row.push_str(word);
+            used += 1 + cells;
+            continue;
+        }
+        if used > 0 {
+            rows.push(std::mem::take(&mut row));
+        }
+        let mut rest: Vec<char> = word.chars().collect();
+        while rest.len() > width {
+            rows.push(rest.drain(..width).collect());
+        }
+        used = rest.len();
+        row = rest.into_iter().collect();
+    }
+    rows.push(row);
+    rows
+}
+
+/// One labelled value as the rows it takes at `width` cells. Clipping hid the
+/// end of a url, which is the part that tells two of them apart, so the value
+/// wraps under itself instead, with the label column left blank beside it.
+pub fn wrap_detail(label: &'static str, value: &str, width: usize) -> Vec<Line<'static>> {
+    let room = width.saturating_sub(LABEL_CELLS);
+    if room < VALUE_MIN {
+        return vec![detail(label, &fit(value, room))];
+    }
+    wrap_words(value, room)
+        .iter()
+        .enumerate()
+        .map(|(i, row)| detail(if i == 0 { label } else { "" }, row))
+        .collect()
 }
 
 /// What an empty pane means, which is three different things. A tunnel through
@@ -864,59 +1034,108 @@ pub fn sparkline_slice(samples: &[u64], width: u16) -> &[u64] {
 
 /// How many rows these lines occupy once wrapped to `width`. An empty line
 /// still takes one, and a pane too narrow to hold anything takes one per line.
+///
+/// Counted the way the widget wraps, not by dividing characters by the width: a
+/// word that does not fit moves whole to the next row, and the cells it leaves
+/// behind are lost. Dividing undercounts every line of words, and the pane then
+/// scrolls too little and cuts off the newest line it exists to show.
 pub fn wrapped_rows(lines: &[Line], width: u16) -> u16 {
     if width == 0 {
         return lines.len() as u16;
     }
     lines
         .iter()
-        .map(|line| {
-            let chars = line.to_string().chars().count().max(1) as u16;
-            chars.div_ceil(width)
-        })
+        .map(|line| rows_for(&line.to_string(), width as usize))
         .sum()
 }
 
-fn render_metrics(f: &mut Frame, app: &App, area: Rect) {
-    let inner = pane(f, area, "Metrics", None);
+fn rows_for(text: &str, width: usize) -> u16 {
+    let mut rows = 1usize;
+    // cells on the current row, and whitespace waiting to see if a word follows
+    // it on the same row. Trailing whitespace never earns a row of its own
+    let mut used = 0usize;
+    let mut pending = 0usize;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c.is_whitespace() {
+            pending += 1;
+            continue;
+        }
+        let mut word = 1usize;
+        while chars.next_if(|c| !c.is_whitespace()).is_some() {
+            word += 1;
+        }
+        if used + pending + word <= width {
+            used += pending + word;
+        } else {
+            // `trim: false` leaves whitespace that fits on the row where it is,
+            // swallows one cell of what does not as the break, and carries the
+            // rest to the head of the new row, where it counts toward the word
+            let carried = if used > 0 {
+                rows += 1;
+                (pending - pending.min(width - used)).saturating_sub(1)
+            } else {
+                pending
+            };
+            let needs = carried + word;
+            rows += (needs - 1) / width;
+            used = (needs - 1) % width + 1;
+        }
+        pending = 0;
+    }
+    rows as u16
+}
 
-    let Some(entry) = app.selected_entry() else {
-        return;
-    };
+/// The widest the four-figure row gets: a latency and a peak of `999 ms`, two
+/// digits of connections and an uptime of `99d 23h`. A pane narrower than this
+/// splits the row in two, decided by the worst case and not by this tick's
+/// digits, so the pane does not change height as a latency gains one.
+const GAUGE_CELLS: usize = 58;
+
+/// The rows Metrics prints for an entry at `width` cells, before wrapping.
+fn metrics_lines(entry: &TunnelEntry, width: usize) -> Vec<Line<'static>> {
     let metrics = entry.metrics.clone().unwrap_or_default();
 
     // The four figures worth a glance, on one line. Stacked over three rows
     // they read as a form to be filled in; side by side they read as a gauge,
     // which is what they are. Restarts and health keep their own row because
     // both are answers to "is something wrong", not numbers to watch.
-    let mut lines = vec![
-        Line::from(vec![
-            inline("latency"),
-            value(match metrics.latency {
-                Some(rtt) => format_latency(rtt),
-                None => "-".to_string(),
-            }),
-            inline("   active"),
-            value(metrics.active_connections.to_string()),
-            inline("   uptime"),
-            value(match metrics.uptime {
-                Some(up) => format_uptime(up),
-                None => "-".to_string(),
-            }),
-            inline("   peak"),
-            value(if entry.history.is_empty() {
-                "-".to_string()
-            } else {
-                format_latency(std::time::Duration::from_micros(entry.history.peak()))
-            }),
-        ]),
-        Line::from(vec![
-            inline("restarts"),
-            value(metrics.restarts.to_string()),
-            inline("   health"),
-            value(entry.health.symbol().to_string()),
-        ]),
+    let latency = vec![
+        inline("latency"),
+        value(match metrics.latency {
+            Some(rtt) => format_latency(rtt),
+            None => "-".to_string(),
+        }),
+        inline("   active"),
+        value(metrics.active_connections.to_string()),
     ];
+    let uptime = vec![
+        inline("uptime"),
+        value(match metrics.uptime {
+            Some(up) => format_uptime(up),
+            None => "-".to_string(),
+        }),
+        inline("   peak"),
+        value(if entry.history.is_empty() {
+            "-".to_string()
+        } else {
+            format_latency(std::time::Duration::from_micros(entry.history.peak()))
+        }),
+    ];
+    let mut lines = if width >= GAUGE_CELLS {
+        let mut row = latency;
+        row.push(Span::raw("   "));
+        row.extend(uptime);
+        vec![Line::from(row)]
+    } else {
+        vec![Line::from(latency), Line::from(uptime)]
+    };
+    lines.push(Line::from(vec![
+        inline("restarts"),
+        value(metrics.restarts.to_string()),
+        inline("   health"),
+        value(entry.health.symbol().to_string()),
+    ]));
 
     if entry.tunnel.is_expose() {
         let (total, classes) = match &metrics.lb {
@@ -934,12 +1153,25 @@ fn render_metrics(f: &mut Frame, app: &App, area: Rect) {
         lines.push(Line::from(vec![field(&label), Span::raw(total)]));
         lines.push(Line::from(vec![Span::raw(format!("  {classes}"))]));
     }
+    lines
+}
+
+fn render_metrics(f: &mut Frame, app: &App, area: Rect) {
+    let inner = pane(f, area, "Metrics", None);
+
+    let Some(entry) = app.selected_entry() else {
+        return;
+    };
+    let lines = metrics_lines(entry, inner.width as usize);
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(lines.len() as u16), Constraint::Min(0)])
+        .constraints([
+            Constraint::Length(wrapped_rows(&lines, inner.width)),
+            Constraint::Min(0),
+        ])
         .split(inner);
-    f.render_widget(Paragraph::new(lines), chunks[0]);
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), chunks[0]);
 
     if !entry.history.is_empty() {
         let samples = app.selected_sparkline();

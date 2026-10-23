@@ -693,8 +693,8 @@ mod tests {
             "{platform:?} / {subtitle:?}"
         );
         assert!(line_text(&lines[2]).trim_end().ends_with('\u{256f}'));
-        // a blank row of padding below the lockup
-        assert_eq!(line_text(&lines[1 + ui::MARK_ROWS + 1]), "");
+        // the rule follows the box's closing row directly
+        assert!(line_text(&lines[3]).starts_with(" \u{2500}"));
         let row0 = line_text(&lines[1]);
         // One cell of margin at each end, the same the footer and the panes
         // have, so the field stops a cell short of the edge rather than on it.
@@ -1081,9 +1081,9 @@ mod tests {
             assert_ne!(row[name_x], ' ', "row {i} has no name under NAME");
             assert_ne!(row[url_x], ' ', "row {i} has no url under URL");
         }
-        // the longest stored name is cut, the suffixed one is not shown with it
+        // the longest name is shown whole, without the suffix the header carries
         let shown: String = rows[1].iter().collect();
-        assert!(shown.contains("mongo-activ\u{2026}"), "{shown}");
+        assert!(shown.contains("mongo-activitylog "), "{shown}");
         assert!(!shown.contains("-dev"), "{shown}");
         assert!(rows[2].iter().collect::<String>().contains("k8s-prod"));
         // the header is air around a muted label, not part of the entries
@@ -1093,8 +1093,8 @@ mod tests {
     #[test]
     fn the_flags_sit_in_their_own_column_whatever_the_row_carries() {
         let mut app = columns_app();
-        // an unmanaged row carries a tag, which must start after the flags
-        // column and not wherever its url happened to end
+        // an unmanaged row says so in the url column, so it carries nothing in
+        // the flags column or after it
         let buffer = screen(&app, 160, 30);
         let (_, rows) = list_rows(&buffer, app.entries.len());
         let auto_x = find(&rows[1], "\u{27f3}").expect("auto-start flag");
@@ -1107,8 +1107,8 @@ mod tests {
         assert_eq!(find(&rows[3], "\u{26a0}"), None);
         assert_eq!(
             find(&rows[4], "[not managed"),
-            Some(auto_x + 3),
-            "the tag begins after the two flag cells and one of air"
+            find(&rows[0], "URL"),
+            "the note takes the url column"
         );
 
         // both flags at once fill both cells and push nothing
@@ -1145,7 +1145,9 @@ mod tests {
     fn a_narrow_pane_shortens_the_url_before_the_name_and_never_wraps() {
         let app = columns_app();
         let wide = screen(&app, 160, 30);
-        let narrow = screen(&app, 80, 30);
+        // 50 columns: the stacked list has 46 cells inside its frame, which is
+        // less than the longest name and url together
+        let narrow = screen(&app, 50, 30);
         let (_, wide_rows) = list_rows(&wide, app.entries.len());
         let (_, narrow_rows) = list_rows(&narrow, app.entries.len());
         for (i, row) in narrow_rows.iter().enumerate().skip(1) {
@@ -1160,7 +1162,7 @@ mod tests {
             );
         }
         let first: String = narrow_rows[1].iter().collect();
-        assert!(first.contains("mongo-activ\u{2026}"), "{first}");
+        assert!(first.contains("mongo-activitylog "), "{first}");
         let second: String = narrow_rows[2].iter().collect();
         assert!(second.contains("k8s-prod"), "{second}");
         assert!(
@@ -1205,21 +1207,459 @@ mod tests {
         assert!(text.contains("relay port"), "{text}");
     }
 
-    // An unmanaged row has no account to match, and a name that is long and
-    // unsuffixed is cut like any other
+    // An unmanaged row has no account to match; a long unsuffixed name shares
+    // the column like any other and is cut only when the pane is too narrow
     #[test]
-    fn an_unmanaged_row_shares_the_column_and_the_cap() {
+    fn an_unmanaged_row_shares_the_name_column() {
         let mut app = columns_app();
         app.entries[3].tunnel.name = "pid-2408312345678".to_string();
         let buffer = screen(&app, 160, 30);
         let (_, rows) = list_rows(&buffer, app.entries.len());
         let text: String = rows[4].iter().collect();
-        assert!(text.contains("pid-2408312\u{2026}"), "{text}");
+        assert!(text.contains("pid-2408312345678"), "{text}");
         let mode_x = find(&rows[0], "MODE").unwrap();
         assert_eq!(
             rows[4][mode_x..mode_x + 6].iter().collect::<String>(),
             "access"
         );
+    }
+
+    // The note that a process is not gtunnel's belongs where the URL would be:
+    // a process gtunnel does not manage has no URL of its own to show, and the
+    // note used to trail the row where a narrow pane clipped it mid-word
+    #[test]
+    fn an_unmanaged_row_says_so_in_the_url_column() {
+        let mut app = columns_app();
+        app.entries[3].kind = TunnelKind::External;
+        let buffer = screen(&app, 160, 30);
+        let (_, rows) = list_rows(&buffer, app.entries.len());
+        let url_x = find(&rows[0], "URL").unwrap();
+        let text: String = rows[4].iter().collect();
+        assert!(
+            rows[4][url_x..]
+                .iter()
+                .collect::<String>()
+                .starts_with("[not managed by gtunnel]"),
+            "{text}"
+        );
+        assert_eq!(text.matches("not managed by gtunnel").count(), 1, "{text}");
+    }
+
+    // The column fitter is arithmetic, so it is tested as arithmetic: sizes in,
+    // cells out, no terminal
+    #[test]
+    fn a_wide_pane_gives_the_longest_name_and_url_in_full() {
+        let cols = ui::fit_columns(&[17, 8], &[23, 15], 120);
+        assert_eq!(cols, ui::Columns { name: 17, url: 23 });
+    }
+
+    #[test]
+    fn a_pane_too_narrow_for_both_shrinks_the_name_first() {
+        // 60 cells less 13 of lead, mode, air and flags leaves 47 to share
+        let cols = ui::fit_columns(&[30], &[40], 60);
+        // the name keeps all 30 and the url takes the 17 left, above its minimum
+        assert_eq!(cols, ui::Columns { name: 30, url: 17 });
+        // a longer name than the pane can hold is what makes it shrink
+        let squeezed = ui::fit_columns(&[40], &[40], 60);
+        assert_eq!(squeezed, ui::Columns { name: 35, url: 12 });
+        // the url keeps its twelve cells while the name still has cells to lose
+        let tight = ui::fit_columns(&[30], &[40], 13 + 8 + 12);
+        assert_eq!(tight, ui::Columns { name: 8, url: 12 });
+        // two cells above the floor, the name takes them and the url holds
+        let loose = ui::fit_columns(&[30], &[40], 13 + 10 + 12);
+        assert_eq!(loose, ui::Columns { name: 10, url: 12 });
+    }
+
+    #[test]
+    fn below_the_name_floor_and_url_minimum_the_url_gives_way() {
+        let cols = ui::fit_columns(&[30], &[40], 13 + 8 + 5);
+        assert_eq!(cols, ui::Columns { name: 8, url: 5 });
+        let none = ui::fit_columns(&[30], &[40], 5);
+        assert_eq!(none.url, 0);
+    }
+
+    #[test]
+    fn a_name_shorter_than_the_floor_is_not_padded_to_it() {
+        let cols = ui::fit_columns(&[5], &[40], 13 + 20);
+        assert_eq!(cols.name, 5);
+    }
+
+    // Entries `svc-00-...` to `svc-NN-...`, long enough that a narrow pane has to
+    // decide what to cut, and in a count no pane of ordinary height can hold
+    fn many_entries(count: usize) -> App {
+        let mut app = App::new("dev");
+        app.entries = (0..count)
+            .map(|i| {
+                TunnelEntry::new(
+                    access(&format!("svc-{i:02}-replica-reader-dev"), 15000 + i as u16),
+                    TunnelStatus::Running,
+                    TunnelKind::Managed,
+                )
+            })
+            .collect();
+        app
+    }
+
+    fn text_of(buffer: &ratatui::buffer::Buffer) -> Vec<String> {
+        (0..buffer.area.height)
+            .map(|y| row_chars(buffer, y).iter().collect())
+            .collect()
+    }
+
+    // A stateless List draws from its first row, so a selection past the pane's
+    // height moved on a list nobody could see
+    #[test]
+    fn the_selected_row_is_on_screen_when_the_list_is_longer_than_the_pane() {
+        // only the list's own columns: Details prints the selected name as well
+        let list_rows = |app: &App| -> Vec<String> {
+            text_of(&screen(app, 120, 10))
+                .iter()
+                .map(|r| r.chars().take(54).collect())
+                .collect()
+        };
+        let mut app = many_entries(20);
+        app.selected = 19;
+        let rows = list_rows(&app);
+        assert!(rows.iter().any(|r| r.contains("svc-19-")), "{rows:#?}");
+        assert!(!rows.iter().any(|r| r.contains("svc-00-")), "{rows:#?}");
+
+        // and it scrolls back when the selection does
+        app.selected = 0;
+        let rows = list_rows(&app);
+        assert!(rows.iter().any(|r| r.contains("svc-00-")), "{rows:#?}");
+        assert!(!rows.iter().any(|r| r.contains("svc-19-")), "{rows:#?}");
+    }
+
+    #[test]
+    fn the_selected_row_keeps_its_highlight_after_the_list_scrolls() {
+        let mut app = many_entries(20);
+        app.selected = 12;
+        let buffer = screen(&app, 120, 10);
+        // the list is the left 46 percent; Details also prints the stored name
+        let y = (0..buffer.area.height)
+            .find(|y| find(&row_chars(&buffer, *y)[..54], "svc-12-").is_some())
+            .expect("selected row on screen");
+        let x = find(&row_chars(&buffer, y), "svc-12-").unwrap() as u16;
+        assert_eq!(buffer[(x, y)].bg, theme::SELECTED_BG);
+    }
+
+    // Side by side the list got 32 cells at 80 columns, which cost it the url;
+    // stacked it gets the width of the terminal
+    #[test]
+    fn below_one_hundred_columns_the_list_stacks_above_the_other_panes() {
+        let app = columns_app();
+        let buffer = screen(&app, 80, 30);
+        let rows = text_of(&buffer);
+        let list_y = rows.iter().position(|r| r.contains("TUNNELS (")).unwrap();
+        let details_y = rows.iter().position(|r| r.contains("DETAILS")).unwrap();
+        assert!(details_y > list_y, "details must sit below the list");
+        // the list's frame spans the terminal, and no second pane shares its row
+        assert_eq!(buffer[(0, list_y as u16 - 1)].symbol(), "\u{256d}");
+        assert_eq!(buffer[(79, list_y as u16 - 1)].symbol(), "\u{256e}");
+        let (_, list) = list_rows(&buffer, app.entries.len());
+        let second: String = list[2].iter().collect();
+        assert!(second.contains("https://k8s.example.com"), "{second}");
+        assert!(!second.contains('\u{2026}'), "{second}");
+    }
+
+    #[test]
+    fn from_one_hundred_columns_the_list_is_the_left_46_percent() {
+        let app = columns_app();
+        let buffer = screen(&app, 120, 30);
+        let rows = text_of(&buffer);
+        let list_y = rows.iter().position(|r| r.contains("TUNNELS (")).unwrap();
+        let details_y = rows.iter().position(|r| r.contains("DETAILS")).unwrap();
+        assert_eq!(details_y, list_y, "the panes share a row");
+        // 46 percent of 120 cells is 55, so the list's right edge is cell 54
+        assert_eq!(buffer[(54, list_y as u16 - 1)].symbol(), "\u{256e}");
+        assert_eq!(buffer[(55, list_y as u16 - 1)].symbol(), "\u{256d}");
+    }
+
+    #[test]
+    fn the_selection_survives_the_change_of_layout_at_one_hundred_columns() {
+        let mut app = many_entries(20);
+        app.selected = 17;
+        // The highlight is the proof it is the list's row, not Details printing
+        // the same name
+        for width in [99, 100, 99, 120, 60] {
+            let buffer = screen(&app, width, 30);
+            let highlighted = (0..buffer.area.height).any(|y| {
+                let row: String = row_chars(&buffer, y).iter().collect();
+                row.contains("svc-17-") && buffer[(2, y)].bg == theme::SELECTED_BG
+            });
+            assert!(highlighted, "width {width}: {:#?}", text_of(&buffer));
+        }
+    }
+
+    // The height budget is arithmetic too: what each pane wants in, what each
+    // gets out, and the order they give way in
+    #[test]
+    fn with_height_to_spare_every_pane_gets_what_it_wants() {
+        let (details, logs, metrics) = ui::right_heights(60, 8, 7);
+        assert_eq!((details, metrics), (8, 7));
+        assert_eq!(logs, 60 - 8 - 7, "logs takes what the others leave");
+    }
+
+    // 17 is the right column at 100x24, where Logs used to vanish
+    #[test]
+    fn at_seventeen_rows_logs_keeps_its_minimum_and_metrics_shrinks() {
+        let (details, logs, metrics) = ui::right_heights(17, 8, 7);
+        assert_eq!((details, logs, metrics), (8, 4, 5));
+        let (details, logs, metrics) = ui::right_heights(17, 10, 9);
+        assert_eq!(details, 10, "details is whole while logs is at its minimum");
+        assert!(logs >= 4, "{logs}");
+        assert_eq!(details + logs + metrics, 17);
+    }
+
+    #[test]
+    fn metrics_hides_before_logs_goes_under_its_minimum() {
+        // 8 + 4 leaves 3, too few for a pane that shows a figure
+        let (details, logs, metrics) = ui::right_heights(15, 8, 7);
+        assert_eq!((details, logs, metrics), (8, 7, 0));
+        let (details, logs, metrics) = ui::right_heights(14, 10, 9);
+        assert_eq!((details, logs, metrics), (10, 4, 0));
+    }
+
+    #[test]
+    fn details_is_cut_only_when_logs_has_nothing_left_to_give() {
+        let (details, logs, metrics) = ui::right_heights(11, 10, 9);
+        assert_eq!((details, logs, metrics), (7, 4, 0));
+        // a column shorter than the minimum goes to logs whole
+        assert_eq!(ui::right_heights(3, 10, 9), (0, 3, 0));
+    }
+
+    #[test]
+    fn the_budget_always_adds_up_to_the_column() {
+        for avail in 0..80 {
+            for (d, m) in [(0, 0), (5, 7), (8, 7), (10, 9), (14, 10)] {
+                let (details, logs, metrics) = ui::right_heights(avail, d, m);
+                assert_eq!(details + logs + metrics, avail, "{avail} {d} {m}");
+                assert!(details <= d && metrics <= m);
+            }
+        }
+    }
+
+    fn row_text(line: &ratatui::text::Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn a_detail_that_fits_is_one_row() {
+        let rows = ui::wrap_detail("url", "localhost:15432", 40);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(row_text(&rows[0]), format!("{:<11}localhost:15432", "url"));
+    }
+
+    #[test]
+    fn a_long_detail_wraps_under_the_value_column() {
+        let value = "launchd, after 2 restarts (auto-start off)";
+        let rows = ui::wrap_detail("started by", value, 30);
+        assert!(rows.len() >= 2, "{rows:?}");
+        for (i, row) in rows.iter().enumerate() {
+            let text = row_text(row);
+            assert!(text.chars().count() <= 30, "{text:?}");
+            if i > 0 {
+                assert_eq!(&text[..11], " ".repeat(11), "{text:?} overwrote the label");
+            }
+        }
+        // nothing is lost, and words are not split while they fit
+        let rejoined: Vec<String> = rows.iter().map(|r| row_text(r)[11..].to_string()).collect();
+        assert_eq!(rejoined.join(" "), value);
+    }
+
+    #[test]
+    fn a_word_longer_than_the_value_column_breaks_at_the_column() {
+        let url = "https://a-very-long-hostname.example.com";
+        let rows = ui::wrap_detail("url", url, 26);
+        let value: String = rows.iter().map(|r| row_text(r)[11..].to_string()).collect();
+        assert_eq!(value.replace(' ', ""), url);
+        assert!(rows.iter().all(|r| row_text(r).chars().count() <= 26));
+    }
+
+    #[test]
+    fn a_pane_too_narrow_for_a_value_gets_one_cut_row() {
+        let rows = ui::wrap_detail("url", "localhost:15432", 14);
+        assert_eq!(rows.len(), 1);
+        assert!(row_text(&rows[0]).chars().count() <= 14);
+    }
+
+    fn with_logs(mut app: App, lines: usize) -> App {
+        app.logs = (1..=lines).map(|i| format!("log line {i}")).collect();
+        app.logs.push("the newest log line".to_string());
+        app
+    }
+
+    // Details and Metrics took fixed heights first, so Logs, the pane that says
+    // why a tunnel is failing, was what a 24-row terminal could not show
+    #[test]
+    fn at_100x24_the_log_title_and_newest_line_are_on_screen_for_both_kinds() {
+        for selected in [0, 1] {
+            let mut app = with_logs(app_with_two(), 40);
+            app.selected = selected;
+            let text = text_of(&screen(&app, 100, 24)).join("\n");
+            assert!(text.contains("LOGS: "), "selected {selected}\n{text}");
+            assert!(
+                text.contains("the newest log line"),
+                "selected {selected}\n{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn at_60_columns_no_details_or_metrics_row_is_cut_mid_word() {
+        let mut app = app_with_two();
+        app.selected = 1;
+        app.entries[1].tunnel.name = "payments-callback-sandbox-dev".to_string();
+        if let TunnelSpec::Expose { hostname, .. } = &mut app.entries[1].tunnel.spec {
+            *hostname = "payments-callback.sandbox.internal".to_string();
+        }
+        app.entries[1].metrics = Some(crate::probe::TunnelMetrics {
+            latency: Some(std::time::Duration::from_millis(123)),
+            active_connections: 12,
+            uptime: Some(std::time::Duration::from_secs(90_000)),
+            restarts: 2,
+            ..Default::default()
+        });
+        app.entries[1].history.record(123_000);
+        // 44 is where even the url and the four figures stop fitting a row
+        for width in [60, 44] {
+            let text = text_of(&screen(&app, width, 60)).join("\n");
+            // the whole stored name and url are readable, wrapped
+            for wanted in [
+                "payments-callback-sandbox-dev",
+                "after 2 restarts",
+                "peak",
+                "uptime",
+            ] {
+                assert!(text.contains(wanted), "{width}: {wanted}\n{text}");
+            }
+            let flat = text.replace(['\u{2502}', '\n'], "").replace(' ', "");
+            assert!(
+                flat.contains("https://payments-callback.sandbox.internal"),
+                "{width}\n{text}"
+            );
+        }
+    }
+
+    // Dividing characters by width assumes words can be split anywhere. The
+    // widget moves a word that does not fit to the next row, so a line of
+    // six-letter words in a ten-cell pane takes a row per word, not 27 / 10
+    #[test]
+    fn a_line_of_short_words_counts_the_rows_the_widget_wraps_it_to() {
+        use ratatui::text::Line;
+        let line = Line::raw("aaaaaa bbbbbb cccccc dddddd");
+        assert_eq!(ui::wrapped_rows(&[line], 10), 4);
+        // a word longer than the pane is broken, as the widget breaks it
+        assert_eq!(ui::wrapped_rows(&[Line::raw("abcdefghijklmno")], 10), 2);
+        // leading air, as the hint rows carry, is kept and counts
+        assert_eq!(ui::wrapped_rows(&[Line::raw("  aaaaaa bbbbbb")], 10), 2);
+    }
+
+    #[test]
+    fn the_newest_log_line_is_on_screen_when_the_lines_above_it_are_short_words() {
+        let mut app = App::new_demo();
+        // twenty-one cells a word: two never share a row of a 40-cell pane, so
+        // each line takes ten rows where characters over width says six
+        let long_words = ["abcdefghijklmnopqrstu"; 10].join(" ");
+        app.logs = (0..4).map(|_| long_words.clone()).collect();
+        app.logs.push("zzzzzz yyyyyy xxxxxx wwwwww".to_string());
+        for (width, height) in [(100, 30), (60, 40), (44, 60)] {
+            let text = text_of(&screen(&app, width, height)).join("\n");
+            assert!(text.contains("wwwwww"), "{width}x{height}\n{text}");
+        }
+    }
+
+    // The count is only worth having if it is the widget's own, so this renders
+    // the same lines through the real `Paragraph` and counts the rows it drew
+    #[test]
+    fn the_wrapped_row_count_agrees_with_the_widget_it_scrolls() {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        use ratatui::text::Line;
+        use ratatui::widgets::{Paragraph, Widget, Wrap};
+        let texts = [
+            "alpha bravo delta gamma sigma omega kappa theta",
+            "abcdefghijklmnopqrstu abcdefghijklmnopqrstu abcdefghijklmnopqrstu",
+            "  hint: a short hint that wraps",
+            "a b c d e f g h i j k l m n o p q r s t",
+            "https://payments-callback.sandbox.internal/path/to/a/resource?x=1",
+            "one two  three   four",
+            "ab    cd efgh",
+            "  https://payments-callback.sandbox.internal/path",
+            "abc  defg hi   jklmnopq",
+            "x",
+        ];
+        for text in texts {
+            for width in [3u16, 5, 8, 10, 13, 20, 33, 40, 80] {
+                let line = Line::raw(text);
+                let area = Rect::new(0, 0, width, 60);
+                let mut buffer = Buffer::empty(area);
+                Paragraph::new(vec![line.clone()])
+                    .wrap(Wrap { trim: false })
+                    .render(area, &mut buffer);
+                let drawn = (0..60)
+                    .rev()
+                    .find(|y| (0..width).any(|x| buffer[(x, *y)].symbol() != " "))
+                    .map_or(1, |y| y + 1);
+                assert_eq!(
+                    ui::wrapped_rows(&[line], width),
+                    drawn,
+                    "{text:?} at {width}"
+                );
+            }
+        }
+    }
+
+    // One pass over the sizes a terminal really takes, and the two it should
+    // never be reduced to a panic at. A buffer is exactly as wide as the
+    // terminal, so "no row wider" holds by construction there; what it can show
+    // is a draw that panics on a size, or a selection the list lost.
+    #[test]
+    fn every_size_draws_without_panic_and_keeps_the_selection_in_view() {
+        let sizes = [
+            (1, 1),
+            (10, 4),
+            (20, 8),
+            (40, 12),
+            (60, 20),
+            (80, 24),
+            (100, 24),
+            (120, 40),
+            (200, 50),
+        ];
+        for (width, height) in sizes {
+            for selected in [0, 13, 19] {
+                let mut app = with_logs(many_entries(20), 30);
+                app.selected = selected;
+                app.entries[selected].tunnel.name = format!("svc-{selected:02}-replica-reader-dev");
+                let buffer = screen(&app, width, height);
+                for y in 0..height {
+                    assert_eq!(row_chars(&buffer, y).len(), width as usize);
+                }
+                if height >= 12 {
+                    let on_screen = (0..height).any(|y| {
+                        let row: String = row_chars(&buffer, y).iter().collect();
+                        row.contains(&format!("svc-{selected:02}-"))
+                            && buffer[(2, y)].bg == theme::SELECTED_BG
+                    });
+                    assert!(
+                        on_screen,
+                        "{width}x{height} selected {selected}\n{:#?}",
+                        text_of(&buffer)
+                    );
+                }
+            }
+        }
+    }
+
+    // Public tunnels carry the most Details rows and an extra Metrics pane
+    #[test]
+    fn a_public_tunnel_draws_at_every_size_too() {
+        for (width, height) in [(1, 1), (10, 4), (20, 8), (44, 16), (100, 24), (200, 50)] {
+            let mut app = with_logs(app_with_two(), 30);
+            app.selected = 1;
+            let _ = screen(&app, width, height);
+        }
     }
 
     fn app_with_many_instances(selected: usize) -> App {

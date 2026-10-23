@@ -85,10 +85,18 @@ tagged `[not managed by gtunnel]`. Every action on them is refused except `m`, w
 them over.
 
 The list is a table with a `NAME  MODE  URL` header. To keep the columns aligned it hides a
-name suffix equal to the tunnel's own account (`k8s-dev` under `dev` reads `k8s`) and cuts
-any name still longer than 12 cells to 11 plus `…`. The Details pane starts with the full
-stored name. `gtunnel list` and every command keep using the full names, so `gtunnel start
-k8s-dev` is still the command. In a narrow pane the URL column shrinks before the name does.
+name suffix equal to the tunnel's own account (`k8s-dev` under `dev` reads `k8s`). The name
+column is as wide as the longest name; it shrinks, to no fewer than 8 cells and with a `…`,
+only when the pane could not otherwise hold a 12-cell URL. The Details pane starts with the
+full stored name. `gtunnel list` and every command keep using the full names, so `gtunnel
+start k8s-dev` is still the command.
+
+The layout follows the terminal. From 100 columns the list is the left 46% and Details, Logs
+and Metrics are stacked on the right; below 100 the list takes the full width above them,
+which keeps the URL readable. The list scrolls to keep the selected tunnel on screen, and a
+Details value too long for its row (a URL, a target, how the tunnel was started) wraps under
+its label instead of being cut. When the terminal is short, Logs keeps at least 4 rows and
+Metrics shrinks, then disappears, before Logs does.
 
 ## init
 
@@ -126,6 +134,32 @@ gtunnel add <NAME> <HOST:PORT> --dest-group G --region R --network N [-s]
 The local port is derived from the tunnel name, so the same name gets the same port on
 every machine unless it is taken.
 
+### Naming a tunnel
+
+A name is unique within its account, not across them, so the same service keeps the same
+name in every account. The account is what you switch with `;` in the TUI or pass with
+`--account`; repeating it in the name buys nothing and costs you a command that works in
+only one account.
+
+| | |
+|---|---|
+| Shape | `<platform>`, or `<platform>-<service>` when the platform has more than one |
+| Leave out | the account, environment or project — no `-dev`, `-prod`, `-staging` |
+| Allowed | up to 40 characters of `a-z`, `0-9` and `-` |
+
+```
+gtunnel add k8s   … --account dev     # same name
+gtunnel add k8s   … --account prod    # different account, different port
+```
+
+Both accounts then list the same platforms in the same order, and `gtunnel start k8s`
+differs only in which account it names. A name that does carry its account still works —
+the TUI hides the suffix — but every command spells it out.
+
+A tunnel forwards to one host, so when the client picks its own destination over the
+tunnel, as MongoDB Compass does over SSH, give the tunnel the bastion and let the client
+choose. One tunnel per database behind it pins a hostname gtunnel has no reason to know.
+
 ### Three ways to reach a target
 
 | Target | Command gtunnel runs | Use it for |
@@ -139,9 +173,11 @@ bastion needs `--via`: IAP carries an ssh connection and ssh makes the forward f
 side. A private GKE master, for example:
 
 ```
-$ gtunnel add k8s-dev 10.3.0.13:443 --via private-cluster-bastion -z europe-west1-b --local-port 8443 -s
-● k8s-dev  localhost:8443 -> 10.3.0.13:443 via private-cluster-bastion
+$ gtunnel add k8s 10.3.0.13:443 --via private-cluster-bastion -z europe-west1-b --local-port 8443
+○ k8s  localhost:8443 -> 10.3.0.13:443 via private-cluster-bastion
 ```
+
+The tunnel is installed and stopped; `-s` starts it in the same command.
 
 The kubeconfig has to name the master in `tls-server-name`, because the API server's
 certificate is issued for its own IP and not for `127.0.0.1`:

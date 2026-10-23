@@ -13,15 +13,15 @@ pub const HEALTH_EVERY: Duration = Duration::from_secs(30);
 pub const LB_EVERY: Duration = Duration::from_secs(60);
 pub const DISCOVERY_EVERY: Duration = Duration::from_secs(60);
 
-/// The widest a name gets in the list. The pane is shared with the URL and the
-/// flags, and a name that grows the column pushes both out of line on every row.
-pub const NAME_CELLS: usize = 12;
-
 /// What the list shows for a tunnel name. The account is already in the header
 /// and in the details pane, so a trailing `-<account>` says it a third time on
 /// every row; it is dropped only when it is this entry's own account, so a
 /// `k8s-prod` listed under `dev` still tells the truth. The stored name, and
 /// every command that takes one, keeps the suffix.
+///
+/// The name is not cut here. How wide the column is depends on the pane, which
+/// only the list knows, so the cut lives with the column fitter; a cap in this
+/// function would hide the end of every long name however wide the terminal is.
 ///
 /// Managed names are ASCII (`validate_tunnel_name`), so a character is a cell.
 pub fn display_name(name: &str, account: &str) -> String {
@@ -35,12 +35,7 @@ pub fn display_name(name: &str, account: &str) -> String {
             .filter(|rest| !rest.is_empty())
             .unwrap_or(name)
     };
-    if stripped.chars().count() <= NAME_CELLS {
-        stripped.to_string()
-    } else {
-        let head: String = stripped.chars().take(NAME_CELLS - 1).collect();
-        format!("{head}\u{2026}")
-    }
+    stripped.to_string()
 }
 
 // Where a row came from, which decides what may be done to it
@@ -62,6 +57,8 @@ pub struct TunnelEntry {
     pub external: Option<ExternalTunnel>,
 }
 
+const NOT_MANAGED: &str = "[not managed by gtunnel]";
+
 impl TunnelEntry {
     pub fn new(tunnel: PersistentTunnel, status: TunnelStatus, kind: TunnelKind) -> Self {
         Self {
@@ -77,6 +74,16 @@ impl TunnelEntry {
 
     pub fn name(&self) -> &str {
         &self.tunnel.name
+    }
+
+    // What the list's URL column shows. A process gtunnel does not manage has
+    // no URL of its own here, so the column says whose it is instead; Details
+    // still carries the real url
+    pub fn url_cell(&self) -> String {
+        match self.kind {
+            TunnelKind::External => NOT_MANAGED.to_string(),
+            _ => self.url(),
+        }
     }
 
     pub fn display_name(&self) -> String {
@@ -105,7 +112,7 @@ impl TunnelEntry {
         match self.kind {
             TunnelKind::Managed => None,
             TunnelKind::Ephemeral => Some("[ephemeral]"),
-            TunnelKind::External => Some("[not managed by gtunnel]"),
+            TunnelKind::External => Some(NOT_MANAGED),
         }
     }
 }
@@ -892,31 +899,28 @@ mod display_name_tests {
         assert_eq!(display_name("anything", ""), "anything");
     }
 
+    // The list sizes its name column to the longest name, so the name reaches it
+    // whole; the cut, when the pane is too narrow, is the column fitter's
     #[test]
-    fn twelve_cells_is_the_edge_of_the_cap() {
-        let twelve = "abcdefghijkl";
-        assert_eq!(twelve.chars().count(), NAME_CELLS);
-        assert_eq!(display_name(twelve, "dev"), twelve);
-        let cut = display_name("abcdefghijklm", "dev");
-        assert_eq!(cut, "abcdefghijk\u{2026}");
-        assert_eq!(cut.chars().count(), NAME_CELLS);
+    fn a_long_name_is_not_cut_by_display_name() {
+        let long = "abcdefghijklmnopqrstuvwxyz";
+        assert_eq!(display_name(long, "dev"), long);
     }
 
     #[test]
-    fn a_long_name_is_cut_after_its_suffix_is_dropped() {
+    fn a_long_name_keeps_all_of_itself_after_its_suffix_is_dropped() {
         assert_eq!(
             display_name("mongo-activitylog-prod", "prod"),
-            "mongo-activ\u{2026}"
+            "mongo-activitylog"
         );
         assert_eq!(
             display_name("mongo-production-prod", "prod"),
-            "mongo-produ\u{2026}"
+            "mongo-production"
         );
     }
 
-    // The cut is harmless only while two tunnels of one account never collapse
-    // to the same cell text; the real config is checked against this in the
-    // evidence run, this guards the shape of it.
+    // Two tunnels of one account must never read as the same row; this guards
+    // the shape of that, and the real config is checked in the evidence run.
     #[test]
     fn cut_names_of_one_account_stay_distinct() {
         let names = [

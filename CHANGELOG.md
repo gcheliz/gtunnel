@@ -45,8 +45,12 @@ GCP relay in place of Cloudflare Tunnel.
   is listed and can be imported with `m`; every other action on it is refused.
 - **List columns** - the tunnel list has a `NAME  MODE  URL` header and fixed columns,
   including one for the auto-start and health flags. It hides a name suffix equal to the
-  tunnel's account and cuts names to 12 cells; Details shows the full name, and
-  `gtunnel list` is unchanged.
+  tunnel's account; Details shows the full name, and `gtunnel list` is unchanged.
+- **Resizing** - every pane follows the terminal. The name column is as wide as the
+  longest name and shrinks only when the URL would otherwise be cut; below 100 columns
+  the list stacks above the other panes instead of sharing a row with them; the list
+  scrolls with the selection; long Details values wrap; and Logs keeps a minimum height,
+  so it is still on screen at 24 rows.
 - **Health notifications** - a tunnel going unhealthy raises a system notification.
 - **`gtunnel demo`** - the whole dashboard filled with synthetic data, touching no GCP
   project and no config file.
