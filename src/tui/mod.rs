@@ -22,6 +22,7 @@ enum Msg {
     Instances(Vec<app::InstanceChoice>),
     Tick,
     Entries(Vec<TunnelEntry>),
+    EntriesFailed(String),
     Metrics(Vec<(String, crate::probe::TunnelMetrics)>),
     Health(Vec<(String, HealthStatus)>),
     Logs(String, Vec<String>),
@@ -230,6 +231,7 @@ async fn event_loop(
                 }
             }
             Msg::Entries(entries) => app.replace_entries(entries),
+            Msg::EntriesFailed(error) => app.load_failed(&error),
             Msg::Metrics(metrics) => {
                 for (name, m) in metrics {
                     if let Some(entry) = app.entries.iter_mut().find(|e| e.name() == name) {
@@ -288,7 +290,7 @@ fn announce(name: &str, was: HealthStatus, now: HealthStatus) {
     }
 }
 
-fn schedule(app: &App, timers: &mut Timers, tx: &mpsc::UnboundedSender<Msg>) {
+fn schedule(app: &mut App, timers: &mut Timers, tx: &mpsc::UnboundedSender<Msg>) {
     let account = app.account.clone();
 
     if timers.entries.elapsed() >= app::DISCOVERY_EVERY {
@@ -296,9 +298,10 @@ fn schedule(app: &App, timers: &mut Timers, tx: &mpsc::UnboundedSender<Msg>) {
         let tx = tx.clone();
         let account = account.clone();
         tokio::spawn(async move {
-            if let Ok(entries) = ops::load_entries(&account).await {
-                let _ = tx.send(Msg::Entries(entries));
-            }
+            let _ = tx.send(match ops::load_entries(&account).await {
+                Ok(entries) => Msg::Entries(entries),
+                Err(e) => Msg::EntriesFailed(format!("{e:#}")),
+            });
         });
     }
 
@@ -322,16 +325,8 @@ fn schedule(app: &App, timers: &mut Timers, tx: &mpsc::UnboundedSender<Msg>) {
         });
     }
 
-    if timers.health.elapsed() >= app::HEALTH_EVERY {
-        timers.health = Instant::now();
-        // Every running tunnel is probed at once; one slow host must not delay
-        // the rest
-        let targets: Vec<_> = app
-            .entries
-            .iter()
-            .filter(|e| e.status == crate::state::TunnelStatus::Running)
-            .map(|e| (e.name().to_string(), e.tunnel.clone()))
-            .collect();
+    let targets = health_round(app, timers);
+    if !targets.is_empty() {
         let tx = tx.clone();
         tokio::spawn(async move {
             let probes = targets
@@ -341,6 +336,47 @@ fn schedule(app: &App, timers: &mut Timers, tx: &mpsc::UnboundedSender<Msg>) {
             let _ = tx.send(Msg::Health(results));
         });
     }
+}
+
+/// The tunnels to probe this round, empty when the round is not due or has
+/// nothing to probe.
+///
+/// The clock is spent only when there is something to spend it on. Every timer
+/// starts due, but entries arrive asynchronously, so the first tick sees an
+/// empty list; resetting the timer there bought a whole period of `?` for rows
+/// that were about to appear. `health_stale` covers the same hole after `;`,
+/// which clears the list, and after a tunnel is added under a new name.
+///
+/// A row still waiting for its first verdict is marked `Checking`, so `?` goes
+/// back to meaning the probe had nothing to measure — a tunnel with no local
+/// port of its own. A verdict already on screen stands until the next one
+/// lands, rather than blinking back to `…` every round.
+fn health_round(
+    app: &mut App,
+    timers: &mut Timers,
+) -> Vec<(String, crate::state::PersistentTunnel)> {
+    if timers.health.elapsed() < app::HEALTH_EVERY && !app.health_stale {
+        return Vec::new();
+    }
+    let running = |e: &&mut TunnelEntry| e.status == crate::state::TunnelStatus::Running;
+    // Every running tunnel is probed at once; one slow host must not delay the
+    // rest
+    let mut targets = Vec::new();
+    for entry in app.entries.iter_mut().filter(running) {
+        if entry.health == HealthStatus::Unknown {
+            entry.health = HealthStatus::Checking;
+        }
+        targets.push((entry.name().to_string(), entry.tunnel.clone()));
+    }
+    // The debt is settled by looking, but the clock only moves when there was
+    // something to probe: an account whose tunnels are all stopped must not
+    // re-ask every tick, and a list that has not loaded yet must not lose its
+    // turn.
+    app.health_stale = false;
+    if !targets.is_empty() {
+        timers.health = Instant::now();
+    }
+    targets
 }
 
 // All probes in flight together, without pulling in a futures crate
@@ -433,6 +469,76 @@ mod tests {
             ),
         ];
         app
+    }
+
+    // Every timer starts due, but entries arrive asynchronously, so the first
+    // tick finds no entries at all. Spending the health slot there left every
+    // row reading `?` for a full period, while latency — on a five-second
+    // period — filled in almost at once.
+    #[test]
+    fn an_empty_list_does_not_spend_the_health_slot() {
+        let mut app = App::new("dev");
+        let mut timers = Timers::due();
+        assert!(health_round(&mut app, &mut timers).is_empty());
+
+        app.entries = vec![TunnelEntry::new(
+            access("db", 15432),
+            TunnelStatus::Running,
+            TunnelKind::Managed,
+        )];
+        let targets = health_round(&mut app, &mut timers);
+        assert_eq!(
+            targets.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+            ["db"],
+            "the slot was still there when the entries arrived"
+        );
+    }
+
+    // A round in flight is not a round with nothing to say: `?` means the probe
+    // found nothing to measure, so a row still waiting for its first answer
+    // says `…` instead, and a verdict already on screen stays until the next
+    // one lands.
+    #[test]
+    fn a_first_round_says_checking_and_a_later_one_leaves_the_verdict_alone() {
+        let mut app = app_with_two();
+        let mut timers = Timers::due();
+        let _ = health_round(&mut app, &mut timers);
+        assert!(
+            app.entries
+                .iter()
+                .all(|e| e.health == HealthStatus::Checking),
+            "{:?}",
+            app.entries.iter().map(|e| e.health).collect::<Vec<_>>()
+        );
+
+        app.entries[0].health = HealthStatus::Healthy;
+        timers.health = Instant::now() - app::HEALTH_EVERY;
+        let _ = health_round(&mut app, &mut timers);
+        assert_eq!(app.entries[0].health, HealthStatus::Healthy);
+    }
+
+    // `;` clears the list, so the next load is all new names with no health to
+    // carry. Without this the account just switched to reads `?` for a period.
+    #[test]
+    fn entries_that_bring_no_health_make_the_next_round_due() {
+        let mut app = app_with_two();
+        let mut timers = Timers::due();
+        let _ = health_round(&mut app, &mut timers);
+        assert!(
+            health_round(&mut app, &mut timers).is_empty(),
+            "a spent slot does not come back on its own"
+        );
+
+        app.replace_entries(vec![TunnelEntry::new(
+            access("other", 15999),
+            TunnelStatus::Running,
+            TunnelKind::Managed,
+        )]);
+        assert_eq!(
+            health_round(&mut app, &mut timers).len(),
+            1,
+            "a name with no carried health is probed at once"
+        );
     }
 
     #[test]
@@ -552,7 +658,7 @@ mod tests {
             target: AccessTarget::Jump {
                 instance: "bastion".to_string(),
                 zone: "europe-west1-b".to_string(),
-                host: "10.3.0.13".to_string(),
+                host: "10.0.0.10".to_string(),
             },
             remote_port: 443,
             local_port: 8443,
@@ -1008,6 +1114,447 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    // A failed tunnel has one obvious next move. Giving it the only WARN in the
+    // footer makes it the loudest thing there without moving or reordering it.
+    #[test]
+    fn a_failed_tunnel_footer_leads_with_restart_in_the_warning_colour() {
+        use ratatui::style::Modifier;
+        let line = ui::footer_line(120, Some(TunnelStatus::Error), true);
+        let at = line
+            .spans
+            .iter()
+            .position(|s| s.content.as_ref() == "R")
+            .expect("a failed footer offers R");
+        let key = &line.spans[at];
+        assert_eq!(key.style.fg, Some(theme::WARN));
+        assert!(key.style.add_modifier.contains(Modifier::BOLD));
+        // key, one space, then the label
+        let label = &line.spans[at + 2];
+        assert_eq!(label.content.as_ref(), "restart");
+        assert_eq!(label.style.fg, Some(ratatui::style::Color::White));
+
+        let warn_spans = line
+            .spans
+            .iter()
+            .filter(|s| s.style.fg == Some(theme::WARN))
+            .count();
+        assert_eq!(warn_spans, 1, "only the lead action is loud");
+
+        let running = ui::footer_line(120, Some(TunnelStatus::Running), true);
+        assert!(
+            running
+                .spans
+                .iter()
+                .all(|s| s.style.fg != Some(theme::WARN)),
+            "a running tunnel has nothing to lead with"
+        );
+    }
+
+    // The way a failed tunnel is retried must survive the narrowest footer that
+    // still shows any contextual action.
+    #[test]
+    fn the_failed_footer_keeps_restart_first_at_forty_eight_columns() {
+        let text = line_text(&ui::footer_line(48, Some(TunnelStatus::Error), true));
+        assert!(text.trim_start().starts_with("R restart"), "{text:?}");
+    }
+
+    // A blank pane under a header reads as a render that failed. The footer
+    // already names `a` and `m`, so the row only has to say the list is empty.
+    #[test]
+    fn an_empty_account_says_so_under_the_list_header() {
+        let mut app = App::new("dev");
+        app.replace_entries(Vec::new());
+        let buffer = screen(&app, 120, 30);
+        let rows: Vec<String> = (0..30)
+            .map(|y| row_chars(&buffer, y).iter().collect())
+            .collect();
+        let title = rows
+            .iter()
+            .position(|r| r.contains("TUNNELS (0)"))
+            .expect("the pane title counts zero tunnels");
+        let header = title + 1;
+        assert!(rows[header].contains("NAME"), "{:?}", rows[header]);
+        let empty = &rows[header + 1];
+        assert!(empty.contains("no tunnels in this account"), "{empty:?}");
+        let x = find(&row_chars(&buffer, (header + 1) as u16), "no tunnels").unwrap();
+        assert_eq!(buffer[(x as u16, (header + 1) as u16)].fg, theme::MUTED);
+    }
+
+    fn list_body_row(app: &App, width: u16, height: u16) -> String {
+        let rows = text_of(&screen(app, width, height));
+        let title = rows
+            .iter()
+            .position(|r| r.contains("TUNNELS ("))
+            .expect("the pane title");
+        rows[title + 2].clone()
+    }
+
+    // An empty list before the first answer is not an empty account: claiming
+    // so is false for as long as the load takes, and for good if it failed
+    #[test]
+    fn a_list_that_has_not_loaded_says_loading_not_empty() {
+        let app = App::new("dev");
+        let row = list_body_row(&app, 120, 12);
+        assert!(row.contains("loading"), "{row:?}");
+        assert!(!row.contains("no tunnels"), "{row:?}");
+        let buffer = screen(&app, 120, 12);
+        let y = text_of(&buffer)
+            .iter()
+            .position(|r| r.contains("loading"))
+            .unwrap() as u16;
+        let x = find(&row_chars(&buffer, y), "loading").unwrap() as u16;
+        assert_eq!(buffer[(x, y)].fg, theme::MUTED);
+    }
+
+    #[test]
+    fn the_first_answer_turns_loading_into_the_empty_row() {
+        let mut app = App::new("dev");
+        app.replace_entries(Vec::new());
+        assert!(app.loaded);
+        assert!(list_body_row(&app, 120, 12).contains("no tunnels in this account"));
+    }
+
+    #[test]
+    fn cycling_accounts_goes_back_to_loading_until_the_new_list_arrives() {
+        let mut app = keymap_fixture();
+        app.loaded = true;
+        app.handle_key(key(KeyCode::Char(';')));
+        assert!(!app.loaded);
+        assert!(list_body_row(&app, 120, 12).contains("loading"));
+    }
+
+    #[test]
+    fn the_demo_is_always_loaded() {
+        let mut app = App::new_demo();
+        assert!(app.loaded);
+        app.handle_key(key(KeyCode::Char(';')));
+        assert!(app.loaded, "the demo carries its own data across accounts");
+    }
+
+    #[test]
+    fn a_failed_load_reaches_the_status_line_and_leaves_the_list_loading() {
+        let mut app = App::new("dev");
+        app.load_failed("tunnels.toml is not valid");
+        let status = app.status.clone().expect("a status message");
+        assert!(status.contains("tunnels.toml is not valid"), "{status}");
+        assert!(app.status_error, "a failure must be marked");
+        assert!(!app.loaded, "a failed load is not an answer");
+    }
+
+    // The footer and the help page are two views of one table. A footer action
+    // with no row in it, or a different word for the same key, is the drift the
+    // table exists to prevent.
+    #[test]
+    fn every_footer_action_is_in_the_keymap_under_the_same_label() {
+        let states = [
+            (Some(TunnelStatus::Running), true),
+            (Some(TunnelStatus::Stopped), true),
+            (Some(TunnelStatus::Error), true),
+            (None, false),
+        ];
+        for (selected, any) in states {
+            let (contextual, program) = ui::footer_groups(selected, any);
+            for action in contextual.iter().chain(program) {
+                let doc = ui::KEYMAP
+                    .iter()
+                    .find(|d| d.key == action.key)
+                    .unwrap_or_else(|| panic!("{} is on the footer but not in KEYMAP", action.key));
+                assert_eq!(doc.footer, Some(action.label), "key {}", action.key);
+            }
+        }
+    }
+
+    // What a key does, as far as the app can say without a terminal: any of
+    // these moving is an effect. `Esc` and `Ctrl+Z` are not Normal-mode keys and
+    // get their own checks below.
+    fn footprint(app: &App, op: &Option<Op>) -> String {
+        format!(
+            "{:?}",
+            (
+                app.selected,
+                app.input_mode,
+                app.should_quit,
+                app.suspend,
+                &app.status,
+                app.force_refresh,
+                &app.account,
+                app.entries.get(1).map(|e| e.health),
+                app.spinner.is_running(),
+                op.is_some(),
+            )
+        )
+    }
+
+    fn keymap_fixture() -> App {
+        let mut app = App::new("dev");
+        app.accounts = vec!["dev".to_string(), "prod".to_string()];
+        app.entries = vec![
+            TunnelEntry::new(
+                access("db", 15432),
+                TunnelStatus::Running,
+                TunnelKind::Managed,
+            ),
+            TunnelEntry::new(
+                access("cache", 16379),
+                TunnelStatus::Running,
+                TunnelKind::Managed,
+            ),
+            TunnelEntry::new(
+                access("queue", 15672),
+                TunnelStatus::Running,
+                TunnelKind::Managed,
+            ),
+        ];
+        app.entries[1].health = HealthStatus::Healthy;
+        app.selected = 1;
+        app
+    }
+
+    // A help page that lists a key nothing handles is worse than none. `c` and
+    // `o` are the two keys whose only effect is outside the process, on the
+    // clipboard and the browser, so a test that pressed them would do both on
+    // the machine running it, and they act on any selected entry, an unmanaged
+    // one included, so no fixture avoids both; they are checked for being in the
+    // table and for doing nothing when there is no selection.
+    #[test]
+    fn every_key_the_help_page_lists_is_handled() {
+        const OUTSIDE_THE_PROCESS: [&str; 2] = ["c", "o"];
+        for doc in ui::KEYMAP {
+            if doc.key == "Esc" {
+                let mut app = keymap_fixture();
+                app.input_mode = InputMode::Help;
+                app.handle_key(key(KeyCode::Esc));
+                assert_eq!(app.input_mode, InputMode::Normal, "Esc closes help");
+                continue;
+            }
+            if doc.key == "Ctrl+C" {
+                let mut app = keymap_fixture();
+                app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+                assert!(app.should_quit, "Ctrl+C quits");
+                continue;
+            }
+            if doc.key == "Ctrl+Z" {
+                let mut app = keymap_fixture();
+                app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
+                assert!(app.suspend, "Ctrl+Z suspends");
+                continue;
+            }
+            if OUTSIDE_THE_PROCESS.contains(&doc.key) {
+                let mut app = App::new("dev");
+                assert!(app
+                    .handle_key(key(KeyCode::Char(doc.key.chars().next().unwrap())))
+                    .is_none());
+                continue;
+            }
+            let codes: Vec<KeyCode> = doc
+                .key
+                .split('/')
+                .map(|part| match part {
+                    "up" => KeyCode::Up,
+                    "down" => KeyCode::Down,
+                    one => KeyCode::Char(one.chars().next().unwrap()),
+                })
+                .collect();
+            for code in codes {
+                let mut app = keymap_fixture();
+                let before = footprint(&app, &None);
+                let op = app.handle_key(key(code));
+                assert_ne!(
+                    before,
+                    footprint(&app, &op),
+                    "{} ({code:?}) is listed but changes nothing",
+                    doc.key
+                );
+            }
+        }
+    }
+
+    fn help_app() -> App {
+        let mut app = app_with_two();
+        app.input_mode = InputMode::Help;
+        app
+    }
+
+    #[test]
+    fn the_footer_never_shows_more_than_the_board_says_it_does() {
+        assert_eq!(ui::footer_most(), 8);
+    }
+
+    #[test]
+    fn a_wide_terminal_lays_the_help_page_out_in_two_columns() {
+        let rows = text_of(&screen(&help_app(), 120, 40));
+        let both = rows
+            .iter()
+            .find(|r| r.contains("THIS TUNNEL'S URL AND LOG"))
+            .expect("the url and log group has a heading");
+        assert!(
+            both.contains("TUNNEL "),
+            "the first group shares its row: {both:?}"
+        );
+        for heading in [
+            "TUNNEL ",
+            "THE LIST",
+            "THIS TUNNEL'S URL AND LOG",
+            "THE PROGRAM",
+        ] {
+            assert!(rows.iter().any(|r| r.contains(heading)), "{heading}");
+        }
+        let all = rows.join("\n");
+        for doc in ui::KEYMAP {
+            assert!(
+                all.contains(doc.label),
+                "{} is missing: {}",
+                doc.key,
+                doc.label
+            );
+        }
+        assert!(all.contains("Case is load-bearing"), "the case note");
+        assert!(all.contains("Metrics every 5s"), "the cadence lines");
+        // Literal on purpose: re-deriving the figure from the table would pass
+        // for any table, and this one has to change when a key is added
+        let count_row = rows
+            .iter()
+            .find(|r| r.contains("23 keys bound - the footer shows at most 8"))
+            .expect("the count line");
+        // In this page `q` closes the page, it does not quit the program
+        assert!(count_row.contains("Esc back  q back"), "{count_row:?}");
+        assert!(!count_row.contains("q quit"), "{count_row:?}");
+    }
+
+    #[test]
+    fn a_narrow_terminal_lays_the_help_page_out_in_one_column() {
+        let buffer = screen(&help_app(), 60, 24);
+        let rows = text_of(&buffer);
+        let at = |needle: &str| {
+            rows.iter()
+                .enumerate()
+                .find_map(|(y, r)| r.find(needle).map(|x| (y, r[..x].chars().count())))
+        };
+        let (tunnel_y, tunnel_x) = at("TUNNEL ").expect("first heading");
+        let (list_y, list_x) = at("THE LIST").expect("second heading");
+        assert_eq!(tunnel_x, list_x, "one column: headings share a left edge");
+        assert!(list_y > tunnel_y);
+        assert!(
+            at("THIS TUNNEL'S URL AND LOG").is_none_or(|(y, _)| y > list_y),
+            "the url group is below, not beside"
+        );
+        assert!(
+            rows.iter().any(|r| r.contains("Esc back")),
+            "Esc survives the truncation:\n{}",
+            rows.join("\n")
+        );
+    }
+
+    #[test]
+    fn the_help_page_never_panics_and_keeps_every_row_in_the_terminal() {
+        for (width, height) in [(1, 1), (10, 4), (20, 8), (40, 12), (60, 24), (120, 40)] {
+            screen(&help_app(), width, height);
+        }
+        // Where the labels fit, no laid-out row is wider than the frame's inside
+        for (width, height) in [(60, 24), (80, 24), (120, 40)] {
+            let inner = ui::help_inner_width(width);
+            for line in ui::help_lines(inner, height as usize - 4) {
+                let text = line_text(&line);
+                assert!(
+                    text.chars().count() <= inner,
+                    "{width}x{height}: {text:?} is wider than {inner}"
+                );
+            }
+        }
+    }
+
+    // The threshold is where a right-hand row used to be clipped: a column has to
+    // hold the longest key row, and the gap has to survive between the columns.
+    #[test]
+    fn no_help_row_is_wider_than_its_column_at_the_threshold_or_one_above() {
+        for inner in [
+            ui::HELP_TWO_COLUMNS - 1,
+            ui::HELP_TWO_COLUMNS,
+            ui::HELP_TWO_COLUMNS + 1,
+        ] {
+            let rows: Vec<Vec<char>> = ui::help_lines(inner, 40)
+                .iter()
+                .map(|l| line_text(l).chars().collect())
+                .collect();
+            let column = (inner - 4) / 2;
+            for row in &rows {
+                let text: String = row.iter().collect();
+                assert!(row.len() <= inner, "inner {inner}: {text:?} overflows");
+                // The cadence lines and the footer span the page, not a column
+                let spans_page = ["Metrics every", "A tunnel going"]
+                    .iter()
+                    .any(|lead| text.starts_with(lead))
+                    || text.contains("keys bound");
+                if inner >= ui::HELP_TWO_COLUMNS && row.len() > column && !spans_page {
+                    assert!(
+                        row[column..(column + 4).min(row.len())]
+                            .iter()
+                            .all(|c| *c == ' '),
+                        "inner {inner}: the left column runs into the gap: {text:?}"
+                    );
+                }
+            }
+        }
+        // And on a real screen: 98 and 99 cells are one column, 100 and 101 two
+        for width in [98u16, 99, 100, 101] {
+            let inner = ui::help_inner_width(width);
+            for line in ui::help_lines(inner, 40) {
+                assert!(line_text(&line).chars().count() <= inner, "{width}");
+            }
+        }
+    }
+
+    // Keys the page shows, found by their row (key cell then label) so a label
+    // that happens to occur elsewhere cannot count
+    fn keys_shown(rows: &[String]) -> usize {
+        ui::KEYMAP
+            .iter()
+            .filter(|d| {
+                let row = format!("{:<8}{}", d.key, d.label);
+                rows.iter().any(|r| r.contains(&row))
+            })
+            .map(|d| d.key.split('/').count())
+            .sum()
+    }
+
+    // Cutting rows silently left a reader at 80x24 unable to tell a page from
+    // its truncation. The last body row says how many keys are not shown.
+    #[test]
+    fn a_page_that_cuts_keys_says_how_many() {
+        let buffer = screen(&help_app(), 80, 24);
+        let rows = text_of(&buffer);
+        let at = rows
+            .iter()
+            .position(|r| r.contains("more keys - enlarge the terminal"))
+            .unwrap_or_else(|| panic!("no cut notice:\n{}", rows.join("\n")));
+        assert!(rows[at + 1]
+            .trim_matches(|c| c == ' ' || c == '\u{2502}')
+            .is_empty());
+        assert!(rows[at + 2].contains("23 keys bound"), "{:?}", rows[at + 2]);
+        let n: usize = rows[at]
+            .split_whitespace()
+            .find_map(|w| w.parse().ok())
+            .expect("a count");
+        assert!(n > 0);
+        assert_eq!(n + keys_shown(&rows), 23, "{}", rows.join("\n"));
+        let x = find(&row_chars(&buffer, at as u16), "more keys").unwrap() as u16;
+        assert_eq!(buffer[(x, at as u16)].fg, theme::MUTED);
+        assert!(rows.iter().any(|r| r.contains("Esc back")));
+    }
+
+    #[test]
+    fn a_page_that_fits_says_nothing_about_cuts() {
+        for (w, h) in [(120, 40), (80, 60)] {
+            let rows = text_of(&screen(&help_app(), w, h));
+            assert!(
+                !rows.iter().any(|r| r.contains("more keys")),
+                "{w}x{h}:\n{}",
+                rows.join("\n")
+            );
+            assert_eq!(keys_shown(&rows), 23, "{w}x{h}");
         }
     }
 
@@ -1931,12 +2478,12 @@ mod tests {
     #[test]
     fn the_add_dialog_asks_what_the_instance_reaches() {
         let mut app = App::new_demo();
-        app.draft.instance = "private-cluster-bastion".to_string();
+        app.draft.instance = "bastion".to_string();
         app.draft.zone = "europe-west1-b".to_string();
         app.input_mode = InputMode::AddJumpHost;
-        app.input = "10.3.0.13".to_string();
+        app.input = "10.0.0.10".to_string();
         assert_eq!(app.handle_key(key(KeyCode::Enter)), None);
-        assert_eq!(app.draft.host, "10.3.0.13");
+        assert_eq!(app.draft.host, "10.0.0.10");
         assert_eq!(app.input_mode, InputMode::AddRemotePort);
     }
 
@@ -1945,21 +2492,18 @@ mod tests {
     #[test]
     fn a_draft_with_a_host_is_created_through_its_instance() {
         let mut draft = NewTunnel {
-            instance: "private-cluster-bastion".to_string(),
+            instance: "bastion".to_string(),
             remote_port: 443,
             ..Default::default()
         };
         assert_eq!(
             ops::add_arguments(&draft),
-            ("private-cluster-bastion:443".to_string(), None)
+            ("bastion:443".to_string(), None)
         );
-        draft.host = "10.3.0.13".to_string();
+        draft.host = "10.0.0.10".to_string();
         assert_eq!(
             ops::add_arguments(&draft),
-            (
-                "10.3.0.13:443".to_string(),
-                Some("private-cluster-bastion".to_string())
-            )
+            ("10.0.0.10:443".to_string(), Some("bastion".to_string()))
         );
     }
 

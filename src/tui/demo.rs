@@ -176,6 +176,7 @@ impl App {
     // been one. `;` calls this, so cycling accounts keeps the screen filled
     pub fn load_demo_account(&mut self) {
         let staging = self.account == "staging";
+        self.loaded = true;
         self.entries = if staging {
             staging_entries()
         } else {

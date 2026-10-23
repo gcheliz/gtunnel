@@ -55,6 +55,11 @@ GCP relay in place of Cloudflare Tunnel.
   two-row filled field, so the project a key will act on is on screen. `;` switches both
   together. A long project id is cut with a `…` before the account name is ever shortened,
   and an account with no project shows the name alone.
+- **Keymap page and states** - `?` opens every bound key in four groups, two columns when
+  the terminal is wide and one when it is not, with a note on the three case-sensitive
+  pairs. A failed tunnel's footer leads with `R restart` in the warning colour, and an
+  empty account says `no tunnels in this account` under the list header, and `loading`
+  until its first load has answered. A page that has to cut keys says how many.
 - **Health notifications** - a tunnel going unhealthy raises a system notification.
 - **`gtunnel demo`** - the whole dashboard filled with synthetic data, touching no GCP
   project and no config file.

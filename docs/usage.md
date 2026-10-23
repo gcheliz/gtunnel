@@ -68,17 +68,25 @@ Error: gtunnel needs a logged-in Google account for 'prod'. Run `gcloud auth log
 `gtunnel` with no subcommand opens the TUI. `gtunnel demo` opens it filled with synthetic
 data and never touches GCP or a config file.
 
-| Key | Action | Key | Action |
-|---|---|---|---|
-| `j` `k` arrows | Move | `a` | Add a tunnel |
-| `s` | Start | `e` | Edit the selected tunnel |
-| `S` | Stop | `d` | Delete |
-| `R` | Restart | `A` | Toggle auto-start |
-| `r` | Refresh now | `c` | Copy the URL |
-| `;` | Next account | `o` | Open the URL |
-| `m` | Import an unmanaged run | `h` | Health check now |
-| `L` | Clear this tunnel's log | | |
-| `?` | Help | `q` | Quit |
+`?` opens the full keymap, in the same four groups:
+
+| Group | Keys |
+|---|---|
+| Tunnel | `s` start, `S` stop, `R` restart, `A` toggle auto-start, `h` health check now |
+| The list | `a` add, `e` edit, `d` delete, `m` import an ephemeral run as managed, `j` `k` or the arrows move the selection |
+| This tunnel's URL and log | `c` copy the URL, `o` open it, `L` clear the log, `r` refresh the list, metrics and health |
+| The program | `;` cycle accounts, `?` the keymap, `q` quit, `Esc` close a page or cancel a prompt, `Ctrl+Z` suspend, `Ctrl+C` quit from anywhere |
+
+Case matters in three pairs: `s`/`S` start and stop, `a`/`A` add and auto-start, `r`/`R`
+refresh and restart. The footer shows only what the selected tunnel can do, so it never has
+both halves of a pair on screen; the keymap page states the difference. When the selected
+tunnel has failed, `R restart` leads the footer in the warning colour. An account with no
+tunnels shows `no tunnels in this account` under the list header, and the footer offers `a`
+and `m`; until the first load has answered, and after `;` until the new account's has, the
+row says `loading` instead, and a load that fails puts its error on the status line. The
+keymap page is two columns from 92 cells inside its frame and one below that; on a short
+terminal it drops its notes and then its last rows, ends the rows with `N more keys -
+enlarge the terminal` when keys were cut, and never drops the `Esc back  q back` line.
 
 The header's right edge is the account field: the account name over its GCP project id, on
 the same two rows as the logo. `;` switches both at once. When the terminal narrows, the

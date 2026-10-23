@@ -275,6 +275,9 @@ pub struct App {
     // name, with no second piece of state to fall out of step
     pub projects: HashMap<String, String>,
     pub entries: Vec<TunnelEntry>,
+    // False until a load has answered for this account. An empty list means
+    // nothing before that, so the pane must not claim the account is empty
+    pub loaded: bool,
     pub selected: usize,
     pub logs: Vec<String>,
     pub status: Option<String>,
@@ -296,6 +299,10 @@ pub struct App {
     pub want_instances: bool,
     // Set by `r`, cleared once the event loop has rescheduled every timer
     pub force_refresh: bool,
+    // An entry arrived with no health to carry, so the next round is owed one
+    // whatever the clock says. Startup and `;` both land here: the list is
+    // replaced wholesale and nothing in it has been probed.
+    pub health_stale: bool,
     // The demo carries its own data and has no runtime to reload it from
     pub demo: bool,
 }
@@ -307,6 +314,7 @@ impl App {
             accounts: vec![initial_account.to_string()],
             projects: HashMap::new(),
             entries: Vec::new(),
+            loaded: false,
             selected: 0,
             logs: Vec::new(),
             status: None,
@@ -325,6 +333,7 @@ impl App {
             has_relay: false,
             want_instances: false,
             force_refresh: false,
+            health_stale: false,
             demo: false,
         }
     }
@@ -351,6 +360,15 @@ impl App {
     pub fn set_status(&mut self, message: impl Into<String>) {
         self.status = Some(message.into());
         self.status_error = false;
+    }
+
+    /// A load that errored leaves `loaded` as it was: the list is still not an
+    /// answer, and the timer asks again. The error goes to the status line,
+    /// where the next successful operation replaces it, because dropping it left
+    /// a broken `tunnels.toml` looking like an empty account.
+    pub fn load_failed(&mut self, error: &str) {
+        self.set_status(format!("could not load tunnels: {error}"));
+        self.status_error = true;
     }
 
     fn move_selection(&mut self, delta: isize) {
@@ -398,6 +416,8 @@ impl App {
         self.account = self.accounts[next].clone();
         self.selected = 0;
         self.entries.clear();
+        // The old account's answer says nothing about the new one's
+        self.loaded = false;
         self.logs.clear();
         // The demo has no runtime behind it, so a refresh would leave the
         // screen empty: it swaps in the next account's synthetic data instead
@@ -823,15 +843,21 @@ impl App {
 
     // Keeps the selection on the same tunnel across a reload
     pub fn replace_entries(&mut self, entries: Vec<TunnelEntry>) {
+        self.loaded = true;
         let selected_name = self.selected_entry().map(|e| e.name().to_string());
         let carried = std::mem::take(&mut self.entries);
         self.entries = entries
             .into_iter()
             .map(|mut entry| {
-                if let Some(old) = carried.iter().find(|o| o.name() == entry.name()) {
-                    entry.history = old.history.clone();
-                    entry.health = old.health;
-                    entry.metrics = old.metrics.clone();
+                match carried.iter().find(|o| o.name() == entry.name()) {
+                    Some(old) => {
+                        entry.history = old.history.clone();
+                        entry.health = old.health;
+                        entry.metrics = old.metrics.clone();
+                    }
+                    // Nothing to carry: this row has never been probed, and
+                    // waiting out the period would leave it reading `?`
+                    None => self.health_stale = true,
                 }
                 entry
             })

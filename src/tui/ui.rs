@@ -322,11 +322,171 @@ pub fn header_height(width: u16, height: u16, account: &str, project: &str) -> u
     }
 }
 
-/// One key and what it does. The footer and the `?` overlay draw the same
-/// shape, so they cannot drift apart.
+/// Where a key is listed on the help page. The four headings are the design's,
+/// so a key's group says what it acts on rather than how it is typed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Group {
+    Tunnel,
+    List,
+    UrlAndLog,
+    Program,
+}
+
+impl Group {
+    /// The order the help page stacks the groups in. Spelled out beside the enum
+    /// and not derived from it, because the page's reading order is a design
+    /// choice and a new variant should have to be placed on purpose.
+    pub const ALL: [Group; 4] = [Group::Tunnel, Group::List, Group::UrlAndLog, Group::Program];
+
+    /// The heading as the design sets it: upper case and phrased as what the
+    /// group acts on, so the page reads as a list of objects and not of verbs.
+    pub fn heading(self) -> &'static str {
+        match self {
+            Group::Tunnel => "TUNNEL",
+            Group::List => "THE LIST",
+            Group::UrlAndLog => "THIS TUNNEL'S URL AND LOG",
+            Group::Program => "THE PROGRAM",
+        }
+    }
+}
+
+/// One bound key. `label` is the sentence the help page prints; `footer` is the
+/// word the footer prints beside it, or `None` for a key the footer never has
+/// room for. They differ because a footer has to fit eight actions on a line and
+/// a page does not, but both live here so neither can name a key the other has
+/// never heard of.
+pub struct KeyDoc {
+    pub key: &'static str,
+    pub label: &'static str,
+    pub footer: Option<&'static str>,
+    pub group: Group,
+}
+
+const fn doc(
+    key: &'static str,
+    footer: Option<&'static str>,
+    label: &'static str,
+    group: Group,
+) -> KeyDoc {
+    KeyDoc {
+        key,
+        label,
+        footer,
+        group,
+    }
+}
+
+/// Every key `handle_key` binds, in the order the help page prints them. A test
+/// presses each one, so a row here that nothing handles fails the build rather
+/// than shipping on the help page.
+pub const KEYMAP: &[KeyDoc] = &[
+    doc(
+        "s",
+        Some("start"),
+        "start the selected tunnel",
+        Group::Tunnel,
+    ),
+    doc("S", Some("stop"), "stop it", Group::Tunnel),
+    doc(
+        "R",
+        Some("restart"),
+        "restart it (rewrites the service)",
+        Group::Tunnel,
+    ),
+    doc(
+        "A",
+        Some("auto"),
+        "toggle auto-start at login",
+        Group::Tunnel,
+    ),
+    doc("h", None, "force a health check now", Group::Tunnel),
+    doc("a", Some("add a tunnel"), "add a tunnel", Group::List),
+    doc("e", Some("edit"), "edit the selected one", Group::List),
+    doc("d", Some("delete"), "delete it", Group::List),
+    doc(
+        "m",
+        Some("import"),
+        "import an ephemeral run as managed",
+        Group::List,
+    ),
+    doc("up/k", None, "move the selection up", Group::List),
+    doc("down/j", None, "move the selection down", Group::List),
+    doc("c", Some("copy"), "copy the tunnel URL", Group::UrlAndLog),
+    doc("o", Some("open"), "open it in a browser", Group::UrlAndLog),
+    doc(
+        "L",
+        Some("clear log"),
+        "clear this tunnel's log",
+        Group::UrlAndLog,
+    ),
+    doc(
+        "r",
+        None,
+        "refresh the list, metrics and health",
+        Group::UrlAndLog,
+    ),
+    doc(";", Some("account"), "cycle accounts", Group::Program),
+    doc("?", Some("keys"), "this page", Group::Program),
+    doc("q", Some("quit"), "quit", Group::Program),
+    doc(
+        "Esc",
+        None,
+        "close this, or cancel a prompt",
+        Group::Program,
+    ),
+    doc("Ctrl+Z", None, "suspend to the shell", Group::Program),
+    // The one key that quits from inside a prompt, where `q` is just a letter
+    doc("Ctrl+C", None, "quit from anywhere", Group::Program),
+];
+
+/// One key and the word beside it in the footer.
 pub struct Action {
     pub key: &'static str,
     pub label: &'static str,
+    /// The one action the state is asking for. It is drawn in the warning
+    /// colour so the next move is the loudest thing on the line.
+    pub lead: bool,
+}
+
+const fn same(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+impl Action {
+    /// Looked up in `KEYMAP` at compile time, so a footer that names a key the
+    /// table does not have, or one with no footer word, does not build.
+    const fn of(key: &'static str) -> Self {
+        let mut i = 0;
+        while i < KEYMAP.len() {
+            if same(KEYMAP[i].key, key) {
+                return match KEYMAP[i].footer {
+                    Some(label) => Action {
+                        key: KEYMAP[i].key,
+                        label,
+                        lead: false,
+                    },
+                    None => panic!("a footer action needs a footer label in KEYMAP"),
+                };
+            }
+            i += 1;
+        }
+        panic!("a footer action must be a KEYMAP key")
+    }
+
+    const fn lead(self) -> Self {
+        Action { lead: true, ..self }
+    }
 }
 
 // The old footer printed all fourteen keys at once, which needed 124 cells and
@@ -336,92 +496,47 @@ pub struct Action {
 // trap rather than annotating it — the two halves of a pair are never on
 // screen together, because a tunnel cannot be both running and stopped.
 const ACTIONS_RUNNING: &[Action] = &[
-    Action {
-        key: "S",
-        label: "stop",
-    },
-    Action {
-        key: "R",
-        label: "restart",
-    },
-    Action {
-        key: "c",
-        label: "copy",
-    },
-    Action {
-        key: "o",
-        label: "open",
-    },
-    Action {
-        key: "L",
-        label: "clear log",
-    },
+    Action::of("S"),
+    Action::of("R"),
+    Action::of("c"),
+    Action::of("o"),
+    Action::of("L"),
 ];
 
 const ACTIONS_STOPPED: &[Action] = &[
-    Action {
-        key: "s",
-        label: "start",
-    },
-    Action {
-        key: "e",
-        label: "edit",
-    },
-    Action {
-        key: "d",
-        label: "delete",
-    },
-    Action {
-        key: "A",
-        label: "auto",
-    },
+    Action::of("s"),
+    Action::of("e"),
+    Action::of("d"),
+    Action::of("A"),
 ];
 
 const ACTIONS_ERROR: &[Action] = &[
-    Action {
-        key: "R",
-        label: "restart",
-    },
-    Action {
-        key: "e",
-        label: "edit",
-    },
-    Action {
-        key: "d",
-        label: "delete",
-    },
-    Action {
-        key: "L",
-        label: "clear log",
-    },
+    Action::of("R").lead(),
+    Action::of("e"),
+    Action::of("d"),
+    Action::of("L"),
 ];
 
-const ACTIONS_EMPTY: &[Action] = &[
-    Action {
-        key: "a",
-        label: "add a tunnel",
-    },
-    Action {
-        key: "m",
-        label: "import",
-    },
-];
+const ACTIONS_EMPTY: &[Action] = &[Action::of("a"), Action::of("m")];
 
 /// Always available, always flush right, and the last thing to shed.
-const ACTIONS_PROGRAM: &[Action] = &[
-    Action {
-        key: ";",
-        label: "account",
-    },
-    Action {
-        key: "?",
-        label: "keys",
-    },
-    Action {
-        key: "q",
-        label: "quit",
-    },
-];
+const ACTIONS_PROGRAM: &[Action] = &[Action::of(";"), Action::of("?"), Action::of("q")];
+
+/// The most actions the footer ever shows at once, for the help page's count
+/// line. Computed so a new action cannot leave the sentence wrong.
+pub fn footer_most() -> usize {
+    [
+        ACTIONS_RUNNING,
+        ACTIONS_STOPPED,
+        ACTIONS_ERROR,
+        ACTIONS_EMPTY,
+    ]
+    .iter()
+    .map(|set| set.len())
+    .max()
+    .unwrap_or(0)
+        + ACTIONS_PROGRAM.len()
+}
 
 /// Draw a pane and return the rectangle its contents go in.
 ///
@@ -654,6 +769,20 @@ fn render_tunnels(f: &mut Frame, app: &App, area: Rect) {
         mode = MODE_CELLS,
     );
     f.render_widget(Paragraph::new(Span::styled(header, muted)), parts[0]);
+
+    // The header alone over a blank pane reads as a draw that failed. The footer
+    // already offers `a` and `m`, so the row only has to say the list is empty,
+    // and only once a load has said so: before that, or after one that failed,
+    // an empty list is just a list nothing has filled yet.
+    if app.entries.is_empty() {
+        let row = if app.loaded {
+            "no tunnels in this account"
+        } else {
+            "loading"
+        };
+        f.render_widget(Paragraph::new(Span::styled(row, muted)), parts[1]);
+        return;
+    }
 
     let items: Vec<ListItem> = app
         .entries
@@ -1300,16 +1429,21 @@ fn group_spans(actions: &[Action], out: &mut Vec<Span<'static>>) {
         if i > 0 {
             out.push(Span::raw("  "));
         }
+        // A lead action trades the accent for the warning colour and its label
+        // for white, which is what makes it read as the thing to press
+        let (key_colour, label_colour) = if action.lead {
+            (theme::WARN, Color::White)
+        } else {
+            (theme::ACCENT, theme::LABEL)
+        };
         out.push(Span::styled(
             action.key,
-            Style::default()
-                .fg(theme::ACCENT)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(key_colour).add_modifier(Modifier::BOLD),
         ));
         out.push(Span::raw(" "));
         out.push(Span::styled(
             action.label,
-            Style::default().fg(theme::LABEL),
+            Style::default().fg(label_colour),
         ));
     }
 }
@@ -1387,80 +1521,269 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
         .split(vertical[1])[1]
 }
 
-const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
-    (
-        "NAVIGATION",
-        &[
-            ("up/k", "Move selection up"),
-            ("down/j", "Move selection down"),
-            (";", "Cycle through accounts"),
-            ("q", "Quit gtunnel"),
-            ("Ctrl+Z", "Suspend"),
-        ],
-    ),
-    (
-        "TUNNELS",
-        &[
-            ("a", "Add a tunnel"),
-            ("e", "Edit tunnel (target and zone)"),
-            ("s", "Start selected tunnel"),
-            ("S", "Stop selected tunnel"),
-            ("R", "Restart tunnel (rewrites the service)"),
-            ("d", "Delete selected tunnel"),
-            ("m", "Import an ephemeral run as managed"),
-            ("A", "Toggle auto-start on login (⟳ = enabled)"),
-        ],
-    ),
-    (
-        "INSPECT",
-        &[
-            ("c", "Copy tunnel URL to clipboard"),
-            ("o", "Open tunnel URL in browser"),
-            ("h", "Check tunnel health now"),
-            ("L", "Clear this tunnel's log"),
-            ("r", "Refresh list, metrics and health"),
-        ],
-    ),
-];
+/// Inside the modal, the width from which the page lays out in two columns. A
+/// column is `(width - gap) / 2` and has to hold the key cell and the longest
+/// label, `refresh the list, metrics and health` at 44 cells in all, so 88 plus
+/// the gap is the least that clips nothing; a test holds the figure to it.
+pub const HELP_TWO_COLUMNS: usize = 92;
+/// The key column's width: `Ctrl+Z` and `down/j` are the widest keys.
+const HELP_KEY_CELLS: usize = 8;
+const HELP_GAP: usize = 4;
+
+const CASE_NOTE: &str = "Case is load-bearing in three places: s/S start and stop, a/A add and auto-start, r/R refresh and restart. The footer only ever shows one of each pair, so the collision cannot bite there - this page is where it has to be stated.";
+
+/// How many keys are bound, counting `up/k` as the two keys it is. Counted
+/// from the table, because a figure typed into a sentence is wrong by the next
+/// key.
+fn keys_bound() -> usize {
+    KEYMAP.iter().map(|d| d.key.split('/').count()).sum()
+}
+
+fn help_heading(group: Group) -> Line<'static> {
+    Line::styled(
+        group.heading(),
+        Style::default()
+            .fg(theme::MUTED)
+            .add_modifier(Modifier::BOLD),
+    )
+}
+
+fn help_row(doc: &KeyDoc) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            format!("{:<width$}", doc.key, width = HELP_KEY_CELLS),
+            Style::default()
+                .fg(theme::ACCENT)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(doc.label, Style::default().fg(theme::LABEL)),
+    ])
+}
+
+/// A laid-out row and how many keys it shows, so a cut can say how many keys
+/// went with it without reading them back out of styled text.
+type HelpRow = (Line<'static>, usize);
+
+/// One group as rows: its heading, then a row per key.
+fn help_group(group: Group) -> Vec<HelpRow> {
+    let mut rows = vec![(help_heading(group), 0)];
+    rows.extend(
+        KEYMAP
+            .iter()
+            .filter(|d| d.group == group)
+            .map(|d| (help_row(d), d.key.split('/').count())),
+    );
+    rows
+}
+
+/// Groups stacked with a blank row between them.
+fn help_stack(groups: &[Group]) -> Vec<HelpRow> {
+    let mut rows = Vec::new();
+    for (i, group) in groups.iter().enumerate() {
+        if i > 0 {
+            rows.push((Line::raw(""), 0));
+        }
+        rows.extend(help_group(*group));
+    }
+    rows
+}
+
+fn help_note(width: usize) -> Vec<Line<'static>> {
+    wrap_words(CASE_NOTE, width)
+        .into_iter()
+        .map(|row| Line::styled(row, Style::default().fg(theme::LABEL)))
+        .collect()
+}
+
+/// The last row of the page: what the page counts on the left, how to leave on
+/// the right. It falls to two rows when one cannot hold both, because the way
+/// out matters more than sitting beside the count.
+fn help_footer(width: usize) -> Vec<Line<'static>> {
+    let count = format!(
+        "{} keys bound - the footer shows at most {}",
+        keys_bound(),
+        footer_most()
+    );
+    let leave = |out: &mut Vec<Span<'static>>| {
+        // `q` only closes the page here, so the page does not offer it as quit
+        for (i, (key, label)) in [("Esc", "back"), ("q", "back")].into_iter().enumerate() {
+            if i > 0 {
+                out.push(Span::raw("  "));
+            }
+            out.push(Span::styled(
+                key,
+                Style::default()
+                    .fg(theme::ACCENT)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            out.push(Span::raw(" "));
+            out.push(Span::styled(label, Style::default().fg(theme::LABEL)));
+        }
+    };
+    let leave_cells = "Esc back  q back".chars().count();
+    let count_span = Span::styled(count.clone(), Style::default().fg(theme::MUTED));
+    let mut keys = Vec::new();
+    leave(&mut keys);
+    if count.chars().count() + 2 + leave_cells <= width {
+        let pad = width - count.chars().count() - leave_cells;
+        let mut row = vec![count_span, Span::raw(" ".repeat(pad))];
+        row.extend(keys);
+        vec![Line::from(row)]
+    } else {
+        vec![Line::from(count_span), Line::from(keys)]
+    }
+}
+
+fn help_cadence() -> Vec<Line<'static>> {
+    let muted = Style::default().fg(theme::MUTED);
+    vec![
+        Line::styled(
+            format!(
+                "Metrics every 5s, health every 30s, load balancer traffic every 60s ({LB_WINDOW_MINUTES}m window)"
+            ),
+            muted,
+        ),
+        Line::styled(
+            "A tunnel going unhealthy raises a system notification",
+            muted,
+        ),
+    ]
+}
+
+/// Two stacks side by side, the left one padded to its column so the right
+/// starts at the same cell on every row.
+fn help_columns(left: Vec<HelpRow>, right: Vec<HelpRow>, column: usize) -> Vec<HelpRow> {
+    let rows = left.len().max(right.len());
+    (0..rows)
+        .map(|i| {
+            let mut spans = left
+                .get(i)
+                .map(|(l, _)| l.spans.clone())
+                .unwrap_or_default();
+            let used = row_cells(&spans);
+            spans.push(Span::raw(
+                " ".repeat((column + HELP_GAP).saturating_sub(used)),
+            ));
+            spans.extend(
+                right
+                    .get(i)
+                    .map(|(l, _)| l.spans.clone())
+                    .unwrap_or_default(),
+            );
+            let keys = left.get(i).map_or(0, |r| r.1) + right.get(i).map_or(0, |r| r.1);
+            (Line::from(spans), keys)
+        })
+        .collect()
+}
+
+/// The keymap page, laid out from `KEYMAP`.
+///
+/// What it gives up when the terminal is short, in order: the cadence lines,
+/// the case note, then rows from the bottom of the groups. The `Esc back` row
+/// is never on the list, since a page that cannot be closed by reading it has
+/// failed at the one thing it is for. Rows cut from the groups are not cut
+/// silently: the last body row counts the keys that went. The case note is
+/// not moved above the bottom groups to spare them; that would put the longest
+/// block ahead of keys a reader came for, to save rows it does not save.
+pub fn help_lines(width: usize, height: usize) -> Vec<Line<'static>> {
+    let two = width >= HELP_TWO_COLUMNS;
+    let (body, note) = if two {
+        let column = (width - HELP_GAP) / 2;
+        let left = help_stack(&[Group::Tunnel, Group::List]);
+        let mut right = help_stack(&[Group::UrlAndLog, Group::Program]);
+        right.push((Line::raw(""), 0));
+        right.extend(help_note(column).into_iter().map(|l| (l, 0)));
+        (help_columns(left, right, column), Vec::new())
+    } else {
+        (help_stack(&Group::ALL), help_note(width))
+    };
+    let footer = help_footer(width);
+    let cadence = help_cadence();
+
+    // Blank rows separate the blocks; each is spent only when its block is drawn
+    let mut body = body;
+    let room = |used: usize, more: usize| used + more + footer.len() <= height;
+    if !note.is_empty() && room(body.len(), 1 + note.len()) {
+        body.push((Line::raw(""), 0));
+        body.extend(note.into_iter().map(|l| (l, 0)));
+    }
+    let avail = height.saturating_sub(footer.len() + 1);
+    let cut_keys = |from: usize| {
+        body[from.min(body.len())..]
+            .iter()
+            .map(|r| r.1)
+            .sum::<usize>()
+    };
+    // A cut that takes only blank or note rows needs no notice; one that takes
+    // keys gives up a row to say so, and counts the keys that row displaces too
+    let notice = (body.len() > avail && cut_keys(avail) > 0 && avail > 0).then(|| {
+        let keep = avail - 1;
+        (keep, cut_keys(keep))
+    });
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    match notice {
+        Some((keep, n)) => {
+            lines.extend(body.into_iter().take(keep).map(|r| r.0));
+            lines.push(Line::styled(
+                format!("{n} more keys - enlarge the terminal"),
+                Style::default().fg(theme::MUTED),
+            ));
+        }
+        None => lines.extend(body.into_iter().take(avail).map(|r| r.0)),
+    }
+    lines.push(Line::raw(""));
+    lines.extend(footer);
+    if lines.len() + cadence.len() <= height {
+        lines.extend(cadence);
+    }
+    lines
+}
+
+/// The modal's frame width on a screen this wide: a margin of two cells on each
+/// side, and no wider than the two columns can use, since past that the labels
+/// only drift away from the keys.
+fn help_modal_width(screen_width: u16) -> u16 {
+    screen_width.saturating_sub(4).min(112)
+}
+
+/// The width `help_lines` lays out in, for a screen this wide: the frame less
+/// two cells of border and two of air. Shared so a test measures the width the
+/// renderer used and not its own copy of the arithmetic.
+pub fn help_inner_width(screen_width: u16) -> usize {
+    help_modal_width(screen_width).saturating_sub(4) as usize
+}
 
 fn render_help_modal(f: &mut Frame) {
-    let area = centered_rect(70, 80, f.area());
+    let screen = f.area();
+    let width = help_modal_width(screen.width);
+    let room = screen.height.saturating_sub(2);
+    let inner_width = help_inner_width(screen.width);
+    let lines = help_lines(inner_width, room.saturating_sub(2) as usize);
+    // The frame hugs the page: the rows under it would be an empty box
+    let height = (lines.len() as u16 + 2).min(room);
+    let area = Rect {
+        x: screen.x + (screen.width - width) / 2,
+        y: screen.y + (screen.height - height) / 2,
+        width,
+        height,
+    };
     f.render_widget(Clear, area);
 
     let block = Block::default()
-        .title(" Help - Press Esc to close ")
+        .title(" Keys ")
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme::ACCENT));
     let inner = block.inner(area);
     f.render_widget(block, area);
-
-    let mut lines = Vec::new();
-    for (heading, keys) in HELP_SECTIONS {
-        lines.push(Line::styled(
-            *heading,
-            Style::default()
-                .fg(theme::WARN)
-                .add_modifier(Modifier::BOLD),
-        ));
-        lines.push(Line::raw(""));
-        for (key, what) in *keys {
-            lines.push(Line::from(vec![
-                Span::styled(format!("  {key:<9}"), Style::default().fg(theme::ACCENT)),
-                Span::raw(*what),
-            ]));
-        }
-        lines.push(Line::raw(""));
+    // One cell of air inside the border, as the panes keep
+    let inner = Rect {
+        x: inner.x.saturating_add(1),
+        width: inner.width.saturating_sub(2),
+        ..inner
+    };
+    if inner.width == 0 || inner.height == 0 {
+        return;
     }
-    lines.push(Line::styled(
-        format!(
-            "  Metrics every 5s, health every 30s, load balancer traffic every 60s ({LB_WINDOW_MINUTES}m window)"
-        ),
-        Style::default().fg(theme::MUTED),
-    ));
-    lines.push(Line::styled(
-        "  A tunnel going unhealthy raises a system notification",
-        Style::default().fg(theme::MUTED),
-    ));
     f.render_widget(Paragraph::new(lines), inner);
 }
 
