@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use std::collections::HashSet;
 
 use super::app::{EditTunnel, NewTunnel, Op, OpResult, TunnelEntry, TunnelKind, TunnelMode};
@@ -13,6 +13,8 @@ use crate::probe::{collect_metrics, http_probe, tcp_probe, HealthStatus};
 use crate::state::{AccessTarget, PersistentTunnel, TunnelSpec, TunnelState, TunnelStatus};
 use std::time::Duration;
 
+// How long an imported run is given to let go of its ports and its route
+const IMPORT_HANDOVER: Duration = Duration::from_secs(10);
 const TCP_HEALTH_TIMEOUT: Duration = Duration::from_secs(2);
 
 // Everything the list shows for one account, read fresh
@@ -335,6 +337,23 @@ async fn import(account: &str, name: &str) -> Result<String> {
     unsafe {
         libc::kill(record.pid as libc::pid_t, libc::SIGTERM);
     }
+    let exited = crate::ephemeral::wait_for_pid_exit(record.pid, IMPORT_HANDOVER).await;
     record.remove()?;
+
+    // The run tears its own route down as it dies, taking the backend, host
+    // rule and DNS record the imported tunnel now owns, so the route is
+    // rebuilt once the pid is gone and not a moment before
+    if tunnel.is_expose() {
+        if !exited {
+            bail!(
+                "Run {} did not exit within {}s, so '{name}' was recorded but its route was left \
+                 to the run. Stop that process, then run `gtunnel restart {name}`",
+                record.pid,
+                IMPORT_HANDOVER.as_secs()
+            );
+        }
+        let client = GcpClient::for_account(&acct);
+        routes::ensure_route(&client, &acct, &tunnel).await?;
+    }
     Ok(format!("{name} is now managed"))
 }

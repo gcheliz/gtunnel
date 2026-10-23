@@ -53,6 +53,21 @@ impl EphemeralRecord {
 }
 
 // Signal 0 asks the kernel whether the process exists without disturbing it
+// Poll until the process is gone, up to `budget`. True means it exited; false
+// means it outlived the budget and the caller decides what that is worth.
+pub async fn wait_for_pid_exit(pid: u32, budget: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + budget;
+    loop {
+        if !pid_is_alive(pid) {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
 pub fn pid_is_alive(pid: u32) -> bool {
     unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
 }
@@ -376,6 +391,7 @@ async fn teardown(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
     use crate::config::testing::TempConfigDir;
     use crate::state::AccessTarget;
 
@@ -409,6 +425,36 @@ mod tests {
 
         record.remove().expect("remove");
         assert!(list_ephemeral().expect("list").is_empty());
+    }
+
+    // Importing a run SIGTERMs it, and the dying process removes its relay
+    // route on the way out. Rebuilding the route before it is gone loses the
+    // race, so the import has to wait for the pid first.
+    #[tokio::test]
+    async fn wait_for_pid_exit_waits_for_a_live_process_and_reports_a_dead_one() {
+        // Orphaned so the kernel reaps it: a child of this test would linger
+        // as a zombie and still answer kill(pid, 0)
+        let out = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg("/bin/sleep 30 >/dev/null 2>&1 & echo $!")
+            .output()
+            .expect("spawn");
+        let pid: u32 = String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .parse()
+            .expect("pid");
+        assert!(pid_is_alive(pid), "the sleep should be running");
+
+        assert!(
+            !wait_for_pid_exit(pid, Duration::from_millis(300)).await,
+            "a live pid must not be reported as exited"
+        );
+
+        unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+        assert!(
+            wait_for_pid_exit(pid, Duration::from_secs(5)).await,
+            "a killed pid must be reported as exited"
+        );
     }
 
     #[test]
