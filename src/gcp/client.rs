@@ -229,19 +229,37 @@ impl GcpClient {
         Ok(serde_json::from_str(&text).ok())
     }
 
-    // Block until a long-running operation finishes, or report why it failed
+    // Block until a long-running operation finishes, or report why it failed.
+    // Compute answers with an absolute selfLink; use wait_operation_at for an
+    // API that answers with a bare resource name instead
     pub async fn wait_operation(&self, op: &Operation) -> Result<()> {
+        self.poll_operation(op, None).await
+    }
+
+    // `base` is the API root the operation came from, used to resolve a bare
+    // `name` that google.longrunning APIs return in place of a selfLink
+    pub async fn wait_operation_at(&self, op: &Operation, base: &str) -> Result<()> {
+        self.poll_operation(op, Some(base)).await
+    }
+
+    async fn poll_operation(&self, op: &Operation, base: Option<&str>) -> Result<()> {
         if let Some(err) = &op.error {
             return Err(operation_error(err));
         }
         if op.is_done() {
             return Ok(());
         }
-        let url = op
-            .self_link
-            .clone()
-            .or_else(|| op.name.clone())
-            .ok_or_else(|| anyhow!("Operation has neither selfLink nor name"))?;
+        let url = match (&op.self_link, &op.name) {
+            (Some(link), _) => link.clone(),
+            // A name is relative to its API root; reqwest rejects it alone
+            (None, Some(name)) => {
+                let base = base.ok_or_else(|| {
+                    anyhow!("Operation '{name}' has no selfLink and no API base to resolve it")
+                })?;
+                format!("{}/{}", base.trim_end_matches('/'), name.trim_start_matches('/'))
+            }
+            (None, None) => return Err(anyhow!("Operation has neither selfLink nor name")),
+        };
 
         let started = Instant::now();
         loop {
@@ -411,6 +429,38 @@ mod tests {
             .await;
         assert!(out.is_err(), "the client surfaces 404; callers decide");
         assert!(is_not_found(&out.unwrap_err()));
+    }
+
+    // Certificate Manager and other google.longrunning APIs answer with a bare
+    // resource name and no selfLink. Handing that to reqwest as a URL fails
+    // with "relative URL without a base", which aborts the first `relay up`
+    #[tokio::test]
+    async fn wait_operation_resolves_a_bare_operation_name_against_the_api_base() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/projects/p/locations/global/operations/op-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "name": "projects/p/locations/global/operations/op-1",
+                "done": true
+            })))
+            .mount(&server)
+            .await;
+
+        let client = GcpClient::new(
+            TokenSource::Static("tok".to_string()),
+            Endpoints::single(&server.uri()),
+        );
+        let op = Operation {
+            name: Some("projects/p/locations/global/operations/op-1".to_string()),
+            status: None,
+            self_link: None,
+            error: None,
+            done: Some(false),
+        };
+        client
+            .wait_operation_at(&op, &server.uri())
+            .await
+            .expect("a bare name must be resolved against the base");
     }
 
     #[tokio::test]

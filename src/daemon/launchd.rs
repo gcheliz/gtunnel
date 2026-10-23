@@ -163,8 +163,31 @@ pub async fn uninstall(label: &str) -> Result<()> {
     Ok(())
 }
 
+// `start` loads the plist before kicking it, because `stop` unloads the job
+pub fn start_args(domain: &str, label: &str, plist: &str) -> (Vec<String>, Vec<String>) {
+    (
+        vec![
+            "bootstrap".to_string(),
+            domain.to_string(),
+            plist.to_string(),
+        ],
+        vec!["kickstart".to_string(), format!("{domain}/{label}")],
+    )
+}
+
+// Unloading is the only stop that holds: `launchctl kill` leaves the job
+// loaded, and KeepAlive{SuccessfulExit:false} reads a SIGTERM death as a
+// failure, so launchd restarted the tunnel one ThrottleInterval later
+pub fn stop_args(domain: &str, label: &str) -> Vec<String> {
+    vec!["bootout".to_string(), format!("{domain}/{label}")]
+}
+
 pub async fn start(label: &str) -> Result<()> {
-    let out = launchctl(&["kickstart", &format!("{}/{}", domain_target(), label)]).await?;
+    let path = plist_path(label)?;
+    let (load, run) = start_args(&domain_target(), label, &path.to_string_lossy());
+    // Already loaded is the common case and bootstrap says so; kickstart decides
+    let _ = launchctl(&load.iter().map(String::as_str).collect::<Vec<_>>()).await;
+    let out = launchctl(&run.iter().map(String::as_str).collect::<Vec<_>>()).await?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         anyhow::bail!("launchctl kickstart failed: {}", stderr.trim());
@@ -173,12 +196,13 @@ pub async fn start(label: &str) -> Result<()> {
 }
 
 pub async fn stop(label: &str) -> Result<()> {
-    // `kill` stops the job without unloading it, so `start` can bring it back
-    let out = launchctl(&["kill", "SIGTERM", &format!("{}/{}", domain_target(), label)]).await?;
+    let args = stop_args(&domain_target(), label);
+    let out = launchctl(&args.iter().map(String::as_str).collect::<Vec<_>>()).await?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
-        if !stderr.contains("No such process") {
-            anyhow::bail!("launchctl kill failed: {}", stderr.trim());
+        // Not loaded is already stopped
+        if !stderr.contains("No such process") && !stderr.contains("not find") {
+            anyhow::bail!("launchctl bootout failed: {}", stderr.trim());
         }
     }
     Ok(())

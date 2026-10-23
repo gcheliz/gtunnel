@@ -63,7 +63,7 @@ pub async fn ensure_dns_authorization(
     let op: Operation = client
         .post(&format!("{base}?dnsAuthorizationId={name}"), &body)
         .await?;
-    client.wait_operation(&op).await?;
+    client.wait_operation_at(&op, &client.endpoints.certmanager).await?;
     let raw: RawDnsAuthorization = client.get(&url).await?;
     Ok(raw.into())
 }
@@ -97,7 +97,7 @@ pub async fn ensure_certificate(
     let op: Operation = client
         .post(&format!("{base}?certificateId={name}"), &body)
         .await?;
-    client.wait_operation(&op).await
+    client.wait_operation_at(&op, &client.endpoints.certmanager).await
 }
 
 // A certificate that does not exist yet reads as MISSING, so doctor and the
@@ -136,7 +136,7 @@ pub async fn ensure_certificate_map(client: &GcpClient, project: &str, name: &st
     let op: Operation = client
         .post(&format!("{base}?certificateMapId={name}"), &json!({}))
         .await?;
-    client.wait_operation(&op).await
+    client.wait_operation_at(&op, &client.endpoints.certmanager).await
 }
 
 pub async fn delete_certificate_map(client: &GcpClient, project: &str, name: &str) -> Result<()> {
@@ -170,7 +170,7 @@ pub async fn ensure_certificate_map_entry(
     let op: Operation = client
         .post(&format!("{base}?certificateMapEntryId={entry}"), &body)
         .await?;
-    client.wait_operation(&op).await
+    client.wait_operation_at(&op, &client.endpoints.certmanager).await
 }
 
 pub async fn delete_certificate_map_entry(

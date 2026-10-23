@@ -157,6 +157,35 @@ mod tests {
         assert!(launchd::render_plist(&s).contains("<key>RunAtLoad</key>\n    <true/>"));
     }
 
+    // KeepAlive{SuccessfulExit:false} treats a SIGTERM death as a failure, so
+    // `launchctl kill` only bought ~10s before launchd brought the tunnel back
+    // while `gtunnel stop` had already printed stopped
+    #[test]
+    fn stopping_unloads_the_job_so_keepalive_cannot_respawn_it() {
+        assert_eq!(
+            launchd::stop_args("gui/501", "com.gtunnel.dev.db"),
+            vec!["bootout", "gui/501/com.gtunnel.dev.db"]
+        );
+    }
+
+    #[test]
+    fn starting_rebootstraps_a_job_that_stop_unloaded() {
+        let (load, run) = launchd::start_args(
+            "gui/501",
+            "com.gtunnel.dev.db",
+            "/Users/me/Library/LaunchAgents/com.gtunnel.dev.db.plist",
+        );
+        assert_eq!(
+            load,
+            vec![
+                "bootstrap",
+                "gui/501",
+                "/Users/me/Library/LaunchAgents/com.gtunnel.dev.db.plist"
+            ]
+        );
+        assert_eq!(run, vec!["kickstart", "gui/501/com.gtunnel.dev.db"]);
+    }
+
     #[test]
     fn plist_escapes_xml_in_values() {
         let mut s = spec();
