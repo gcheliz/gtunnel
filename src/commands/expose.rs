@@ -190,6 +190,30 @@ pub async fn cmd_domains(
     Ok(())
 }
 
+// Auto-start is off for a new tunnel: `-s` starts it now, and `A` in the TUI
+// is what makes one survive a reboot
+fn new_expose_tunnel(
+    name: &str,
+    account: &str,
+    local_target: &str,
+    domain: &str,
+    relay_port: u16,
+    private: bool,
+) -> PersistentTunnel {
+    PersistentTunnel {
+        name: name.to_string(),
+        account_name: account.to_string(),
+        auto_start: false,
+        spec: TunnelSpec::Expose {
+            local_target: local_target.to_string(),
+            domain: domain.to_string(),
+            hostname: format!("{name}.{domain}"),
+            relay_port,
+            private,
+        },
+    }
+}
+
 pub async fn cmd_expose(
     account: Option<&str>,
     name: &str,
@@ -222,18 +246,14 @@ pub async fn cmd_expose(
         |_| true,
     )?;
 
-    let tunnel = PersistentTunnel {
-        name: name.to_string(),
-        account_name: acct.name.clone(),
-        auto_start: true,
-        spec: TunnelSpec::Expose {
-            local_target: target.to_string(),
-            domain: domain.domain.clone(),
-            hostname: format!("{name}.{}", domain.domain),
-            relay_port,
-            private,
-        },
-    };
+    let tunnel = new_expose_tunnel(
+        name,
+        &acct.name,
+        target,
+        &domain.domain,
+        relay_port,
+        private,
+    );
 
     let client = GcpClient::for_account(&acct);
     routes::add_route(&client, &acct, &expose, &tunnel).await?;
@@ -267,6 +287,19 @@ pub async fn cmd_expose(
         super::access::cmd_start(account, name).await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod new_tunnel_tests {
+    use super::*;
+
+    // `expose` without `-s` printed stopped and started the tunnel anyway
+    #[test]
+    fn a_new_expose_tunnel_does_not_auto_start() {
+        let t = new_expose_tunnel("web", "dev", "localhost:3000", "example.com", 30001, false);
+        assert!(!t.auto_start);
+        assert_eq!(t.display_url(), "https://web.example.com");
+    }
 }
 
 #[cfg(test)]

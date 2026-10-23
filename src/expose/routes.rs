@@ -258,14 +258,18 @@ pub async fn add_route(
     Ok(())
 }
 
-// start and restart call this so a route deleted outside gtunnel comes back
-pub async fn ensure_route(
-    client: &GcpClient,
-    acct: &Account,
-    ex: &ExposeConfig,
-    t: &PersistentTunnel,
-) -> Result<()> {
-    add_route(client, acct, ex, t).await
+// start, restart and edit call this so a route deleted outside gtunnel comes
+// back. An Access tunnel has no route, so it reaches GCP at all only for a
+// public one.
+pub async fn ensure_route(client: &GcpClient, acct: &Account, t: &PersistentTunnel) -> Result<()> {
+    if !t.is_expose() {
+        return Ok(());
+    }
+    let ex = acct
+        .expose
+        .clone()
+        .context("This account has no relay, but the tunnel is an Expose tunnel")?;
+    add_route(client, acct, &ex, t).await
 }
 
 #[cfg(test)]
@@ -396,6 +400,45 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(done_op()))
             .mount(server)
             .await;
+    }
+
+    // The comment on ensure_route promised start and restart repaired a route
+    // deleted outside gtunnel, but nothing on either path called it
+    #[tokio::test]
+    async fn ensure_route_recreates_a_dns_record_deleted_outside_gtunnel() {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(done_op()))
+            .mount(&server)
+            .await;
+        base_mocks(&server).await;
+
+        ensure_route(&client(&server), &account(), &tunnel())
+            .await
+            .expect("ensure route");
+
+        assert_eq!(count(&server, "POST", "rrsets").await, 1);
+    }
+
+    // An Access tunnel has no relay route, so starting one must not call GCP
+    #[tokio::test]
+    async fn ensure_route_leaves_an_access_tunnel_alone() {
+        let server = MockServer::start().await;
+        let mut t = tunnel();
+        t.spec = TunnelSpec::Access {
+            target: crate::state::AccessTarget::Instance {
+                instance: "my-vm".to_string(),
+                zone: "europe-west1-b".to_string(),
+            },
+            remote_port: 5432,
+            local_port: 15432,
+        };
+
+        ensure_route(&client(&server), &account(), &t)
+            .await
+            .expect("ensure route");
+
+        assert!(server.received_requests().await.unwrap_or_default().is_empty());
     }
 
     // Review Focus 4: two gtunnel runs editing the url map at once get a 412,

@@ -16,6 +16,27 @@ use crate::tunnel::diagnose_log_line;
 const START_SETTLE: Duration = Duration::from_secs(3);
 const FOLLOW_INTERVAL: Duration = Duration::from_millis(500);
 
+// Auto-start is off for a new tunnel: `-s` starts it now, and `A` in the TUI
+// is what makes one survive a reboot
+fn new_access_tunnel(
+    name: &str,
+    account: &str,
+    target: AccessTarget,
+    remote_port: u16,
+    local_port: u16,
+) -> PersistentTunnel {
+    PersistentTunnel {
+        name: name.to_string(),
+        account_name: account.to_string(),
+        auto_start: false,
+        spec: TunnelSpec::Access {
+            target,
+            remote_port,
+            local_port,
+        },
+    }
+}
+
 // `INSTANCE:PORT`, or `HOST:PORT` when a destination group is used
 pub fn parse_access_target(target: &str) -> Result<(String, u16)> {
     let (host, port) = target
@@ -88,16 +109,7 @@ pub async fn cmd_add(
         )?,
     };
 
-    let tunnel = PersistentTunnel {
-        name: name.to_string(),
-        account_name: acct.name.clone(),
-        auto_start: true,
-        spec: TunnelSpec::Access {
-            target: access_target,
-            remote_port,
-            local_port,
-        },
-    };
+    let tunnel = new_access_tunnel(name, &acct.name, access_target, remote_port, local_port);
     state.add(tunnel.clone())?;
     state.save()?;
 
@@ -138,6 +150,13 @@ pub async fn cmd_start(account: Option<&str>, name: &str) -> Result<()> {
     let (config, acct) = resolve(account)?;
     let state = TunnelState::load()?;
     let tunnel = find_tunnel(&state, name, &acct.name)?;
+
+    // A public tunnel whose backend, host rule or DNS record was removed
+    // outside gtunnel would otherwise come up serving a 503
+    if tunnel.is_expose() {
+        let client = GcpClient::for_account(&acct);
+        routes::ensure_route(&client, &acct, &tunnel).await?;
+    }
 
     // A unit written by an older gtunnel is rewritten before it is started
     let spec = daemon::service_spec(&config, &tunnel)?;
@@ -318,6 +337,30 @@ pub async fn cmd_zones(account: Option<&str>, default: Option<&str>) -> Result<(
     crate::config::save_config(&config)?;
     println!("Default zone for '{}' is now {zone}", acct.name);
     Ok(())
+}
+
+#[cfg(test)]
+mod new_tunnel_tests {
+    use super::*;
+
+    // `add` without `-s` printed stopped and started the tunnel anyway: the
+    // record said auto_start, so install() bootstrapped a RunAtLoad plist
+    #[test]
+    fn a_new_access_tunnel_does_not_auto_start() {
+        let t = new_access_tunnel(
+            "db",
+            "dev",
+            AccessTarget::Instance {
+                instance: "my-vm".to_string(),
+                zone: "europe-west1-b".to_string(),
+            },
+            5432,
+            15432,
+        );
+        assert!(!t.auto_start);
+        assert_eq!(t.name, "db");
+        assert_eq!(t.account_name, "dev");
+    }
 }
 
 #[cfg(test)]

@@ -15,7 +15,7 @@ run used.
 | `add` | Add a persistent Access tunnel | read |
 | `expose` | Publish a local service at `https://<name>.<domain>` | write |
 | `run` | Ephemeral tunnel in the foreground, gone on Ctrl+C | read, or write with `--public` |
-| `start` / `stop` / `restart` | Service control | no |
+| `start` / `stop` / `restart` | Service control | write, for a public tunnel only |
 | `logs` | Read a tunnel's log | no |
 | `list` | Every tunnel, managed or not | no |
 | `delete` | Remove a tunnel and its route | write for public tunnels |
@@ -125,6 +125,10 @@ Error: Tunnel 'nope' not found for account 'evidence'
 
 `logs -f` follows. `restart` rewrites the service file before starting, so it also picks up
 an edited target. `delete` removes the relay route first, then the service, then the record.
+
+Starting a public tunnel re-creates its backend, host rule, named port and DNS record if any
+of them went missing, so `gtunnel restart <name>` is the fix for a tunnel that comes up
+serving a 503. Starting an Access tunnel makes no API call.
 
 ## zones and domains
 

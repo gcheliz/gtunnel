@@ -242,9 +242,9 @@ async fn edit_tunnel(edit: &EditTunnel) -> Result<String> {
     state.save()?;
 
     // A public tunnel's access rule lives on the backend, not in tunnels.toml
-    if let (true, Some(expose)) = (updated.is_expose(), acct.expose.clone()) {
+    if updated.is_expose() {
         let client = GcpClient::for_account(&acct);
-        routes::ensure_route(&client, &acct, &expose, &updated).await?;
+        routes::ensure_route(&client, &acct, &updated).await?;
     }
 
     let spec = daemon::service_spec(&config, &updated)?;
@@ -260,6 +260,10 @@ async fn start(account: &str, name: &str) -> Result<String> {
     let (config, acct) = resolve(Some(account))?;
     let state = TunnelState::load()?;
     let tunnel = find_tunnel(&state, name, &acct.name)?;
+    if tunnel.is_expose() {
+        let client = GcpClient::for_account(&acct);
+        routes::ensure_route(&client, &acct, &tunnel).await?;
+    }
     let spec = daemon::service_spec(&config, &tunnel)?;
     daemon::install(&spec).await?;
     daemon::start(&spec.label).await?;
