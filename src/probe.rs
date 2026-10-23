@@ -9,9 +9,6 @@ use crate::state::{PersistentTunnel, TunnelSpec, TunnelStatus};
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(5);
 const TCP_TIMEOUT: Duration = Duration::from_secs(2);
-// A probed peer answers a round trip away, and through a tunnel that is
-// hundreds of milliseconds: how long a close waits for the peer to close too
-const DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 // How many minutes of load balancer traffic one metrics read covers
 pub const LB_WINDOW_MINUTES: u32 = 10;
 
@@ -42,7 +39,9 @@ pub async fn tcp_probe(addr: &str, timeout: Duration) -> Option<Duration> {
     match tokio::time::timeout(timeout, connect).await {
         Ok(Ok(mut stream)) => {
             let rtt = started.elapsed();
-            close_politely(&mut stream).await;
+            // Closing cleanly costs another round trip, so it gets the same
+            // budget the connection itself was given
+            close_politely(&mut stream, timeout).await;
             Some(rtt)
         }
         _ => None,
@@ -54,7 +53,7 @@ pub async fn tcp_probe(addr: &str, timeout: Duration) -> Option<Duration> {
 // way the peer reports a client error: gcloud logs a traceback for every probe
 // and the tunnel's log fills with them. Half-close so the peer sees a FIN, then
 // read until its own close arrives. Says whether that close arrived in time.
-async fn close_politely(stream: &mut tokio::net::TcpStream) -> bool {
+async fn close_politely(stream: &mut tokio::net::TcpStream, budget: Duration) -> bool {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     if stream.shutdown().await.is_err() {
@@ -65,7 +64,7 @@ async fn close_politely(stream: &mut tokio::net::TcpStream) -> bool {
         let mut scratch = [0u8; 1024];
         while matches!(stream.read(&mut scratch).await, Ok(n) if n > 0) {}
     };
-    tokio::time::timeout(DRAIN_TIMEOUT, drain).await.is_ok()
+    tokio::time::timeout(budget, drain).await.is_ok()
 }
 
 // A 4xx still proves the request reached the service; only 5xx and a failure
@@ -290,31 +289,44 @@ mod tests {
         }
     }
 
-    // Through a tunnel the greeting is a round trip away. A probe that stops
-    // waiting first leaves that greeting arriving at a closed socket, which
-    // answers with RST: the same client error, one per probe
-    #[tokio::test]
-    async fn closing_waits_for_a_greeting_a_round_trip_late() {
+    // A peer that greets a round trip after the probe half-closes, the way a
+    // bastion behind an IAP tunnel does
+    async fn slow_greeter() -> std::net::SocketAddr {
         use tokio::io::AsyncWriteExt;
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind");
         let addr = listener.local_addr().expect("addr");
-
         tokio::spawn(async move {
             let (mut sock, _) = listener.accept().await.expect("accept");
             // What an IAP tunnel to a bastion measures: ~260 ms to first byte
             tokio::time::sleep(Duration::from_millis(300)).await;
             let _ = sock.write_all(b"SSH-2.0-OpenSSH_10.0p2 Debian-7\r\n").await;
         });
+        addr
+    }
 
-        let mut stream = tokio::net::TcpStream::connect(addr)
+    // Closing cleanly costs a round trip of its own, and the probe that can
+    // afford to wait that long is the one that said how long it would wait: a
+    // close that gives up first leaves the greeting arriving at a closed
+    // socket, which answers with RST — the client error gcloud logs per probe
+    #[tokio::test]
+    async fn closing_waits_as_long_as_the_probe_was_given() {
+        let mut patient = tokio::net::TcpStream::connect(slow_greeter().await)
             .await
             .expect("the probe did not connect");
         assert!(
-            close_politely(&mut stream).await,
+            close_politely(&mut patient, TCP_TIMEOUT).await,
             "closed before the peer's greeting and its own close arrived"
+        );
+
+        let mut hasty = tokio::net::TcpStream::connect(slow_greeter().await)
+            .await
+            .expect("the probe did not connect");
+        assert!(
+            !close_politely(&mut hasty, Duration::from_millis(50)).await,
+            "a close given 50 ms reported success waiting 300 ms, so the budget is not the caller's"
         );
     }
 
