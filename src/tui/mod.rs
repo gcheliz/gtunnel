@@ -557,23 +557,107 @@ mod tests {
         assert!(!ui::empty_log_note(&jump, TunnelStatus::Error).contains("silent"));
     }
 
-    // A logo that wraps is worse than no logo: the glyphs break mid-row and the
-    // subtitle lands inside them
+    // The brand hues are the one exception to the named-ANSI contract. The
+    // account field's half of that contract is asserted where the field is
+    // introduced, in the header tests.
+    #[test]
+    fn the_logo_is_the_only_truecolor_in_the_theme() {
+        use ratatui::style::Color;
+        assert_eq!(theme::LOGO_BLUE, Color::Rgb(0x42, 0x85, 0xF4));
+        assert_eq!(theme::LOGO_RED, Color::Rgb(0xEA, 0x43, 0x35));
+        assert_eq!(theme::LOGO_YELLOW, Color::Rgb(0xFB, 0xBC, 0x04));
+        assert_eq!(theme::LOGO_GREEN, Color::Rgb(0x34, 0xA8, 0x53));
+        assert_eq!(theme::LOGO_LINE, Color::Rgb(0x4D, 0xD0, 0xE1));
+    }
+
+    // The lockup only centres if the mark and the name are the same number of
+    // cells. A terminal has no half cells, so this is an equality, not a target.
+    #[test]
+    fn the_lockup_rows_are_the_same_width() {
+        let mark: String = ui::mark_spans(true)
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(mark.chars().count(), 11);
+        assert_eq!(ui::NAME_ROW.chars().count(), 11);
+        let fallback: String = ui::mark_spans(false)
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(
+            fallback.chars().count(),
+            11,
+            "the fallback must not change the lockup width"
+        );
+        for row in ui::LARGE_MARK {
+            assert_eq!(row.chars().count(), 21);
+        }
+        assert_eq!(ui::LARGE_NAME_ROW.chars().count(), 21);
+    }
+
+    fn line_text(line: &ratatui::text::Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    // The account is the one piece of state that changes what every other key
+    // acts on, so it is pinned to the corner where nothing else can push it.
+    #[test]
+    fn the_account_sits_flush_right_and_never_touches_the_logo() {
+        let lines = ui::header_lines(120, "dev");
+        assert_eq!(lines.len(), 2);
+        let row0 = line_text(&lines[0]);
+        assert!(row0.ends_with(" dev "), "{row0:?}");
+        assert_eq!(row0.chars().count(), 120);
+        let first_cells: String = row0.chars().take(11).collect();
+        assert!(
+            first_cells.contains('\u{2824}'),
+            "the mark keeps the first 11 cells: {first_cells:?}"
+        );
+    }
+
+    // Review Focus 3: an account name long enough to push the field off the edge
+    #[test]
+    fn a_long_account_name_does_not_overflow_the_row() {
+        let lines = ui::header_lines(60, "platform-production-emea");
+        assert!(lines.iter().all(|l| line_text(l).chars().count() <= 60));
+    }
+
+    // Review Focus 1: narrower than the lockup plus the field, the header sheds
+    // a row rather than wrapping the mark mid-glyph
+    #[test]
+    fn a_terminal_too_narrow_for_the_lockup_gets_one_line() {
+        let lines = ui::header_lines(20, "dev");
+        assert_eq!(lines.len(), 1);
+        assert_eq!(ui::header_height(20, "dev"), 1);
+        assert!(line_text(&lines[0]).chars().count() <= 20);
+    }
+
+    // The account field is state, not artwork, so it must not reach for a brand
+    // hue. This is the other half of the named-ANSI contract.
+    #[test]
+    fn the_account_field_uses_the_ansi_pair_not_a_brand_hue() {
+        assert_eq!(theme::ACCOUNT_BG, theme::ACCENT);
+        assert_eq!(theme::ACCOUNT_FG, theme::ON_ACCENT);
+    }
+
+    // A lockup that wraps is worse than no lockup: the mark breaks mid-glyph
+    // and the name lands inside it. The compact form is the escape hatch, and
+    // it still has to carry the account.
     #[test]
     fn the_header_steps_down_before_it_wraps() {
         let wide = ui::header_lines(120, "dev");
         assert_eq!(wide.len() as u16, ui::HEADER_HEIGHT_FULL);
         for line in &wide {
             assert!(
-                line.to_string().chars().count() <= 120,
+                line_text(line).chars().count() <= 120,
                 "{}",
-                line.to_string()
+                line_text(line)
             );
         }
-        let narrow = ui::header_lines(50, "dev");
+        let narrow = ui::header_lines(18, "dev");
         assert_eq!(narrow.len() as u16, ui::HEADER_HEIGHT_COMPACT);
-        assert!(narrow[0].to_string().chars().count() <= 50);
-        assert!(narrow[0].to_string().contains("dev"), "{:?}", narrow[0]);
+        assert!(line_text(&narrow[0]).chars().count() <= 18);
+        assert!(line_text(&narrow[0]).contains("dev"), "{:?}", narrow[0]);
     }
 
     // Review Focus: the header must never be the reason the list has no rows

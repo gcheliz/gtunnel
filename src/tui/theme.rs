@@ -10,6 +10,13 @@
 //! A color means one thing. `ACCENT` marks what gtunnel measured or derived,
 //! `MUTED` is for labels that must not compete with their values, and the three
 //! status colors answer one question each.
+//!
+//! The logo is the one exception, and it is deliberate. Its hues are not a
+//! judgement about state that the terminal's theme should get to reinterpret —
+//! they are the mark itself, and a mark that changes colour between terminals is
+//! a different mark. So the `LOGO_*` constants name exact hues and accept that a
+//! sixteen-colour terminal will approximate them. Nothing else may follow them:
+//! if a value answers a question about what gtunnel found, it stays ANSI.
 
 use ratatui::style::Color;
 
@@ -38,3 +45,27 @@ pub const SELECTED_BG: Color = Color::Indexed(236);
 
 /// Text that sits on top of `ACCENT`.
 pub const ON_ACCENT: Color = Color::Black;
+
+/// The line the cloud rests on, and the two cells at each end of the mark.
+pub const LOGO_LINE: Color = Color::Rgb(0x4D, 0xD0, 0xE1);
+
+/// The mark's first band, reading left to right.
+pub const LOGO_BLUE: Color = Color::Rgb(0x42, 0x85, 0xF4);
+
+/// The second band.
+pub const LOGO_RED: Color = Color::Rgb(0xEA, 0x43, 0x35);
+
+/// The third band.
+pub const LOGO_YELLOW: Color = Color::Rgb(0xFB, 0xBC, 0x04);
+
+/// The fourth band.
+pub const LOGO_GREEN: Color = Color::Rgb(0x34, 0xA8, 0x53);
+
+/// The account field in the header. The account is the one piece of state that
+/// changes what every other key acts on, so it reads as a mode rather than a
+/// label — but it is still state, not artwork, and so it reuses the ANSI pair
+/// instead of reaching for a brand hue.
+pub const ACCOUNT_BG: Color = ACCENT;
+
+/// Text that sits on top of `ACCOUNT_BG`.
+pub const ACCOUNT_FG: Color = ON_ACCENT;

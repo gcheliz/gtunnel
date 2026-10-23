@@ -1,5 +1,5 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Sparkline, Wrap,
@@ -14,59 +14,174 @@ use crate::tunnel::diagnose_log_line;
 
 pub const LOG_LINES: usize = 200;
 
-/// Three rows of logo and subtitle, with no border: the panels below carry
-/// enough lines already.
-pub const HEADER_HEIGHT_FULL: u16 = 3;
-/// One row, for a terminal too narrow to hold the logo without breaking it.
+/// The mark, and the name beneath it. Two rows where the block lettering took
+/// four: a header is a label, not a splash screen, and every row it takes comes
+/// off the panes below.
+pub const HEADER_HEIGHT_FULL: u16 = 2;
+/// One row, for a terminal too narrow to hold the lockup without breaking it.
 pub const HEADER_HEIGHT_COMPACT: u16 = 1;
-/// Below this the block letters wrap mid-glyph, which reads worse than no logo.
-const HEADER_MIN_WIDTH: u16 = 60;
 
-// Half-block characters, so the name reads as one object at two rows high
-// without needing a font that has box drawing
-const LOGO: [&str; 2] = ["▛▀▖ ▜▘  ▌ ▌ ▛▀▖ ▛▀▖ ▛▀▘ ▌  ", "▙▄▌ ▐▖  ▙▄▌ ▌ ▌ ▌ ▌ ▙▄▖ ▙▄▖"];
+/// The lockup is eleven cells, not ten. `gtunnel` is seven, and 11 - 7 = 4
+/// leaves two blank cells on each side; a ten-cell mark leaves three, and no
+/// terminal can split a cell. The mark is mirror-symmetric about its centre
+/// column, so the centring reads as deliberate rather than as a near miss.
+pub const MARK_WIDTH: u16 = 11;
 
-/// The logo, the subtitle and the account, or one line of the same facts when
-/// the terminal is too narrow for the logo to survive.
-pub fn header_lines(width: u16, account: &str) -> Vec<Line<'static>> {
-    if width < HEADER_MIN_WIDTH {
-        return vec![Line::from(vec![
-            Span::styled(
-                "gtunnel",
-                Style::default()
-                    .fg(theme::ACCENT)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(format!("  {account}"), Style::default().fg(theme::MUTED)),
-        ])];
+/// The name, padded to `MARK_WIDTH` so the two rows centre on one another.
+pub const NAME_ROW: &str = "  gtunnel  ";
+
+/// A cloud resting on a line. Braille because a braille cell carries 2x4 dots,
+/// which is the only way to draw a curve inside a single terminal row.
+const MARK_BRAILLE: &str = "⠤⠤⢤⣶⣾⣿⣷⣶⡤⠤⠤";
+
+/// The same shape for a font with no braille coverage. Eleven cells again, so
+/// a missing glyph changes how the mark looks but never where the name sits.
+const MARK_FALLBACK: &str = "──▗▄▟▀▙▄▖──";
+
+/// The large form, where the mark is the subject rather than a label. The
+/// program never draws it — only the README does — so it lives here as the
+/// single copy both are checked against, and the test is what ties them
+/// together. Three rows, 21 cells.
+#[cfg(test)]
+pub const LARGE_MARK: [&str; 3] = [
+    "⠀⠀⠀⠀⠀⠀⠀⠀⣠⣴⣶⣦⣄⠀⠀⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⢀⣴⣾⣶⣿⣿⣿⣿⣿⣶⣷⣦⡀⠀⠀⠀⠀",
+    "⠤⠤⠤⠤⣿⣿⡏⠉⠉⠉⠉⠉⠉⠉⢹⣿⣿⠤⠤⠤⠤",
+];
+
+/// The large form's name row, padded to its 21 cells.
+#[cfg(test)]
+pub const LARGE_NAME_ROW: &str = "       gtunnel       ";
+
+/// Which hue each cell of the mark carries. The line runs off both ends in the
+/// same colour, and the four brand hues band the cloud left to right.
+const MARK_BANDS: [Color; MARK_WIDTH as usize] = [
+    theme::LOGO_LINE,
+    theme::LOGO_LINE,
+    theme::LOGO_BLUE,
+    theme::LOGO_RED,
+    theme::LOGO_RED,
+    theme::LOGO_YELLOW,
+    theme::LOGO_YELLOW,
+    theme::LOGO_GREEN,
+    theme::LOGO_GREEN,
+    theme::LOGO_LINE,
+    theme::LOGO_LINE,
+];
+
+/// The label beside the account value. Its spaces are part of the field.
+const ACCOUNT_LABEL: &str = " account ";
+
+/// The mark as one row of coloured spans. Consecutive cells sharing a hue are
+/// merged so a row costs five spans rather than eleven.
+pub fn mark_spans(braille: bool) -> Vec<Span<'static>> {
+    let art = if braille { MARK_BRAILLE } else { MARK_FALLBACK };
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut run = String::new();
+    let mut hue: Option<Color> = None;
+    for (cell, ch) in art.chars().enumerate() {
+        let next = MARK_BANDS[cell];
+        if hue != Some(next) {
+            if let Some(previous) = hue {
+                spans.push(Span::styled(
+                    std::mem::take(&mut run),
+                    Style::default().fg(previous),
+                ));
+            }
+            hue = Some(next);
+        }
+        run.push(ch);
     }
-    vec![
-        Line::from(vec![
-            Span::styled(LOGO[0], Style::default().fg(theme::ACCENT)),
-            Span::styled(
-                "  IAP tunnel manager",
-                Style::default()
-                    .fg(theme::MUTED)
-                    .add_modifier(Modifier::DIM),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(LOGO[1], Style::default().fg(theme::ACCENT)),
-            Span::styled(
-                format!("  account {account}"),
+    if let Some(previous) = hue {
+        spans.push(Span::styled(run, Style::default().fg(previous)));
+    }
+    spans
+}
+
+/// How many cells the account field occupies: the label, the name, and the cell
+/// of padding on each side that makes it read as a field and not as more text.
+fn account_field_width(account: &str) -> usize {
+    ACCOUNT_LABEL.chars().count() + account.chars().count() + 2
+}
+
+/// The lockup with the subtitle and the account beside it, or one line of the
+/// same facts when the terminal is too narrow for the lockup to survive.
+///
+/// The account field has priority over the subtitle: it is the one piece of
+/// state that changes what every other key acts on, so it is the last thing to
+/// go, and when even it will not fit the header falls to the compact form.
+pub fn header_lines(width: u16, account: &str) -> Vec<Line<'static>> {
+    let w = width as usize;
+    let field = account_field_width(account);
+
+    if w < MARK_WIDTH as usize + 1 + field {
+        let name: String = "gtunnel".chars().take(w).collect();
+        let mut spans = vec![Span::styled(
+            name.clone(),
+            Style::default()
+                .fg(theme::ACCENT)
+                .add_modifier(Modifier::BOLD),
+        )];
+        // Two cells separate the name from the account; below that there is
+        // room for the name alone, and the account waits for a wider terminal.
+        let room = w.saturating_sub(name.chars().count());
+        if room > 2 {
+            let shown: String = account.chars().take(room - 2).collect();
+            spans.push(Span::styled(
+                format!("  {shown}"),
                 Style::default().fg(theme::MUTED),
-            ),
-        ]),
-        Line::raw(""),
+            ));
+        }
+        return vec![Line::from(spans)];
+    }
+
+    const SUBTITLE: &str = "IAP tunnel manager";
+    let mut spans = mark_spans(true);
+    let mut used = MARK_WIDTH as usize + field;
+
+    // The subtitle appears only when it fits whole, with two cells of air on
+    // each side. A half-drawn subtitle is worse than none.
+    let subtitle_cost = SUBTITLE.chars().count() + 4;
+    if w >= used + subtitle_cost {
+        spans.push(Span::styled(
+            format!("  {SUBTITLE}"),
+            Style::default().fg(theme::MUTED),
+        ));
+        used += SUBTITLE.chars().count() + 2;
+    }
+
+    // Whatever is left pushes the field flush against the right edge.
+    spans.push(Span::raw(" ".repeat(w - used)));
+    spans.push(Span::styled(
+        ACCOUNT_LABEL,
+        Style::default().fg(theme::MUTED),
+    ));
+    spans.push(Span::styled(
+        format!(" {account} "),
+        Style::default()
+            .bg(theme::ACCOUNT_BG)
+            .fg(theme::ACCOUNT_FG)
+            .add_modifier(Modifier::BOLD),
+    ));
+
+    vec![
+        Line::from(spans),
+        Line::from(Span::styled(
+            NAME_ROW,
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        )),
     ]
 }
 
-/// How many rows the header takes at this width.
-pub fn header_height(width: u16) -> u16 {
-    if width < HEADER_MIN_WIDTH {
-        HEADER_HEIGHT_COMPACT
-    } else {
-        HEADER_HEIGHT_FULL
+/// How many rows the header takes at this width. Derived from `header_lines`
+/// rather than recomputed, because a layout that reserves a different number of
+/// rows than the header draws is a bug with no symptom until it clips.
+pub fn header_height(width: u16, account: &str) -> u16 {
+    match header_lines(width, account).len() {
+        1 => HEADER_HEIGHT_COMPACT,
+        _ => HEADER_HEIGHT_FULL,
     }
 }
 
@@ -92,7 +207,7 @@ pub fn render(f: &mut Frame, app: &App) {
     // A terminal short enough that the header would cost the list its last row
     // keeps the list: the header says what the app is, the list is the app
     let header_height = if f.area().height >= 16 {
-        header_height(f.area().width)
+        header_height(f.area().width, &app.account)
     } else {
         0
     };
