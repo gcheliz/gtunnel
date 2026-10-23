@@ -9,7 +9,7 @@ use crate::expose::routes;
 use crate::gcp::compute::{BackendService, NamedPort, UrlMap};
 use crate::gcp::dns::RecordSet;
 use crate::gcp::{certmanager, compute, dns, gcloud, iap, GcpClient};
-use crate::state::{local_port_is_free, AccessTarget, TunnelSpec, TunnelState};
+use crate::state::{local_port_is_free, AccessTarget, PersistentTunnel, TunnelSpec, TunnelState};
 
 pub const TUNNEL_ROLE: &str = "roles/iap.tunnelResourceAccessor";
 
@@ -27,6 +27,7 @@ pub enum Finding {
     RelayMissing { account: String },
     CertNotActive { domain: String, state: String },
     OrphanDns { zone: String, fqdn: String },
+    UnknownDns { zone: String, fqdn: String },
     OrphanBackend { name: String },
     OrphanHostRule { host: String },
     OrphanNamedPort { name: String },
@@ -87,6 +88,11 @@ impl Finding {
             Finding::OrphanDns { zone, fqdn } => {
                 format!("DNS record {fqdn} in zone {zone} points at the relay but has no tunnel")
             }
+            Finding::UnknownDns { zone, fqdn } => format!(
+                "DNS record {fqdn} in zone {zone} points at the relay but gtunnel did not \
+                 create it. Remove it yourself if it is stale: `gcloud dns record-sets delete \
+                 {fqdn} --type=A --zone={zone}`"
+            ),
             Finding::OrphanBackend { name } => {
                 format!("Backend service {name} has no tunnel")
             }
@@ -145,14 +151,34 @@ pub fn ephemeral_ownership(
     (hostnames, names)
 }
 
-// The fix pass runs after a confirmation prompt, so a `gtunnel run` can claim a
-// route between the scan and the delete
+// Everything that owns a route right now: tunnels.toml plus the live runs.
+// Both are re-read at fix time, not at scan time.
+pub fn live_ownership(
+    tunnels: &[PersistentTunnel],
+    records: &[(EphemeralRecord, bool)],
+    account: &str,
+) -> (HashSet<String>, HashSet<String>) {
+    let (mut hostnames, mut names) = ephemeral_ownership(records, account);
+    for t in tunnels {
+        if t.account_name != account {
+            continue;
+        }
+        if let TunnelSpec::Expose { hostname, .. } = &t.spec {
+            hostnames.insert(hostname.clone());
+            names.insert(t.name.clone());
+        }
+    }
+    (hostnames, names)
+}
+
+// The fix pass runs after a confirmation prompt, so `gtunnel run` or
+// `gtunnel expose` can claim a route between the scan and the delete
 pub fn claimed_since_scan(
     finding: &Finding,
-    records: &[(EphemeralRecord, bool)],
+    hostnames: &HashSet<String>,
+    tunnels: &HashSet<String>,
     names: &Names,
 ) -> bool {
-    let (hostnames, tunnels) = ephemeral_ownership(records, &names.account);
     match finding {
         Finding::OrphanDns { fqdn, .. } => hostnames.contains(fqdn.trim_end_matches('.')),
         Finding::OrphanHostRule { host } => hostnames.contains(host),
@@ -177,6 +203,29 @@ pub fn find_expose_orphans(
 ) -> Vec<Finding> {
     let mut findings = Vec::new();
 
+    // Account names share dash-separated prefixes, so the name alone cannot say
+    // whose backend this is; only the owner tag gtunnel wrote can
+    let owner = names.owner();
+    let backend_prefix = format!("gt-{}-", names.account);
+
+    // A Cloud DNS record carries no description, so pointing at the relay IP
+    // proves nothing on its own. A record is gtunnel's only when gtunnel still
+    // holds a resource it did tag for the same tunnel.
+    let mut owned_labels: HashSet<&str> = HashSet::new();
+    for backend in backends {
+        if backend.description.as_deref() == Some(owner.as_str()) {
+            if let Some(tunnel) = backend.name.strip_prefix(&backend_prefix) {
+                owned_labels.insert(tunnel);
+            }
+        }
+    }
+    for port in named_ports {
+        if let Some(tunnel) = port.name.strip_prefix("gt-") {
+            owned_labels.insert(tunnel);
+        }
+    }
+    let owned_hosts: HashSet<String> = host_rules(url_map).into_iter().collect();
+
     for (zone, record) in records {
         if record.rtype != "A" || record.rrdatas != [relay_ip.to_string()] {
             continue;
@@ -185,16 +234,20 @@ pub fn find_expose_orphans(
         if state_hostnames.contains(hostname) {
             continue;
         }
-        findings.push(Finding::OrphanDns {
-            zone: zone.clone(),
-            fqdn: record.name.clone(),
-        });
+        let label = hostname.split('.').next().unwrap_or_default();
+        if owned_hosts.contains(hostname) || owned_labels.contains(label) {
+            findings.push(Finding::OrphanDns {
+                zone: zone.clone(),
+                fqdn: record.name.clone(),
+            });
+        } else {
+            findings.push(Finding::UnknownDns {
+                zone: zone.clone(),
+                fqdn: record.name.clone(),
+            });
+        }
     }
 
-    // Account names share dash-separated prefixes, so the name alone cannot say
-    // whose backend this is; only the owner tag gtunnel wrote can
-    let owner = names.owner();
-    let backend_prefix = format!("gt-{}-", names.account);
     for backend in backends {
         if backend.description.as_deref() != Some(owner.as_str()) {
             continue;
@@ -586,11 +639,14 @@ async fn apply_fix(
     finding: &Finding,
 ) -> Result<()> {
     let acct = config.get_account(Some(account_name)).ok();
-    if claimed_since_scan(
-        finding,
+    // Re-read both owners: `gtunnel expose` writes tunnels.toml and `gtunnel
+    // run` writes a record, and either can land between the scan and here
+    let (hostnames, tunnels) = live_ownership(
+        &state.tunnels,
         &list_ephemeral().unwrap_or_default(),
-        &Names::new(account_name),
-    ) {
+        account_name,
+    );
+    if claimed_since_scan(finding, &hostnames, &tunnels, &Names::new(account_name)) {
         anyhow::bail!("a tunnel claimed it since the scan");
     }
     match finding {
@@ -767,7 +823,8 @@ mod tests {
     fn a_route_claimed_between_the_scan_and_the_fix_is_not_removed() {
         let names = Names::new("dev");
         let records = vec![expose_record("gt-live", "gt-live.dev.example.com", true)];
-        let claimed = |f: &Finding| claimed_since_scan(f, &records, &names);
+        let (hostnames, tunnels) = live_ownership(&[], &records, "dev");
+        let claimed = |f: &Finding| claimed_since_scan(f, &hostnames, &tunnels, &names);
 
         assert!(claimed(&Finding::OrphanDns {
             zone: "example".to_string(),
@@ -870,6 +927,66 @@ mod tests {
         assert!(findings
             .iter()
             .any(|f| matches!(f, Finding::OrphanBackend { name } if name == "gt-dev-old")));
+    }
+
+    // Cloud DNS records carry no description, so pointing at the relay IP was
+    // the whole test and `doctor --fix` deleted a record someone made by hand
+    #[test]
+    fn a_hand_made_record_pointing_at_the_relay_is_reported_but_not_deletable() {
+        let names = Names::new("dev");
+        let findings = find_expose_orphans(
+            &HashSet::new(),
+            &HashSet::new(),
+            RELAY_IP,
+            &[record("legacy", RELAY_IP)],
+            &[],
+            &url_map(&[]),
+            &[],
+            &names,
+        );
+        assert_eq!(
+            findings,
+            vec![Finding::UnknownDns {
+                zone: "example".to_string(),
+                fqdn: "legacy.dev.example.com.".to_string(),
+            }]
+        );
+        assert!(!findings[0].fixable());
+    }
+
+    // The fix pass runs after a prompt, so `gtunnel expose` can claim a route
+    // between the scan and the delete just as `gtunnel run` can
+    #[test]
+    fn a_managed_tunnel_added_between_the_scan_and_the_fix_keeps_its_route() {
+        let names = Names::new("dev");
+        let hostnames: HashSet<String> = ["api.dev.example.com".to_string()].into_iter().collect();
+        let tunnels: HashSet<String> = ["api".to_string()].into_iter().collect();
+
+        assert!(claimed_since_scan(
+            &Finding::OrphanBackend {
+                name: "gt-dev-api".to_string()
+            },
+            &hostnames,
+            &tunnels,
+            &names
+        ));
+        assert!(claimed_since_scan(
+            &Finding::OrphanDns {
+                zone: "example".to_string(),
+                fqdn: "api.dev.example.com.".to_string(),
+            },
+            &hostnames,
+            &tunnels,
+            &names
+        ));
+        assert!(!claimed_since_scan(
+            &Finding::OrphanBackend {
+                name: "gt-dev-gone".to_string()
+            },
+            &hostnames,
+            &tunnels,
+            &names
+        ));
     }
 
     #[test]

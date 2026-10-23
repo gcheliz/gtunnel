@@ -129,10 +129,15 @@ So a relay is about USD 25/month per account, and a tunnel on top of it is free.
 | Dead ephemeral | A `run` record whose process is gone |
 | Orphan DNS record, backend, host rule, named port | Relay resources tagged `gtunnel:<account>` that no live tunnel claims |
 
-It re-checks the claim immediately before each removal, so a tunnel started while the scan
-was running is never torn out from under you. Anything created by hand is left alone, even
-when its name matches gtunnel's scheme, because the decision is made on the `gtunnel:<account>`
-tag rather than on the name.
+It re-checks the claim against `tunnels.toml` and the live runs immediately before each
+removal, so a tunnel created while the scan was running is never torn out from under you.
+Anything created by hand is left alone, even when its name matches gtunnel's scheme, because
+the decision is made on the `gtunnel:<account>` tag rather than on the name.
+
+A Cloud DNS record set carries no description, so pointing at the relay address is not proof
+of ownership. gtunnel treats such a record as its own only while it still holds a tagged
+backend, a host rule or a named port for the same tunnel. Any other record aimed at the relay
+is reported with the `gcloud dns record-sets delete` command and left in place.
 
 To confirm nothing is left in GCP after `relay down`:
 
