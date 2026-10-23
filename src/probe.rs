@@ -88,9 +88,21 @@ pub async fn http_probe(url: &str) -> HealthStatus {
     }
 }
 
-pub fn parse_lsof_established(text: &str) -> u64 {
+/// How many clients an established-connection listing shows. Both ends of a
+/// loopback connection carry the tunnel's port — the listener's accepted socket
+/// and the client's own — and `lsof -iTCP:<port>` returns a row for each, so
+/// counting rows reported one client as two. Only the row whose *local* side is
+/// the port is the tunnel's end of it.
+pub fn parse_lsof_established(text: &str, port: u16) -> u64 {
+    let suffix = format!(":{port}");
     text.lines()
         .filter(|line| line.contains("ESTABLISHED"))
+        .filter(|line| {
+            line.split_whitespace()
+                .find(|field| field.contains("->"))
+                .and_then(|name| name.split("->").next())
+                .is_some_and(|local| local.ends_with(&suffix))
+        })
         .count() as u64
 }
 
@@ -110,7 +122,7 @@ pub fn active_connections(port: u16) -> u64 {
         .output()
     {
         if out.status.success() {
-            return parse_lsof_established(&String::from_utf8_lossy(&out.stdout));
+            return parse_lsof_established(&String::from_utf8_lossy(&out.stdout), port);
         }
     }
     if let Ok(out) = std::process::Command::new("ss")
@@ -439,7 +451,28 @@ gcloud 123 me 8u IPv4 0x2 0t0 TCP 127.0.0.1:15432->127.0.0.1:52002 (ESTABLISHED)
 gcloud 123 me 9u IPv4 0x3 0t0 TCP 127.0.0.1:15432->127.0.0.1:52003 (ESTABLISHED)
 gcloud 123 me 6u IPv4 0x4 0t0 TCP 127.0.0.1:15432 (LISTEN)
 ";
-        assert_eq!(parse_lsof_established(fixture), 3);
+        assert_eq!(parse_lsof_established(fixture, 15432), 3);
+    }
+
+    // Both ends of a loopback connection carry the same port, so `lsof -iTCP:8443`
+    // returns two rows for one client and the count read double
+    #[test]
+    fn one_loopback_client_counts_once() {
+        let real = "\
+COMMAND   PID    USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+ssh      2146 gonzalo    8u  IPv4 0x3a6c8252f144aa71      0t0  TCP 127.0.0.1:8443->127.0.0.1:64306 (ESTABLISHED)
+Python  12253 gonzalo    3u  IPv4 0xc78928f83ee41eb7      0t0  TCP 127.0.0.1:64306->127.0.0.1:8443 (ESTABLISHED)
+";
+        assert_eq!(parse_lsof_established(real, 8443), 1);
+    }
+
+    // A client on another machine reaching a tunnel bound to all interfaces has
+    // only one row, and it is still one connection
+    #[test]
+    fn a_remote_client_counts_once() {
+        let text =
+            "ssh 2146 gonzalo 8u IPv4 0x1 0t0 TCP 10.0.0.2:8443->10.0.0.9:51234 (ESTABLISHED)\n";
+        assert_eq!(parse_lsof_established(text, 8443), 1);
     }
 
     #[test]
