@@ -59,7 +59,8 @@ pub fn render(f: &mut Frame, app: &App) {
         let right = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(6),
+                // Six rows of detail and two of border
+                Constraint::Length(8),
                 Constraint::Min(0),
                 Constraint::Length(metrics_height),
             ])
@@ -176,7 +177,46 @@ fn render_details(f: &mut Frame, app: &App, area: Rect) {
         }
     }
 
+    // Status says a tunnel is running; these two say since when, and whether
+    // anything brought it up without being asked
+    let metrics = entry.metrics.clone().unwrap_or_default();
+    lines.push(detail(
+        "started",
+        &match metrics.uptime {
+            Some(up) => format!("{} ago", format_uptime(up)),
+            None => "-".to_string(),
+        },
+    ));
+    lines.push(detail(
+        "started by",
+        &match entry.status {
+            TunnelStatus::Running => started_by(metrics.restarts, entry.tunnel.auto_start),
+            _ => "-".to_string(),
+        },
+    ));
+
     f.render_widget(Paragraph::new(lines).block(panel("Details")), area);
+}
+
+/// Who started the process that is running now. The service manager counts
+/// runs, and the run gtunnel asked for is the first one: anything past it is
+/// the manager reviving a tunnel that died, which the screen never showed.
+pub fn started_by(restarts: u32, auto_start: bool) -> String {
+    let flag = if auto_start {
+        "auto-start on"
+    } else {
+        "auto-start off"
+    };
+    if restarts == 0 {
+        format!("gtunnel ({flag})")
+    } else {
+        let manager = if cfg!(target_os = "macos") {
+            "launchd"
+        } else {
+            "systemd"
+        };
+        format!("{manager}, after {restarts} restarts ({flag})")
+    }
 }
 
 fn access_zone(target: &crate::state::AccessTarget) -> String {

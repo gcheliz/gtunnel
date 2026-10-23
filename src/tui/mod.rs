@@ -524,6 +524,19 @@ mod tests {
         assert_eq!(ui::wrapped_rows(&lines, 0), 3);
     }
 
+    // "Running" alone cannot answer the question the user actually asks, which is
+    // whether anything started this tunnel without being told to
+    #[test]
+    fn details_distinguish_a_launchd_revival_from_a_start() {
+        // RuntimeInfo already reports runs minus the one gtunnel asked for
+        assert_eq!(ui::started_by(0, false), "gtunnel (auto-start off)");
+        assert_eq!(ui::started_by(0, true), "gtunnel (auto-start on)");
+        // Any run past the first is the service manager reviving a crash
+        let revived = ui::started_by(2, false);
+        assert!(revived.contains("after 2 restarts"), "{revived}");
+        assert!(revived.contains("auto-start off"), "{revived}");
+    }
+
     // A jump tunnel runs `ssh -N`, which prints nothing while it works, so an
     // empty pane is the healthy case and must not read as a broken one
     #[test]
