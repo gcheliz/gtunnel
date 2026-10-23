@@ -164,7 +164,7 @@ fn write_plist(path: &std::path::Path, spec: &ServiceSpec) -> Result<()> {
 pub async fn install(spec: &ServiceSpec) -> Result<()> {
     crate::state::ensure_logs_dir()?;
     // The tunnel about to run owns its log; the last run's errors are not its own
-    super::reset_log(&spec.log_path)?;
+    super::write_log_header(spec)?;
     write_plist(&plist_path(&spec.label)?, spec)?;
 
     let agent = agent_path(&spec.label)?;

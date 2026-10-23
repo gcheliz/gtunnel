@@ -17,6 +17,9 @@ pub struct ServiceSpec {
     pub log_path: PathBuf,
     pub env: Vec<(String, String)>,
     pub auto_start: bool,
+    // What the log's opening line names, so a backend can write it without
+    // knowing anything about tunnels
+    pub description: String,
 }
 
 // Runtime facts the service manager reports back
@@ -63,6 +66,7 @@ pub fn service_spec(cfg: &Config, t: &PersistentTunnel) -> Result<ServiceSpec> {
         log_path: t.log_path()?,
         env: daemon_env(&gcloud),
         auto_start: t.auto_start,
+        description: format!("{} -> {}", t.name, t.display_target()),
     })
 }
 
@@ -102,6 +106,42 @@ pub fn reset_log(path: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
+/// Clear a tunnel's log and name the tunnel on its first line. Install is the
+/// one place that truncates, so it is also the one place that has to leave
+/// something behind: an empty pane and a tunnel that was never installed looked
+/// the same on screen.
+pub fn write_log_header(spec: &ServiceSpec) -> Result<()> {
+    reset_log(&spec.log_path)?;
+    log_event(&spec.log_path, &spec.description)
+}
+
+/// Append one gtunnel line to a tunnel's log. The daemon's stdout is redirected
+/// into the same file, so both writers append and neither rewrites the other;
+/// one `write_all` of one whole line keeps a gtunnel line from landing inside a
+/// gcloud one. A `--via` tunnel prints nothing while it is healthy, so without
+/// these lines its log is indistinguishable from a tunnel that never ran.
+pub fn log_event(path: &std::path::Path, message: &str) -> Result<()> {
+    use std::io::Write;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("Failed to create {}", dir.display()))?;
+    }
+    // A name carrying a newline would otherwise forge a second line
+    let message: String = message
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let stamp = humantime::format_rfc3339_seconds(std::time::SystemTime::now());
+    let line = format!("{stamp} gtunnel: {message}\n");
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .with_context(|| format!("Failed to open {}", path.display()))?
+        .write_all(line.as_bytes())
+        .with_context(|| format!("Failed to write {}", path.display()))
+}
+
 /// Delete a tunnel's log. A tunnel that no longer exists owns nothing, and a
 /// name reused later would otherwise open on the previous tunnel's lines.
 pub fn remove_log(path: &std::path::Path) -> Result<()> {
@@ -137,6 +177,7 @@ mod tests {
                 ),
             ],
             auto_start: false,
+            description: "db -> postgres-1:5432 (europe-west1-b)".to_string(),
         }
     }
 
@@ -411,6 +452,66 @@ mod tests {
         assert!(!log.exists());
         remove_log(&log).expect("a log that is already gone is not an error");
     }
+
+    #[test]
+    fn an_event_appends_one_line_and_creates_the_directory_it_needs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log = dir.path().join("nested/dev-db.log");
+        log_event(&log, "starting dev-db -> 10.0.0.1:443").expect("first event");
+        log_event(&log, "stopped by gtunnel").expect("second event");
+        let text = std::fs::read_to_string(&log).expect("read");
+        assert_eq!(text.lines().count(), 2, "{text}");
+        assert!(
+            text.lines()
+                .next()
+                .unwrap()
+                .ends_with("gtunnel: starting dev-db -> 10.0.0.1:443"),
+            "{text}"
+        );
+        assert!(text.ends_with('\n'), "{text}");
+    }
+
+    // The daemon appends too, so an event must never rewrite what is already there
+    #[test]
+    fn an_event_keeps_the_daemon_lines_already_in_the_log() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log = dir.path().join("dev-db.log");
+        std::fs::write(&log, "Testing if tunnel connection works.\n").expect("seed");
+        log_event(&log, "stopped by gtunnel").expect("event");
+        let text = std::fs::read_to_string(&log).expect("read");
+        assert!(
+            text.starts_with("Testing if tunnel connection works.\n"),
+            "{text}"
+        );
+        assert_eq!(text.lines().count(), 2, "{text}");
+    }
+
+    // An edit or a plain install truncates the log; without a header the pane
+    // goes blank again and the tunnel looks like it was never there
+    #[test]
+    fn installing_leaves_the_tunnel_named_in_its_own_log() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut s = spec();
+        s.log_path = dir.path().join("dev-db.log");
+        s.description = "dev-db -> 10.0.0.1:443".to_string();
+        std::fs::write(&s.log_path, "stale line from the last run\n").expect("seed");
+
+        write_log_header(&s).expect("header");
+
+        let text = std::fs::read_to_string(&s.log_path).expect("read");
+        assert!(!text.contains("stale"), "{text}");
+        assert!(text.contains("dev-db -> 10.0.0.1:443"), "{text}");
+    }
+
+    // Review Focus 3: a target carrying a newline must not forge a second line
+    #[test]
+    fn an_event_writes_one_line_however_the_message_is_shaped() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log = dir.path().join("dev-db.log");
+        log_event(&log, "starting dev-db\nforged: line").expect("event");
+        let text = std::fs::read_to_string(&log).expect("read");
+        assert_eq!(text.lines().count(), 1, "{text}");
+    }
 }
 
 // Live launchd lifecycle check, run by hand on macOS:
@@ -432,6 +533,7 @@ mod live {
             log_path: dir.join("logs/test-sleep.log"),
             env: vec![("PATH".to_string(), "/usr/bin:/bin".to_string())],
             auto_start: false,
+            description: "sleep -> nothing at all".to_string(),
         };
 
         launchd::install(&spec).await.expect("install");

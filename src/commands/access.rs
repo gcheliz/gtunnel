@@ -173,6 +173,11 @@ pub async fn cmd_start(account: Option<&str>, name: &str) -> Result<()> {
     // A unit written by an older gtunnel is rewritten before it is started
     let spec = daemon::service_spec(&config, &tunnel)?;
     daemon::install(&spec).await?;
+    // A tunnel that started is started whether or not its log took the line
+    let _ = daemon::log_event(
+        &spec.log_path,
+        &format!("starting {name} on {}", tunnel.display_url()),
+    );
     daemon::start(&spec.label).await?;
 
     tokio::time::sleep(START_SETTLE).await;
@@ -210,6 +215,9 @@ pub async fn cmd_stop(account: Option<&str>, name: &str) -> Result<()> {
     let state = TunnelState::load()?;
     let tunnel = find_tunnel(&state, name, &acct.name)?;
     daemon::stop(&daemon::platform_label(&acct.name, &tunnel.name)).await?;
+    if let Ok(log) = tunnel.log_path() {
+        let _ = daemon::log_event(&log, "stopped by gtunnel");
+    }
     println!("{} {name} stopped", TunnelStatus::Stopped.symbol());
     Ok(())
 }

@@ -123,8 +123,26 @@ fn clear_log(account: &str, name: &str) -> Result<String> {
     let (_, acct) = resolve(Some(account))?;
     let state = TunnelState::load()?;
     let tunnel = find_tunnel(&state, name, &acct.name)?;
-    daemon::reset_log(&tunnel.log_path()?)?;
+    let path = tunnel.log_path()?;
+    daemon::reset_log(&path)?;
+    // Otherwise the pane the user just cleared reads like a tunnel with nothing
+    // to say, which is the state this whole pass exists to tell apart
+    let _ = daemon::log_event(&path, "log cleared");
     Ok(format!("{name} log cleared"))
+}
+
+// A stop has nothing left to fail: the line is best effort, and the tunnel is
+// stopped either way
+fn log_stopped(account: &str, name: &str) {
+    let Ok(state) = TunnelState::load() else {
+        return;
+    };
+    let Some(tunnel) = state.find_for_account(name, account) else {
+        return;
+    };
+    if let Ok(path) = tunnel.log_path() {
+        let _ = daemon::log_event(&path, "stopped by gtunnel");
+    }
 }
 
 pub async fn probe_health(tunnel: &PersistentTunnel) -> HealthStatus {
@@ -199,6 +217,7 @@ async fn run(account: &str, op: &Op) -> Result<String> {
         Op::Start(name) => start(account, name).await,
         Op::Stop(name) => {
             daemon::stop(&daemon::platform_label(account, name)).await?;
+            log_stopped(account, name);
             Ok(format!("{name} stopped"))
         }
         Op::Restart(name) => {
@@ -322,6 +341,11 @@ async fn start(account: &str, name: &str) -> Result<String> {
     }
     let spec = daemon::service_spec(&config, &tunnel)?;
     daemon::install(&spec).await?;
+    // A tunnel that started is started whether or not its log took the line
+    let _ = daemon::log_event(
+        &spec.log_path,
+        &format!("starting {name} on {}", tunnel.display_url()),
+    );
     daemon::start(&spec.label).await?;
     Ok(format!("{name} starting"))
 }

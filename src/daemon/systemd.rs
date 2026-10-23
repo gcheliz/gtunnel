@@ -115,7 +115,7 @@ async fn daemon_reload() -> Result<()> {
 pub async fn install(spec: &ServiceSpec) -> Result<()> {
     crate::state::ensure_logs_dir()?;
     // The tunnel about to run owns its log; the last run's errors are not its own
-    super::reset_log(&spec.log_path)?;
+    super::write_log_header(spec)?;
     let dir = units_dir()?;
     std::fs::create_dir_all(&dir).with_context(|| format!("Failed to create {}", dir.display()))?;
     let path = unit_path(&spec.label)?;
