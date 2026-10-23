@@ -149,10 +149,12 @@ mod tests {
         );
     }
 
+    // RunAtLoad no longer carries auto-start: KeepAlive overrides it, and the
+    // plist is loaded only when the tunnel is meant to run
     #[test]
-    fn plist_run_at_load_follows_auto_start() {
+    fn a_loaded_plist_always_runs() {
         let mut s = spec();
-        assert!(launchd::render_plist(&s).contains("<key>RunAtLoad</key>\n    <false/>"));
+        assert!(launchd::render_plist(&s).contains("<key>RunAtLoad</key>\n    <true/>"));
         s.auto_start = true;
         assert!(launchd::render_plist(&s).contains("<key>RunAtLoad</key>\n    <true/>"));
     }
@@ -184,6 +186,28 @@ mod tests {
             ]
         );
         assert_eq!(run, vec!["kickstart", "gui/501/com.gtunnel.dev.db"]);
+    }
+
+    // With KeepAlive set, launchd runs a job the moment it is loaded, whatever
+    // RunAtLoad or Disabled say, and it loads everything in LaunchAgents at
+    // login. So a plist kept there is a tunnel that always runs: the loaded
+    // definition gtunnel starts and stops lives in its own directory, and the
+    // LaunchAgents copy exists only when auto-start is on.
+    #[test]
+    fn only_an_auto_start_tunnel_puts_a_plist_in_launch_agents() {
+        let canonical = launchd::plist_path("com.gtunnel.dev.db").expect("path");
+        assert!(
+            !canonical.starts_with(launchd::agents_dir().expect("agents")),
+            "{}",
+            canonical.display()
+        );
+        let agent = launchd::agent_path("com.gtunnel.dev.db").expect("path");
+        assert!(
+            agent.starts_with(launchd::agents_dir().expect("agents")),
+            "{}",
+            agent.display()
+        );
+        assert_eq!(canonical.file_name(), agent.file_name());
     }
 
     #[test]

@@ -10,12 +10,21 @@ pub fn label_for(account: &str, name: &str) -> String {
     format!("com.gtunnel.{account}.{name}")
 }
 
-fn agents_dir() -> Result<PathBuf> {
+// Everything launchd finds here is loaded at login, and a KeepAlive job runs
+// the moment it is loaded, so a plist here IS auto-start
+pub fn agents_dir() -> Result<PathBuf> {
     let home = dirs::home_dir().context("Could not determine the home directory")?;
     Ok(home.join("Library/LaunchAgents"))
 }
 
-fn plist_path(label: &str) -> Result<PathBuf> {
+// The definition gtunnel loads and unloads itself, out of launchd's reach
+pub fn plist_path(label: &str) -> Result<PathBuf> {
+    Ok(crate::config::config_dir()?
+        .join("agents")
+        .join(format!("{label}.plist")))
+}
+
+pub fn agent_path(label: &str) -> Result<PathBuf> {
     Ok(agents_dir()?.join(format!("{label}.plist")))
 }
 
@@ -44,7 +53,6 @@ pub fn render_plist(spec: &ServiceSpec) -> String {
         ));
     }
 
-    let run_at_load = if spec.auto_start { "true" } else { "false" };
     let log = xml_escape(&spec.log_path.to_string_lossy());
 
     format!(
@@ -61,7 +69,7 @@ pub fn render_plist(spec: &ServiceSpec) -> String {
     <dict>
 {env}    </dict>
     <key>RunAtLoad</key>
-    <{run_at_load}/>
+    <true/>
     <key>KeepAlive</key>
     <dict>
         <key>SuccessfulExit</key>
@@ -136,29 +144,45 @@ fn domain_target() -> String {
     format!("gui/{}", unsafe { libc::getuid() })
 }
 
+fn write_plist(path: &std::path::Path, spec: &ServiceSpec) -> Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("Failed to create {}", dir.display()))?;
+    }
+    std::fs::write(path, render_plist(spec))
+        .with_context(|| format!("Failed to write {}", path.display()))
+}
+
+// Writing the definition is not the same as asking the tunnel to run: a loaded
+// KeepAlive job always runs, so a job that was not loaded stays unloaded and
+// `start` is what loads it.
 pub async fn install(spec: &ServiceSpec) -> Result<()> {
     crate::state::ensure_logs_dir()?;
-    let dir = agents_dir()?;
-    std::fs::create_dir_all(&dir).with_context(|| format!("Failed to create {}", dir.display()))?;
-    let path = plist_path(&spec.label)?;
-    std::fs::write(&path, render_plist(spec))
-        .with_context(|| format!("Failed to write {}", path.display()))?;
-    // Replace any already-loaded definition so the new argv takes effect
-    let _ = launchctl(&["bootout", &format!("{}/{}", domain_target(), spec.label)]).await;
-    let out = launchctl(&["bootstrap", &domain_target(), &path.to_string_lossy()]).await?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        anyhow::bail!("launchctl bootstrap failed: {}", stderr.trim());
+    write_plist(&plist_path(&spec.label)?, spec)?;
+
+    let agent = agent_path(&spec.label)?;
+    if spec.auto_start {
+        write_plist(&agent, spec)?;
+    } else if agent.exists() {
+        std::fs::remove_file(&agent)
+            .with_context(|| format!("Failed to remove {}", agent.display()))?;
+    }
+
+    // A running tunnel is reloaded so the new argv takes effect
+    if status(&spec.label).await == TunnelStatus::Running {
+        stop(&spec.label).await?;
+        start(&spec.label).await?;
     }
     Ok(())
 }
 
 pub async fn uninstall(label: &str) -> Result<()> {
     let _ = launchctl(&["bootout", &format!("{}/{}", domain_target(), label)]).await;
-    let path = plist_path(label)?;
-    if path.exists() {
-        std::fs::remove_file(&path)
-            .with_context(|| format!("Failed to remove {}", path.display()))?;
+    for path in [plist_path(label)?, agent_path(label)?] {
+        if path.exists() {
+            std::fs::remove_file(&path)
+                .with_context(|| format!("Failed to remove {}", path.display()))?;
+        }
     }
     Ok(())
 }
@@ -208,8 +232,9 @@ pub async fn stop(label: &str) -> Result<()> {
     Ok(())
 }
 
+// Auto-start is the LaunchAgents copy, which install adds or removes. It does
+// not touch whether the tunnel is running now.
 pub async fn set_auto_start(spec: &ServiceSpec) -> Result<()> {
-    // RunAtLoad lives in the plist, so rewriting and reloading is the change
     install(spec).await
 }
 

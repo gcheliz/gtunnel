@@ -98,7 +98,7 @@ flowchart TB
 | Concern | Decision |
 |---|---|
 | Supervision | launchd on macOS, systemd `--user` on Linux. Both restart on failure |
-| Reboot | Auto-start is per tunnel; off by default, toggled with `A` in the TUI |
+| Reboot | Auto-start is per tunnel; off by default, toggled with `A` in the TUI. On macOS it is the presence of the plist in `~/Library/LaunchAgents`, because launchd loads everything there at login and a `KeepAlive` job runs the moment it is loaded. The definition gtunnel starts and stops itself lives outside that directory |
 | PATH | A daemon does not inherit a shell, so gcloud's directory is written into the unit. Without it the service dies at every start |
 | Credentials | None stored. Each API call shells out to `gcloud auth print-access-token` for the account's configuration |
 | Ephemeral runs | `run` writes a record with its pid, so `list`, the TUI and `doctor` see it. Every exit path tears the route down, including signals |
@@ -112,6 +112,8 @@ flowchart TB
 | `<config>/config.toml` | Accounts, default account, relay and domains per account |
 | `<config>/tunnels.toml` | Persistent tunnels |
 | `<config>/run/<account>-<name>.json` | One record per live `gtunnel run` |
+| `<config>/agents/<label>.plist` | macOS: the service definition gtunnel loads and unloads |
+| `~/Library/LaunchAgents/<label>.plist` | macOS: present only while auto-start is on |
 | `<config>/logs/<account>-<name>.log` | Per-tunnel log, written by the service |
 | `<config>/update-check.json` | Last version check |
 

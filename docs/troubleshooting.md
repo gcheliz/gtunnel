@@ -82,8 +82,13 @@ launchctl list | grep gtunnel
 launchctl print gui/$(id -u)/com.gtunnel.<account>.<name>
 launchctl kickstart -k gui/$(id -u)/com.gtunnel.<account>.<name>
 launchctl bootout gui/$(id -u)/com.gtunnel.<account>.<name>
-cat ~/Library/LaunchAgents/com.gtunnel.<account>.<name>.plist
+cat "$HOME/Library/Application Support/gtunnel/agents/com.gtunnel.<account>.<name>.plist"
 ```
+
+A plist in `~/Library/LaunchAgents` means auto-start is on for that tunnel, nothing more:
+launchd loads everything in that directory at login, and a `KeepAlive` job runs the moment
+it is loaded. The definition `gtunnel start` and `gtunnel stop` load and unload lives in
+gtunnel's own directory, so a stopped tunnel is a label launchd does not have.
 
 ### Linux, systemd user units
 
