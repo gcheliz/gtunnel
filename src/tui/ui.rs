@@ -135,23 +135,23 @@ fn divider_span() -> Span<'static> {
 /// How many cells the divider and its air occupy.
 const DIVIDER_WIDTH: usize = 5;
 
-/// The subtitle and the right-aligned account field that sit on the mark's top
-/// row, padded so the field's last cell lands on the final column.
-fn caption_spans(w: usize, mark_cells: usize, account: &str) -> Vec<Span<'static>> {
+/// The two caption lines, one per lockup row: the platform beside the mark and
+/// the subtitle beside the name. Two lines on a two-row lockup is the one
+/// pairing a cell grid can centre exactly.
+fn caption_spans(w: usize, mark_cells: usize, account: &str) -> Option<[Span<'static>; 2]> {
+    const PLATFORM: &str = "Google Cloud Platform";
     const SUBTITLE: &str = "IAP tunnel manager";
     let field = account_field_width(account);
     let used = MARGIN + mark_cells + field + MARGIN;
 
-    // The subtitle appears only when it fits whole, behind the divider that
-    // separates it from the mark. A half-drawn subtitle is worse than none.
-    if w >= used + DIVIDER_WIDTH + SUBTITLE.chars().count() {
-        vec![
-            divider_span(),
-            Span::styled(SUBTITLE, Style::default().fg(theme::MUTED)),
-        ]
-    } else {
-        Vec::new()
-    }
+    // The captions appear only when the longer one fits whole, behind the
+    // divider that separates them from the mark. A half-drawn caption is worse
+    // than none.
+    let longest = PLATFORM.chars().count().max(SUBTITLE.chars().count());
+    (w >= used + DIVIDER_WIDTH + longest).then(|| {
+        let muted = Style::default().fg(theme::MUTED);
+        [Span::styled(PLATFORM, muted), Span::styled(SUBTITLE, muted)]
+    })
 }
 
 /// How wide the account box is: two borders, the label, the value, and the
@@ -195,7 +195,7 @@ fn row_cells(spans: &[Span<'_>]) -> usize {
 
 /// The name under the mark, and the divider carried down beside it so the
 /// separator runs the lockup's whole height rather than half of it.
-fn name_spans(row: &'static str, divided: bool) -> Vec<Span<'static>> {
+fn name_spans(row: &'static str, caption: Option<Span<'static>>) -> Vec<Span<'static>> {
     let mut spans = vec![
         Span::raw(" ".repeat(MARGIN)),
         Span::styled(
@@ -205,8 +205,9 @@ fn name_spans(row: &'static str, divided: bool) -> Vec<Span<'static>> {
                 .add_modifier(Modifier::BOLD),
         ),
     ];
-    if divided {
+    if let Some(caption) = caption {
         spans.push(divider_span());
+        spans.push(caption);
     }
     spans
 }
@@ -243,20 +244,25 @@ pub fn header_lines(width: u16, _height: u16, account: &str) -> Vec<Line<'static
         return vec![Line::from(spans)];
     }
 
-    let caption = caption_spans(w, MARK_WIDTH as usize, account);
-    // The divider belongs to the subtitle: with no room for one there is
+    // The divider belongs to the captions: with no room for them there is
     // nothing for it to separate, and it would point at empty space.
-    let divided = !caption.is_empty();
+    let (platform, subtitle) = match caption_spans(w, MARK_WIDTH as usize, account) {
+        Some([platform, subtitle]) => (Some(platform), Some(subtitle)),
+        None => (None, None),
+    };
 
     let mut top = vec![Span::raw(" ".repeat(MARGIN))];
     top.extend(mark_spans(true, 0));
-    top.extend(caption);
+    if let Some(platform) = platform {
+        top.push(divider_span());
+        top.push(platform);
+    }
 
     // The box is three rows tall and the lockup is two, so it starts on the
     // blank row above the mark: that centres it on the mark rather than on
     // the word, and the mark is what the eye lands on first.
     let boxw = account_box_width(account);
-    let mut rows = [Vec::new(), top, name_spans(NAME_ROW, divided)];
+    let mut rows = [Vec::new(), top, name_spans(NAME_ROW, subtitle)];
     for (row, segment) in rows.iter_mut().zip(account_box(account)) {
         let pad = w.saturating_sub(row_cells(row) + boxw + MARGIN);
         row.push(Span::raw(" ".repeat(pad)));

@@ -677,8 +677,21 @@ mod tests {
         // The box is three rows tall and opens on the row above the mark, so
         // it is centred on the lockup rather than hanging off its top.
         let top = line_text(&lines[0]);
-        assert!(top.trim_start().starts_with('\u{256d}'), "{top:?}");
         assert!(top.trim_end().ends_with('\u{256e}'), "{top:?}");
+        // The two caption lines are as tall as the lockup: the platform on the
+        // mark's row, the subtitle on the name's row, both in the same column.
+        let platform = line_text(&lines[1]);
+        let subtitle = line_text(&lines[2]);
+        let col = |t: &str, needle: &str| t.find(needle).map(|i| t[..i].chars().count());
+        assert!(
+            col(&platform, "Google Cloud Platform").is_some(),
+            "{platform:?}"
+        );
+        assert_eq!(
+            col(&platform, "Google Cloud Platform"),
+            col(&subtitle, "IAP tunnel manager"),
+            "{platform:?} / {subtitle:?}"
+        );
         assert!(line_text(&lines[2]).trim_end().ends_with('\u{256f}'));
         // a blank row of padding below the lockup
         assert_eq!(line_text(&lines[1 + ui::MARK_ROWS + 1]), "");
@@ -688,8 +701,8 @@ mod tests {
         assert!(row0.ends_with(" ACCOUNT  dev \u{2502} "), "{row0:?}");
         assert!(row0.starts_with(' '), "{row0:?}");
         assert_eq!(row0.chars().count(), 120);
-        // The subtitle is separated from the mark by a divider, not by air
-        assert!(row0.contains("\u{2502}  IAP tunnel manager"), "{row0:?}");
+        // The captions are separated from the mark by a divider, not by air
+        assert!(row0.contains("\u{2502}  Google Cloud Platform"), "{row0:?}");
         // and that divider runs the lockup's whole height: the mark's lower
         // row and the name both carry it, so it does not stop halfway.
         for row in [1 + ui::MARK_ROWS - 1, 1 + ui::MARK_ROWS] {
