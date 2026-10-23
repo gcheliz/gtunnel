@@ -268,6 +268,43 @@ pub enum Commands {
     },
 }
 
+impl Cli {
+    // No subcommand is the TUI, which talks to GCP from its first refresh
+    pub fn needs_gcp_auth(&self) -> bool {
+        self.command.as_ref().is_none_or(Commands::needs_gcp_auth)
+    }
+}
+
+impl Commands {
+    // Whether the command reaches GCP and so wants credentials up front.
+    // Exhaustive on purpose: a new variant must be decided here, not default.
+    // `doctor` is off the list because it reports missing auth as a finding,
+    // and a login prompt would swallow that; `init` has no account yet.
+    pub fn needs_gcp_auth(&self) -> bool {
+        match self {
+            Commands::Init
+            | Commands::Account { .. }
+            | Commands::Reset { .. }
+            | Commands::Demo
+            | Commands::Update { .. }
+            | Commands::Doctor { .. } => false,
+            Commands::Add { .. }
+            | Commands::Expose { .. }
+            | Commands::Run { .. }
+            | Commands::Start { .. }
+            | Commands::Stop { .. }
+            | Commands::Autostart { .. }
+            | Commands::Restart { .. }
+            | Commands::Logs { .. }
+            | Commands::List
+            | Commands::Delete { .. }
+            | Commands::Zones { .. }
+            | Commands::Domains { .. }
+            | Commands::Relay { .. } => true,
+        }
+    }
+}
+
 #[derive(Subcommand, Debug, PartialEq, Eq)]
 pub enum ZonesCommands {
     // Set the default compute zone
@@ -574,5 +611,49 @@ mod tests {
     fn no_subcommand_is_none() {
         let cli = parse(&["gtunnel"]);
         assert!(cli.command.is_none());
+    }
+
+    // Every variant is listed on purpose: a new command must be sorted into
+    // one side or the other here, not inherit a default
+    #[test]
+    fn only_commands_that_touch_gcp_need_a_login() {
+        let skip = ["init", "account", "reset", "demo", "update", "doctor"];
+        for name in skip {
+            let cli = parse(&["gtunnel", name]);
+            assert!(
+                !cli.command.expect("command").needs_gcp_auth(),
+                "{name} must not need a login"
+            );
+        }
+        let check: [&[&str]; 12] = [
+            &["gtunnel", "add", "db", "vm:5432"],
+            &["gtunnel", "expose", "api", "3000"],
+            &["gtunnel", "run", "vm:5432"],
+            &["gtunnel", "start", "db"],
+            &["gtunnel", "stop", "db"],
+            &["gtunnel", "autostart", "db"],
+            &["gtunnel", "restart", "db"],
+            &["gtunnel", "logs", "db"],
+            &["gtunnel", "list"],
+            &["gtunnel", "delete", "db"],
+            &["gtunnel", "zones"],
+            &["gtunnel", "relay", "status"],
+        ];
+        for argv in check {
+            let cli = parse(argv);
+            assert!(
+                cli.command.expect("command").needs_gcp_auth(),
+                "{argv:?} must need a login"
+            );
+        }
+        assert!(parse(&["gtunnel", "domains"])
+            .command
+            .expect("command")
+            .needs_gcp_auth());
+    }
+
+    #[test]
+    fn the_tui_needs_a_login() {
+        assert!(parse(&["gtunnel"]).needs_gcp_auth());
     }
 }

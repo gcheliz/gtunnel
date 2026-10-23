@@ -26,6 +26,13 @@ async fn main() -> Result<()> {
     // The hint reads a cache file; `update` does the real check itself
     let quiet = matches!(args.command, None | Some(Commands::Update { .. }));
 
+    // Before the TUI takes the screen or any command touches GCP, so a login
+    // prints to a normal terminal and a missing one ends the process here
+    if args.needs_gcp_auth() {
+        let (_, acct) = commands::resolve(account)?;
+        gcp::gcloud::ensure_logged_in(&acct).await?;
+    }
+
     let result = match args.command {
         None => tui::run_tui(account).await,
         Some(Commands::Init) => commands::account::cmd_init().await,

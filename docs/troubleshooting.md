@@ -17,6 +17,27 @@ emptied when its tunnel starts, so a line in it was written by the process runni
 | `remote port forwarding failed` | The relay port is busy on the relay VM | `gtunnel restart <name>`, then `gtunnel doctor` |
 | `numpy` | gcloud's Python has no NumPy | See NumPy below |
 
+## gtunnel needs a logged-in Google account
+
+```
+Error: gtunnel needs a logged-in Google account for 'prod'. Run `gcloud auth login`
+```
+
+gtunnel could not get an access token for the account at startup and either the login did
+not finish or it was not allowed to start.
+
+| Cause | Fix |
+|---|---|
+| No terminal: stdin or stdout is redirected, as under cron, a pipe or CI | A browser login cannot finish there. Run `gcloud auth login --configuration=<configuration>` once in a terminal, or use a credential that needs no login |
+| The login was cancelled or failed | Run it again; `gcloud auth list` shows who is logged in |
+| The login exited 0 but the probe still fails | The configuration gtunnel uses is not the one that was logged in. Check `gcloud config configurations list` against the account's `gcloud_configuration` |
+| The account impersonates a service account | `gcloud auth login` is run without `--impersonate-service-account`, because it rejects that flag. It logs in the user whose credentials mint the impersonation token, so that user needs `roles/iam.serviceAccountTokenCreator` on the service account |
+
+Only the selected account (or `--account`) is checked at startup. Switching to another
+account in the TUI does not check again, so an account that is logged out surfaces as the
+error in that tunnel's log. `doctor`, `account`, `init`, `reset`, `demo` and `update` skip
+the check.
+
 ## IAP firewall
 
 IAP connects from `35.235.240.0/20`, and that range must be allowed to the exact port you

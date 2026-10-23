@@ -129,3 +129,130 @@ pub async fn print_access_token(acct: &Account) -> Result<String> {
         .context("Could not get a gcloud access token. Run `gcloud auth login` and try again.")?;
     Ok(stdout.trim().to_string())
 }
+
+// What startup does about credentials, decided apart from the I/O so the
+// three outcomes are testable without a terminal or a gcloud
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthStep {
+    Proceed,
+    Login,
+    Fail,
+}
+
+// A browser login cannot finish under cron, a pipe or CI, so without a
+// terminal a failed probe is a failure rather than a prompt nobody can answer
+pub fn next_step(probe_ok: bool, interactive: bool) -> AuthStep {
+    match (probe_ok, interactive) {
+        (true, _) => AuthStep::Proceed,
+        (false, true) => AuthStep::Login,
+        (false, false) => AuthStep::Fail,
+    }
+}
+
+// Both ends must be a terminal: the login prints a URL to read and takes a
+// verification code typed back, and a redirected stdout hides the first
+fn is_interactive() -> bool {
+    use std::io::IsTerminal;
+    std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
+}
+
+// No --project and no --impersonate-service-account: `auth login` rejects
+// impersonation, and the project is not something a login stores. It fixes
+// the user credentials the impersonated token is minted from.
+pub fn login_argv(acct: &Account) -> Vec<String> {
+    vec![
+        "auth".to_string(),
+        "login".to_string(),
+        format!("--configuration={}", acct.gcloud_configuration),
+    ]
+}
+
+// Unlike `run_gcloud`, stdio is inherited: the login prompts, prints a URL
+// and reads a code, none of which works with stdin nulled and output captured
+async fn run_login(acct: &Account) -> Result<()> {
+    let gcloud = require_gcloud()?;
+    let status = Command::new(&gcloud)
+        .args(login_argv(acct))
+        .status()
+        .await
+        .with_context(|| format!("Failed to run {}", gcloud.display()))?;
+    if !status.success() {
+        bail!("`gcloud auth login` did not complete ({status})");
+    }
+    Ok(())
+}
+
+// Runs before the TUI takes the screen, so the login's output lands on a
+// normal terminal and nothing prints after raw mode starts
+pub async fn ensure_logged_in(acct: &Account) -> Result<()> {
+    ensure_logged_in_with(acct, is_interactive()).await
+}
+
+async fn ensure_logged_in_with(acct: &Account, interactive: bool) -> Result<()> {
+    let probe_ok = print_access_token(acct).await.is_ok();
+    match next_step(probe_ok, interactive) {
+        AuthStep::Proceed => return Ok(()),
+        AuthStep::Login => {
+            eprintln!(
+                "gcloud has no usable credentials for '{}'. Starting `gcloud auth login`.",
+                acct.name
+            );
+            // A login that exits 0 proves nothing; only a second probe does
+            if run_login(acct).await.is_ok() && print_access_token(acct).await.is_ok() {
+                return Ok(());
+            }
+        }
+        AuthStep::Fail => {}
+    }
+    bail!(
+        "gtunnel needs a logged-in Google account for '{}'. Run `gcloud auth login`",
+        acct.name
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn account(impersonate: Option<&str>) -> Account {
+        Account {
+            name: "prod".to_string(),
+            gcloud_configuration: "work".to_string(),
+            project: "my-project".to_string(),
+            default_zone: "europe-west1-b".to_string(),
+            impersonate_service_account: impersonate.map(str::to_string),
+            expose: None,
+        }
+    }
+
+    #[test]
+    fn login_names_the_configuration_and_nothing_else() {
+        assert_eq!(
+            login_argv(&account(None)),
+            vec!["auth", "login", "--configuration=work"]
+        );
+    }
+
+    #[test]
+    fn login_never_carries_impersonation_or_a_project() {
+        let argv = login_argv(&account(Some("sa@my-project.iam.gserviceaccount.com")));
+        assert!(!argv.iter().any(|a| a.contains("impersonate")));
+        assert!(!argv.iter().any(|a| a.contains("--project")));
+    }
+
+    #[test]
+    fn a_passing_probe_proceeds_with_or_without_a_terminal() {
+        assert_eq!(next_step(true, true), AuthStep::Proceed);
+        assert_eq!(next_step(true, false), AuthStep::Proceed);
+    }
+
+    #[test]
+    fn a_failed_probe_on_a_terminal_starts_the_login() {
+        assert_eq!(next_step(false, true), AuthStep::Login);
+    }
+
+    #[test]
+    fn a_failed_probe_without_a_terminal_fails() {
+        assert_eq!(next_step(false, false), AuthStep::Fail);
+    }
+}

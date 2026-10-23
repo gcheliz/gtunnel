@@ -28,6 +28,41 @@ ones.
 | `demo` | TUI with synthetic data | no |
 | `update` | Check for and install a new version | no |
 
+## Startup
+
+Before it opens the TUI or runs a command that reaches GCP, gtunnel asks gcloud for an
+access token for the selected account (or `--account`), the same probe `doctor` uses. A
+token that cannot be minted, including an expired refresh token, counts as logged out.
+
+| Checks the login | Skips the check |
+|---|---|
+| `gtunnel` (the TUI), `add`, `expose`, `run`, `start`, `stop`, `restart`, `autostart`, `logs`, `list`, `delete`, `zones`, `domains`, `relay` | `init`, `account`, `doctor`, `reset`, `demo`, `update` |
+
+`doctor` is skipped because it reports broken credentials as a finding and a login prompt
+would hide it; `init` has no account yet. Background services run `gcloud` directly and
+never go through this check.
+
+On a terminal, a failed probe runs `gcloud auth login --configuration=<configuration>` with
+the terminal handed to it, then probes again. Only the second probe counts: a login that
+exits 0 and still cannot mint a token fails like any other. The sample below is
+illustrative, since the login output belongs to gcloud.
+
+```
+$ gtunnel list
+gcloud has no usable credentials for 'prod'. Starting `gcloud auth login`.
+Your browser has been opened to visit: ...
+You are now logged in as [you@example.com].
+NAME  STATUS  ...
+```
+
+When the login is cancelled, fails, or there is no terminal (stdin or stdout is redirected,
+as under cron or CI), gtunnel exits 1 without starting anything.
+
+```
+$ gtunnel list < /dev/null
+Error: gtunnel needs a logged-in Google account for 'prod'. Run `gcloud auth login`
+```
+
 ## The TUI
 
 `gtunnel` with no subcommand opens the TUI. `gtunnel demo` opens it filled with synthetic

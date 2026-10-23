@@ -61,6 +61,14 @@ GCP relay in place of Cloudflare Tunnel.
 - **Self-update** - `gtunnel update` verifies the published SHA-256 before replacing the
   binary, and defers to Homebrew or cargo when that is how it was installed.
 
+### Startup
+
+- **Login check** - gtunnel probes the selected account's gcloud credentials before the
+  TUI or any GCP command starts, runs `gcloud auth login` on a terminal when they are
+  missing or expired, and exits 1 if the account is still not logged in afterwards.
+  Without a terminal it exits 1 instead of prompting. `doctor`, `account`, `init`,
+  `reset`, `demo` and `update` skip it.
+
 ### Platforms
 
 - **macOS** - launchd user agents. Auto-start is the presence of the plist in
