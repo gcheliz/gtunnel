@@ -34,6 +34,12 @@ Sleep 2s
 Up
 Sleep 1500ms
 
+# `;` cycles the accounts; `staging` has no relay, so it shows Access only
+Type ";"
+Sleep 2s
+Type ";"
+Sleep 2s
+
 # `?` is the key map
 Type "?"
 Sleep 4s

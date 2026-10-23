@@ -5,7 +5,8 @@ section says the opposite.
 
 `--account <name>` works on every command and overrides the default account. Paths in
 captured output are shown at their default location rather than the throwaway directory the
-run used.
+run used, and the instance names of tunnels gtunnel only observed are replaced with generic
+ones.
 
 ## Command map
 
@@ -115,7 +116,7 @@ gtunnel run --public 3000              # https://gt-<random>.<domain>
 $ gtunnel list
 STATUS     NAME             MODE    URL                              TARGET
 ○ stopped  db               access  localhost:15432                  postgres-1:5432 (europe-west1-b)
-● running  pid 59670        access  -                                private-cluster-bastion:22 (europe-west1-b)  [not managed by gtunnel]
+● running  pid 59670        access  -                                bastion-1:22 (europe-west1-b)  [not managed by gtunnel]
 ```
 
 ```
