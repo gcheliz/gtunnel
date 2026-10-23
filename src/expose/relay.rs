@@ -424,6 +424,23 @@ async fn drop_resource(
     }
 }
 
+// Public runs that are still alive for this account. A run owns its route
+// until the process exits, so `relay down` has to count it as a tenant.
+pub fn live_public_runs(
+    records: &[(crate::ephemeral::EphemeralRecord, bool)],
+    account: &str,
+) -> Vec<String> {
+    records
+        .iter()
+        .filter(|(r, alive)| {
+            *alive
+                && r.account_name == account
+                && matches!(r.spec, crate::state::TunnelSpec::Expose { .. })
+        })
+        .map(|(r, _)| r.name.clone())
+        .collect()
+}
+
 pub async fn relay_down(
     client: &GcpClient,
     cfg: &Config,
@@ -444,10 +461,21 @@ pub async fn relay_down(
         .filter(|t| t.is_expose())
         .map(|t| t.name.clone())
         .collect();
-    if !live.is_empty() && !force {
+    // A `gtunnel run --public` holds a route too, and it is not gtunnel's to
+    // delete: that process owns it until it exits
+    let runs = live_public_runs(&crate::ephemeral::list_ephemeral()?, &acct.name);
+    if (!live.is_empty() || !runs.is_empty()) && !force {
+        let mut serving = live.clone();
+        serving.extend(runs.iter().map(|r| format!("{r} (gtunnel run)")));
         bail!(
             "Relay still serves: {}. Delete them or pass --force",
-            live.join(", ")
+            serving.join(", ")
+        );
+    }
+    for name in &runs {
+        step(
+            false,
+            &format!("{name} is a live `gtunnel run` and will lose its URL"),
         );
     }
 
@@ -560,6 +588,46 @@ mod tests {
     use crate::state::{PersistentTunnel, TunnelSpec, TunnelState};
     use wiremock::matchers::{method, path_regex};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn run_record(name: &str, account: &str, public: bool) -> crate::ephemeral::EphemeralRecord {
+        crate::ephemeral::EphemeralRecord {
+            name: name.to_string(),
+            account_name: account.to_string(),
+            pid: 1234,
+            spec: if public {
+                TunnelSpec::Expose {
+                    local_target: "3000".to_string(),
+                    domain: "dev.example.com".to_string(),
+                    hostname: format!("{name}.dev.example.com"),
+                    relay_port: 30001,
+                    private: false,
+                }
+            } else {
+                TunnelSpec::Access {
+                    target: crate::state::AccessTarget::Instance {
+                        instance: "vm".to_string(),
+                        zone: "europe-west1-b".to_string(),
+                    },
+                    remote_port: 5432,
+                    local_port: 15432,
+                }
+            },
+            started_at: 1_700_000_000,
+        }
+    }
+
+    // `relay down` counted only tunnels.toml, so a `gtunnel run --public` had
+    // the load balancer pulled out from under it without a word
+    #[test]
+    fn a_live_public_run_counts_as_a_relay_tenant() {
+        let records = vec![
+            (run_record("gt-live", "dev", true), true),
+            (run_record("gt-dead", "dev", true), false),
+            (run_record("gt-access", "dev", false), true),
+            (run_record("gt-other", "prod", true), true),
+        ];
+        assert_eq!(live_public_runs(&records, "dev"), vec!["gt-live".to_string()]);
+    }
 
     fn client(server: &MockServer) -> GcpClient {
         GcpClient::new(

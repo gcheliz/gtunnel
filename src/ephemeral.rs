@@ -117,6 +117,17 @@ fn now_secs() -> u64 {
 // Every record counts, alive or not: a record is removed only once its relay
 // route is gone, so a dead one's port must not be handed to a new tunnel that
 // would then share the old hostname's named port
+// Relay ports are bound on the relay VM, so nothing local can probe them:
+// state and the live runs are the only record, and `expose` has to read both
+pub fn used_relay_ports(
+    state: &TunnelState,
+    account: &str,
+) -> Result<std::collections::HashSet<u16>> {
+    let mut used = state.used_relay_ports(account);
+    used.extend(ephemeral_ports(account, true)?);
+    Ok(used)
+}
+
 fn ephemeral_ports(account: &str, relay: bool) -> Result<std::collections::HashSet<u16>> {
     let mut used = std::collections::HashSet::new();
     for (record, _alive) in list_ephemeral()? {
@@ -230,8 +241,7 @@ pub async fn cmd_run(
             )
         })?;
         let domain = expose.domain(domain)?.clone();
-        let mut used = state.used_relay_ports(&acct.name);
-        used.extend(ephemeral_ports(&acct.name, true)?);
+        let used = used_relay_ports(&state, &acct.name)?;
         let relay_port = allocate_port(&name, RELAY_PORT_BASE, RELAY_PORT_SPAN, &used, |_| true)?;
         (
             TunnelSpec::Expose {
@@ -454,6 +464,35 @@ mod tests {
         assert!(
             wait_for_pid_exit(pid, Duration::from_secs(5)).await,
             "a killed pid must be reported as exited"
+        );
+    }
+
+    // `expose` read tunnels.toml alone, so it handed out a relay port a live
+    // `gtunnel run --public` was already bound to on the relay VM
+    #[test]
+    fn used_relay_ports_counts_a_live_run() {
+        let _temp = TempConfigDir::new();
+        let record = EphemeralRecord {
+            name: "gt-live".to_string(),
+            account_name: "dev".to_string(),
+            pid: std::process::id(),
+            spec: TunnelSpec::Expose {
+                local_target: "3000".to_string(),
+                domain: "dev.example.com".to_string(),
+                hostname: "gt-live.dev.example.com".to_string(),
+                relay_port: 30007,
+                private: false,
+            },
+            started_at: 1_700_000_000,
+        };
+        record.save().expect("save");
+
+        let state = TunnelState::default();
+        let used = used_relay_ports(&state, "dev").expect("ports");
+        assert!(used.contains(&30007), "{used:?}");
+        assert!(
+            used_relay_ports(&state, "prod").expect("ports").is_empty(),
+            "another account's run is not this account's port"
         );
     }
 

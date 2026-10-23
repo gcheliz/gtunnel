@@ -241,8 +241,9 @@ pub async fn cmd_expose(
         name,
         RELAY_PORT_BASE,
         RELAY_PORT_SPAN,
-        &state.used_relay_ports(&acct.name),
-        // The port is bound on the relay VM, not here, so only state decides
+        // The port is bound on the relay VM, not here, so nothing local can
+        // probe it: tunnels.toml and the live runs are the whole record
+        &crate::ephemeral::used_relay_ports(&state, &acct.name)?,
         |_| true,
     )?;
 
