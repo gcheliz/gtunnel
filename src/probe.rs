@@ -9,6 +9,9 @@ use crate::state::{PersistentTunnel, TunnelSpec, TunnelStatus};
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(5);
 const TCP_TIMEOUT: Duration = Duration::from_secs(2);
+// A probed peer answers a round trip away, and through a tunnel that is
+// hundreds of milliseconds: how long a close waits for the peer to close too
+const DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 // How many minutes of load balancer traffic one metrics read covers
 pub const LB_WINDOW_MINUTES: u32 = 10;
 
@@ -37,9 +40,32 @@ pub async fn tcp_probe(addr: &str, timeout: Duration) -> Option<Duration> {
     let started = std::time::Instant::now();
     let connect = tokio::net::TcpStream::connect(addr);
     match tokio::time::timeout(timeout, connect).await {
-        Ok(Ok(_)) => Some(started.elapsed()),
+        Ok(Ok(mut stream)) => {
+            let rtt = started.elapsed();
+            close_politely(&mut stream).await;
+            Some(rtt)
+        }
         _ => None,
     }
+}
+
+// A socket dropped while the peer's greeting is still unread closes with RST,
+// and so does one closed just before a greeting still in flight arrives. Either
+// way the peer reports a client error: gcloud logs a traceback for every probe
+// and the tunnel's log fills with them. Half-close so the peer sees a FIN, then
+// read until its own close arrives. Says whether that close arrived in time.
+async fn close_politely(stream: &mut tokio::net::TcpStream) -> bool {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    if stream.shutdown().await.is_err() {
+        return false;
+    }
+    let drain = async {
+        // Whatever the peer says is of no interest; reaching its EOF is
+        let mut scratch = [0u8; 1024];
+        while matches!(stream.read(&mut scratch).await, Ok(n) if n > 0) {}
+    };
+    tokio::time::timeout(DRAIN_TIMEOUT, drain).await.is_ok()
 }
 
 // A 4xx still proves the request reached the service; only 5xx and a failure
@@ -229,6 +255,68 @@ mod tests {
     use super::*;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    // A tunnel's own health check must not look like a client crash to the
+    // process on the other end: a socket dropped with the peer's greeting
+    // still unread closes with RST, and gcloud logs a traceback per probe
+    #[tokio::test]
+    async fn tcp_probe_leaves_the_peer_with_a_clean_eof() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr").to_string();
+
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.expect("accept");
+            // Every SSH server greets before the client says anything
+            sock.write_all(b"SSH-2.0-OpenSSH_10.0p2 Debian-7\r\n")
+                .await
+                .expect("banner");
+            let mut buf = [0u8; 64];
+            sock.read(&mut buf).await
+        });
+
+        assert!(
+            tcp_probe(&addr, TCP_TIMEOUT).await.is_some(),
+            "the probe did not connect"
+        );
+
+        let observed = server.await.expect("server task");
+        match observed {
+            Ok(0) => {}
+            other => panic!("peer saw {other:?} instead of a clean EOF"),
+        }
+    }
+
+    // Through a tunnel the greeting is a round trip away. A probe that stops
+    // waiting first leaves that greeting arriving at a closed socket, which
+    // answers with RST: the same client error, one per probe
+    #[tokio::test]
+    async fn closing_waits_for_a_greeting_a_round_trip_late() {
+        use tokio::io::AsyncWriteExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.expect("accept");
+            // What an IAP tunnel to a bastion measures: ~260 ms to first byte
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let _ = sock.write_all(b"SSH-2.0-OpenSSH_10.0p2 Debian-7\r\n").await;
+        });
+
+        let mut stream = tokio::net::TcpStream::connect(addr)
+            .await
+            .expect("the probe did not connect");
+        assert!(
+            close_politely(&mut stream).await,
+            "closed before the peer's greeting and its own close arrived"
+        );
+    }
 
     #[test]
     fn etime_parses_every_ps_format() {
