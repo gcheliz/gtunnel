@@ -531,6 +531,56 @@ mod tests {
         }
     }
 
+    fn render_to_string(app: &App, width: u16, height: u16) -> String {
+        let backend = ratatui::backend::TestBackend::new(width, height);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| ui::render(f, app)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    fn app_with_many_instances(selected: usize) -> App {
+        let mut app = app_with_two();
+        app.instances = (0..36)
+            .map(|i| InstanceChoice {
+                name: format!("instance-{i:02}"),
+                zone: "europe-west1-b".to_string(),
+            })
+            .collect();
+        app.input_mode = InputMode::AddInstance;
+        app.instance_selected = selected;
+        app
+    }
+
+    #[test]
+    fn the_instance_picker_scrolls_to_keep_the_selection_visible() {
+        let rendered = render_to_string(&app_with_many_instances(30), 120, 40);
+        assert!(
+            rendered.contains("instance-30"),
+            "the selected instance is off screen"
+        );
+        assert!(rendered.contains("31/36"), "no position counter");
+    }
+
+    #[test]
+    fn the_instance_picker_starts_at_the_top() {
+        let rendered = render_to_string(&app_with_many_instances(0), 120, 40);
+        assert!(
+            rendered.contains("instance-00"),
+            "the list is scrolled past"
+        );
+        assert!(
+            !rendered.contains("instance-35"),
+            "the last row cannot fit with the first"
+        );
+        assert!(rendered.contains("1/36"), "no position counter");
+    }
+
     fn keys(app: &mut App, sequence: &str) -> Option<Op> {
         let mut last = None;
         for c in sequence.chars() {

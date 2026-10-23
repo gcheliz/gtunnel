@@ -97,6 +97,9 @@ pub async fn list_instances(client: &GcpClient, project: &str) -> Result<Vec<Ins
             out.push(instance.into_instance(&zone_hint));
         }
     }
+    // The aggregated list is grouped by zone, so sort by name: a picker row's
+    // position should not depend on which zone the instance happens to be in
+    out.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(out)
 }
 
@@ -1163,6 +1166,42 @@ mod tests {
         assert_eq!(got[0].internal_ip.as_deref(), Some("10.0.0.5"));
         assert_eq!(got[0].tags, vec!["db".to_string()]);
         assert_eq!(got[1].tags, Vec::<String>::new());
+    }
+
+    // The aggregated list walks one bucket per zone, so without a sort an
+    // instance's position in the picker depends on which zone it lives in
+    #[tokio::test]
+    async fn list_instances_sorts_by_name_across_zones() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/projects/p/aggregated/instances"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+              "items": {
+                "zones/us-central1-a": {
+                  "instances": [
+                    {"name":"zeta","status":"RUNNING","tags":{},
+                     "networkInterfaces":[],
+                     "zone":"https://x/projects/p/zones/us-central1-a"},
+                    {"name":"alpha","status":"RUNNING","tags":{},
+                     "networkInterfaces":[],
+                     "zone":"https://x/projects/p/zones/us-central1-a"}
+                  ]
+                },
+                "zones/europe-west1-b": {
+                  "instances": [
+                    {"name":"middle","status":"RUNNING","tags":{},
+                     "networkInterfaces":[],
+                     "zone":"https://x/projects/p/zones/europe-west1-b"}
+                  ]
+                }
+              }
+            })))
+            .mount(&server)
+            .await;
+
+        let got = list_instances(&client(&server), "p").await.expect("list");
+        let names: Vec<&str> = got.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, vec!["alpha", "middle", "zeta"]);
     }
 
     #[tokio::test]

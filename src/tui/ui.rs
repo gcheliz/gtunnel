@@ -494,37 +494,104 @@ fn render_prompt(f: &mut Frame, app: &App, mode: InputMode) {
     );
 }
 
-fn picker_lines<'a>(
+// The prompt, the filter being typed and a blank line, which stay put while
+// the rows below them scroll
+const PICKER_HEADER_LINES: u16 = 3;
+
+fn picker_header<'a>(
     prompt: &'a str,
     filter: &str,
-    rows: Vec<String>,
     selected: usize,
+    total: usize,
 ) -> Vec<Line<'a>> {
-    let mut lines = vec![
-        Line::styled(prompt, Style::default().fg(Color::Yellow)),
+    let mut head = vec![Span::styled(prompt, Style::default().fg(Color::Yellow))];
+    if total > 0 {
+        // Says how far down a list that does not fit the selection is
+        head.push(Span::styled(
+            format!("  {}/{}", selected.min(total - 1) + 1, total),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    vec![
+        Line::from(head),
         Line::from(vec![
             Span::raw(format!("  {filter}")),
             Span::styled("_", Style::default().fg(Color::Cyan)),
         ]),
         Line::raw(""),
-    ];
+    ]
+}
+
+fn picker_rows<'a>(rows: Vec<String>, selected: usize) -> Vec<Line<'a>> {
     if rows.is_empty() {
-        lines.push(Line::styled(
+        return vec![Line::styled(
             "  nothing matches",
             Style::default().fg(Color::DarkGray),
-        ));
+        )];
     }
-    for (i, row) in rows.into_iter().enumerate() {
-        let style = if i == selected {
-            Style::default()
-                .add_modifier(Modifier::BOLD)
-                .fg(Color::Cyan)
-        } else {
-            Style::default()
-        };
-        lines.push(Line::styled(format!("  {row}"), style));
-    }
-    lines
+    rows.into_iter()
+        .enumerate()
+        .map(|(i, row)| {
+            let style = if i == selected {
+                Style::default()
+                    .add_modifier(Modifier::BOLD)
+                    .fg(Color::Cyan)
+            } else {
+                Style::default()
+            };
+            Line::styled(format!("  {row}"), style)
+        })
+        .collect()
+}
+
+struct Picker<'a> {
+    title: &'a str,
+    prompt: &'a str,
+    filter: &'a str,
+    rows: Vec<String>,
+    selected: usize,
+    width: u16,
+    height: u16,
+}
+
+// A dialog whose row list is taller than the dialog: the header is fixed and
+// the rows scroll just enough to keep the selected one on screen
+fn render_picker(f: &mut Frame, p: Picker) {
+    let Picker {
+        title,
+        prompt,
+        filter,
+        rows,
+        selected,
+        width,
+        height,
+    } = p;
+    let area = centered_rect(width, height, f.area());
+    f.render_widget(Clear, area);
+    let block = Block::default()
+        .title(format!(" {title} "))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let parts = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(PICKER_HEADER_LINES), Constraint::Min(0)])
+        .split(inner);
+
+    let total = rows.len();
+    f.render_widget(
+        Paragraph::new(picker_header(prompt, filter, selected, total)),
+        parts[0],
+    );
+
+    let visible = parts[1].height as usize;
+    let offset = selected.saturating_sub(visible.saturating_sub(1)) as u16;
+    f.render_widget(
+        Paragraph::new(picker_rows(rows, selected)).scroll((offset, 0)),
+        parts[1],
+    );
 }
 
 fn render_instance_picker(f: &mut Frame, app: &App) {
@@ -533,31 +600,31 @@ fn render_instance_picker(f: &mut Frame, app: &App) {
         .iter()
         .map(|i| format!("{:<30} {}", i.name, i.zone))
         .collect();
-    render_dialog(
+    render_picker(
         f,
-        "Instance",
-        picker_lines(
-            InputMode::AddInstance.prompt(),
-            &app.input,
+        Picker {
+            title: "Instance",
+            prompt: InputMode::AddInstance.prompt(),
+            filter: &app.input,
             rows,
-            app.instance_selected,
-        ),
-        70,
-        60,
+            selected: app.instance_selected,
+            width: 70,
+            height: 60,
+        },
     );
 }
 
 fn render_domain_picker(f: &mut Frame, app: &App) {
-    render_dialog(
+    render_picker(
         f,
-        "Domain",
-        picker_lines(
-            InputMode::AddDomain.prompt(),
-            "",
-            app.domains.clone(),
-            app.domain_selected,
-        ),
-        60,
-        40,
+        Picker {
+            title: "Domain",
+            prompt: InputMode::AddDomain.prompt(),
+            filter: "",
+            rows: app.domains.clone(),
+            selected: app.domain_selected,
+            width: 60,
+            height: 40,
+        },
     );
 }
