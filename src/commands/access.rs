@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 use std::time::Duration;
 
-use super::{find_tunnel, format_list_row, list_header, resolve, tunnel_status};
+use super::{find_tunnel, resolve, tunnel_status, ListLayout, ListRow};
 use crate::config::Account;
 use crate::daemon;
 use crate::expose::routes;
@@ -343,37 +343,44 @@ pub async fn cmd_list(account: Option<&str>) -> Result<()> {
         println!("No tunnels for account '{}'", acct.name);
         return Ok(());
     }
-    println!("{}", list_header());
+    // Every row is collected first: the columns cannot be sized until the
+    // unmanaged tunnels below have been discovered too.
+    let mut rows = Vec::new();
     for tunnel in tunnels {
         let status = tunnel_status(tunnel).await;
-        println!("{}", format_list_row(status, tunnel));
+        rows.push(ListRow::from_tunnel(status, tunnel));
     }
-    print_external_tunnels().await;
+    rows.extend(external_rows().await);
+
+    let layout = ListLayout::fit(&rows);
+    println!("{}", layout.header());
+    for row in &rows {
+        println!("{}", row.render(&layout));
+    }
     Ok(())
 }
 
 // IAP tunnels started outside gtunnel hold ports and confuse `doctor`, so the
 // list names them instead of pretending they are not there
-async fn print_external_tunnels() {
+async fn external_rows() -> Vec<ListRow> {
     let managed = crate::discovery::managed_pids().await;
-    for external in crate::discovery::external_tunnels(&managed) {
-        let url = match external.local_port {
-            Some(port) => format!("localhost:{port}"),
-            None => "-".to_string(),
-        };
-        let target = match &external.zone {
-            Some(zone) => format!("{}:{} ({zone})", external.target, external.remote_port),
-            None => format!("{}:{}", external.target, external.remote_port),
-        };
-        println!(
-            "{} {:<8} {:<16} {:<7} {:<32} {target}  [not managed by gtunnel]",
-            TunnelStatus::Running.symbol(),
-            "running",
-            format!("pid {}", external.pid),
-            "access",
-            url
-        );
-    }
+    crate::discovery::external_tunnels(&managed)
+        .into_iter()
+        .map(|external| ListRow {
+            status: TunnelStatus::Running,
+            name: format!("pid {}", external.pid),
+            mode: "access",
+            url: match external.local_port {
+                Some(port) => format!("localhost:{port}"),
+                None => "-".to_string(),
+            },
+            target: match &external.zone {
+                Some(zone) => format!("{}:{} ({zone})", external.target, external.remote_port),
+                None => format!("{}:{}", external.target, external.remote_port),
+            },
+            note: Some("  [not managed by gtunnel]"),
+        })
+        .collect()
 }
 
 pub async fn cmd_zones(account: Option<&str>, default: Option<&str>) -> Result<()> {

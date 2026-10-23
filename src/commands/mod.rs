@@ -10,10 +10,12 @@ use crate::config::{load_config, Account, Config};
 use crate::daemon;
 use crate::state::{PersistentTunnel, TunnelSpec, TunnelState, TunnelStatus};
 
-// Column widths shared by the header and every row
-const NAME_WIDTH: usize = 16;
+// The narrowest each column is allowed to be. A column grows to fit its
+// widest value and never shrinks below this, so a listing of short names
+// looks the way it always has and a listing of long ones still lines up.
+const NAME_FLOOR: usize = 16;
 const MODE_WIDTH: usize = 7;
-const URL_WIDTH: usize = 32;
+const URL_FLOOR: usize = 32;
 
 pub fn status_word(status: TunnelStatus) -> &'static str {
     match status {
@@ -23,29 +25,89 @@ pub fn status_word(status: TunnelStatus) -> &'static str {
     }
 }
 
-pub fn list_header() -> String {
-    format!(
-        "{:<10} {:<NAME_WIDTH$} {:<MODE_WIDTH$} {:<URL_WIDTH$} {}",
-        "STATUS", "NAME", "MODE", "URL", "TARGET"
-    )
+/// One line of `gtunnel list`, before it knows how wide its columns are.
+///
+/// Rows are collected before any of them is printed because a column cannot
+/// be sized until the longest value in it is known — and the unmanaged
+/// tunnels, which are discovered last, have the longest names of all.
+pub struct ListRow {
+    pub status: TunnelStatus,
+    pub name: String,
+    pub mode: &'static str,
+    pub url: String,
+    pub target: String,
+    /// Appended after the target, for a tunnel gtunnel does not own.
+    pub note: Option<&'static str>,
 }
 
-pub fn format_list_row(status: TunnelStatus, t: &PersistentTunnel) -> String {
-    let mode = match t.spec {
-        TunnelSpec::Access { .. } => "access",
-        TunnelSpec::Expose { .. } => "expose",
-    };
-    format!(
-        "{} {:<8} {:<NAME_WIDTH$} {:<MODE_WIDTH$} {:<URL_WIDTH$} {}",
-        status.symbol(),
-        status_word(status),
-        t.name,
-        mode,
-        t.display_url(),
-        t.display_target()
-    )
-    .trim_end()
-    .to_string()
+impl ListRow {
+    pub fn from_tunnel(status: TunnelStatus, t: &PersistentTunnel) -> Self {
+        Self {
+            status,
+            name: t.name.clone(),
+            mode: match t.spec {
+                TunnelSpec::Access { .. } => "access",
+                TunnelSpec::Expose { .. } => "expose",
+            },
+            url: t.display_url(),
+            target: t.display_target(),
+            note: None,
+        }
+    }
+
+    pub fn render(&self, layout: &ListLayout) -> String {
+        let note = self.note.unwrap_or_default();
+        format!(
+            "{} {:<8} {:<name$} {:<MODE_WIDTH$} {:<url$} {}{note}",
+            self.status.symbol(),
+            status_word(self.status),
+            self.name,
+            self.mode,
+            self.url,
+            self.target,
+            name = layout.name,
+            url = layout.url,
+        )
+        .trim_end()
+        .to_string()
+    }
+}
+
+/// How wide each variable column has to be for this particular listing.
+pub struct ListLayout {
+    name: usize,
+    url: usize,
+}
+
+impl ListLayout {
+    /// Cells, not bytes: a name or a URL may hold a multi-byte character, and
+    /// `len()` would reserve too many columns for it.
+    pub fn fit(rows: &[ListRow]) -> Self {
+        let widest = |f: fn(&ListRow) -> &str, floor: usize| {
+            rows.iter()
+                .map(|r| f(r).chars().count())
+                .max()
+                .unwrap_or(0)
+                .max(floor)
+        };
+        Self {
+            name: widest(|r| &r.name, NAME_FLOOR),
+            url: widest(|r| &r.url, URL_FLOOR),
+        }
+    }
+
+    pub fn header(&self) -> String {
+        format!(
+            "{:<10} {:<name$} {:<MODE_WIDTH$} {:<url$} {}",
+            "STATUS",
+            "NAME",
+            "MODE",
+            "URL",
+            "TARGET",
+            name = self.name,
+            url = self.url,
+        )
+    }
 }
 
 // Read one line, falling back to the default when the user just presses enter
@@ -132,9 +194,34 @@ mod tests {
         }
     }
 
+    fn named(name: &str) -> PersistentTunnel {
+        PersistentTunnel {
+            name: name.to_string(),
+            ..access()
+        }
+    }
+
+    // Where a column starts, counted in cells from the start of the line.
+    fn column_starts(line: &str) -> Vec<usize> {
+        let mut starts = Vec::new();
+        let mut in_gap = true;
+        for (i, c) in line.chars().enumerate() {
+            if c == ' ' {
+                in_gap = true;
+            } else {
+                if in_gap {
+                    starts.push(i);
+                }
+                in_gap = false;
+            }
+        }
+        starts
+    }
+
     #[test]
     fn list_row_holds_status_name_mode_url_and_target() {
-        let row = format_list_row(TunnelStatus::Running, &access());
+        let rows = vec![ListRow::from_tunnel(TunnelStatus::Running, &access())];
+        let row = rows[0].render(&ListLayout::fit(&rows));
         let columns: Vec<&str> = row.split_whitespace().collect();
         assert_eq!(columns[0], TunnelStatus::Running.symbol());
         assert_eq!(columns[1], "running");
@@ -146,20 +233,60 @@ mod tests {
 
     #[test]
     fn list_row_marks_an_expose_tunnel() {
-        let row = format_list_row(TunnelStatus::Stopped, &expose());
+        let rows = vec![ListRow::from_tunnel(TunnelStatus::Stopped, &expose())];
+        let row = rows[0].render(&ListLayout::fit(&rows));
         assert!(row.contains("expose"), "{row}");
         assert!(row.contains("https://api.dev.example.com"), "{row}");
     }
 
     #[test]
     fn the_list_header_lines_up_with_a_row() {
-        let header = list_header();
-        let row = format_list_row(TunnelStatus::Running, &access());
+        let rows = vec![ListRow::from_tunnel(TunnelStatus::Running, &access())];
+        let layout = ListLayout::fit(&rows);
+        let header = layout.header();
         assert_eq!(
             header.split_whitespace().count(),
             5,
             "header columns: {header}"
         );
-        assert!(row.len() >= header.len() - 8, "{row}");
+        // MODE and URL start in the same cell in both lines
+        let h = column_starts(&header);
+        let r = column_starts(&rows[0].render(&layout));
+        assert_eq!((h[2], h[3]), (r[3], r[4]), "header: {header}");
+    }
+
+    // A name longer than the floor used to run into the next column, which is
+    // what a listing of per-instance tunnels is made of: `redis-realtime-prod`
+    // and `mongo-activitylog-prod` are both past sixteen cells.
+    #[test]
+    fn a_long_name_widens_the_column_instead_of_shunting_the_next_one() {
+        let rows = vec![
+            ListRow::from_tunnel(TunnelStatus::Running, &named("db")),
+            ListRow::from_tunnel(TunnelStatus::Stopped, &named("mongo-activitylog-prod")),
+        ];
+        let layout = ListLayout::fit(&rows);
+        let header = layout.header();
+        let starts: Vec<Vec<usize>> = rows
+            .iter()
+            .map(|r| column_starts(&r.render(&layout)))
+            .collect();
+        assert_eq!(
+            starts[0], starts[1],
+            "every row puts its columns in the same cells"
+        );
+        assert_eq!(
+            (column_starts(&header)[2], column_starts(&header)[3]),
+            (starts[0][3], starts[0][4]),
+            "the header follows the rows"
+        );
+        // and a short listing is unchanged: the floor still applies
+        let short = vec![ListRow::from_tunnel(TunnelStatus::Running, &named("db"))];
+        assert_eq!(ListLayout::fit(&short).header(), {
+            let l = ListLayout {
+                name: NAME_FLOOR,
+                url: URL_FLOOR,
+            };
+            l.header()
+        });
     }
 }
