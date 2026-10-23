@@ -186,11 +186,19 @@ impl TunnelState {
             .find(|t| t.name == name && t.account_name == account)
     }
 
+    /// Every tunnel in an account, by name. The file keeps insertion order,
+    /// which makes one account read differently from the next for no reason a
+    /// person can see; a name is the one key both accounts share. Because a
+    /// name leads with its platform — `k8s`, `mongodb`, `redis-session` — the
+    /// sort groups platforms without a table of them to maintain.
     pub fn tunnels_for_account(&self, account: &str) -> Vec<&PersistentTunnel> {
-        self.tunnels
+        let mut found: Vec<&PersistentTunnel> = self
+            .tunnels
             .iter()
             .filter(|t| t.account_name == account)
-            .collect()
+            .collect();
+        found.sort_by(|a, b| a.name.cmp(&b.name));
+        found
     }
 
     pub fn remove_for_account(&mut self, name: &str, account: &str) -> Option<PersistentTunnel> {
@@ -446,6 +454,47 @@ mod tests {
         let mut other = access_instance("db", 15434);
         other.account_name = "prod".to_string();
         state.add(other).expect("different account");
+    }
+
+    // Both accounts hold the same platforms under the same names, so a list
+    // sorted by name groups by platform on its own: every `redis-*` lands
+    // together, and dev reads like prod with the missing rows left out.
+    #[test]
+    fn an_account_lists_its_tunnels_by_name_whatever_order_the_file_holds() {
+        let mut state = TunnelState::default();
+        for (account, name) in [
+            ("prod", "redis-storage"),
+            ("dev", "mongodb"),
+            ("prod", "k8s"),
+            ("dev", "redis-session"),
+            ("prod", "mongodb"),
+            ("dev", "k8s"),
+            ("prod", "redis-cache"),
+        ] {
+            let mut t = access_instance(name, 15432);
+            t.account_name = account.to_string();
+            state.add(t).unwrap();
+        }
+
+        let names = |account| -> Vec<String> {
+            state
+                .tunnels_for_account(account)
+                .iter()
+                .map(|t| t.name.clone())
+                .collect()
+        };
+        assert_eq!(names("dev"), ["k8s", "mongodb", "redis-session"]);
+        assert_eq!(
+            names("prod"),
+            ["k8s", "mongodb", "redis-cache", "redis-storage"]
+        );
+
+        // The shared names appear in the same relative order in both accounts.
+        let shared: Vec<String> = names("prod")
+            .into_iter()
+            .filter(|n| names("dev").contains(n))
+            .collect();
+        assert_eq!(shared, ["k8s", "mongodb"]);
     }
 
     #[test]
