@@ -43,6 +43,10 @@ GCP relay in place of Cloudflare Tunnel.
   auto-start, copy and open, without leaving the TUI.
 - **Unmanaged tunnels** - a `gcloud start-iap-tunnel` process started outside gtunnel
   is listed and can be imported with `m`; every other action on it is refused.
+- **List columns** - the tunnel list has a `NAME  MODE  URL` header and fixed columns,
+  including one for the auto-start and health flags. It hides a name suffix equal to the
+  tunnel's account and cuts names to 12 cells; Details shows the full name, and
+  `gtunnel list` is unchanged.
 - **Health notifications** - a tunnel going unhealthy raises a system notification.
 - **`gtunnel demo`** - the whole dashboard filled with synthetic data, touching no GCP
   project and no config file.

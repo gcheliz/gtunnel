@@ -998,6 +998,230 @@ mod tests {
             .collect()
     }
 
+    // Cells, not text: the list is a table only if every row's columns start
+    // where the header's do, which a substring search cannot say
+    fn screen(app: &App, width: u16, height: u16) -> ratatui::buffer::Buffer {
+        let backend = ratatui::backend::TestBackend::new(width, height);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| ui::render(f, app)).unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn row_chars(buffer: &ratatui::buffer::Buffer, y: u16) -> Vec<char> {
+        (0..buffer.area.width)
+            .map(|x| buffer[(x, y)].symbol().chars().next().unwrap_or(' '))
+            .collect()
+    }
+
+    fn find(row: &[char], needle: &str) -> Option<usize> {
+        let needle: Vec<char> = needle.chars().collect();
+        row.windows(needle.len()).position(|w| w == needle)
+    }
+
+    // The header row, then one row per entry, in screen order
+    fn list_rows(buffer: &ratatui::buffer::Buffer, entries: usize) -> (u16, Vec<Vec<char>>) {
+        let title = (0..buffer.area.height)
+            .find(|y| find(&row_chars(buffer, *y), "TUNNELS (").is_some())
+            .expect("the list pane has a title");
+        let rows = (1..=entries as u16 + 1)
+            .map(|d| row_chars(buffer, title + d))
+            .collect();
+        (title + 1, rows)
+    }
+
+    fn columns_app() -> App {
+        let mut app = App::new("dev");
+        let mut with_flags = TunnelEntry::new(
+            access("mongo-activitylog-dev", 15001),
+            TunnelStatus::Running,
+            TunnelKind::Managed,
+        );
+        with_flags.tunnel.auto_start = true;
+        let mut unhealthy = TunnelEntry::new(
+            expose("k8s-prod", "k8s.example.com"),
+            TunnelStatus::Running,
+            TunnelKind::Managed,
+        );
+        unhealthy.health = crate::probe::HealthStatus::Unhealthy;
+        let plain = TunnelEntry::new(
+            access("redis-dev", 16379),
+            TunnelStatus::Stopped,
+            TunnelKind::Managed,
+        );
+        let mut unmanaged = TunnelEntry::new(
+            access("pid-24083", 0),
+            TunnelStatus::Running,
+            TunnelKind::External,
+        );
+        unmanaged.tunnel.account_name = String::new();
+        app.entries = vec![with_flags, unhealthy, plain, unmanaged];
+        app
+    }
+
+    #[test]
+    fn every_row_of_the_list_starts_its_columns_where_the_header_does() {
+        let app = columns_app();
+        let buffer = screen(&app, 160, 30);
+        let (header_y, rows) = list_rows(&buffer, app.entries.len());
+        let header = &rows[0];
+        let name_x = find(header, "NAME").expect("NAME header");
+        let mode_x = find(header, "MODE").expect("MODE header");
+        let url_x = find(header, "URL").expect("URL header");
+
+        let cells = |row: &[char], x: usize, n: usize| -> String { row[x..x + n].iter().collect() };
+        let expected_modes = ["access", "public", "access", "access"];
+        for (i, mode) in expected_modes.iter().enumerate() {
+            let row = &rows[i + 1];
+            assert_eq!(
+                &cells(row, mode_x, 6),
+                mode,
+                "row {i}: {}",
+                row.iter().collect::<String>()
+            );
+            assert_ne!(row[name_x], ' ', "row {i} has no name under NAME");
+            assert_ne!(row[url_x], ' ', "row {i} has no url under URL");
+        }
+        // the longest stored name is cut, the suffixed one is not shown with it
+        let shown: String = rows[1].iter().collect();
+        assert!(shown.contains("mongo-activ\u{2026}"), "{shown}");
+        assert!(!shown.contains("-dev"), "{shown}");
+        assert!(rows[2].iter().collect::<String>().contains("k8s-prod"));
+        // the header is air around a muted label, not part of the entries
+        assert_eq!(buffer[(name_x as u16, header_y)].fg, theme::MUTED);
+    }
+
+    #[test]
+    fn the_flags_sit_in_their_own_column_whatever_the_row_carries() {
+        let mut app = columns_app();
+        // an unmanaged row carries a tag, which must start after the flags
+        // column and not wherever its url happened to end
+        let buffer = screen(&app, 160, 30);
+        let (_, rows) = list_rows(&buffer, app.entries.len());
+        let auto_x = find(&rows[1], "\u{27f3}").expect("auto-start flag");
+        assert_eq!(
+            find(&rows[2], "\u{26a0}"),
+            Some(auto_x + 1),
+            "the warning has the cell after the auto-start one"
+        );
+        assert_eq!(find(&rows[3], "\u{27f3}"), None);
+        assert_eq!(find(&rows[3], "\u{26a0}"), None);
+        assert_eq!(
+            find(&rows[4], "[not managed"),
+            Some(auto_x + 3),
+            "the tag begins after the two flag cells and one of air"
+        );
+
+        // both flags at once fill both cells and push nothing
+        app.entries[0].health = crate::probe::HealthStatus::Unhealthy;
+        let buffer = screen(&app, 160, 30);
+        let (_, rows) = list_rows(&buffer, app.entries.len());
+        assert_eq!(find(&rows[1], "\u{27f3}"), Some(auto_x));
+        assert_eq!(find(&rows[1], "\u{26a0}"), Some(auto_x + 1));
+    }
+
+    // The header occupies a screen row, and `selected` indexes entries
+    #[test]
+    fn the_header_row_does_not_shift_the_selection() {
+        use ratatui::style::Color;
+        let mut app = columns_app();
+        app.selected = 2;
+        let buffer = screen(&app, 160, 30);
+        let (header_y, rows) = list_rows(&buffer, app.entries.len());
+        let name_x = find(&rows[0], "NAME").unwrap() as u16;
+        let highlighted: Vec<usize> = (0..=app.entries.len())
+            .filter(|i| buffer[(name_x, header_y + *i as u16)].bg == theme::SELECTED_BG)
+            .collect();
+        assert_eq!(
+            highlighted,
+            vec![3],
+            "entry 2 is screen row 3 under the header"
+        );
+        assert_ne!(theme::SELECTED_BG, Color::Reset);
+    }
+
+    // The url gives way first: a name is the only thing that says which row is
+    // which, and a row that wrapped would be two rows
+    #[test]
+    fn a_narrow_pane_shortens_the_url_before_the_name_and_never_wraps() {
+        let app = columns_app();
+        let wide = screen(&app, 160, 30);
+        let narrow = screen(&app, 80, 30);
+        let (_, wide_rows) = list_rows(&wide, app.entries.len());
+        let (_, narrow_rows) = list_rows(&narrow, app.entries.len());
+        for (i, row) in narrow_rows.iter().enumerate().skip(1) {
+            let text: String = row.iter().collect();
+            let name_x = find(row, "\u{25cf} ").or(find(row, "\u{25cb} ")).unwrap();
+            assert!(!text.is_empty(), "row {i}");
+            assert_eq!(
+                name_x,
+                find(&wide_rows[i], "\u{25cf} ")
+                    .or(find(&wide_rows[i], "\u{25cb} "))
+                    .unwrap()
+            );
+        }
+        let first: String = narrow_rows[1].iter().collect();
+        assert!(first.contains("mongo-activ\u{2026}"), "{first}");
+        let second: String = narrow_rows[2].iter().collect();
+        assert!(second.contains("k8s-prod"), "{second}");
+        assert!(
+            !second.contains("https://k8s.example.com"),
+            "the url must shrink at this width: {second}"
+        );
+        assert!(second.contains('\u{2026}'), "a cut url says so: {second}");
+        // one screen row per entry: the row below the last entry is not a list row
+        let below: String = row_chars(&narrow, list_rows(&narrow, 4).0 + 5)
+            .iter()
+            .collect();
+        assert!(!below.contains("pid-24083"), "{below}");
+    }
+
+    // The list cuts a name, so the pane that names the selection is where the
+    // whole one has to be readable
+    #[test]
+    fn details_open_with_the_full_name_of_a_cut_tunnel() {
+        let app = columns_app();
+        let buffer = screen(&app, 160, 30);
+        let title = (0..buffer.area.height)
+            .find(|y| find(&row_chars(&buffer, *y), "DETAILS").is_some())
+            .expect("the details pane has a title");
+        let first: String = row_chars(&buffer, title + 1).iter().collect();
+        assert!(
+            first.contains("name") && first.contains("mongo-activitylog-dev"),
+            "{first}"
+        );
+    }
+
+    // The name row must not be the reason `started by` is off the pane, for a
+    // public tunnel, which has the most rows
+    #[test]
+    fn the_name_row_does_not_push_started_by_out_of_the_details_pane() {
+        let mut app = columns_app();
+        app.selected = 1;
+        let buffer = screen(&app, 160, 40);
+        let text: String = (0..buffer.area.height)
+            .flat_map(|y| row_chars(&buffer, y))
+            .collect();
+        assert!(text.contains("started by"), "{text}");
+        assert!(text.contains("relay port"), "{text}");
+    }
+
+    // An unmanaged row has no account to match, and a name that is long and
+    // unsuffixed is cut like any other
+    #[test]
+    fn an_unmanaged_row_shares_the_column_and_the_cap() {
+        let mut app = columns_app();
+        app.entries[3].tunnel.name = "pid-2408312345678".to_string();
+        let buffer = screen(&app, 160, 30);
+        let (_, rows) = list_rows(&buffer, app.entries.len());
+        let text: String = rows[4].iter().collect();
+        assert!(text.contains("pid-2408312\u{2026}"), "{text}");
+        let mode_x = find(&rows[0], "MODE").unwrap();
+        assert_eq!(
+            rows[4][mode_x..mode_x + 6].iter().collect::<String>(),
+            "access"
+        );
+    }
+
     fn app_with_many_instances(selected: usize) -> App {
         let mut app = app_with_two();
         app.instances = (0..36)

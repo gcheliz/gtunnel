@@ -84,6 +84,12 @@ Unmanaged `gcloud start-iap-tunnel` processes started outside gtunnel appear in 
 tagged `[not managed by gtunnel]`. Every action on them is refused except `m`, which takes
 them over.
 
+The list is a table with a `NAME  MODE  URL` header. To keep the columns aligned it hides a
+name suffix equal to the tunnel's own account (`k8s-dev` under `dev` reads `k8s`) and cuts
+any name still longer than 12 cells to 11 plus `…`. The Details pane starts with the full
+stored name. `gtunnel list` and every command keep using the full names, so `gtunnel start
+k8s-dev` is still the command. In a narrow pane the URL column shrinks before the name does.
+
 ## init
 
 Reads a gcloud configuration and writes a gtunnel account. It prompts for everything it

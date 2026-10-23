@@ -6,7 +6,7 @@ use ratatui::widgets::{
 };
 use ratatui::Frame;
 
-use super::app::{App, InputMode, TunnelMode};
+use super::app::{App, InputMode, TunnelEntry, TunnelMode, NAME_CELLS};
 use super::theme;
 use crate::probe::{HealthStatus, LB_WINDOW_MINUTES};
 use crate::state::{TunnelSpec, TunnelStatus};
@@ -489,11 +489,13 @@ pub fn render(f: &mut Frame, app: &App) {
     if metrics_height == 0 {
         render_logs(f, app, content[1]);
     } else {
+        let details_height = app
+            .selected_entry()
+            .map_or(0, |e| detail_lines(e).len() as u16 + DETAILS_CHROME);
         let right = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                // Six rows of detail and two of border
-                Constraint::Length(8),
+                Constraint::Length(details_height),
                 Constraint::Min(0),
                 Constraint::Length(metrics_height),
             ])
@@ -520,7 +522,67 @@ pub fn render(f: &mut Frame, app: &App) {
     }
 }
 
+// Cells the list spends before the url: the status symbol and its air, the
+// name column and its air, the mode and its air. Every mode is six characters.
+const LEAD_CELLS: usize = 2;
+const MODE_CELLS: usize = 6;
+const PREFIX_CELLS: usize = LEAD_CELLS + NAME_CELLS + 1 + MODE_CELLS + 1;
+// One cell for the auto-start flag, one for the health warning, and the air
+// before them. The flags used to follow the url, so they landed in a different
+// column on every row; a fixed pair of cells is what makes the column a column.
+const FLAG_CELLS: usize = 2;
+
+/// Cuts `text` to `width` cells, marking the cut. A name or url that overflows
+/// is clipped at the pane's edge otherwise, which reads as a shorter value.
+fn fit(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text.to_string();
+    }
+    match width {
+        0 => String::new(),
+        n => {
+            let head: String = text.chars().take(n - 1).collect();
+            format!("{head}\u{2026}")
+        }
+    }
+}
+
 fn render_tunnels(f: &mut Frame, app: &App, area: Rect) {
+    let title = format!("Tunnels ({})", app.entries.len());
+    let inner = pane(f, area, &title, None);
+    if inner.height == 0 {
+        return;
+    }
+    let parts = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(inner);
+
+    // The url is the one column that can be wider than the pane: it takes what
+    // the name, mode and flags leave, and gives way before any of them does
+    let longest_url = app
+        .entries
+        .iter()
+        .map(|e| e.url().chars().count())
+        .max()
+        .unwrap_or(0)
+        .max("URL".len());
+    let room = (inner.width as usize).saturating_sub(PREFIX_CELLS + 1 + FLAG_CELLS);
+    let url_cells = longest_url.min(room);
+
+    let muted = Style::default().fg(theme::MUTED);
+    let header = format!(
+        "{:lead$}{:<name$} {:<mode$} {}",
+        "",
+        "NAME",
+        "MODE",
+        fit("URL", url_cells),
+        lead = LEAD_CELLS,
+        name = NAME_CELLS,
+        mode = MODE_CELLS,
+    );
+    f.render_widget(Paragraph::new(Span::styled(header, muted)), parts[0]);
+
     let items: Vec<ListItem> = app
         .entries
         .iter()
@@ -532,7 +594,7 @@ fn render_tunnels(f: &mut Frame, app: &App, area: Rect) {
                     status_style(entry.status),
                 ),
                 Span::styled(
-                    format!("{:<14}", entry.name()),
+                    format!("{:<width$} ", entry.display_name(), width = NAME_CELLS),
                     if i == app.selected {
                         Style::default().add_modifier(Modifier::BOLD)
                     } else {
@@ -540,22 +602,33 @@ fn render_tunnels(f: &mut Frame, app: &App, area: Rect) {
                     },
                 ),
                 Span::styled(
-                    format!("{:<7}", entry.mode()),
+                    format!("{:<width$} ", entry.mode(), width = MODE_CELLS),
                     Style::default().fg(theme::ACCENT),
                 ),
-                Span::raw(entry.url()),
+                Span::raw(format!(
+                    "{:<width$} ",
+                    fit(&entry.url(), url_cells),
+                    width = url_cells
+                )),
+                Span::styled(
+                    if entry.tunnel.auto_start {
+                        "\u{27f3}"
+                    } else {
+                        " "
+                    },
+                    Style::default().fg(theme::FLAG),
+                ),
+                Span::styled(
+                    if entry.health == HealthStatus::Unhealthy {
+                        "\u{26a0}"
+                    } else {
+                        " "
+                    },
+                    Style::default().fg(theme::WARN),
+                ),
             ];
-            if entry.tunnel.auto_start {
-                spans.push(Span::styled(" ⟳", Style::default().fg(theme::FLAG)));
-            }
-            if entry.health == HealthStatus::Unhealthy {
-                spans.push(Span::styled(" ⚠", Style::default().fg(theme::WARN)));
-            }
             if let Some(tag) = entry.tag() {
-                spans.push(Span::styled(
-                    format!(" {tag}"),
-                    Style::default().fg(theme::MUTED),
-                ));
+                spans.push(Span::styled(format!(" {tag}"), muted));
             }
             let style = if i == app.selected {
                 Style::default().bg(theme::SELECTED_BG)
@@ -566,18 +639,17 @@ fn render_tunnels(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
-    let title = format!("Tunnels ({})", app.entries.len());
-    let inner = pane(f, area, &title, None);
-    f.render_widget(List::new(items), inner);
+    f.render_widget(List::new(items), parts[1]);
 }
 
-fn render_details(f: &mut Frame, app: &App, area: Rect) {
-    let Some(entry) = app.selected_entry() else {
-        pane(f, area, "Details", None);
-        return;
-    };
-
+/// The rows Details shows for an entry. The pane's height is derived from this
+/// count: a fixed height was sized for an Access tunnel and clipped `started by`
+/// off every public one, and a `name` row would have clipped one more.
+fn detail_lines(entry: &TunnelEntry) -> Vec<Line<'static>> {
     let mut lines = vec![
+        // The list cuts long names and drops the account suffix; this row is
+        // where the stored name, the one every command takes, can be read
+        detail("name", entry.name()),
         // The list already reads an unknown port as "-"; the details pane said
         // `localhost:0`, which reads as a port the tunnel actually holds
         detail("url", &entry.url()),
@@ -622,8 +694,19 @@ fn render_details(f: &mut Frame, app: &App, area: Rect) {
         },
     ));
 
+    lines
+}
+
+/// Rows of border and title around the detail rows
+const DETAILS_CHROME: u16 = 3;
+
+fn render_details(f: &mut Frame, app: &App, area: Rect) {
+    let Some(entry) = app.selected_entry() else {
+        pane(f, area, "Details", None);
+        return;
+    };
     let inner = pane(f, area, "Details", None);
-    f.render_widget(Paragraph::new(lines), inner);
+    f.render_widget(Paragraph::new(detail_lines(entry)), inner);
 }
 
 /// Who started the process that is running now. The service manager counts
@@ -647,7 +730,7 @@ pub fn started_by(restarts: u32, auto_start: bool) -> String {
     }
 }
 
-fn detail<'a>(label: &'a str, value: &str) -> Line<'a> {
+fn detail(label: &'static str, value: &str) -> Line<'static> {
     Line::from(vec![
         Span::styled(format!("{label:<11}"), Style::default().fg(theme::MUTED)),
         Span::raw(value.to_string()),

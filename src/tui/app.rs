@@ -13,6 +13,36 @@ pub const HEALTH_EVERY: Duration = Duration::from_secs(30);
 pub const LB_EVERY: Duration = Duration::from_secs(60);
 pub const DISCOVERY_EVERY: Duration = Duration::from_secs(60);
 
+/// The widest a name gets in the list. The pane is shared with the URL and the
+/// flags, and a name that grows the column pushes both out of line on every row.
+pub const NAME_CELLS: usize = 12;
+
+/// What the list shows for a tunnel name. The account is already in the header
+/// and in the details pane, so a trailing `-<account>` says it a third time on
+/// every row; it is dropped only when it is this entry's own account, so a
+/// `k8s-prod` listed under `dev` still tells the truth. The stored name, and
+/// every command that takes one, keeps the suffix.
+///
+/// Managed names are ASCII (`validate_tunnel_name`), so a character is a cell.
+pub fn display_name(name: &str, account: &str) -> String {
+    let stripped = if account.is_empty() {
+        name
+    } else {
+        name.strip_suffix(account)
+            .and_then(|rest| rest.strip_suffix('-'))
+            // Nothing left means the whole name was the suffix, and an empty
+            // cell cannot be told from the row beneath it
+            .filter(|rest| !rest.is_empty())
+            .unwrap_or(name)
+    };
+    if stripped.chars().count() <= NAME_CELLS {
+        stripped.to_string()
+    } else {
+        let head: String = stripped.chars().take(NAME_CELLS - 1).collect();
+        format!("{head}\u{2026}")
+    }
+}
+
 // Where a row came from, which decides what may be done to it
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TunnelKind {
@@ -47,6 +77,10 @@ impl TunnelEntry {
 
     pub fn name(&self) -> &str {
         &self.tunnel.name
+    }
+
+    pub fn display_name(&self) -> String {
+        display_name(&self.tunnel.name, &self.tunnel.account_name)
     }
 
     // An unmanaged process does not always reveal its local port, and
@@ -832,4 +866,92 @@ pub fn open_url(url: &str) -> anyhow::Result<()> {
         .stderr(std::process::Stdio::null())
         .spawn()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod display_name_tests {
+    use super::*;
+
+    #[test]
+    fn a_suffix_equal_to_the_account_is_not_shown() {
+        assert_eq!(display_name("k8s-dev", "dev"), "k8s");
+        assert_eq!(display_name("redis-dev", "dev"), "redis");
+    }
+
+    // The suffix says which account a tunnel is on only when it is that account's
+    #[test]
+    fn a_suffix_that_names_another_account_stays() {
+        assert_eq!(display_name("k8s-prod", "dev"), "k8s-prod");
+    }
+
+    // An empty cell is a row nobody can tell apart from the next
+    #[test]
+    fn a_name_that_would_vanish_is_shown_whole() {
+        assert_eq!(display_name("dev", "dev"), "dev");
+        assert_eq!(display_name("-dev", "dev"), "-dev");
+        assert_eq!(display_name("anything", ""), "anything");
+    }
+
+    #[test]
+    fn twelve_cells_is_the_edge_of_the_cap() {
+        let twelve = "abcdefghijkl";
+        assert_eq!(twelve.chars().count(), NAME_CELLS);
+        assert_eq!(display_name(twelve, "dev"), twelve);
+        let cut = display_name("abcdefghijklm", "dev");
+        assert_eq!(cut, "abcdefghijk\u{2026}");
+        assert_eq!(cut.chars().count(), NAME_CELLS);
+    }
+
+    #[test]
+    fn a_long_name_is_cut_after_its_suffix_is_dropped() {
+        assert_eq!(
+            display_name("mongo-activitylog-prod", "prod"),
+            "mongo-activ\u{2026}"
+        );
+        assert_eq!(
+            display_name("mongo-production-prod", "prod"),
+            "mongo-produ\u{2026}"
+        );
+    }
+
+    // The cut is harmless only while two tunnels of one account never collapse
+    // to the same cell text; the real config is checked against this in the
+    // evidence run, this guards the shape of it.
+    #[test]
+    fn cut_names_of_one_account_stay_distinct() {
+        let names = [
+            "k8s-prod",
+            "redis-prod",
+            "mongo-activitylog-prod",
+            "mongo-production-prod",
+            "mongo-payments-prod",
+            "mongo-billing-prod",
+            "postgres-primary-prod",
+            "postgres-replica-prod",
+        ];
+        let shown: std::collections::HashSet<String> =
+            names.iter().map(|n| display_name(n, "prod")).collect();
+        assert_eq!(shown.len(), names.len(), "{shown:?}");
+    }
+
+    #[test]
+    fn an_entry_uses_its_own_account_for_the_suffix() {
+        use crate::state::AccessTarget;
+        let tunnel = PersistentTunnel {
+            name: "k8s-dev".to_string(),
+            account_name: "dev".to_string(),
+            auto_start: false,
+            spec: TunnelSpec::Access {
+                target: AccessTarget::Instance {
+                    instance: "vm".to_string(),
+                    zone: "z".to_string(),
+                },
+                remote_port: 1,
+                local_port: 2,
+            },
+        };
+        let entry = TunnelEntry::new(tunnel, TunnelStatus::Stopped, TunnelKind::Managed);
+        assert_eq!(entry.display_name(), "k8s");
+        assert_eq!(entry.name(), "k8s-dev");
+    }
 }
