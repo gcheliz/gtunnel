@@ -32,8 +32,46 @@ pub fn access_argv(acct: &Account, t: &PersistentTunnel) -> Result<Vec<String>> 
         }
     };
 
+    // A jump tunnel is a different gcloud command, not a different flag: IAP
+    // carries an ssh connection and ssh makes the forward from the far side
+    if let AccessTarget::Jump {
+        instance,
+        zone,
+        host,
+    } = target
+    {
+        let mut argv = vec![
+            "compute".to_string(),
+            "ssh".to_string(),
+            instance.clone(),
+            format!("--zone={zone}"),
+            "--tunnel-through-iap".to_string(),
+            "--quiet".to_string(),
+        ];
+        argv.extend(gcloud_common(acct));
+        argv.push("--".to_string());
+        argv.extend(
+            [
+                "-N",
+                "-o",
+                "ExitOnForwardFailure=yes",
+                "-o",
+                "ServerAliveInterval=30",
+                "-o",
+                "ServerAliveCountMax=3",
+                "-L",
+            ]
+            .into_iter()
+            .map(String::from),
+        );
+        argv.push(format!("{local_port}:{host}:{remote_port}"));
+        return Ok(argv);
+    }
+
     let mut argv = vec!["compute".to_string(), "start-iap-tunnel".to_string()];
     match target {
+        // Answered above, before the IAP forward is built
+        AccessTarget::Jump { .. } => unreachable!("a jump tunnel is an ssh forward"),
         AccessTarget::Instance { instance, zone } => {
             argv.push(instance.clone());
             argv.push(remote_port.to_string());
@@ -236,6 +274,24 @@ mod tests {
         }
     }
 
+    // What k9s needs: the cluster master, reached from the bastion
+    fn jump_tunnel() -> PersistentTunnel {
+        PersistentTunnel {
+            name: "k8s-dev".to_string(),
+            account_name: "dev".to_string(),
+            auto_start: false,
+            spec: TunnelSpec::Access {
+                target: AccessTarget::Jump {
+                    instance: "private-cluster-bastion".to_string(),
+                    zone: "europe-west1-b".to_string(),
+                    host: "10.3.0.13".to_string(),
+                },
+                remote_port: 443,
+                local_port: 8443,
+            },
+        }
+    }
+
     fn expose_tunnel(local_target: &str) -> PersistentTunnel {
         PersistentTunnel {
             name: "api".to_string(),
@@ -427,6 +483,35 @@ mod tests {
             .expect("an active configuration");
         assert_eq!(active.name, "default");
         assert_eq!(active.account.as_deref(), Some("me@example.com"));
+    }
+
+    // An IAP TCP forward lands on a port of the instance itself, so a private
+    // endpoint behind a bastion is out of its reach: the forward has to be made
+    // by ssh on the far side, with IAP carrying the ssh connection
+    #[test]
+    fn access_argv_for_a_jump_host_forwards_from_the_far_side() {
+        let argv = access_argv(&account(), &jump_tunnel()).expect("argv");
+        assert_eq!(argv[0], "compute", "{argv:?}");
+        assert_eq!(argv[1], "ssh", "{argv:?}");
+        assert_eq!(argv[2], "private-cluster-bastion", "{argv:?}");
+        assert!(
+            argv.contains(&"--tunnel-through-iap".to_string()),
+            "{argv:?}"
+        );
+        assert!(
+            argv.contains(&"--zone=europe-west1-b".to_string()),
+            "{argv:?}"
+        );
+        let dash = argv.iter().position(|a| a == "--").expect("an ssh argv");
+        assert!(
+            argv[dash..].contains(&"-L".to_string())
+                && argv.last() == Some(&"8443:10.3.0.13:443".to_string()),
+            "the forward is local, from the local port to the host the bastion reaches: {argv:?}"
+        );
+        assert!(
+            argv[dash..].contains(&"ExitOnForwardFailure=yes".to_string()),
+            "a forward that cannot bind must fail loudly: {argv:?}"
+        );
     }
 
     #[test]

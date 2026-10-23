@@ -28,15 +28,25 @@ pub enum Commands {
     // Examples:
     //   gtunnel add db my-vm:5432 -z europe-west1-b --start
     //   gtunnel add pg 10.0.0.5:5432 --dest-group prod --region europe-west1 --network default
+    //   gtunnel add k8s-dev 10.3.0.13:443 --via private-cluster-bastion --local-port 8443
     #[command(about = "Add a persistent Access tunnel (IAP TCP forward to localhost)")]
     Add {
         // Tunnel name
         #[arg(help = "Tunnel name")]
         name: String,
 
-        // INSTANCE:PORT, or HOST:PORT when --dest-group is used
-        #[arg(help = "INSTANCE:PORT, or HOST:PORT with --dest-group")]
+        // INSTANCE:PORT, or HOST:PORT when --dest-group or --via is used
+        #[arg(help = "INSTANCE:PORT, or HOST:PORT with --dest-group or --via")]
         target: String,
+
+        // An instance that can reach the target, when IAP cannot reach it
+        // directly: the forward is made by ssh on that instance
+        #[arg(
+            long,
+            conflicts_with = "dest_group",
+            help = "Instance to forward from, for a host only it can reach"
+        )]
+        via: Option<String>,
 
         // Compute zone of the instance (overrides the account default)
         #[arg(short, long, help = "Compute zone of the instance")]
@@ -384,6 +394,39 @@ mod tests {
                 assert_eq!(zone.as_deref(), Some("europe-west1-b"));
                 assert_eq!(local_port, Some(15432));
                 assert!(start);
+            }
+            other => panic!("expected Add, got {other:?}"),
+        }
+    }
+
+    // The k9s shape: a private endpoint the bastion can reach, forwarded from
+    // the bastion rather than dialled through IAP directly
+    #[test]
+    fn add_parses_a_jump_host() {
+        let cli = parse(&[
+            "gtunnel",
+            "add",
+            "k8s-dev",
+            "10.3.0.13:443",
+            "--via",
+            "private-cluster-bastion",
+            "--zone",
+            "europe-west1-b",
+            "--local-port",
+            "8443",
+        ]);
+        match cli.command.expect("command") {
+            Commands::Add {
+                target,
+                via,
+                zone,
+                local_port,
+                ..
+            } => {
+                assert_eq!(target, "10.3.0.13:443");
+                assert_eq!(via.as_deref(), Some("private-cluster-bastion"));
+                assert_eq!(zone.as_deref(), Some("europe-west1-b"));
+                assert_eq!(local_port, Some(8443));
             }
             other => panic!("expected Add, got {other:?}"),
         }

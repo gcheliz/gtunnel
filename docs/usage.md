@@ -42,6 +42,7 @@ data and never touches GCP or a config file.
 | `r` | Refresh now | `c` | Copy the URL |
 | `;` | Next account | `o` | Open the URL |
 | `m` | Import an unmanaged run | `h` | Health check now |
+| `L` | Clear this tunnel's log | | |
 | `?` | Help | `q` | Quit |
 
 Unmanaged `gcloud start-iap-tunnel` processes started outside gtunnel appear in the list
@@ -69,6 +70,7 @@ credential: every token comes from `gcloud auth print-access-token` at the momen
 
 ```
 gtunnel add <NAME> <INSTANCE:PORT> [-z ZONE] [--local-port N] [-s]
+gtunnel add <NAME> <HOST:PORT> --via INSTANCE [-z ZONE] [--local-port N] [-s]
 gtunnel add <NAME> <HOST:PORT> --dest-group G --region R --network N [-s]
 ```
 
@@ -76,11 +78,37 @@ gtunnel add <NAME> <HOST:PORT> --dest-group G --region R --network N [-s]
 |---|---|
 | `-z`, `--zone` | Zone of the instance; the account default otherwise |
 | `--local-port` | Fixed local port; otherwise one is allocated from 15000-15999, stable per name |
+| `--via` | Reach a host the instance can reach, rather than a port of the instance |
 | `--dest-group` | Target an IAP destination group instead of an instance |
 | `-s`, `--start` | Install the service and start it immediately |
 
 The local port is derived from the tunnel name, so the same name gets the same port on
 every machine unless it is taken.
+
+### Three ways to reach a target
+
+| Target | Command gtunnel runs | Use it for |
+|---|---|---|
+| A port of the instance | `start-iap-tunnel INSTANCE PORT --local-host-port=…` | SSH, a database on the VM itself |
+| A host the instance reaches (`--via`) | `compute ssh INSTANCE --tunnel-through-iap -- -N -L LOCAL:HOST:PORT` | A private GKE control plane, anything behind a bastion |
+| A host in a destination group | `start-iap-tunnel HOST PORT --dest-group=… --region=…` | A host IAP can address directly, where a group exists |
+
+An IAP TCP forward lands on a port of the instance itself, so a private endpoint behind a
+bastion needs `--via`: IAP carries an ssh connection and ssh makes the forward from the far
+side. A private GKE master, for example:
+
+```
+$ gtunnel add k8s-dev 10.3.0.13:443 --via private-cluster-bastion -z europe-west1-b --local-port 8443 -s
+● k8s-dev  localhost:8443 -> 10.3.0.13:443 via private-cluster-bastion
+```
+
+The kubeconfig has to name the master in `tls-server-name`, because the API server's
+certificate is issued for its own IP and not for `127.0.0.1`:
+
+```yaml
+    server: https://127.0.0.1:8443
+    tls-server-name: 10.3.0.13
+```
 
 ## expose
 
@@ -125,7 +153,8 @@ Error: Tunnel 'nope' not found for account 'evidence'
 ```
 
 `logs -f` follows. `restart` rewrites the service file before starting, so it also picks up
-an edited target. `delete` removes the relay route first, then the service, then the record.
+an edited target. Starting a tunnel empties its log first, so what the pane shows belongs to
+the run in front of you; `L` in the TUI clears the selected tunnel's log without restarting it. `delete` removes the relay route first, then the service, then the record and the log.
 
 Starting a public tunnel re-creates its backend, host rule, named port and DNS record if any
 of them went missing, so `gtunnel restart <name>` is the fix for a tunnel that comes up

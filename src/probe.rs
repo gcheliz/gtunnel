@@ -32,39 +32,46 @@ impl HealthStatus {
     }
 }
 
-// Round-trip time to open a TCP connection, or None when it does not open
+// How long the far end takes to answer, or None when it does not answer at
+// all. The local accept is no measurement: gcloud's listener accepts whether
+// or not IAP, the bastion or the network are reachable, so the probe asks the
+// far end for something and times the round trip it costs.
 pub async fn tcp_probe(addr: &str, timeout: Duration) -> Option<Duration> {
-    let started = std::time::Instant::now();
     let connect = tokio::net::TcpStream::connect(addr);
-    match tokio::time::timeout(timeout, connect).await {
-        Ok(Ok(mut stream)) => {
-            let rtt = started.elapsed();
-            // Closing cleanly costs another round trip, so it gets the same
-            // budget the connection itself was given
-            close_politely(&mut stream, timeout).await;
-            Some(rtt)
-        }
-        _ => None,
-    }
+    let mut stream = match tokio::time::timeout(timeout, connect).await {
+        Ok(Ok(stream)) => stream,
+        _ => return None,
+    };
+    close_politely(&mut stream, timeout).await
 }
 
 // A socket dropped while the peer's greeting is still unread closes with RST,
 // and so does one closed just before a greeting still in flight arrives. Either
 // way the peer reports a client error: gcloud logs a traceback for every probe
 // and the tunnel's log fills with them. Half-close so the peer sees a FIN, then
-// read until its own close arrives. Says whether that close arrived in time.
-async fn close_politely(stream: &mut tokio::net::TcpStream, budget: Duration) -> bool {
+// read until its own close arrives. Returns how long the far end took to say
+// anything back, which is the round trip the probe reports.
+async fn close_politely(stream: &mut tokio::net::TcpStream, budget: Duration) -> Option<Duration> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     if stream.shutdown().await.is_err() {
-        return false;
+        return None;
     }
+    let started = std::time::Instant::now();
+    let mut answered = None;
     let drain = async {
-        // Whatever the peer says is of no interest; reaching its EOF is
+        // Anything from the far end is its answer: a greeting, or its own close
+        // relayed back. Read on to EOF so nothing is left unread.
         let mut scratch = [0u8; 1024];
-        while matches!(stream.read(&mut scratch).await, Ok(n) if n > 0) {}
+        while let Ok(read) = stream.read(&mut scratch).await {
+            answered.get_or_insert_with(|| started.elapsed());
+            if read == 0 {
+                break;
+            }
+        }
     };
-    tokio::time::timeout(budget, drain).await.is_ok()
+    let _ = tokio::time::timeout(budget, drain).await;
+    answered
 }
 
 // A 4xx still proves the request reached the service; only 5xx and a failure
@@ -158,7 +165,8 @@ pub fn process_uptime(pid: u32) -> Option<Duration> {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TunnelMetrics {
-    pub latency_ms: Option<u64>,
+    // How long the far end took to answer, not how long the local accept took
+    pub latency: Option<Duration>,
     pub active_connections: u64,
     pub uptime: Option<Duration>,
     pub restarts: u32,
@@ -174,7 +182,27 @@ pub async fn collect_metrics(
     let label = daemon::platform_label(&t.account_name, &t.name);
     let status = daemon::status(&label).await;
     let runtime = daemon::runtime_info(&label).await;
+    measure(cfg, t, include_lb, status, runtime).await
+}
 
+// An unmanaged tunnel has no service to ask: discovery saw the process, and
+// `ps` already gave the pid its uptime is read from. Nothing restarts it, so a
+// restart count would be a number gtunnel invented.
+pub async fn collect_unmanaged(cfg: &Config, t: &PersistentTunnel, pid: u32) -> TunnelMetrics {
+    let runtime = daemon::RuntimeInfo {
+        pid: Some(pid),
+        restarts: 0,
+    };
+    measure(cfg, t, false, TunnelStatus::Running, runtime).await
+}
+
+async fn measure(
+    cfg: &Config,
+    t: &PersistentTunnel,
+    include_lb: bool,
+    status: TunnelStatus,
+    runtime: daemon::RuntimeInfo,
+) -> TunnelMetrics {
     let mut metrics = TunnelMetrics {
         restarts: runtime.restarts,
         uptime: runtime.pid.and_then(process_uptime),
@@ -186,7 +214,7 @@ pub async fn collect_metrics(
         TunnelSpec::Access { local_port, .. } => {
             metrics.active_connections = active_connections(*local_port);
             if let Some(rtt) = tcp_probe(&format!("127.0.0.1:{local_port}"), TCP_TIMEOUT).await {
-                metrics.latency_ms = Some(rtt.as_millis() as u64);
+                metrics.latency = Some(rtt);
             } else {
                 metrics.available = false;
             }
@@ -289,6 +317,63 @@ mod tests {
         }
     }
 
+    // Accepting a connection on the loopback port proves nothing: gcloud's
+    // listener accepts whether or not IAP, the bastion or the network are
+    // reachable. What the probe reports has to be the far end's own answer,
+    // which costs a round trip through the tunnel
+    #[tokio::test]
+    async fn the_latency_reported_is_the_far_end_answering() {
+        let measured = tcp_probe(&slow_greeter().await.to_string(), TCP_TIMEOUT)
+            .await
+            .expect("the peer greeted, so the probe has a measurement");
+        assert!(
+            measured >= Duration::from_millis(300),
+            "reported {measured:?}, which is the local accept rather than the round trip"
+        );
+    }
+
+    // A listener with nothing behind it accepts and then says nothing at all:
+    // the case that reported `Health: OK Latency: 2 ms` for a port held by a
+    // foreign process
+    #[tokio::test]
+    async fn a_peer_that_never_answers_is_not_a_working_tunnel() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr").to_string();
+        let _held = tokio::spawn(async move {
+            let (sock, _) = listener.accept().await.expect("accept");
+            // Accepted and held open, saying nothing and never closing
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            drop(sock);
+        });
+
+        assert_eq!(
+            tcp_probe(&addr, Duration::from_millis(300)).await,
+            None,
+            "a port that answers nothing was reported as a live tunnel"
+        );
+    }
+
+    // A silent service is still reachable: its close crossed the tunnel, so the
+    // round trip is measurable even though no greeting ever came
+    #[tokio::test]
+    async fn a_peer_that_only_closes_still_answers() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr").to_string();
+        tokio::spawn(async move {
+            let (sock, _) = listener.accept().await.expect("accept");
+            drop(sock);
+        });
+
+        assert!(
+            tcp_probe(&addr, TCP_TIMEOUT).await.is_some(),
+            "a reachable service that does not greet was reported as down"
+        );
+    }
+
     // A peer that greets a round trip after the probe half-closes, the way a
     // bastion behind an IAP tunnel does
     async fn slow_greeter() -> std::net::SocketAddr {
@@ -317,7 +402,7 @@ mod tests {
             .await
             .expect("the probe did not connect");
         assert!(
-            close_politely(&mut patient, TCP_TIMEOUT).await,
+            close_politely(&mut patient, TCP_TIMEOUT).await.is_some(),
             "closed before the peer's greeting and its own close arrived"
         );
 
@@ -325,8 +410,10 @@ mod tests {
             .await
             .expect("the probe did not connect");
         assert!(
-            !close_politely(&mut hasty, Duration::from_millis(50)).await,
-            "a close given 50 ms reported success waiting 300 ms, so the budget is not the caller's"
+            close_politely(&mut hasty, Duration::from_millis(50))
+                .await
+                .is_none(),
+            "a close given 50 ms reported an answer 300 ms away, so the budget is not the caller's"
         );
     }
 
@@ -402,10 +489,17 @@ LISTEN 0      128    127.0.0.1:15432     0.0.0.0:*
 
     #[tokio::test]
     async fn tcp_probe_reaches_a_listening_port_and_not_a_closed_one() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
         let addr = listener.local_addr().expect("addr").to_string();
+        // A port is only reached when something behind it answers, so the
+        // listener has to accept rather than leave the connection in its backlog
+        tokio::spawn(async move {
+            let (sock, _) = listener.accept().await.expect("accept");
+            drop(sock);
+        });
         assert!(tcp_probe(&addr, Duration::from_secs(2)).await.is_some());
-        drop(listener);
         assert!(tcp_probe("127.0.0.1:1", Duration::from_millis(200))
             .await
             .is_none());

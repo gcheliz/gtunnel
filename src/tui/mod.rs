@@ -227,7 +227,11 @@ async fn event_loop(
             Msg::Metrics(metrics) => {
                 for (name, m) in metrics {
                     if let Some(entry) = app.entries.iter_mut().find(|e| e.name() == name) {
-                        entry.history.record(m.latency_ms.unwrap_or(0));
+                        // Microseconds: a fast hop is a real measurement, and
+                        // whole milliseconds would record it as nothing
+                        entry
+                            .history
+                            .record(m.latency.map_or(0, |d| d.as_micros() as u64));
                         entry.metrics = Some(m);
                     }
                 }
@@ -298,19 +302,13 @@ fn schedule(app: &App, timers: &mut Timers, tx: &mpsc::UnboundedSender<Msg>) {
         if include_lb {
             timers.lb = Instant::now();
         }
-        let running: Vec<String> = app
-            .entries
-            .iter()
-            .filter(|e| e.status == crate::state::TunnelStatus::Running)
-            .filter(|e| e.kind != TunnelKind::External)
-            .map(|e| e.name().to_string())
-            .collect();
+        let targets = ops::metric_targets(&app.entries);
         let tx = tx.clone();
-        let account = account.clone();
         tokio::spawn(async move {
             let mut out = Vec::new();
-            for name in running {
-                if let Some(m) = ops::collect(&account, &name, include_lb).await {
+            for target in targets {
+                let name = target.tunnel.name.clone();
+                if let Some(m) = ops::collect(&target, include_lb).await {
                     out.push((name, m));
                 }
             }
@@ -446,6 +444,31 @@ mod tests {
         );
     }
 
+    // A log that filled with a previous run's gcloud tracebacks is noise the
+    // user can clear from the row it belongs to, and the panel empties with it
+    // rather than showing lines the file no longer holds
+    #[test]
+    fn l_clears_the_selected_tunnels_log_and_the_panel_with_it() {
+        let mut app = app_with_two();
+        app.logs = vec!["ERROR: [243] Connection reset by peer".to_string()];
+        assert_eq!(
+            app.handle_key(key(KeyCode::Char('L'))),
+            Some(Op::ClearLog("db".to_string()))
+        );
+        assert!(app.logs.is_empty(), "{:?}", app.logs);
+    }
+
+    // An ephemeral run writes to the terminal that started it, so there is no
+    // file to clear and saying so beats a silent no-op
+    #[test]
+    fn clearing_the_log_of_a_run_says_it_has_none() {
+        let mut app = app_with_two();
+        app.entries[0].kind = TunnelKind::Ephemeral;
+        assert_eq!(app.handle_key(key(KeyCode::Char('L'))), None);
+        let status = app.status.clone().expect("a status message");
+        assert!(status.contains("log"), "{status}");
+    }
+
     #[test]
     fn an_external_tunnel_refuses_every_action_and_says_why() {
         let mut app = app_with_two();
@@ -479,6 +502,16 @@ mod tests {
         assert!(!app.status_error, "success must clear the mark");
     }
 
+    // A hop that answers in under a millisecond is a measurement, not a zero:
+    // whole milliseconds reported every local tunnel as 0 ms, which left the
+    // chart with nothing to draw and the peak reading 0
+    #[test]
+    fn a_sub_millisecond_round_trip_is_not_reported_as_zero() {
+        assert_eq!(ui::format_latency(Duration::from_micros(400)), "0.4 ms");
+        assert_eq!(ui::format_latency(Duration::from_micros(1500)), "1.5 ms");
+        assert_eq!(ui::format_latency(Duration::from_millis(340)), "340 ms");
+    }
+
     // A sparkline with no scale cannot be read: 60 bars of "some latency" say
     // nothing without the number the tallest one stands for
     #[test]
@@ -487,7 +520,7 @@ mod tests {
         use ratatui::Terminal;
 
         let mut app = app_with_two();
-        for sample in [12u64, 31, 18, 44, 22] {
+        for sample in [12_000u64, 31_000, 18_000, 44_000, 22_000] {
             app.entries[0].history.record(sample);
         }
         let mut terminal = Terminal::new(TestBackend::new(120, 38)).unwrap();
@@ -604,7 +637,8 @@ mod tests {
             zone: "europe-west1-b".to_string(),
         }];
 
-        let op = keys(&mut app, "a1db\n\n5432\n\n");
+        // a, mode 1, name, instance, host (empty: the instance itself), ports
+        let op = keys(&mut app, "a1db\n\n\n5432\n\n");
         assert_eq!(
             op,
             Some(Op::Create(NewTunnel {
@@ -641,6 +675,63 @@ mod tests {
 
         assert_eq!(keys(&mut app, "d"), None);
         assert_eq!(keys(&mut app, "y"), Some(Op::Delete("db".to_string())));
+    }
+
+    // The chart's samples and the latency reading are one measurement in one
+    // unit. The demo seeded milliseconds into a history the live path fills in
+    // microseconds, so a 21 ms peak was labelled `0.0 ms` under a chart of bars
+    // Adding a tunnel to a private endpoint has to be possible from the TUI,
+    // not only from the CLI: the dialog asks what the chosen instance reaches,
+    // and an empty answer means the instance itself
+    #[test]
+    fn the_add_dialog_asks_what_the_instance_reaches() {
+        let mut app = App::new_demo();
+        app.draft.instance = "private-cluster-bastion".to_string();
+        app.draft.zone = "europe-west1-b".to_string();
+        app.input_mode = InputMode::AddJumpHost;
+        app.input = "10.3.0.13".to_string();
+        assert_eq!(app.handle_key(key(KeyCode::Enter)), None);
+        assert_eq!(app.draft.host, "10.3.0.13");
+        assert_eq!(app.input_mode, InputMode::AddRemotePort);
+    }
+
+    // What the create op sends to `add`: a jump tunnel names the host as its
+    // target and the instance as the way to it, a plain one names the instance
+    #[test]
+    fn a_draft_with_a_host_is_created_through_its_instance() {
+        let mut draft = NewTunnel {
+            instance: "private-cluster-bastion".to_string(),
+            remote_port: 443,
+            ..Default::default()
+        };
+        assert_eq!(
+            ops::add_arguments(&draft),
+            ("private-cluster-bastion:443".to_string(), None)
+        );
+        draft.host = "10.3.0.13".to_string();
+        assert_eq!(
+            ops::add_arguments(&draft),
+            (
+                "10.3.0.13:443".to_string(),
+                Some("private-cluster-bastion".to_string())
+            )
+        );
+    }
+
+    #[test]
+    fn the_demo_peak_reads_in_the_same_unit_as_its_latency() {
+        let app = App::new_demo();
+        for entry in &app.entries {
+            let Some(latency) = entry.metrics.as_ref().and_then(|m| m.latency) else {
+                continue;
+            };
+            let peak = Duration::from_micros(entry.history.peak());
+            assert!(
+                peak >= latency / 2 && peak <= latency * 4,
+                "{}: peak {peak:?} is not the same unit as latency {latency:?}",
+                entry.name()
+            );
+        }
     }
 
     #[test]

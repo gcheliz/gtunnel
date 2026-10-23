@@ -5,7 +5,8 @@ the exact command for the things it cannot fix itself.
 
 ## What the log says, and what it means
 
-gtunnel annotates these lines in `gtunnel logs <name>` and in the TUI's log pane.
+gtunnel annotates these lines in `gtunnel logs <name>` and in the TUI's log pane. A log is
+emptied when its tunnel starts, so a line in it was written by the process running now.
 
 | Log line contains | Cause | Fix |
 |---|---|---|

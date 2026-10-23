@@ -83,6 +83,7 @@ pub enum Op {
     Delete(String),
     ToggleAutoStart(String),
     Import(String),
+    ClearLog(String),
     Create(NewTunnel),
     Edit(EditTunnel),
 }
@@ -101,6 +102,9 @@ pub struct NewTunnel {
     pub mode: TunnelMode,
     pub instance: String,
     pub zone: String,
+    // What the instance reaches, when the target is not a port of the instance
+    // itself: empty means the instance
+    pub host: String,
     pub remote_port: u16,
     pub local_port: u16,
     pub local_target: String,
@@ -130,6 +134,7 @@ pub enum InputMode {
     ChooseMode,
     AddName,
     AddInstance,
+    AddJumpHost,
     AddRemotePort,
     AddLocalPort,
     AddLocalTarget,
@@ -145,6 +150,7 @@ impl InputMode {
         matches!(
             self,
             InputMode::AddName
+                | InputMode::AddJumpHost
                 | InputMode::AddRemotePort
                 | InputMode::AddLocalPort
                 | InputMode::AddLocalTarget
@@ -156,6 +162,7 @@ impl InputMode {
         match self {
             InputMode::AddName => "Name:",
             InputMode::AddInstance => "Instance (type to filter):",
+            InputMode::AddJumpHost => "Host it reaches (Enter for the instance itself):",
             InputMode::AddRemotePort => "Remote port:",
             InputMode::AddLocalPort => "Local port (Enter keeps the suggestion):",
             InputMode::AddLocalTarget => "Local target (e.g. localhost:3000):",
@@ -400,6 +407,7 @@ impl App {
             KeyCode::Char('h') => self.force_health(),
             KeyCode::Char('a') => self.open_add(),
             KeyCode::Char('e') => self.open_edit(),
+            KeyCode::Char('L') => return self.clear_log_op(),
             _ => {}
         }
         None
@@ -422,6 +430,33 @@ impl App {
                 let name = entry.name().to_string();
                 self.spinner.start(&format!("import {name}"));
                 Some(Op::Import(name))
+            }
+        }
+    }
+
+    // Only a managed tunnel keeps a log file: a run writes to the terminal that
+    // started it, and an unmanaged process writes wherever its owner sent it
+    fn clear_log_op(&mut self) -> Option<Op> {
+        let entry = self.selected_entry()?;
+        match entry.kind {
+            TunnelKind::External => {
+                self.refuse_external("clear the log of");
+                None
+            }
+            TunnelKind::Ephemeral => {
+                self.set_status(format!(
+                    "{} is a run: its log goes to the terminal that started it",
+                    entry.name()
+                ));
+                None
+            }
+            TunnelKind::Managed => {
+                let name = entry.name().to_string();
+                // The panel follows the file, so it empties with it instead of
+                // showing lines until the next reload
+                self.logs.clear();
+                self.spinner.start(&format!("clear log {name}"));
+                Some(Op::ClearLog(name))
             }
         }
     }
@@ -596,6 +631,11 @@ impl App {
                 };
                 None
             }
+            InputMode::AddJumpHost => {
+                self.draft.host = value.trim().to_string();
+                self.input_mode = InputMode::AddRemotePort;
+                None
+            }
             InputMode::AddRemotePort => match value.trim().parse::<u16>() {
                 Ok(port) => {
                     self.draft.remote_port = port;
@@ -684,7 +724,7 @@ impl App {
                 self.draft.instance = chosen.name;
                 self.draft.zone = chosen.zone;
                 self.input.clear();
-                self.input_mode = InputMode::AddRemotePort;
+                self.input_mode = InputMode::AddJumpHost;
             }
             _ => {}
         }

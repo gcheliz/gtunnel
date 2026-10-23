@@ -32,6 +32,7 @@ async fn main() -> Result<()> {
         Some(Commands::Add {
             name,
             target,
+            via,
             zone,
             local_port,
             dest_group,
@@ -43,6 +44,7 @@ async fn main() -> Result<()> {
                 account,
                 &name,
                 &target,
+                via.as_deref(),
                 zone.as_deref(),
                 local_port,
                 dest_group.as_deref(),

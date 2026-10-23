@@ -85,6 +85,33 @@ pub use launchd::{install, runtime_info, set_auto_start, start, status, stop, un
 #[cfg(not(target_os = "macos"))]
 pub use systemd::{install, runtime_info, set_auto_start, start, status, stop, uninstall};
 
+// A tunnel that starts gets a clean log. Truncated in place rather than removed
+// and rewritten, so a process still holding the file open in append mode keeps
+// writing where the reader is looking.
+pub fn reset_log(path: &std::path::Path) -> Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("Failed to create {}", dir.display()))?;
+    }
+    std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(path)
+        .with_context(|| format!("Failed to clear {}", path.display()))?;
+    Ok(())
+}
+
+/// Delete a tunnel's log. A tunnel that no longer exists owns nothing, and a
+/// name reused later would otherwise open on the previous tunnel's lines.
+pub fn remove_log(path: &std::path::Path) -> Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e).with_context(|| format!("Failed to remove {}", path.display())),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,6 +358,58 @@ mod tests {
             systemd::unit_for("prod-eu", "api"),
             "gtunnel-prod-eu-api.service"
         );
+    }
+    // A tunnel that starts again starts its log again: the previous process's
+    // gcloud tracebacks are not this one's, and a log that only ever grows
+    // buries the line that matters under the ones that no longer do
+    #[test]
+    fn a_log_reset_empties_an_existing_log_and_creates_a_missing_one() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log = dir.path().join("dev-db.log");
+        std::fs::write(&log, "ERROR: [243] Connection reset by peer\n").expect("write");
+
+        reset_log(&log).expect("reset an existing log");
+        assert_eq!(std::fs::read_to_string(&log).expect("read"), "");
+
+        let fresh = dir.path().join("dev-new.log");
+        reset_log(&fresh).expect("reset a log that does not exist yet");
+        assert!(fresh.exists(), "a missing log is created, not an error");
+    }
+
+    // Truncation happens in place so a process already holding the file open in
+    // append mode keeps writing to the same inode instead of into a deleted file
+    #[test]
+    fn a_log_reset_keeps_the_same_file_an_open_process_is_writing_to() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log = dir.path().join("dev-db.log");
+        let mut held = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log)
+            .expect("open");
+        held.write_all(b"old line\n").expect("write");
+
+        reset_log(&log).expect("reset");
+        held.write_all(b"new line\n")
+            .expect("the held handle still writes");
+
+        let after = std::fs::read_to_string(&log).expect("read");
+        assert!(after.contains("new line"), "{after:?}");
+        assert!(!after.contains("old line"), "{after:?}");
+    }
+
+    // A deleted tunnel keeps nothing: its log outlived it, so a name reused
+    // later opened on the previous tunnel's lines
+    #[test]
+    fn removing_a_log_leaves_no_file_and_forgives_a_missing_one() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log = dir.path().join("dev-db.log");
+        std::fs::write(&log, "a line\n").expect("write");
+
+        remove_log(&log).expect("remove an existing log");
+        assert!(!log.exists());
+        remove_log(&log).expect("a log that is already gone is not an error");
     }
 }
 

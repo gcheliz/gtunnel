@@ -9,7 +9,7 @@ use crate::discovery::{external_tunnels, ExternalTunnel};
 use crate::ephemeral::list_ephemeral;
 use crate::expose::routes;
 use crate::gcp::GcpClient;
-use crate::probe::{collect_metrics, http_probe, tcp_probe, HealthStatus};
+use crate::probe::{collect_metrics, collect_unmanaged, http_probe, tcp_probe, HealthStatus};
 use crate::state::{AccessTarget, PersistentTunnel, TunnelSpec, TunnelState, TunnelStatus};
 use std::time::Duration;
 
@@ -21,14 +21,13 @@ const TCP_HEALTH_TIMEOUT: Duration = Duration::from_secs(2);
 pub async fn load_entries(account: &str) -> Result<Vec<TunnelEntry>> {
     let state = TunnelState::load()?;
     let mut entries = Vec::new();
-    let mut managed_pids: HashSet<u32> = HashSet::new();
+    // Every gtunnel pid on the machine, so another account's tunnel is not
+    // listed a second time as a stranger
+    let managed_pids: HashSet<u32> = crate::discovery::managed_pids().await;
 
     for tunnel in state.tunnels_for_account(account) {
         let label = daemon::platform_label(account, &tunnel.name);
         let status = daemon::status(&label).await;
-        if let Some(pid) = daemon::runtime_info(&label).await.pid {
-            managed_pids.insert(pid);
-        }
         entries.push(TunnelEntry::new(
             tunnel.clone(),
             status,
@@ -40,7 +39,6 @@ pub async fn load_entries(account: &str) -> Result<Vec<TunnelEntry>> {
         if record.account_name != account {
             continue;
         }
-        managed_pids.insert(record.pid);
         entries.push(TunnelEntry::new(
             PersistentTunnel {
                 name: record.name.clone(),
@@ -118,9 +116,25 @@ pub fn read_logs(tunnel: &PersistentTunnel, lines: usize) -> Vec<String> {
         .collect()
 }
 
+// Empties one tunnel's log without touching the service behind it: the process
+// keeps its handle on the file, so the next line it writes lands in the file the
+// panel is reading.
+fn clear_log(account: &str, name: &str) -> Result<String> {
+    let (_, acct) = resolve(Some(account))?;
+    let state = TunnelState::load()?;
+    let tunnel = find_tunnel(&state, name, &acct.name)?;
+    daemon::reset_log(&tunnel.log_path()?)?;
+    Ok(format!("{name} log cleared"))
+}
+
 pub async fn probe_health(tunnel: &PersistentTunnel) -> HealthStatus {
     match &tunnel.spec {
         TunnelSpec::Access { local_port, .. } => {
+            // A tunnel started with --listen-on-stdin reveals no local port, so
+            // there is nothing to dial: the port is unknown, not shut
+            if *local_port == 0 {
+                return HealthStatus::Unknown;
+            }
             match tcp_probe(&format!("127.0.0.1:{local_port}"), TCP_HEALTH_TIMEOUT).await {
                 Some(_) => HealthStatus::Healthy,
                 None => HealthStatus::Unhealthy,
@@ -130,15 +144,38 @@ pub async fn probe_health(tunnel: &PersistentTunnel) -> HealthStatus {
     }
 }
 
+// One row to measure this round. An unmanaged tunnel has no service to ask, so
+// it brings the pid `ps` gave it; a managed one is read from its service.
+#[derive(Debug, Clone)]
+pub struct MetricTarget {
+    pub tunnel: PersistentTunnel,
+    pub pid: Option<u32>,
+}
+
+// Latency, peak and the chart belong to the port, not to whoever opened it: a
+// running tunnel is measured whether or not gtunnel manages it, and a row whose
+// port is unknown has nothing to measure.
+pub fn metric_targets(entries: &[TunnelEntry]) -> Vec<MetricTarget> {
+    entries
+        .iter()
+        .filter(|e| e.status == TunnelStatus::Running)
+        .filter(|e| !matches!(e.tunnel.spec, TunnelSpec::Access { local_port: 0, .. }))
+        .map(|e| MetricTarget {
+            tunnel: e.tunnel.clone(),
+            pid: e.external.as_ref().map(|x| x.pid),
+        })
+        .collect()
+}
+
 pub async fn collect(
-    account: &str,
-    name: &str,
+    target: &MetricTarget,
     include_lb: bool,
 ) -> Option<crate::probe::TunnelMetrics> {
     let config = load_config().ok()?;
-    let state = TunnelState::load().ok()?;
-    let tunnel = state.find_for_account(name, account)?;
-    Some(collect_metrics(&config, tunnel, include_lb).await)
+    Some(match target.pid {
+        Some(pid) => collect_unmanaged(&config, &target.tunnel, pid).await,
+        None => collect_metrics(&config, &target.tunnel, include_lb).await,
+    })
 }
 
 // Runs on a tokio task; the UI thread never waits on gcloud or the API
@@ -171,8 +208,23 @@ async fn run(account: &str, op: &Op) -> Result<String> {
         Op::Delete(name) => delete(account, name).await,
         Op::ToggleAutoStart(name) => toggle_auto_start(account, name).await,
         Op::Import(name) => import(account, name).await,
+        Op::ClearLog(name) => clear_log(account, name),
         Op::Create(new) => create(new).await,
         Op::Edit(edit) => edit_tunnel(edit).await,
+    }
+}
+
+// What the draft means to `add`: a tunnel to a host the instance reaches names
+// that host as the target and the instance as the way to it, while a tunnel to
+// the instance's own port names the instance
+pub fn add_arguments(new: &NewTunnel) -> (String, Option<String>) {
+    if new.host.trim().is_empty() {
+        (format!("{}:{}", new.instance, new.remote_port), None)
+    } else {
+        (
+            format!("{}:{}", new.host.trim(), new.remote_port),
+            Some(new.instance.clone()),
+        )
     }
 }
 
@@ -181,10 +233,12 @@ async fn run(account: &str, op: &Op) -> Result<String> {
 async fn create(new: &NewTunnel) -> Result<String> {
     match new.mode {
         TunnelMode::Access => {
+            let (target, via) = add_arguments(new);
             crate::commands::access::cmd_add(
                 Some(&new.account),
                 &new.name,
-                &format!("{}:{}", new.instance, new.remote_port),
+                &target,
+                via.as_deref(),
                 Some(&new.zone),
                 Some(new.local_port),
                 None,
@@ -288,8 +342,11 @@ async fn delete(account: &str, name: &str) -> Result<String> {
     }
 
     let label = daemon::platform_label(&acct.name, name);
+    let log_path = tunnel.log_path()?;
     let _ = daemon::stop(&label).await;
     daemon::uninstall(&label).await?;
+    // The log goes with the tunnel: nothing is left to own it
+    daemon::remove_log(&log_path)?;
     state.remove_for_account(name, &acct.name);
     state.save()?;
     Ok(format!("deleted {name}"))
@@ -356,4 +413,79 @@ async fn import(account: &str, name: &str) -> Result<String> {
         routes::ensure_route(&client, &acct, &tunnel).await?;
     }
     Ok(format!("{name} is now managed"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn access(name: &str, local_port: u16) -> PersistentTunnel {
+        PersistentTunnel {
+            name: name.to_string(),
+            account_name: "dev".to_string(),
+            auto_start: false,
+            spec: TunnelSpec::Access {
+                target: AccessTarget::Instance {
+                    instance: "bastion".to_string(),
+                    zone: "europe-west1-b".to_string(),
+                },
+                remote_port: 22,
+                local_port,
+            },
+        }
+    }
+
+    // An unmanaged tunnel started with --listen-on-stdin has no local port in
+    // its `ps` line, so there is nothing to dial. That is a port gtunnel does
+    // not know, not a tunnel that is down, and the row said down.
+    #[tokio::test]
+    async fn a_tunnel_with_no_local_port_is_unknown_rather_than_unhealthy() {
+        assert_eq!(
+            probe_health(&access("pid-72420", 0)).await,
+            HealthStatus::Unknown
+        );
+    }
+
+    // The chart and the latency are a property of the port, not of who started
+    // it: an unmanaged tunnel whose port is known is measured like any other,
+    // and one whose port is unknown has nothing to measure
+    #[test]
+    fn metrics_are_collected_for_an_unmanaged_tunnel_that_has_a_port() {
+        let mut known = TunnelEntry::new(
+            access("pid-1", 5455),
+            TunnelStatus::Running,
+            TunnelKind::External,
+        );
+        known.external = Some(ExternalTunnel {
+            pid: 1,
+            target: "bastion".to_string(),
+            remote_port: 22,
+            local_port: Some(5455),
+            zone: None,
+        });
+        let unknown = TunnelEntry::new(
+            access("pid-2", 0),
+            TunnelStatus::Running,
+            TunnelKind::External,
+        );
+        let stopped = TunnelEntry::new(
+            access("db", 6000),
+            TunnelStatus::Stopped,
+            TunnelKind::Managed,
+        );
+        let running = TunnelEntry::new(
+            access("api", 6001),
+            TunnelStatus::Running,
+            TunnelKind::Managed,
+        );
+
+        let targets = metric_targets(&[known, unknown, stopped, running]);
+        let names: Vec<&str> = targets.iter().map(|t| t.tunnel.name.as_str()).collect();
+        assert_eq!(names, vec!["pid-1", "api"], "{names:?}");
+        assert_eq!(targets[0].pid, Some(1), "an unmanaged row carries its pid");
+        assert_eq!(
+            targets[1].pid, None,
+            "a managed row is read from its service"
+        );
+    }
 }

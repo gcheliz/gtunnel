@@ -57,17 +57,19 @@ fn public(name: &str, host: &str, target: &str, port: u16, private: bool) -> Per
     }
 }
 
-fn history(values: &[u64]) -> MetricsHistory {
+// Samples are written in milliseconds for the eye and recorded in the
+// microseconds the history holds, the same unit a live probe records
+fn history(millis: &[u64]) -> MetricsHistory {
     let mut h = MetricsHistory::new(SPARKLINE_SAMPLES);
-    for v in values {
-        h.record(*v);
+    for ms in millis {
+        h.record(ms * 1_000);
     }
     h
 }
 
 fn metrics(latency: u64, connections: u64, uptime_secs: u64, lb: Option<LbStats>) -> TunnelMetrics {
     TunnelMetrics {
-        latency_ms: Some(latency),
+        latency: Some(Duration::from_millis(latency)),
         active_connections: connections,
         uptime: Some(Duration::from_secs(uptime_secs)),
         restarts: 0,

@@ -12,7 +12,7 @@ use crate::tunnel::diagnose_log_line;
 pub const LOG_LINES: usize = 200;
 
 const HELP_BAR: &str =
-    " s start  S stop  R restart  d delete  a add  e edit  A auto  c copy  o open  ; account  r refresh  ? help  q quit";
+    " s start  S stop  R restart  d delete  a add  e edit  A auto  c copy  o open  L clear log  ; account  r refresh  ? help  q quit";
 
 fn panel(title: &str) -> Block<'_> {
     Block::default()
@@ -142,7 +142,9 @@ fn render_details(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let mut lines = vec![
-        detail("url", &entry.tunnel.display_url()),
+        // The list already reads an unknown port as "-"; the details pane said
+        // `localhost:0`, which reads as a port the tunnel actually holds
+        detail("url", &entry.url()),
         detail("target", &entry.tunnel.display_target()),
     ];
     match &entry.tunnel.spec {
@@ -150,7 +152,13 @@ fn render_details(f: &mut Frame, app: &App, area: Rect) {
             target, local_port, ..
         } => {
             lines.push(detail("zone", &access_zone(target)));
-            lines.push(detail("local port", &local_port.to_string()));
+            lines.push(detail(
+                "local port",
+                &match local_port {
+                    0 => "-".to_string(),
+                    port => port.to_string(),
+                },
+            ));
         }
         TunnelSpec::Expose {
             domain,
@@ -172,6 +180,7 @@ fn render_details(f: &mut Frame, app: &App, area: Rect) {
 fn access_zone(target: &crate::state::AccessTarget) -> String {
     match target {
         crate::state::AccessTarget::Instance { zone, .. } => zone.clone(),
+        crate::state::AccessTarget::Jump { zone, .. } => zone.clone(),
         crate::state::AccessTarget::DestGroup { region, .. } => region.clone(),
     }
 }
@@ -223,8 +232,8 @@ fn render_metrics(f: &mut Frame, app: &App, area: Rect) {
     let mut lines = vec![
         Line::from(vec![
             field("Latency"),
-            Span::raw(match metrics.latency_ms {
-                Some(ms) => format!("{ms} ms"),
+            Span::raw(match metrics.latency {
+                Some(rtt) => format_latency(rtt),
                 None => "-".to_string(),
             }),
             field("  Active"),
@@ -266,7 +275,7 @@ fn render_metrics(f: &mut Frame, app: &App, area: Rect) {
         lines.push(Line::from(vec![
             field("Peak"),
             Span::styled(
-                format!("{} ms", entry.history.peak()),
+                format_latency(std::time::Duration::from_micros(entry.history.peak())),
                 Style::default().fg(Color::DarkGray),
             ),
         ]));
@@ -285,6 +294,17 @@ fn render_metrics(f: &mut Frame, app: &App, area: Rect) {
                 .style(Style::default().fg(Color::Cyan)),
             chunks[1],
         );
+    }
+}
+
+// Milliseconds, with a decimal while the figure is small enough that rounding
+// to a whole one would report a real measurement as nothing
+pub fn format_latency(rtt: std::time::Duration) -> String {
+    let ms = rtt.as_secs_f64() * 1000.0;
+    if ms < 10.0 {
+        format!("{ms:.1} ms")
+    } else {
+        format!("{} ms", ms.round() as u64)
     }
 }
 
@@ -384,6 +404,7 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("c", "Copy tunnel URL to clipboard"),
             ("o", "Open tunnel URL in browser"),
             ("h", "Check tunnel health now"),
+            ("L", "Clear this tunnel's log"),
             ("r", "Refresh list, metrics and health"),
         ],
     ),

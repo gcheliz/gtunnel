@@ -56,6 +56,7 @@ pub async fn cmd_add(
     account: Option<&str>,
     name: &str,
     target: &str,
+    via: Option<&str>,
     zone: Option<&str>,
     local_port: Option<u16>,
     dest_group: Option<&str>,
@@ -71,8 +72,19 @@ pub async fn cmd_add(
     }
 
     let (host, remote_port) = parse_access_target(target)?;
-    let access_target = match dest_group {
-        Some(group) => AccessTarget::DestGroup {
+    let access_target = match (dest_group, via) {
+        // The instance is what gtunnel checks exists; the host behind it is
+        // reachable from there or it is not, which only the tunnel can tell
+        (_, Some(instance)) => {
+            let zone = zone.unwrap_or(&acct.default_zone).to_string();
+            verify_instance(&acct, &zone, instance).await?;
+            AccessTarget::Jump {
+                instance: instance.to_string(),
+                zone,
+                host,
+            }
+        }
+        (Some(group), None) => AccessTarget::DestGroup {
             host,
             region: region
                 .context("--region is required with --dest-group")?
@@ -80,7 +92,7 @@ pub async fn cmd_add(
             group: group.to_string(),
             network: network.unwrap_or("default").to_string(),
         },
-        None => {
+        (None, None) => {
             let zone = zone.unwrap_or(&acct.default_zone).to_string();
             verify_instance(&acct, &zone, &host).await?;
             AccessTarget::Instance {
@@ -226,8 +238,11 @@ pub async fn cmd_delete(account: Option<&str>, name: &str) -> Result<()> {
     }
 
     let label = daemon::platform_label(&acct.name, &tunnel.name);
+    let log_path = tunnel.log_path()?;
     let _ = daemon::stop(&label).await;
     daemon::uninstall(&label).await?;
+    // The log goes with the tunnel: nothing is left to own it
+    daemon::remove_log(&log_path)?;
     state.remove_for_account(name, &acct.name);
     state.save()?;
     println!("Deleted {name}");
@@ -293,10 +308,7 @@ pub async fn cmd_list(account: Option<&str>) -> Result<()> {
 // IAP tunnels started outside gtunnel hold ports and confuse `doctor`, so the
 // list names them instead of pretending they are not there
 async fn print_external_tunnels() {
-    let mut managed: std::collections::HashSet<u32> = std::collections::HashSet::new();
-    if let Ok(records) = crate::ephemeral::list_ephemeral() {
-        managed.extend(records.iter().map(|(record, _)| record.pid));
-    }
+    let managed = crate::discovery::managed_pids().await;
     for external in crate::discovery::external_tunnels(&managed) {
         let url = match external.local_port {
             Some(port) => format!("localhost:{port}"),

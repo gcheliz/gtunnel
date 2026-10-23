@@ -29,8 +29,9 @@ impl TunnelStatus {
     }
 }
 
-// What an Access tunnel points at: a compute instance, or a host reached
-// through an IAP destination group
+// What an Access tunnel points at: a port of a compute instance, a host reached
+// through an IAP destination group, or a host only the instance can reach,
+// forwarded by ssh on the instance with IAP carrying the ssh connection
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AccessTarget {
@@ -43,6 +44,11 @@ pub enum AccessTarget {
         region: String,
         group: String,
         network: String,
+    },
+    Jump {
+        instance: String,
+        zone: String,
+        host: String,
     },
 }
 
@@ -104,6 +110,9 @@ impl PersistentTunnel {
             } => match target {
                 AccessTarget::Instance { instance, zone } => {
                     format!("{instance}:{remote_port} ({zone})")
+                }
+                AccessTarget::Jump { instance, host, .. } => {
+                    format!("{host}:{remote_port} via {instance}")
                 }
                 AccessTarget::DestGroup { host, group, .. } => {
                     format!("{host}:{remote_port} via dest-group {group}")

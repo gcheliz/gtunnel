@@ -20,6 +20,7 @@ No inbound firewall rules, no public IP on the target, no agent on the VM.
 | Feature | What it does |
 |---|---|
 | Access tunnels | `localhost:15432` reaches a VM port through IAP. Creates nothing in GCP |
+| Jump tunnels | `--via <instance>` reaches a host only that instance can reach, such as a private GKE control plane |
 | Public tunnels | `https://api.example.com` reaches `localhost:3000` through a relay VM and a global HTTPS load balancer |
 | TUI dashboard | Live status, latency, connection counts, load-balancer traffic and per-tunnel logs |
 | Managed services | launchd on macOS, systemd `--user` on Linux. Restart on failure, optional auto-start at login |
@@ -126,6 +127,7 @@ synthetic data and touches no GCP project and no config file.
 | `r` | Refresh now | `c` | Copy the URL |
 | `;` | Next account | `o` | Open the URL |
 | `m` | Import an unmanaged run | `h` | Health check now |
+| `L` | Clear this tunnel's log | | |
 | `?` | Help | `q` | Quit |
 
 Metrics refresh every 5s, health every 30s, load-balancer request counts every 60s
