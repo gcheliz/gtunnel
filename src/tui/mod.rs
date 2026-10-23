@@ -611,4 +611,23 @@ mod tests {
         assert!(!app.logs.is_empty());
         assert!(app.entries.iter().any(|e| e.metrics.is_some()));
     }
+
+    #[test]
+    fn cycling_accounts_in_the_demo_keeps_showing_tunnels() {
+        let mut app = App::new_demo();
+        let demo_entries = app.entries.len();
+
+        assert_eq!(keys(&mut app, ";"), None);
+        assert_eq!(app.account, "staging");
+        assert!(!app.entries.is_empty(), "staging shows no tunnels");
+        assert!(!app.logs.is_empty(), "staging shows no log");
+        assert!(
+            !app.force_refresh,
+            "the demo has no state to refresh from, so the request would clear the screen"
+        );
+
+        assert_eq!(keys(&mut app, ";"), None);
+        assert_eq!(app.account, "demo");
+        assert_eq!(app.entries.len(), demo_entries);
+    }
 }

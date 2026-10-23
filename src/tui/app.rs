@@ -242,6 +242,8 @@ pub struct App {
     pub want_instances: bool,
     // Set by `r`, cleared once the event loop has rescheduled every timer
     pub force_refresh: bool,
+    // The demo carries its own data and has no runtime to reload it from
+    pub demo: bool,
 }
 
 impl App {
@@ -268,6 +270,7 @@ impl App {
             has_relay: false,
             want_instances: false,
             force_refresh: false,
+            demo: false,
         }
     }
 
@@ -332,7 +335,13 @@ impl App {
         self.selected = 0;
         self.entries.clear();
         self.logs.clear();
-        self.force_refresh = true;
+        // The demo has no runtime behind it, so a refresh would leave the
+        // screen empty: it swaps in the next account's synthetic data instead
+        if self.demo {
+            self.load_demo_account();
+        } else {
+            self.force_refresh = true;
+        }
         self.set_status(format!("account {}", self.account));
     }
 
