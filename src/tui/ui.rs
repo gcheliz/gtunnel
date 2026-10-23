@@ -194,6 +194,28 @@ fn detail<'a>(label: &'a str, value: &str) -> Line<'a> {
     ])
 }
 
+/// What an empty pane means, which is three different things. A tunnel through
+/// a jump host runs `ssh -N`: it prints nothing at all while it is working, so
+/// for it an empty log is the healthy case. A tunnel in `Error` state with
+/// nothing in its log is the opposite, and must not be told it is fine.
+pub fn empty_log_note(spec: &TunnelSpec, status: TunnelStatus) -> &'static str {
+    let jumps = matches!(
+        spec,
+        TunnelSpec::Access {
+            target: crate::state::AccessTarget::Jump { .. },
+            ..
+        }
+    );
+    match (status, jumps) {
+        (TunnelStatus::Error, _) => "The tunnel failed and wrote nothing. Press R to restart it.",
+        (_, true) => {
+            "No output. A tunnel through a jump host is silent while it is healthy; \
+             errors appear here."
+        }
+        (_, false) => "No output yet.",
+    }
+}
+
 fn render_logs(f: &mut Frame, app: &App, area: Rect) {
     let title = match app.selected_entry() {
         Some(entry) => format!("Logs: {}", entry.name()),
@@ -214,6 +236,15 @@ fn render_logs(f: &mut Frame, app: &App, area: Rect) {
             annotated.push(Line::styled(
                 format!("  {hint}"),
                 Style::default().fg(Color::Yellow),
+            ));
+        }
+    }
+
+    if annotated.is_empty() {
+        if let Some(entry) = app.selected_entry() {
+            annotated.push(Line::styled(
+                empty_log_note(&entry.tunnel.spec, entry.status),
+                Style::default().fg(Color::DarkGray),
             ));
         }
     }

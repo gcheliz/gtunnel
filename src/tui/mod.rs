@@ -524,6 +524,25 @@ mod tests {
         assert_eq!(ui::wrapped_rows(&lines, 0), 3);
     }
 
+    // A jump tunnel runs `ssh -N`, which prints nothing while it works, so an
+    // empty pane is the healthy case and must not read as a broken one
+    #[test]
+    fn an_empty_log_says_why_it_is_empty() {
+        use crate::state::{AccessTarget, TunnelSpec, TunnelStatus};
+        let jump = TunnelSpec::Access {
+            target: AccessTarget::Jump {
+                instance: "bastion".to_string(),
+                zone: "europe-west1-b".to_string(),
+                host: "10.3.0.13".to_string(),
+            },
+            remote_port: 443,
+            local_port: 8443,
+        };
+        assert!(ui::empty_log_note(&jump, TunnelStatus::Running).contains("silent"));
+        // Review Focus 5: a failed tunnel is not a quiet healthy one
+        assert!(!ui::empty_log_note(&jump, TunnelStatus::Error).contains("silent"));
+    }
+
     // A sparkline with no scale cannot be read: 60 bars of "some latency" say
     // nothing without the number the tallest one stands for
     #[test]
