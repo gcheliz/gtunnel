@@ -4,7 +4,7 @@
 
 **Goal:** Make the shipped TUI render the approved layout exactly — the compound cloud-over-name logo in brand hues, the account pinned top-right in a highlighted field, and a footer that shows only the keys the selection can actually use.
 
-**Architecture:** Three seams, all inside `src/tui/`. `theme.rs` gains a documented truecolor exception for the logo only; status colors stay named-ANSI. `ui.rs` replaces the 4-row block `LOGO` with an 11-cell braille lockup and replaces the static `HELP_BAR` string with a function of selection state and width. `README.md` carries the 21-cell large form so the documentation and the program draw the same mark.
+**Architecture:** Three seams, all inside `src/tui/`. `theme.rs` gains a documented truecolor exception for the logo only; status colors stay named-ANSI. `ui.rs` replaces the 4-row block `LOGO` with an 11-cell braille lockup and replaces the static `HELP_BAR` string with a function of selection state and width. `README.md` carries the same 11-cell mark, so the documentation and the program draw one logo and not two.
 
 **Tech Stack:** Rust, ratatui, crossterm.
 
@@ -15,7 +15,12 @@
 - The logo is the only place in the TUI permitted to name an exact hue. Every status, label and selection colour stays a named ANSI colour, per the existing contract in `src/tui/theme.rs`.
 - Brand hues, exact: line `#4DD0E1`, blue `#4285F4`, red `#EA4335`, yellow `#FBBC04`, green `#34A853`.
 - The one-row mark is 11 cells and the name row is `"  gtunnel  "`, also 11 cells. The widths must stay equal or the lockup stops centring.
-- The large form is 21 cells over 3 rows, name row `"       gtunnel       "`, also 21.
+- **The mark is fixed artwork and is never redrawn at another size.** It is 11 cells and one
+  row, everywhere it appears. Scaling it is arithmetically easy and visually fatal: a braille
+  glyph draws its dots as separated points, so doubling the raster doubles the gaps between
+  them and the cloud reads as a loose dot matrix, while the word beneath it cannot grow at all
+  because a terminal cannot scale type. A header that needs more height gains blank rows, not
+  a bigger mark.
 - Every action string in the footer and in the `?` overlay must correspond to a key actually bound in `src/tui/app.rs`. No key is printed that is not bound; no bound key is absent from `?`.
 - No emoji anywhere. No Claude attribution in commits or PR text.
 - `cargo fmt` and `cargo clippy` clean, `cargo test` green, before each task's commit.
@@ -40,7 +45,7 @@ Input classes the spec implies but no task's tests exercise, most likely to bite
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `pub const LOGO_LINE: Color`, `LOGO_BLUE`, `LOGO_RED`, `LOGO_YELLOW`, `LOGO_GREEN`, all `Color::Rgb`; `pub const ACCOUNT_BG: Color` (= `ACCENT`) and `ACCOUNT_FG: Color` (= `ON_ACCENT`).
+- Produces: `pub const LOGO_LINE: Color`, `LOGO_BLUE`, `LOGO_RED`, `LOGO_YELLOW`, `LOGO_GREEN`, all `Color::Rgb`; `pub const LABEL: Color` (= `Color::Gray`), the colour of a field's name, one step brighter than the `MUTED` furniture so it reads on its own while still losing to its value.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -52,9 +57,12 @@ fn the_logo_is_the_only_truecolor_in_the_theme() {
     assert_eq!(theme::LOGO_YELLOW, Color::Rgb(0xFB, 0xBC, 0x04));
     assert_eq!(theme::LOGO_GREEN, Color::Rgb(0x34, 0xA8, 0x53));
     assert_eq!(theme::LOGO_LINE, Color::Rgb(0x4D, 0xD0, 0xE1));
-    // the account field reuses the ANSI pair, it is not brand artwork
-    assert_eq!(theme::ACCOUNT_BG, theme::ACCENT);
-    assert_eq!(theme::ACCOUNT_FG, theme::ON_ACCENT);
+    // and nothing else: every colour that answers a question about state
+    // stays a named ANSI colour the terminal's theme gets to reinterpret
+    for c in [theme::ACCENT, theme::MUTED, theme::LABEL, theme::OK,
+              theme::WARN, theme::BAD, theme::FLAG] {
+        assert!(!matches!(c, Color::Rgb(..)), "{c:?} names an exact hue");
+    }
 }
 ```
 
@@ -89,45 +97,61 @@ git commit -m "feat: the theme names the brand hues, for the logo only"
 
 **Interfaces:**
 - Consumes: Task 1's `LOGO_*` constants.
-- Produces: `const MARK_WIDTH: u16 = 11`; `pub fn mark_spans(braille: bool) -> Vec<Span<'static>>` (one row, coloured per band); `pub const NAME_ROW: &str = "  gtunnel  "`; `pub const LARGE_MARK: [&str; 3]` and `pub const LARGE_NAME_ROW: &str`. `HEADER_HEIGHT_FULL` becomes `2`.
+- Produces: `pub const MARK_WIDTH: u16 = 11`; `pub const MARK_ROWS: usize = 1`; `pub fn mark_spans(braille: bool, row: usize) -> Vec<Span<'static>>` (coloured per band); `pub const NAME_ROW: &str = "  gtunnel  "`.
 
 - [ ] **Step 1: Write the failing test**
 
 ```rust
 #[test]
 fn the_lockup_rows_are_the_same_width() {
-    let mark: String = ui::mark_spans(true).iter().map(|s| s.content.as_ref()).collect();
-    assert_eq!(mark.chars().count(), 11);
-    assert_eq!(ui::NAME_ROW.chars().count(), 11);
-    let fallback: String = ui::mark_spans(false).iter().map(|s| s.content.as_ref()).collect();
-    assert_eq!(fallback.chars().count(), 11, "the fallback must not change the lockup width");
-    for row in ui::LARGE_MARK {
-        assert_eq!(row.chars().count(), 21);
+    for row in 0..ui::MARK_ROWS {
+        let mark: String = ui::mark_spans(true, row).iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(mark.chars().count(), ui::MARK_WIDTH as usize);
+        let fallback: String = ui::mark_spans(false, row).iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(fallback.chars().count(), ui::MARK_WIDTH as usize,
+            "the fallback must not change the lockup width");
     }
-    assert_eq!(ui::LARGE_NAME_ROW.chars().count(), 21);
+    assert_eq!(ui::NAME_ROW.chars().count(), ui::MARK_WIDTH as usize);
 }
 ```
 
-- [ ] **Step 2: Run it and watch it fail**
+And the test that keeps the mark from being redrawn. It is not decoration: the
+mark has been enlarged three times and come out wrong three times, for the
+reason in the Global Constraints. Pinning the exact cells makes the fourth
+attempt fail here instead of on screen.
 
-Run: `cargo test the_lockup_rows_are_the_same_width`
+```rust
+#[test]
+fn the_mark_is_the_one_drawn_for_the_design_and_never_another() {
+    assert_eq!(ui::MARK_ROWS, 1, "the mark is one row and stays one row");
+    assert_eq!(ui::MARK_WIDTH, 11);
+    let drawn: Vec<u32> = ui::mark_spans(true, 0).iter()
+        .flat_map(|s| s.content.chars()).map(|c| c as u32).collect();
+    assert_eq!(drawn, vec![
+        0x2824, 0x2824, 0x28a4, 0x28f6, 0x28fe, 0x28ff, 0x28f7, 0x28f6, 0x2864, 0x2824, 0x2824,
+    ], "the mark must be the cloud from the design, cell for cell");
+    assert_eq!(ui::NAME_ROW, "  gtunnel  ");
+}
+```
+
+- [ ] **Step 2: Run them and watch them fail**
+
+Run: `cargo test the_lockup_rows_are_the_same_width the_mark_is_the_one_drawn`
 Expected: FAIL, `no function mark_spans in ui`.
 
 - [ ] **Step 3: Replace the block logo in `src/tui/ui.rs`**
 
-Delete `LOGO`, `LOGO_WIDTH`, `HEADER_MIN_WIDTH` and `SUBTITLE_COLUMN` as they stand. The one-row mark is `⠤⠤⢤⣶⣾⣿⣷⣶⡤⠤⠤`, banded by cell index: 0-1 `LOGO_LINE`, 2 `LOGO_BLUE`, 3-4 `LOGO_RED`, 5-6 `LOGO_YELLOW`, 7-8 `LOGO_GREEN`, 9-10 `LOGO_LINE`. The no-braille fallback is `──▗▄▟▀▙▄▖──`, same bands, same 11 cells. `LARGE_MARK` is:
+Delete `LOGO`, `LOGO_WIDTH`, `HEADER_MIN_WIDTH` and `SUBTITLE_COLUMN` as they stand. The one-row mark is `⠤⠤⢤⣶⣾⣿⣷⣶⡤⠤⠤`, banded by cell index: 0-1 `LOGO_LINE`, 2 `LOGO_BLUE`, 3-4 `LOGO_RED`, 5-6 `LOGO_YELLOW`, 7-8 `LOGO_GREEN`, 9-10 `LOGO_LINE`. The no-braille fallback is `──▗▄▟▀▙▄▖──`, same bands, same 11 cells.
 
-```
-⠀⠀⠀⠀⠀⠀⠀⠀⣠⣴⣶⣦⣄⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⢀⣴⣾⣶⣿⣿⣿⣿⣿⣶⣷⣦⡀⠀⠀⠀⠀
-⠤⠤⠤⠤⣿⣿⡏⠉⠉⠉⠉⠉⠉⠉⢹⣿⣿⠤⠤⠤⠤
-```
+`mark_spans` takes a row index although there is only one row, so the header's
+layout code does not have to change if the art ever gains a row of its own.
+`MARK_ROWS` is the single place that number lives.
 
-Comment why 11 and not 10: `gtunnel` is 7 cells, 11 − 7 = 4, two blank cells each side. A 10-cell mark leaves 3, which no terminal can split.
+Comment why 11 and not 10: `gtunnel` is 7 cells, 11 − 7 = 4, two blank cells each side. A 10-cell mark leaves 3, which no terminal can split. Comment on `MARK_BRAILLE` why it is never redrawn larger, so the next reader finds the reason before the test does.
 
-- [ ] **Step 4: Run it and watch it pass**
+- [ ] **Step 4: Run them and watch them pass**
 
-Run: `cargo test the_lockup_rows_are_the_same_width`
+Run: `cargo test the_lockup_rows_are_the_same_width the_mark_is_the_one_drawn`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -146,35 +170,77 @@ git commit -m "feat: the logo is a cloud over the name, eleven cells wide"
 - Test: `src/tui/mod.rs:560-594` (the two existing header tests change)
 
 **Interfaces:**
-- Consumes: Task 2's `mark_spans`, `NAME_ROW`, `MARK_WIDTH`; Task 1's `ACCOUNT_BG`/`ACCOUNT_FG`.
-- Produces: `pub fn header_lines(width: u16, account: &str) -> Vec<Line<'static>>` returning 2 lines when the lockup fits and 1 when it does not; `header_height` returns `2`/`1` to match.
+- Consumes: Task 2's `mark_spans`, `NAME_ROW`, `MARK_WIDTH`, `MARK_ROWS`; Task 1's `MUTED` and `LABEL`.
+- Produces: `pub fn header_lines(width: u16, height: u16, account: &str) -> Vec<Line<'static>>` returning `HEADER_HEIGHT_FULL` (6) lines when the lockup fits and 1 when it does not; `header_height` returns `6`/`1` to match, derived from `header_lines` rather than recomputed.
 
-Row 0 is the mark, then the subtitle `IAP tunnel manager` in `MUTED`, then the account field flush right: `" account "` in `MUTED` followed by `format!(" {account} ")` styled `bg(ACCOUNT_BG).fg(ACCOUNT_FG)` bold. Row 1 is `NAME_ROW` alone, in `#F1F3F4`-equivalent (`Color::White`) bold. The subtitle appears only when it fits whole; the account field has priority over it and is dropped only when even it will not fit, at which point the header falls to the compact one-line form.
+Six rows:
+
+| Row | Contents |
+|---|---|
+| 0 | blank |
+| 1 | the mark, the divider, then the account box's top `╭─╮` flush right |
+| 2 | `NAME_ROW` in `Color::White` bold, the divider, the subtitle `IAP tunnel manager` in `MUTED`, then `│ ACCOUNT  dev │` flush right |
+| 3 | the account box's bottom `╰─╯` flush right |
+| 4 | blank |
+| 5 | a rule across the width |
+
+The box is three rows tall and the lockup is two, and a cell grid has no row between two rows,
+so one of them has to be off by half a row. The box's text sits on the name's row: the name is
+the heaviest thing in the lockup, so the subtitle and the account read as one line with it, and
+the box opens on the mark's row and closes on the row below the name. `ACCOUNT` is in `LABEL`
+and the account itself is bold.
+
+The account is a box and not a filled chip because it is the one control on the header: a
+block of solid colour reads as a status light, something the program is telling you, while an
+outline reads as a field — something you can change, which `;` does.
+
+The subtitle appears only when it fits whole; the account box has priority over it and is
+dropped only when even it will not fit, at which point the header falls to the compact
+one-line form. The mark does not grow to fill a taller header — see the Global Constraints —
+so `height` only decides full against compact.
 
 - [ ] **Step 1: Write the failing tests**
 
 ```rust
 #[test]
 fn the_account_sits_flush_right_and_never_touches_the_logo() {
-    let lines = ui::header_lines(120, "dev");
-    assert_eq!(lines.len(), 2);
-    let row0 = line_text(&lines[0]);
-    assert!(row0.trim_end().ends_with("dev "), "{row0:?}");
+    let lines = ui::header_lines(120, 24, "dev");
+    assert_eq!(lines.len() as u16, ui::HEADER_HEIGHT_FULL);
+    assert_eq!(line_text(&lines[0]), "");
+    let top = line_text(&lines[1]);
+    assert!(top.trim_end().ends_with('\u{256e}'), "{top:?}");
+    assert!(line_text(&lines[3]).trim_end().ends_with('\u{256f}'));
+    assert_eq!(line_text(&lines[4]), "");
+    let row0 = line_text(&lines[2]);
+    // One cell of margin at each end, the same the footer and the panes have.
+    assert!(row0.ends_with(" ACCOUNT  dev \u{2502} "), "{row0:?}");
     assert_eq!(row0.chars().count(), 120);
-    assert!(row0[..11].contains('\u{2824}'), "the mark keeps the first 11 cells");
+    assert!(row0.contains(ui::NAME_ROW), "{row0:?}");
+    assert!(row0.contains("\u{2502}  IAP tunnel manager"), "{row0:?}");
+    // The divider runs the lockup's whole height, and belongs to the lockup
+    // rather than to the box. Cells, not bytes: a braille cell is three
+    // bytes, so `find` would put the divider past the mark on the mark's row.
+    for row in [1 + ui::MARK_ROWS - 1, 1 + ui::MARK_ROWS] {
+        let text = line_text(&lines[row]);
+        let divider = text.chars().position(|c| c == '\u{2502}')
+            .expect("the divider runs every row");
+        assert!(divider < ui::MARK_WIDTH as usize + 6, "{text:?}");
+    }
 }
+```
 
+```rust
 #[test]
 fn a_long_account_name_does_not_overflow_the_row() {
-    let lines = ui::header_lines(60, "platform-production-emea");
+    let lines = ui::header_lines(60, 40, "platform-production-emea");
     assert!(lines.iter().all(|l| line_text(l).chars().count() <= 60));
 }
 
 #[test]
 fn a_terminal_too_narrow_for_the_lockup_gets_one_line() {
-    let lines = ui::header_lines(20, "dev");
+    let lines = ui::header_lines(20, 40, "dev");
     assert_eq!(lines.len(), 1);
-    assert_eq!(ui::header_height(20), 1);
+    assert_eq!(ui::header_height(20, 40, "dev"), ui::HEADER_HEIGHT_COMPACT);
 }
 ```
 
@@ -187,7 +253,7 @@ Expected: FAIL — the old tests assert the 4-row block logo, the new ones asser
 
 - [ ] **Step 3: Rewrite `header_lines` and `header_height`**
 
-Pad between the subtitle and the account field so the field's last cell lands on `width - 1`. Replace the two superseded tests (`the_header_steps_down_before_it_wraps`, and the logo assertion inside `a_short_terminal_keeps_a_visible_tunnel_row`) rather than leaving them asserting the old art.
+Pad between the subtitle and the account box so the box's last cell lands on `width - 1`, measuring every span in cells rather than bytes. Replace the two superseded tests (`the_header_steps_down_before_it_wraps`, and the logo assertion inside `a_short_terminal_keeps_a_visible_tunnel_row`) rather than leaving them asserting the old art.
 
 - [ ] **Step 4: Run them and watch them pass**
 
@@ -353,7 +419,7 @@ git commit -m "feat: ? documents every bound key, m and h included"
 - Test: `src/tui/mod.rs`
 
 **Interfaces:**
-- Consumes: Task 2's `LARGE_MARK` and `LARGE_NAME_ROW`.
+- Consumes: Task 2's `mark_spans` and `NAME_ROW`.
 - Produces: nothing for other tasks.
 
 - [ ] **Step 1: Write the failing test**
@@ -363,10 +429,12 @@ git commit -m "feat: ? documents every bound key, m and h included"
 fn the_readme_draws_the_same_mark_as_the_program() {
     let readme = std::fs::read_to_string(
         concat!(env!("CARGO_MANIFEST_DIR"), "/README.md")).unwrap();
-    for row in ui::LARGE_MARK {
-        assert!(readme.contains(row), "README is missing a row of the mark: {row:?}");
+    for row in 0..ui::MARK_ROWS {
+        let mark: String = ui::mark_spans(true, row).iter()
+            .map(|s| s.content.as_ref()).collect();
+        assert!(readme.contains(&mark), "README is missing a row of the mark: {mark:?}");
     }
-    assert!(readme.contains(ui::LARGE_NAME_ROW.trim_end()));
+    assert!(readme.contains(ui::NAME_ROW.trim_end()));
     assert!(!readme.contains("\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2557}"),
         "the old block logo is still in the README");
 }
@@ -377,9 +445,11 @@ fn the_readme_draws_the_same_mark_as_the_program() {
 Run: `cargo test the_readme_draws_the_same_mark_as_the_program`
 Expected: FAIL — the README still holds the six-row block logo.
 
-- [ ] **Step 3: Replace `README.md:2-7` with the large form**
+- [ ] **Step 3: Replace `README.md:2-7` with the mark**
 
-Three rows of mark plus the name row, inside the existing fenced block.
+The one mark row plus the name row, inside the existing fenced block. The README gets the
+same 11 cells the program draws, not a larger variant of them: a README that shows a bigger
+logo than the program has is the same mistake as a program that tries to draw one.
 
 - [ ] **Step 4: Run it and watch it pass**
 
@@ -404,9 +474,14 @@ The suite is not evidence that the layout is right — it is evidence that the s
 cargo run -- demo
 ```
 
-Check against the `Main` board: the cloud sits over the name, the name is centred under it, the account is flush right in a cyan field, and the footer shows five actions on the left and three on the right. Then narrow the terminal to 80 and to 48 columns and check against the `States` board.
+Check against the `Main` board: the cloud sits over the name, the name is centred under it, the account is flush right in its outlined box, and the footer shows five actions on the left and three on the right. Then narrow the terminal to 80 and to 48 columns and check against the `States` board.
 
 ## Deferred
 
-- The two-row header costs the panes one row against today's four-row logo, so this is a net gain of two rows. If the lockup ever needs breathing room between the cloud and the name, that is a third row and a separate decision.
-- `src/tui/ui.rs` currently has uncommitted changes (the four-row README-derived logo). Task 2 replaces that work; decide whether to commit it first for history or discard it.
+- The header settled at five rows, not the two this plan first specified: the lockup, a blank
+  row and a rule, with the account box spanning the first three. The extra height is whitespace
+  and furniture around a mark that stays 11 cells by one row.
+- Three attempts were made to enlarge the mark for the taller header, and all three were
+  reverted. The reason is now a Global Constraint and a test; do not spend a fourth.
+- Tasks 5 and 6 are open. Task 4 shipped, and the account indicator it duplicated in the footer
+  was removed there rather than here.
