@@ -570,55 +570,153 @@ mod tests {
         assert_eq!(theme::LOGO_LINE, Color::Rgb(0x4D, 0xD0, 0xE1));
     }
 
+    // The mark is fixed artwork, not a parameter. It has been redrawn larger
+    // three times and come out wrong three times, for a reason that does not
+    // go away: braille draws separated dots, so scaling the raster scales the
+    // gaps with it and the cloud reads as a dot matrix, while the word under
+    // it cannot scale at all. This test pins the exact cells so the next
+    // attempt fails here instead of on screen.
+    #[test]
+    fn the_mark_is_the_one_drawn_for_the_design_and_never_another() {
+        assert_eq!(ui::MARK_ROWS, 1, "the mark is one row and stays one row");
+        assert_eq!(ui::MARK_WIDTH, 11);
+        let drawn: Vec<u32> = ui::mark_spans(true, 0)
+            .iter()
+            .flat_map(|s| s.content.chars())
+            .map(|c| c as u32)
+            .collect();
+        assert_eq!(
+            drawn,
+            vec![
+                0x2824, 0x2824, 0x28a4, 0x28f6, 0x28fe, 0x28ff, 0x28f7, 0x28f6, 0x2864, 0x2824,
+                0x2824,
+            ],
+            "the mark must be the cloud from the design, cell for cell"
+        );
+        assert_eq!(ui::NAME_ROW, "  gtunnel  ");
+    }
+
     // The lockup only centres if the mark and the name are the same number of
     // cells. A terminal has no half cells, so this is an equality, not a target.
     #[test]
     fn the_lockup_rows_are_the_same_width() {
-        let mark: String = ui::mark_spans(true)
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect();
-        assert_eq!(mark.chars().count(), 11);
-        assert_eq!(ui::NAME_ROW.chars().count(), 11);
-        let fallback: String = ui::mark_spans(false)
+        for row in 0..ui::MARK_ROWS {
+            let mark: String = ui::mark_spans(true, row)
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect();
+            assert_eq!(mark.chars().count(), ui::MARK_WIDTH as usize, "row {row}");
+        }
+        assert_eq!(ui::NAME_ROW.chars().count(), ui::MARK_WIDTH as usize);
+        let fallback: String = ui::mark_spans(false, 0)
             .iter()
             .map(|s| s.content.as_ref())
             .collect();
         assert_eq!(
             fallback.chars().count(),
-            11,
+            ui::MARK_WIDTH as usize,
             "the fallback must not change the lockup width"
         );
-        for row in ui::LARGE_MARK {
-            assert_eq!(row.chars().count(), 21);
-        }
-        assert_eq!(ui::LARGE_NAME_ROW.chars().count(), 21);
     }
 
     fn line_text(line: &ratatui::text::Line<'_>) -> String {
         line.spans.iter().map(|s| s.content.as_ref()).collect()
     }
 
+    // Activity used to sit on a row of its own above the footer, where it
+    // crowded the keymap and said nothing about which tunnel it concerned. It
+    // belongs on the log it describes.
+    #[test]
+    fn activity_rides_on_the_log_pane_title() {
+        assert_eq!(ui::logs_title(Some("k8s-dev"), None), "Logs: k8s-dev");
+        assert_eq!(
+            ui::logs_title(Some("k8s-dev"), Some("\u{280b} starting")),
+            "Logs: k8s-dev \u{2014} \u{280b} starting"
+        );
+        // with nothing selected there is still a pane, and still activity
+        assert_eq!(ui::logs_title(None, None), "Logs");
+        assert_eq!(
+            ui::logs_title(None, Some("importing")),
+            "Logs \u{2014} importing"
+        );
+    }
+
+    // `App::status` is set when an operation finishes and never cleared, so a
+    // title that showed it kept saying "start k8s-dev" long after k8s-dev had
+    // started. A title is standing chrome, not a log line.
+    #[test]
+    fn the_log_title_stops_saying_starting_once_it_has_started() {
+        // while the operation is in flight
+        assert_eq!(
+            ui::activity_text(Some("\u{280b} start k8s-dev"), None, false).as_deref(),
+            Some("\u{280b} start k8s-dev")
+        );
+        // it finished: the title going back to naming the pane is the signal
+        assert_eq!(
+            ui::activity_text(None, Some("started k8s-dev"), false),
+            None
+        );
+        // a failure stays, because an error that clears itself is one nobody saw
+        assert_eq!(
+            ui::activity_text(None, Some("could not start k8s-dev"), true).as_deref(),
+            Some("could not start k8s-dev")
+        );
+        // and the spinner wins over a stale error while the next op runs
+        assert_eq!(
+            ui::activity_text(Some("\u{280b} stop k8s-dev"), Some("it failed"), true).as_deref(),
+            Some("\u{280b} stop k8s-dev")
+        );
+    }
+
     // The account is the one piece of state that changes what every other key
     // acts on, so it is pinned to the corner where nothing else can push it.
     #[test]
     fn the_account_sits_flush_right_and_never_touches_the_logo() {
-        let lines = ui::header_lines(120, "dev");
-        assert_eq!(lines.len(), 2);
-        let row0 = line_text(&lines[0]);
-        assert!(row0.ends_with(" dev "), "{row0:?}");
+        let lines = ui::header_lines(120, 24, "dev");
+        assert_eq!(lines.len() as u16, ui::HEADER_HEIGHT_FULL);
+        // The box is three rows tall and opens on the row above the mark, so
+        // it is centred on the lockup rather than hanging off its top.
+        let top = line_text(&lines[0]);
+        assert!(top.trim_start().starts_with('\u{256d}'), "{top:?}");
+        assert!(top.trim_end().ends_with('\u{256e}'), "{top:?}");
+        assert!(line_text(&lines[2]).trim_end().ends_with('\u{256f}'));
+        // a blank row of padding below the lockup
+        assert_eq!(line_text(&lines[1 + ui::MARK_ROWS + 1]), "");
+        let row0 = line_text(&lines[1]);
+        // One cell of margin at each end, the same the footer and the panes
+        // have, so the field stops a cell short of the edge rather than on it.
+        assert!(row0.ends_with(" ACCOUNT  dev \u{2502} "), "{row0:?}");
+        assert!(row0.starts_with(' '), "{row0:?}");
         assert_eq!(row0.chars().count(), 120);
-        let first_cells: String = row0.chars().take(11).collect();
-        assert!(
-            first_cells.contains('\u{2824}'),
-            "the mark keeps the first 11 cells: {first_cells:?}"
-        );
+        // The subtitle is separated from the mark by a divider, not by air
+        assert!(row0.contains("\u{2502}  IAP tunnel manager"), "{row0:?}");
+        // and that divider runs the lockup's whole height: the mark's lower
+        // row and the name both carry it, so it does not stop halfway.
+        for row in [1 + ui::MARK_ROWS - 1, 1 + ui::MARK_ROWS] {
+            let text = line_text(&lines[row]);
+            // Cells, not bytes: a braille cell is three bytes, so `find`
+            // would put the divider past the mark on the row that has one.
+            let divider = text
+                .chars()
+                .position(|c| c == '\u{2502}')
+                .expect("the divider runs every row");
+            assert!(
+                divider < ui::MARK_WIDTH as usize + 6,
+                "the divider belongs to the lockup, not the account box: {text:?}"
+            );
+        }
+        // the name sits under the mark, letterspaced to the mark's own width
+        assert!(line_text(&lines[1 + ui::MARK_ROWS]).contains(ui::NAME_ROW));
+        // the rule closes the header off, inset to the same margin
+        let rule = line_text(&lines[ui::HEADER_HEIGHT_FULL as usize - 1]);
+        assert_eq!(rule.chars().count(), 120);
+        assert_eq!(rule.matches('\u{2500}').count(), 118);
     }
 
     // Review Focus 3: an account name long enough to push the field off the edge
     #[test]
     fn a_long_account_name_does_not_overflow_the_row() {
-        let lines = ui::header_lines(60, "platform-production-emea");
+        let lines = ui::header_lines(60, 24, "platform-production-emea");
         assert!(lines.iter().all(|l| line_text(l).chars().count() <= 60));
     }
 
@@ -626,18 +724,146 @@ mod tests {
     // a row rather than wrapping the mark mid-glyph
     #[test]
     fn a_terminal_too_narrow_for_the_lockup_gets_one_line() {
-        let lines = ui::header_lines(20, "dev");
+        let lines = ui::header_lines(20, 24, "dev");
         assert_eq!(lines.len(), 1);
-        assert_eq!(ui::header_height(20, "dev"), 1);
+        assert_eq!(ui::header_height(20, 24, "dev"), 1);
         assert!(line_text(&lines[0]).chars().count() <= 20);
     }
 
-    // The account field is state, not artwork, so it must not reach for a brand
-    // hue. This is the other half of the named-ANSI contract.
+    // The design draws the same eleven cells on a 1200-pixel board as on a
+    // narrow one. A mark that scales with the terminal breaks the lockup: the
+    // cloud grows and the word under it cannot, so the two stop being one mark.
     #[test]
-    fn the_account_field_uses_the_ansi_pair_not_a_brand_hue() {
-        assert_eq!(theme::ACCOUNT_BG, theme::ACCENT);
-        assert_eq!(theme::ACCOUNT_FG, theme::ON_ACCENT);
+    fn the_lockup_is_one_size_at_every_width() {
+        for (w, h) in [(80, 24), (100, 30), (160, 40), (200, 60)] {
+            let lines = ui::header_lines(w, h, "dev");
+            assert_eq!(
+                lines.len() as u16,
+                ui::HEADER_HEIGHT_FULL,
+                "{w}x{h} must draw the mark, the name and the rule"
+            );
+            assert_eq!(ui::header_height(w, h, "dev"), ui::HEADER_HEIGHT_FULL);
+            for row in 0..ui::MARK_ROWS {
+                let drawn: String = line_text(&lines[1 + row])
+                    .chars()
+                    .skip(1)
+                    .take(ui::MARK_WIDTH as usize)
+                    .collect();
+                let expected: String = ui::mark_spans(true, row)
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect();
+                assert_eq!(drawn, expected, "mark row {row} differs at {w}x{h}");
+            }
+            assert!(line_text(&lines[1 + ui::MARK_ROWS]).contains(ui::NAME_ROW));
+            for line in &lines {
+                assert!(line_text(line).chars().count() <= w as usize);
+            }
+        }
+    }
+
+    // Only the mark names exact hues. Everything that answers a question about
+    // what gtunnel found stays on the terminal's own palette, so it is legible
+    // against whatever background the user chose.
+    #[test]
+    fn only_the_logo_names_an_exact_hue() {
+        let judgements = [
+            ("ACCENT", theme::ACCENT),
+            ("MUTED", theme::MUTED),
+            ("LABEL", theme::LABEL),
+            ("OK", theme::OK),
+            ("WARN", theme::WARN),
+            ("BAD", theme::BAD),
+            ("FLAG", theme::FLAG),
+        ];
+        for (name, colour) in judgements {
+            assert!(
+                !matches!(colour, ratatui::style::Color::Rgb(..)),
+                "{name} names an exact hue; only the LOGO_* constants may"
+            );
+        }
+        // And the mark's own colours are the documented exception, so the
+        // test fails if someone quietly demotes them to ANSI.
+        for (name, colour) in [
+            ("LOGO_LINE", theme::LOGO_LINE),
+            ("LOGO_BLUE", theme::LOGO_BLUE),
+            ("LOGO_RED", theme::LOGO_RED),
+            ("LOGO_YELLOW", theme::LOGO_YELLOW),
+            ("LOGO_GREEN", theme::LOGO_GREEN),
+        ] {
+            assert!(
+                matches!(colour, ratatui::style::Color::Rgb(..)),
+                "{name} is part of the mark and must name its hue"
+            );
+        }
+    }
+
+    // Case is load-bearing in three pairs, and the old bar printed both halves
+    // of each. Showing only what the selection can do dissolves the trap
+    // instead of annotating it.
+    #[test]
+    fn the_footer_offers_only_what_the_selection_can_do() {
+        let (ctx, _) = ui::footer_groups(Some(TunnelStatus::Running), true);
+        let keys: Vec<_> = ctx.iter().map(|a| a.key).collect();
+        assert_eq!(keys, ["S", "R", "c", "o", "L"]);
+        assert!(!keys.contains(&"s"), "a running tunnel cannot be started");
+
+        let (ctx, _) = ui::footer_groups(Some(TunnelStatus::Stopped), true);
+        let keys: Vec<_> = ctx.iter().map(|a| a.key).collect();
+        assert_eq!(keys, ["s", "e", "d", "A"]);
+        assert!(!keys.contains(&"S"), "s and S are never on screen together");
+    }
+
+    // Review Focus 4: no tunnels at all, so there is no selection to derive a
+    // contextual group from. The footer still has to offer a way forward.
+    #[test]
+    fn an_empty_account_offers_a_way_to_fill_it() {
+        let (ctx, _) = ui::footer_groups(None, false);
+        assert_eq!(ctx.iter().map(|a| a.key).collect::<Vec<_>>(), ["a", "m"]);
+    }
+
+    // Review Focus 2: a width landing exactly on a shedding boundary, where an
+    // action would be drawn half-way
+    #[test]
+    fn the_footer_sheds_whole_actions_and_never_half_of_one() {
+        for width in 20u16..=140 {
+            let text = line_text(&ui::footer_line(width, Some(TunnelStatus::Running), true));
+            assert!(
+                text.chars().count() <= width as usize,
+                "overflows at {width}"
+            );
+            for action in ["stop", "restart", "clear log", "account", "keys", "quit"] {
+                let drawn = text.matches(&format!(" {action}")).count();
+                assert!(drawn <= 1, "{action} drawn twice at {width}");
+            }
+            // every label that appears, appears whole
+            for action in [
+                "stop",
+                "restart",
+                "copy",
+                "open",
+                "clear log",
+                "account",
+                "keys",
+                "quit",
+            ] {
+                let prefix = &action[..action.len() - 1];
+                if text.contains(prefix) {
+                    assert!(
+                        text.contains(action),
+                        "{action} was cut mid-word at {width}: {text:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    // The program group sheds last and `q quit` sheds never: a user who cannot
+    // read the footer must still be able to leave.
+    #[test]
+    fn the_way_out_survives_the_narrowest_terminal() {
+        let text = line_text(&ui::footer_line(24, Some(TunnelStatus::Running), true));
+        assert!(text.contains("keys") && text.contains("quit"), "{text:?}");
     }
 
     // A lockup that wraps is worse than no lockup: the mark breaks mid-glyph
@@ -645,7 +871,7 @@ mod tests {
     // it still has to carry the account.
     #[test]
     fn the_header_steps_down_before_it_wraps() {
-        let wide = ui::header_lines(120, "dev");
+        let wide = ui::header_lines(120, 24, "dev");
         assert_eq!(wide.len() as u16, ui::HEADER_HEIGHT_FULL);
         for line in &wide {
             assert!(
@@ -654,7 +880,7 @@ mod tests {
                 line_text(line)
             );
         }
-        let narrow = ui::header_lines(18, "dev");
+        let narrow = ui::header_lines(18, 24, "dev");
         assert_eq!(narrow.len() as u16, ui::HEADER_HEIGHT_COMPACT);
         assert!(line_text(&narrow[0]).chars().count() <= 18);
         assert!(line_text(&narrow[0]).contains("dev"), "{:?}", narrow[0]);
@@ -714,7 +940,7 @@ mod tests {
             .iter()
             .map(|c| c.symbol())
             .collect();
-        assert!(text.contains("Peak: 44 ms"), "{text}");
+        assert!(text.contains("peak 44 ms"), "{text}");
     }
 
     #[test]
@@ -741,7 +967,7 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect();
-        for wanted in ["Tunnels (2)", "localhost:15432", "https://api.example.com"] {
+        for wanted in ["TUNNELS (2)", "localhost:15432", "https://api.example.com"] {
             assert!(rendered.contains(wanted), "missing {wanted:?}");
         }
     }

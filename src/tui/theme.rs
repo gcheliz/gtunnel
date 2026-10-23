@@ -23,8 +23,14 @@ use ratatui::style::Color;
 /// What gtunnel measured or derived: a mode, a chart, a figure worth reading.
 pub const ACCENT: Color = Color::Cyan;
 
-/// A field label. It names the value beside it and must lose to it.
+/// Furniture: a rule, a divider, a pane's name. It frames what the user came
+/// to read and must recede behind all of it.
 pub const MUTED: Color = Color::DarkGray;
+
+/// A field label, and the word beside a key in the footer. It names the thing
+/// next to it, so it loses to that value but still has to be read on its own —
+/// which is why it is one step brighter than the furniture around it.
+pub const LABEL: Color = Color::Gray;
 
 /// Running, healthy, done.
 pub const OK: Color = Color::Green;
@@ -43,9 +49,6 @@ pub const FLAG: Color = Color::Blue;
 /// so the row the cursor is on reads as emphasis and not as a warning.
 pub const SELECTED_BG: Color = Color::Indexed(236);
 
-/// Text that sits on top of `ACCENT`.
-pub const ON_ACCENT: Color = Color::Black;
-
 /// The line the cloud rests on, and the two cells at each end of the mark.
 pub const LOGO_LINE: Color = Color::Rgb(0x4D, 0xD0, 0xE1);
 
@@ -60,12 +63,3 @@ pub const LOGO_YELLOW: Color = Color::Rgb(0xFB, 0xBC, 0x04);
 
 /// The fourth band.
 pub const LOGO_GREEN: Color = Color::Rgb(0x34, 0xA8, 0x53);
-
-/// The account field in the header. The account is the one piece of state that
-/// changes what every other key acts on, so it reads as a mode rather than a
-/// label — but it is still state, not artwork, and so it reuses the ANSI pair
-/// instead of reaching for a brand hue.
-pub const ACCOUNT_BG: Color = ACCENT;
-
-/// Text that sits on top of `ACCOUNT_BG`.
-pub const ACCOUNT_FG: Color = ON_ACCENT;
