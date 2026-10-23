@@ -75,7 +75,7 @@ data and never touches GCP or a config file.
 | Tunnel | `s` start, `S` stop, `R` restart, `A` toggle auto-start, `h` health check now |
 | The list | `a` add, `e` edit, `d` delete, `m` import an ephemeral run as managed, `j` `k` or the arrows move the selection |
 | This tunnel's URL and log | `c` copy the URL, `o` open it, `L` clear the log, `r` refresh the list, metrics and health |
-| The program | `;` cycle accounts, `?` the keymap, `q` quit, `Esc` close a page or cancel a prompt, `Ctrl+Z` suspend, `Ctrl+C` quit from anywhere |
+| The program | `;` cycle accounts, `?` the keymap, `q` quit, `Esc` close a page or cancel a prompt, `PgUp` `PgDn` and `g` `G` scroll the keymap page, `Ctrl+Z` suspend, `Ctrl+C` quit from anywhere |
 
 Case matters in three pairs: `s`/`S` start and stop, `a`/`A` add and auto-start, `r`/`R`
 refresh and restart. The footer shows only what the selected tunnel can do, so it never has
@@ -84,15 +84,24 @@ tunnel has failed, `R restart` leads the footer in the warning colour. An accoun
 tunnels shows `no tunnels in this account` under the list header, and the footer offers `a`
 and `m`; until the first load has answered, and after `;` until the new account's has, the
 row says `loading` instead, and a load that fails puts its error on the status line. The
-keymap page is two columns from 92 cells inside its frame and one below that; on a short
-terminal it drops its notes and then its last rows, ends the rows with `N more keys -
-enlarge the terminal` when keys were cut, and never drops the `Esc back  q back` line.
+keymap page is two columns from 92 cells inside its frame and one below that. On a
+terminal too short for it, the page scrolls: `j` `k` and the arrows move a row, `PgUp` and
+`PgDn` a screen, `g` and `G` jump to the top and the end, and a row such as
+`3-14 of 31 rows` says where the window is. Both columns scroll together; the count line
+and the `Esc back  q back` line stay in place; closing the page resets it to the top. A page
+that fits shows no counter.
 
 The header's right edge is the account field: the account name over its GCP project id, on
 the same two rows as the logo. `;` switches both at once. When the terminal narrows, the
 subtitle beside the logo goes first, then the project id is cut with a `…` (never below four
 cells, and dropped whole if there is no room for that), and the account name is the last to
 go. An account with no project shows the name alone.
+
+Details repeats the project under the `target` row it qualifies. The header carries it
+once as a property of the account, at the far edge of the screen from the host it belongs
+to; the pane open while a `gcloud` command of your own is being typed is the one that has
+to answer which project that host is in. An account with no project prints no row, the
+same silence the header keeps.
 
 Unmanaged `gcloud start-iap-tunnel` processes started outside gtunnel appear in the list
 tagged `[not managed by gtunnel]`. Every action on them is refused except `m`, which takes

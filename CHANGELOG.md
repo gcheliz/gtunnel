@@ -43,6 +43,15 @@ GCP relay in place of Cloudflare Tunnel.
   auto-start, copy and open, without leaving the TUI.
 - **Unmanaged tunnels** - a `gcloud start-iap-tunnel` process started outside gtunnel
   is listed and can be imported with `m`; every other action on it is refused.
+- **A mark and a header** - a cloud resting on a line, drawn in braille and banded in
+  the four Google Cloud hues, with the platform beside the mark and the product beside
+  the name. The art is one fixed size, because a braille glyph scaled up reads as a loose
+  matrix of dots rather than a cloud. One module decides every colour the TUI uses, in
+  named ANSI so it follows the terminal's own palette; the mark's hues are the documented
+  exception.
+- **Details** - beside the stored name, url and target, the pane says which GCP project
+  the target is in, when the tunnel started, and whether anything brought it up without
+  being asked - a launchd revival after a crash reads differently from a start.
 - **List columns** - the tunnel list has a `NAME  MODE  URL` header and fixed columns,
   including one for the auto-start and health flags. It hides a name suffix equal to the
   tunnel's account; Details shows the full name, and `gtunnel list` is unchanged.
@@ -59,7 +68,13 @@ GCP relay in place of Cloudflare Tunnel.
   the terminal is wide and one when it is not, with a note on the three case-sensitive
   pairs. A failed tunnel's footer leads with `R restart` in the warning colour, and an
   empty account says `no tunnels in this account` under the list header, and `loading`
-  until its first load has answered. A page that has to cut keys says how many.
+  until its first load has answered. A page taller than the terminal scrolls with
+  `j`/`k`, the arrows, `PgUp`/`PgDn` and `g`/`G`, and says where the reader is in it.
+- **Dialogs that fit the terminal** - the add, edit, delete and mode dialogs and the
+  instance and domain pickers are sized to their text and the terminal instead of a
+  percentage of it, so a prompt wraps instead of being cut, the `Esc to cancel` row is on
+  screen at 80x24, a long value keeps its end and the cursor in view, and a picker always
+  shows the selected row.
 - **Health notifications** - a tunnel going unhealthy raises a system notification.
 - **`gtunnel demo`** - the whole dashboard filled with synthetic data, touching no GCP
   project and no config file.

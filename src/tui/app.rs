@@ -1,4 +1,5 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -217,6 +218,13 @@ impl InputMode {
     }
 }
 
+/// How far the keymap page scrolls on the terminal it was last drawn on.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HelpExtent {
+    pub max_scroll: usize,
+    pub view: usize,
+}
+
 // An instance the picker offers, as list_instances reports it
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstanceChoice {
@@ -284,6 +292,14 @@ pub struct App {
     // The last operation failed, so the status line says so in red
     pub status_error: bool,
     pub input_mode: InputMode,
+    // The first row of the keymap page on screen. Zero whenever the page is
+    // closed, so it always opens at the top.
+    pub help_scroll: usize,
+    // What the last draw of the page measured: the furthest it can scroll and
+    // how many rows it shows. Only a draw knows the terminal's height, and
+    // `draw` takes `&App`, so the measure comes back through a `Cell` rather
+    // than a second pass that would have to guess the geometry.
+    pub help_extent: Cell<HelpExtent>,
     pub spinner: Spinner,
     pub should_quit: bool,
     pub suspend: bool,
@@ -320,6 +336,8 @@ impl App {
             status: None,
             status_error: false,
             input_mode: InputMode::Normal,
+            help_scroll: 0,
+            help_extent: Cell::new(HelpExtent::default()),
             spinner: Spinner::new(),
             should_quit: false,
             suspend: false,
@@ -376,12 +394,19 @@ impl App {
             return;
         }
         let last = self.entries.len() - 1;
+        let before = self.selected;
         self.selected = match delta {
             d if d < 0 => self.selected.saturating_sub(1),
             _ => (self.selected + 1).min(last),
         };
-        // The logs panel follows the selection, so what is on screen is stale
-        self.logs.clear();
+        // The logs panel follows the selection, so what is on screen is stale —
+        // but only once the selection has actually moved. Both ends of the list
+        // clamp, and clearing there emptied the pane of a tunnel that stayed
+        // selected: the loop refetches on a change of name, so nothing refilled
+        // it and the tunnel read as silent until the log timer came round.
+        if self.selected != before {
+            self.logs.clear();
+        }
     }
 
     // An External tunnel is someone else's process; gtunnel reports it and
@@ -447,12 +472,7 @@ impl App {
         match self.input_mode {
             InputMode::Normal => {}
             InputMode::Help => {
-                if matches!(
-                    key.code,
-                    KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q')
-                ) {
-                    self.input_mode = InputMode::Normal;
-                }
+                self.help_key(key.code);
                 return None;
             }
             InputMode::ChooseMode => return self.choose_mode(key.code),
@@ -488,6 +508,31 @@ impl App {
             _ => {}
         }
         None
+    }
+
+    // The page scrolls with the list's own keys and with the paging keys, and
+    // only here: `PgUp`, `g` and `G` are not bound anywhere else. The position
+    // is clamped to the last draw's measure before the move and after it, so a
+    // press at either end is a no-op and the first press back always moves.
+    fn help_key(&mut self, code: KeyCode) {
+        let HelpExtent { max_scroll, view } = self.help_extent.get();
+        let at = self.help_scroll.min(max_scroll);
+        // A page keeps one row of the last screen, so the eye has a place to land
+        let page = view.saturating_sub(1).max(1);
+        self.help_scroll = match code {
+            KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => {
+                self.input_mode = InputMode::Normal;
+                0
+            }
+            KeyCode::Down | KeyCode::Char('j') => at + 1,
+            KeyCode::Up | KeyCode::Char('k') => at.saturating_sub(1),
+            KeyCode::PageDown => at + page,
+            KeyCode::PageUp => at.saturating_sub(page),
+            KeyCode::Char('g') => 0,
+            KeyCode::Char('G') => max_scroll,
+            _ => at,
+        }
+        .min(max_scroll);
     }
 
     // Only an ephemeral run has a name and a spec already; an external tunnel

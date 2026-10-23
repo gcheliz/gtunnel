@@ -6,7 +6,7 @@ use ratatui::widgets::{
 };
 use ratatui::Frame;
 
-use super::app::{App, InputMode, TunnelEntry, TunnelMode};
+use super::app::{App, HelpExtent, InputMode, TunnelEntry, TunnelMode};
 use super::theme;
 use crate::probe::{HealthStatus, LB_WINDOW_MINUTES};
 use crate::state::{TunnelSpec, TunnelStatus};
@@ -409,8 +409,19 @@ pub const KEYMAP: &[KeyDoc] = &[
         "import an ephemeral run as managed",
         Group::List,
     ),
-    doc("up/k", None, "move the selection up", Group::List),
-    doc("down/j", None, "move the selection down", Group::List),
+    // On the help page the same four keys scroll it, since it has no selection
+    doc(
+        "up/k",
+        None,
+        "move the selection up, or scroll",
+        Group::List,
+    ),
+    doc(
+        "down/j",
+        None,
+        "move the selection down, or scroll",
+        Group::List,
+    ),
     doc("c", Some("copy"), "copy the tunnel URL", Group::UrlAndLog),
     doc("o", Some("open"), "open it in a browser", Group::UrlAndLog),
     doc(
@@ -432,6 +443,20 @@ pub const KEYMAP: &[KeyDoc] = &[
         "Esc",
         None,
         "close this, or cancel a prompt",
+        Group::Program,
+    ),
+    // Bound on the page only: the list has no use for them, and the page needs
+    // them because it is the one screen that can be taller than the terminal
+    doc(
+        "PgUp/Dn",
+        None,
+        "scroll this page a screen at a time",
+        Group::Program,
+    ),
+    doc(
+        "g/G",
+        None,
+        "jump to the top or end of this page",
         Group::Program,
     ),
     doc("Ctrl+Z", None, "suspend to the shell", Group::Program),
@@ -658,11 +683,11 @@ pub fn render(f: &mut Frame, app: &App) {
 
     match app.input_mode {
         InputMode::Normal => {}
-        InputMode::Help => render_help_modal(f),
+        InputMode::Help => render_help_modal(f, app),
         InputMode::ChooseMode => render_choose_mode(f),
         InputMode::Confirm => {
             if let Some(message) = &app.confirm_message {
-                render_dialog(f, "Confirm", vec![Line::raw(message.clone())], 50, 20);
+                render_confirm(f, message);
             }
         }
         InputMode::AddInstance => render_instance_picker(f, app),
@@ -903,7 +928,7 @@ fn render_right(f: &mut Frame, app: &App, area: Rect) {
         return;
     };
     let width = pane_text_width(area.width);
-    let details = detail_lines(entry, width).len() as u16 + DETAILS_CHROME;
+    let details = detail_lines(entry, app.project(), width).len() as u16 + DETAILS_CHROME;
     let metrics =
         METRICS_CHROME + wrapped_rows(&metrics_lines(entry, width), width as u16) + SPARKLINE_ROWS;
     let (details, logs, metrics) = right_heights(area.height, details, metrics);
@@ -927,7 +952,7 @@ fn render_right(f: &mut Frame, app: &App, area: Rect) {
 /// The rows Details shows for an entry at `width` cells, long values wrapped. The
 /// pane's height is derived from this count: a fixed height was sized for an Access tunnel and clipped `started by`
 /// off every public one, and a `name` row would have clipped one more.
-fn detail_lines(entry: &TunnelEntry, width: usize) -> Vec<Line<'static>> {
+fn detail_lines(entry: &TunnelEntry, project: &str, width: usize) -> Vec<Line<'static>> {
     let mut rows: Vec<(&'static str, String)> = vec![
         // The list cuts long names and drops the account suffix; this row is
         // where the stored name, the one every command takes, can be read
@@ -937,6 +962,14 @@ fn detail_lines(entry: &TunnelEntry, width: usize) -> Vec<Line<'static>> {
         ("url", entry.url()),
         ("target", entry.tunnel.display_target()),
     ];
+    // The target names a host inside a project that nothing else on this pane
+    // names: the header carries it as a property of the account, four panes
+    // away from the host it qualifies and gone the moment the pane is the one
+    // being read. A config with no project for the account says nothing here,
+    // rather than printing a label over a blank.
+    if !project.is_empty() {
+        rows.push(("project", project.to_string()));
+    }
     match &entry.tunnel.spec {
         // An Access tunnel adds nothing here. Its zone is already inside the
         // target line and its local port is already inside the url, so a row
@@ -991,7 +1024,7 @@ fn render_details(f: &mut Frame, app: &App, area: Rect) {
     };
     let inner = pane(f, area, "Details", None);
     f.render_widget(
-        Paragraph::new(detail_lines(entry, inner.width as usize)),
+        Paragraph::new(detail_lines(entry, app.project(), inner.width as usize)),
         inner,
     );
 }
@@ -1502,25 +1535,6 @@ fn render_help_bar(f: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
-    let vertical = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(r);
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(vertical[1])[1]
-}
-
 /// Inside the modal, the width from which the page lays out in two columns. A
 /// column is `(width - gap) / 2` and has to hold the key cell and the longest
 /// label, `refresh the list, metrics and health` at 44 cells in all, so 88 plus
@@ -1560,28 +1574,19 @@ fn help_row(doc: &KeyDoc) -> Line<'static> {
     ])
 }
 
-/// A laid-out row and how many keys it shows, so a cut can say how many keys
-/// went with it without reading them back out of styled text.
-type HelpRow = (Line<'static>, usize);
-
 /// One group as rows: its heading, then a row per key.
-fn help_group(group: Group) -> Vec<HelpRow> {
-    let mut rows = vec![(help_heading(group), 0)];
-    rows.extend(
-        KEYMAP
-            .iter()
-            .filter(|d| d.group == group)
-            .map(|d| (help_row(d), d.key.split('/').count())),
-    );
+fn help_group(group: Group) -> Vec<Line<'static>> {
+    let mut rows = vec![help_heading(group)];
+    rows.extend(KEYMAP.iter().filter(|d| d.group == group).map(help_row));
     rows
 }
 
 /// Groups stacked with a blank row between them.
-fn help_stack(groups: &[Group]) -> Vec<HelpRow> {
+fn help_stack(groups: &[Group]) -> Vec<Line<'static>> {
     let mut rows = Vec::new();
     for (i, group) in groups.iter().enumerate() {
         if i > 0 {
-            rows.push((Line::raw(""), 0));
+            rows.push(Line::raw(""));
         }
         rows.extend(help_group(*group));
     }
@@ -1652,91 +1657,108 @@ fn help_cadence() -> Vec<Line<'static>> {
 
 /// Two stacks side by side, the left one padded to its column so the right
 /// starts at the same cell on every row.
-fn help_columns(left: Vec<HelpRow>, right: Vec<HelpRow>, column: usize) -> Vec<HelpRow> {
+fn help_columns(
+    left: Vec<Line<'static>>,
+    right: Vec<Line<'static>>,
+    column: usize,
+) -> Vec<Line<'static>> {
     let rows = left.len().max(right.len());
     (0..rows)
         .map(|i| {
-            let mut spans = left
-                .get(i)
-                .map(|(l, _)| l.spans.clone())
-                .unwrap_or_default();
+            let mut spans = left.get(i).map(|l| l.spans.clone()).unwrap_or_default();
             let used = row_cells(&spans);
             spans.push(Span::raw(
                 " ".repeat((column + HELP_GAP).saturating_sub(used)),
             ));
-            spans.extend(
-                right
-                    .get(i)
-                    .map(|(l, _)| l.spans.clone())
-                    .unwrap_or_default(),
-            );
-            let keys = left.get(i).map_or(0, |r| r.1) + right.get(i).map_or(0, |r| r.1);
-            (Line::from(spans), keys)
+            spans.extend(right.get(i).map(|l| l.spans.clone()).unwrap_or_default());
+            Line::from(spans)
         })
         .collect()
 }
 
-/// The keymap page, laid out from `KEYMAP`.
+/// The keymap page as drawn at one size and scroll position, and how far it can
+/// scroll at that size.
+pub struct HelpPage {
+    pub lines: Vec<Line<'static>>,
+    /// The furthest the page scrolls; zero when it fits.
+    pub max_scroll: usize,
+    /// How many body rows the window shows.
+    pub view: usize,
+}
+
+/// The keymap page, laid out from `KEYMAP` and cut to `height` rows.
 ///
-/// What it gives up when the terminal is short, in order: the cadence lines,
-/// the case note, then rows from the bottom of the groups. The `Esc back` row
-/// is never on the list, since a page that cannot be closed by reading it has
-/// failed at the one thing it is for. Rows cut from the groups are not cut
-/// silently: the last body row counts the keys that went. The case note is
-/// not moved above the bottom groups to spare them; that would put the longest
-/// block ahead of keys a reader came for, to save rows it does not save.
-pub fn help_lines(width: usize, height: usize) -> Vec<Line<'static>> {
+/// A page that does not fit scrolls. It used to drop its notes and then its
+/// last rows and count the keys that went, which left the program group and the
+/// case note unreachable at 80x24: a keymap that cannot be read in full fails
+/// its one job. The body (the groups, and in one column the case note) is the
+/// scrolling part; the count line, `Esc back` and the blank row above them stay
+/// put, so the way out is never scrolled off. The cadence lines are the one
+/// thing still dropped, and only when they would not fit under the whole page,
+/// since they are the least a reader came for. A cut page spends its last body
+/// row on where the reader is in it, so a window is never mistaken for the page.
+pub fn help_page(width: usize, height: usize, scroll: usize) -> HelpPage {
     let two = width >= HELP_TWO_COLUMNS;
-    let (body, note) = if two {
+    let mut body = if two {
         let column = (width - HELP_GAP) / 2;
         let left = help_stack(&[Group::Tunnel, Group::List]);
         let mut right = help_stack(&[Group::UrlAndLog, Group::Program]);
-        right.push((Line::raw(""), 0));
-        right.extend(help_note(column).into_iter().map(|l| (l, 0)));
-        (help_columns(left, right, column), Vec::new())
+        right.push(Line::raw(""));
+        right.extend(help_note(column));
+        help_columns(left, right, column)
     } else {
-        (help_stack(&Group::ALL), help_note(width))
+        help_stack(&Group::ALL)
     };
+    if !two {
+        body.push(Line::raw(""));
+        body.extend(help_note(width));
+    }
     let footer = help_footer(width);
-    let cadence = help_cadence();
-
-    // Blank rows separate the blocks; each is spent only when its block is drawn
-    let mut body = body;
-    let room = |used: usize, more: usize| used + more + footer.len() <= height;
-    if !note.is_empty() && room(body.len(), 1 + note.len()) {
-        body.push((Line::raw(""), 0));
-        body.extend(note.into_iter().map(|l| (l, 0)));
-    }
     let avail = height.saturating_sub(footer.len() + 1);
-    let cut_keys = |from: usize| {
-        body[from.min(body.len())..]
-            .iter()
-            .map(|r| r.1)
-            .sum::<usize>()
-    };
-    // A cut that takes only blank or note rows needs no notice; one that takes
-    // keys gives up a row to say so, and counts the keys that row displaces too
-    let notice = (body.len() > avail && cut_keys(avail) > 0 && avail > 0).then(|| {
-        let keep = avail - 1;
-        (keep, cut_keys(keep))
-    });
+
     let mut lines: Vec<Line<'static>> = Vec::new();
-    match notice {
-        Some((keep, n)) => {
-            lines.extend(body.into_iter().take(keep).map(|r| r.0));
-            lines.push(Line::styled(
-                format!("{n} more keys - enlarge the terminal"),
-                Style::default().fg(theme::MUTED),
-            ));
+    let (max_scroll, view) = if body.len() <= avail {
+        let view = body.len();
+        lines.extend(body);
+        (0, view)
+    } else {
+        // One row of the window goes to the counter
+        let view = avail.saturating_sub(1);
+        let max_scroll = if view == 0 { 0 } else { body.len() - view };
+        let top = scroll.min(max_scroll);
+        let total = body.len();
+        lines.extend(body.into_iter().skip(top).take(view));
+        if avail > 0 {
+            lines.push(help_counter(top, view, total, width));
         }
-        None => lines.extend(body.into_iter().take(avail).map(|r| r.0)),
-    }
+        (max_scroll, view)
+    };
     lines.push(Line::raw(""));
     lines.extend(footer);
-    if lines.len() + cadence.len() <= height {
-        lines.extend(cadence);
+    if max_scroll == 0 && lines.len() + 2 <= height {
+        lines.extend(help_cadence());
     }
-    lines
+    HelpPage {
+        lines,
+        max_scroll,
+        view,
+    }
+}
+
+/// `3-14 of 31 rows`, with the keys that move it when the row has room.
+fn help_counter(top: usize, view: usize, total: usize, width: usize) -> Line<'static> {
+    let place = if view == 0 {
+        format!("{total} rows")
+    } else {
+        format!("{}-{} of {total} rows", top + 1, top + view)
+    };
+    let hinted = format!("{place}  j/k scroll");
+    let text = if hinted.chars().count() <= width {
+        hinted
+    } else {
+        place
+    };
+    Line::styled(text, Style::default().fg(theme::MUTED))
 }
 
 /// The modal's frame width on a screen this wide: a margin of two cells on each
@@ -1746,19 +1768,30 @@ fn help_modal_width(screen_width: u16) -> u16 {
     screen_width.saturating_sub(4).min(112)
 }
 
-/// The width `help_lines` lays out in, for a screen this wide: the frame less
+/// The width `help_page` lays out in, for a screen this wide: the frame less
 /// two cells of border and two of air. Shared so a test measures the width the
 /// renderer used and not its own copy of the arithmetic.
 pub fn help_inner_width(screen_width: u16) -> usize {
     help_modal_width(screen_width).saturating_sub(4) as usize
 }
 
-fn render_help_modal(f: &mut Frame) {
+fn render_help_modal(f: &mut Frame, app: &App) {
     let screen = f.area();
     let width = help_modal_width(screen.width);
     let room = screen.height.saturating_sub(2);
     let inner_width = help_inner_width(screen.width);
-    let lines = help_lines(inner_width, room.saturating_sub(2) as usize);
+    let HelpPage {
+        lines,
+        max_scroll,
+        view,
+    } = help_page(
+        inner_width,
+        room.saturating_sub(2) as usize,
+        app.help_scroll,
+    );
+    // The keys clamp to what this draw found, so a resize that changes the
+    // page's length is corrected by the next press and never by a dead one
+    app.help_extent.set(HelpExtent { max_scroll, view });
     // The frame hugs the page: the rows under it would be an empty box
     let height = (lines.len() as u16 + 2).min(room);
     let area = Rect {
@@ -1787,8 +1820,70 @@ fn render_help_modal(f: &mut Frame) {
     f.render_widget(Paragraph::new(lines), inner);
 }
 
-fn render_dialog(f: &mut Frame, title: &str, lines: Vec<Line>, width: u16, height: u16) {
-    let area = centered_rect(width, height, f.area());
+/// The frame a dialog gets on a screen: as big as it asked for and no bigger
+/// than the terminal less a margin, centred. The dialogs used to be a percentage
+/// of the screen, which is the wrong unit for text: a quarter of 24 rows is
+/// less than the five a prompt needs, and 60 percent of 60 columns is less than
+/// the question it asks. Sized to the text and then to the terminal, a dialog
+/// keeps its words until the terminal cannot hold them, and never leaves it. The
+/// floor of a border and one row of text is kept even on a terminal too small to
+/// leave a margin, so there is always a row to draw the prompt in.
+pub fn dialog_rect(screen: Rect, want_w: u16, want_h: u16) -> Rect {
+    let width = want_w
+        .min(screen.width.saturating_sub(DIALOG_MARGIN_X))
+        .max(screen.width.min(DIALOG_FLOOR_W));
+    let height = want_h
+        .min(screen.height.saturating_sub(DIALOG_MARGIN_Y))
+        .max(screen.height.min(DIALOG_FLOOR_H));
+    Rect {
+        x: screen.x + (screen.width - width) / 2,
+        y: screen.y + (screen.height - height) / 2,
+        width,
+        height,
+    }
+}
+
+// Two cells each side and one row top and bottom, so the frame never touches
+// the terminal's edge and the panes behind it still frame the dialog
+const DIALOG_MARGIN_X: u16 = 4;
+const DIALOG_MARGIN_Y: u16 = 2;
+const DIALOG_FLOOR_W: u16 = 6;
+const DIALOG_FLOOR_H: u16 = 3;
+/// A dialog is never narrower than this when the terminal has the room, so a
+/// two-word prompt still leaves a field to type in.
+const DIALOG_MIN_WIDTH: usize = 40;
+/// Nor wider: past this a long value is cut to its tail rather than stretching
+/// the frame across the screen.
+const DIALOG_MAX_WIDTH: usize = 72;
+
+fn cells(text: &str) -> usize {
+    text.chars().count()
+}
+
+/// The width a dialog asks for: its widest line, its title, and a floor, in
+/// cells of frame (the border is added here).
+fn dialog_width(widest: usize, title: &str) -> u16 {
+    (widest
+        .max(cells(title) + 4)
+        .clamp(DIALOG_MIN_WIDTH, DIALOG_MAX_WIDTH)
+        + 2) as u16
+}
+
+/// Draws a dialog whose lines depend on the width and height it is given. The
+/// builder is handed the room inside the frame and returns the lines that fit
+/// it, and the frame is then sized to them, so a short dialog is a short frame.
+fn render_dialog(
+    f: &mut Frame,
+    title: &str,
+    want_w: u16,
+    build: impl FnOnce(usize, usize) -> Vec<Line<'static>>,
+) {
+    let screen = f.area();
+    let room = dialog_rect(screen, want_w, u16::MAX);
+    let inner_w = room.width.saturating_sub(2) as usize;
+    let inner_h = room.height.saturating_sub(2) as usize;
+    let lines = build(inner_w, inner_h);
+    let area = dialog_rect(screen, want_w, lines.len() as u16 + 2);
     f.render_widget(Clear, area);
     let block = Block::default()
         .title(format!(" {title} "))
@@ -1799,26 +1894,102 @@ fn render_dialog(f: &mut Frame, title: &str, lines: Vec<Line>, width: u16, heigh
     f.render_widget(Paragraph::new(lines), inner);
 }
 
+/// Sections stacked with a blank row between them when that fits, and without
+/// when only that does; `None` when even the bare rows do not.
+fn stacked(sections: &[Vec<Line<'static>>], rows: usize) -> Option<Vec<Line<'static>>> {
+    let bare: usize = sections.iter().map(Vec::len).sum();
+    let gaps = sections.len().saturating_sub(1);
+    let with_blanks = bare + gaps <= rows;
+    if !with_blanks && bare > rows {
+        return None;
+    }
+    let mut out = Vec::new();
+    for (i, section) in sections.iter().enumerate() {
+        if i > 0 && with_blanks {
+            out.push(Line::raw(""));
+        }
+        out.extend(section.iter().cloned());
+    }
+    Some(out)
+}
+
+/// `  text` in rows of at most `width` cells, continuation rows indented as the
+/// first is. Indent is part of the width, so a wrapped row never runs over.
+fn wrapped_indent(text: &str, indent: usize, width: usize, style: Style) -> Vec<Line<'static>> {
+    wrap_words(text, width.saturating_sub(indent))
+        .into_iter()
+        .map(|row| Line::styled(format!("{}{row}", " ".repeat(indent)), style))
+        .collect()
+}
+
+/// What was typed and the cursor after it. A value wider than the dialog keeps
+/// its tail: the end is where the next key lands, and a cursor pushed off the
+/// right edge reads as a field that has stopped taking input.
+fn input_row(input: &str, width: usize) -> Line<'static> {
+    let room = width.saturating_sub(3);
+    let skip = cells(input).saturating_sub(room);
+    let tail: String = input.chars().skip(skip).collect();
+    Line::from(vec![
+        Span::raw(format!("  {tail}")),
+        Span::styled("_", Style::default().fg(theme::ACCENT)),
+    ])
+}
+
 fn render_choose_mode(f: &mut Frame) {
+    const OPTIONS: [(&str, &str); 2] = [
+        ("1", "Access - forward a remote port to localhost over IAP"),
+        ("2", "Public - publish a local service at an HTTPS URL"),
+    ];
+    const LEAD: usize = 5;
+    let widest = OPTIONS.iter().map(|o| LEAD + cells(o.1)).max().unwrap_or(0);
     render_dialog(
         f,
         "New tunnel",
-        vec![
-            Line::from(vec![
-                Span::styled("  1  ", Style::default().fg(theme::ACCENT)),
-                Span::raw("Access - forward a remote port to localhost over IAP"),
-            ]),
-            Line::from(vec![
-                Span::styled("  2  ", Style::default().fg(theme::ACCENT)),
-                Span::raw("Public - publish a local service at an HTTPS URL"),
-            ]),
-            Line::raw(""),
-            Line::styled("  Esc to cancel", Style::default().fg(theme::MUTED)),
-        ],
-        60,
-        25,
+        dialog_width(widest, "New tunnel"),
+        |width, rows| {
+            let mut options = Vec::new();
+            for (key, text) in OPTIONS {
+                for (i, row) in wrap_words(text, width.saturating_sub(LEAD))
+                    .into_iter()
+                    .enumerate()
+                {
+                    let lead = if i == 0 {
+                        Span::styled(format!("  {key}  "), Style::default().fg(theme::ACCENT))
+                    } else {
+                        Span::raw(" ".repeat(LEAD))
+                    };
+                    options.push(Line::from(vec![lead, Span::raw(row)]));
+                }
+            }
+            let hint = vec![Line::styled(
+                "  Esc to cancel",
+                Style::default().fg(theme::MUTED),
+            )];
+            stacked(&[options.clone(), hint], rows).unwrap_or_else(|| {
+                options.truncate(rows);
+                options
+            })
+        },
     );
 }
+
+fn render_confirm(f: &mut Frame, message: &str) {
+    render_dialog(
+        f,
+        "Confirm",
+        dialog_width(cells(message), "Confirm"),
+        |width, rows| {
+            let mut lines: Vec<Line<'static>> = wrap_words(message, width)
+                .into_iter()
+                .map(Line::from)
+                .collect();
+            lines.truncate(rows);
+            lines
+        },
+    );
+}
+
+const PROMPT_HINT: &str = "Enter to continue, Esc to cancel";
 
 fn render_prompt(f: &mut Frame, app: &App, mode: InputMode) {
     let title = match app.draft.mode {
@@ -1830,75 +2001,37 @@ fn render_prompt(f: &mut Frame, app: &App, mode: InputMode) {
     } else {
         title
     };
-    render_dialog(
-        f,
-        title,
-        vec![
-            Line::styled(mode.prompt(), Style::default().fg(theme::WARN)),
-            Line::raw(""),
-            Line::from(vec![
-                Span::raw(format!("  {}", app.input)),
-                Span::styled("_", Style::default().fg(theme::ACCENT)),
-            ]),
-            Line::raw(""),
-            Line::styled(
-                "  Enter to continue, Esc to cancel",
-                Style::default().fg(theme::MUTED),
-            ),
-        ],
-        60,
-        25,
-    );
+    let prompt = mode.prompt();
+    let widest = cells(prompt)
+        .max(cells(&app.input) + 3)
+        .max(cells(PROMPT_HINT) + 2);
+    render_dialog(f, title, dialog_width(widest, title), |width, rows| {
+        let ask = wrapped_indent(prompt, 0, width, Style::default().fg(theme::WARN));
+        let field = vec![input_row(&app.input, width)];
+        let hint = wrapped_indent(PROMPT_HINT, 2, width, Style::default().fg(theme::MUTED));
+        // What goes first when the terminal is short: the blank rows, then the
+        // hint, then the end of a prompt that wraps. The field is never shed,
+        // since the keys a user types must land somewhere they can see.
+        stacked(&[ask.clone(), field.clone(), hint], rows)
+            .or_else(|| stacked(&[ask.clone(), field.clone()], rows))
+            .unwrap_or_else(|| {
+                let mut lines: Vec<Line<'static>> =
+                    ask.into_iter().take(rows.saturating_sub(1)).collect();
+                lines.extend(field);
+                lines
+            })
+    });
 }
 
-// The prompt, the filter being typed and a blank line, which stay put while
-// the rows below them scroll
-const PICKER_HEADER_LINES: u16 = 3;
-
-fn picker_header<'a>(
-    prompt: &'a str,
-    filter: &str,
-    selected: usize,
-    total: usize,
-) -> Vec<Line<'a>> {
-    let mut head = vec![Span::styled(prompt, Style::default().fg(theme::WARN))];
-    if total > 0 {
-        // Says how far down a list that does not fit the selection is
-        head.push(Span::styled(
-            format!("  {}/{}", selected.min(total - 1) + 1, total),
-            Style::default().fg(theme::MUTED),
-        ));
-    }
-    vec![
-        Line::from(head),
-        Line::from(vec![
-            Span::raw(format!("  {filter}")),
-            Span::styled("_", Style::default().fg(theme::ACCENT)),
-        ]),
-        Line::raw(""),
-    ]
-}
-
-fn picker_rows<'a>(rows: Vec<String>, selected: usize) -> Vec<Line<'a>> {
-    if rows.is_empty() {
-        return vec![Line::styled(
-            "  nothing matches",
-            Style::default().fg(theme::MUTED),
-        )];
-    }
-    rows.into_iter()
-        .enumerate()
-        .map(|(i, row)| {
-            let style = if i == selected {
-                Style::default()
-                    .add_modifier(Modifier::BOLD)
-                    .fg(theme::ACCENT)
-            } else {
-                Style::default()
-            };
-            Line::styled(format!("  {row}"), style)
-        })
-        .collect()
+fn picker_row(row: &str, selected: bool) -> Line<'static> {
+    let style = if selected {
+        Style::default()
+            .add_modifier(Modifier::BOLD)
+            .fg(theme::ACCENT)
+    } else {
+        Style::default()
+    };
+    Line::styled(format!("  {row}"), style)
 }
 
 struct Picker<'a> {
@@ -1907,12 +2040,13 @@ struct Picker<'a> {
     filter: &'a str,
     rows: Vec<String>,
     selected: usize,
-    width: u16,
-    height: u16,
 }
 
-// A dialog whose row list is taller than the dialog: the header is fixed and
-// the rows scroll just enough to keep the selected one on screen
+/// A dialog whose row list is taller than the dialog: the header is fixed and
+/// the rows scroll just enough to keep the selected one on screen. The list
+/// gets the first claim on the frame, because a picker that shows its prompt
+/// and no choices has stopped being one; the header takes what is left, the
+/// filter first, then the prompt, then the blank row that only spaces it.
 fn render_picker(f: &mut Frame, p: Picker) {
     let Picker {
         title,
@@ -1920,35 +2054,56 @@ fn render_picker(f: &mut Frame, p: Picker) {
         filter,
         rows,
         selected,
-        width,
-        height,
     } = p;
-    let area = centered_rect(width, height, f.area());
-    f.render_widget(Clear, area);
-    let block = Block::default()
-        .title(format!(" {title} "))
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme::ACCENT));
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
-    let parts = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(PICKER_HEADER_LINES), Constraint::Min(0)])
-        .split(inner);
-
     let total = rows.len();
-    f.render_widget(
-        Paragraph::new(picker_header(prompt, filter, selected, total)),
-        parts[0],
-    );
+    let counter = if total > 0 {
+        format!("  {}/{}", selected.min(total - 1) + 1, total)
+    } else {
+        String::new()
+    };
+    let widest =
+        (cells(prompt) + cells(&counter)).max(rows.iter().map(|r| cells(r) + 2).max().unwrap_or(0));
+    render_dialog(f, title, dialog_width(widest, title), |width, room| {
+        let mut ask = wrapped_indent(prompt, 0, width, Style::default().fg(theme::WARN));
+        // The counter rides on the prompt's last row, or takes one of its own
+        let muted = Style::default().fg(theme::MUTED);
+        match ask.last_mut() {
+            Some(last) if cells(&last.to_string()) + cells(&counter) <= width => {
+                last.push_span(Span::styled(counter.clone(), muted));
+            }
+            _ if total > 0 => ask.push(Line::styled(counter.trim_start().to_string(), muted)),
+            _ => {}
+        }
+        let mut budget = room.saturating_sub(1);
+        let mut head: Vec<Line<'static>> = Vec::new();
+        let keep_filter = budget > 0;
+        budget = budget.saturating_sub(1);
+        let asked = ask.len().min(budget);
+        budget -= asked;
+        head.extend(ask.into_iter().take(asked));
+        if keep_filter {
+            head.push(input_row(filter, width));
+            if budget > 0 {
+                head.push(Line::raw(""));
+            }
+        }
 
-    let visible = parts[1].height as usize;
-    let offset = selected.saturating_sub(visible.saturating_sub(1)) as u16;
-    f.render_widget(
-        Paragraph::new(picker_rows(rows, selected)).scroll((offset, 0)),
-        parts[1],
-    );
+        let visible = room.saturating_sub(head.len());
+        let mut lines = head;
+        if total == 0 {
+            lines.push(Line::styled("  nothing matches", muted));
+        } else {
+            let start = (selected.min(total - 1) + 1).saturating_sub(visible);
+            lines.extend(
+                rows.iter()
+                    .enumerate()
+                    .skip(start)
+                    .take(visible)
+                    .map(|(i, row)| picker_row(row, i == selected)),
+            );
+        }
+        lines
+    });
 }
 
 fn render_instance_picker(f: &mut Frame, app: &App) {
@@ -1965,8 +2120,6 @@ fn render_instance_picker(f: &mut Frame, app: &App) {
             filter: &app.input,
             rows,
             selected: app.instance_selected,
-            width: 70,
-            height: 60,
         },
     );
 }
@@ -1980,8 +2133,6 @@ fn render_domain_picker(f: &mut Frame, app: &App) {
             filter: "",
             rows: app.domains.clone(),
             selected: app.domain_selected,
-            width: 60,
-            height: 40,
         },
     );
 }

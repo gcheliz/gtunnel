@@ -570,6 +570,30 @@ mod tests {
         assert!(app.logs.is_empty(), "{:?}", app.logs);
     }
 
+    // Up on the first row keeps the row it is on, so the panel keeps the log it
+    // is already showing. Clearing it there emptied a pane the loop then had no
+    // reason to refill, because it refetches on a change of selected name and
+    // the name had not changed: the tunnel read as silent until the log timer
+    // came round. The last row is the same clamp at the other end.
+    #[test]
+    fn a_selection_that_cannot_move_keeps_the_log_on_screen() {
+        let mut app = app_with_two();
+        app.logs = vec!["2026-10-23T23:16:59Z gtunnel: starting".to_string()];
+        app.handle_key(key(KeyCode::Up));
+        assert_eq!(app.selected, 0);
+        assert!(!app.logs.is_empty(), "{:?}", app.logs);
+
+        app.selected = app.entries.len() - 1;
+        app.handle_key(key(KeyCode::Down));
+        assert_eq!(app.selected, app.entries.len() - 1);
+        assert!(!app.logs.is_empty(), "{:?}", app.logs);
+
+        // A move that does land on another tunnel still drops the stale pane
+        app.selected = 0;
+        app.handle_key(key(KeyCode::Down));
+        assert!(app.logs.is_empty(), "{:?}", app.logs);
+    }
+
     // An ephemeral run writes to the terminal that started it, so there is no
     // file to clear and saying so beats a silent no-op
     #[test]
@@ -1322,6 +1346,7 @@ mod tests {
     #[test]
     fn every_key_the_help_page_lists_is_handled() {
         const OUTSIDE_THE_PROCESS: [&str; 2] = ["c", "o"];
+        const HELP_ONLY: [&str; 2] = ["PgUp/Dn", "g/G"];
         for doc in ui::KEYMAP {
             if doc.key == "Esc" {
                 let mut app = keymap_fixture();
@@ -1340,6 +1365,32 @@ mod tests {
                 let mut app = keymap_fixture();
                 app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
                 assert!(app.suspend, "Ctrl+Z suspends");
+                continue;
+            }
+            // Bound on the help page only: pressed in the list they do nothing,
+            // so each is checked where it acts, by the position it moves
+            if HELP_ONLY.contains(&doc.key) {
+                let (down, up) = if doc.key == "g/G" {
+                    (KeyCode::Char('G'), KeyCode::Char('g'))
+                } else {
+                    (KeyCode::PageDown, KeyCode::PageUp)
+                };
+                let mut app = keymap_fixture();
+                app.input_mode = InputMode::Help;
+                screen(&app, 80, 24);
+                app.handle_key(key(down));
+                assert!(
+                    app.help_scroll > 0,
+                    "{} ({down:?}) scrolls nothing",
+                    doc.key
+                );
+                screen(&app, 80, 24);
+                app.handle_key(key(up));
+                assert!(
+                    app.help_scroll < app.help_extent.get().max_scroll,
+                    "{} ({up:?}) scrolls nothing",
+                    doc.key
+                );
                 continue;
             }
             if OUTSIDE_THE_PROCESS.contains(&doc.key) {
@@ -1417,7 +1468,7 @@ mod tests {
         // for any table, and this one has to change when a key is added
         let count_row = rows
             .iter()
-            .find(|r| r.contains("23 keys bound - the footer shows at most 8"))
+            .find(|r| r.contains("27 keys bound - the footer shows at most 8"))
             .expect("the count line");
         // In this page `q` closes the page, it does not quit the program
         assert!(count_row.contains("Esc back  q back"), "{count_row:?}");
@@ -1456,7 +1507,7 @@ mod tests {
         // Where the labels fit, no laid-out row is wider than the frame's inside
         for (width, height) in [(60, 24), (80, 24), (120, 40)] {
             let inner = ui::help_inner_width(width);
-            for line in ui::help_lines(inner, height as usize - 4) {
+            for line in ui::help_page(inner, height as usize - 4, 0).lines {
                 let text = line_text(&line);
                 assert!(
                     text.chars().count() <= inner,
@@ -1475,7 +1526,8 @@ mod tests {
             ui::HELP_TWO_COLUMNS,
             ui::HELP_TWO_COLUMNS + 1,
         ] {
-            let rows: Vec<Vec<char>> = ui::help_lines(inner, 40)
+            let rows: Vec<Vec<char>> = ui::help_page(inner, 40, 0)
+                .lines
                 .iter()
                 .map(|l| line_text(l).chars().collect())
                 .collect();
@@ -1501,7 +1553,7 @@ mod tests {
         // And on a real screen: 98 and 99 cells are one column, 100 and 101 two
         for width in [98u16, 99, 100, 101] {
             let inner = ui::help_inner_width(width);
-            for line in ui::help_lines(inner, 40) {
+            for line in ui::help_page(inner, 40, 0).lines {
                 assert!(line_text(&line).chars().count() <= inner, "{width}");
             }
         }
@@ -1520,41 +1572,251 @@ mod tests {
             .sum()
     }
 
-    // Cutting rows silently left a reader at 80x24 unable to tell a page from
-    // its truncation. The last body row says how many keys are not shown.
+    // The page is drawn before every key, as the loop does: the terminal's
+    // height is only known to a draw, and the scroll keys clamp to what it found.
+    fn help_after(keys: &[KeyCode], width: u16, height: u16) -> (App, Vec<String>) {
+        let mut app = help_app();
+        for code in keys {
+            screen(&app, width, height);
+            app.handle_key(key(*code));
+        }
+        let rows = text_of(&screen(&app, width, height));
+        (app, rows)
+    }
+
+    // What the page says about its position: the `3-14 of 31 rows` row
+    fn counter(rows: &[String]) -> Option<(usize, usize, usize)> {
+        let row = rows.iter().find(|r| r.contains(" rows"))?;
+        let words: Vec<&str> = row.split_whitespace().collect();
+        let at = words.iter().position(|w| *w == "of")?;
+        let (first, last) = words[at - 1].split_once('-')?;
+        Some((
+            first.parse().ok()?,
+            last.parse().ok()?,
+            words[at + 1].parse().ok()?,
+        ))
+    }
+
+    // A page cut to the terminal used to say `N more keys` and stop there: the
+    // rest was not reachable at any size under 38 rows. A cut page says where the
+    // reader is in it instead, and the keys below move it.
     #[test]
-    fn a_page_that_cuts_keys_says_how_many() {
-        let buffer = screen(&help_app(), 80, 24);
-        let rows = text_of(&buffer);
-        let at = rows
-            .iter()
-            .position(|r| r.contains("more keys - enlarge the terminal"))
-            .unwrap_or_else(|| panic!("no cut notice:\n{}", rows.join("\n")));
-        assert!(rows[at + 1]
-            .trim_matches(|c| c == ' ' || c == '\u{2502}')
-            .is_empty());
-        assert!(rows[at + 2].contains("23 keys bound"), "{:?}", rows[at + 2]);
-        let n: usize = rows[at]
-            .split_whitespace()
-            .find_map(|w| w.parse().ok())
-            .expect("a count");
-        assert!(n > 0);
-        assert_eq!(n + keys_shown(&rows), 23, "{}", rows.join("\n"));
-        let x = find(&row_chars(&buffer, at as u16), "more keys").unwrap() as u16;
-        assert_eq!(buffer[(x, at as u16)].fg, theme::MUTED);
+    fn a_page_that_is_cut_says_where_the_reader_is_in_it() {
+        let (_, rows) = help_after(&[], 80, 24);
+        let (first, last, total) =
+            counter(&rows).unwrap_or_else(|| panic!("no position counter:\n{}", rows.join("\n")));
+        assert_eq!(first, 1);
+        assert!(last < total, "{first}-{last} of {total}");
+        assert!(
+            !rows.iter().any(|r| r.contains("more keys")),
+            "the old cut notice is gone:\n{}",
+            rows.join("\n")
+        );
         assert!(rows.iter().any(|r| r.contains("Esc back")));
+
+        let (_, rows) = help_after(&[KeyCode::Char('j')], 80, 24);
+        assert_eq!(counter(&rows), Some((2, last + 1, total)));
+        let x = {
+            let buffer = screen(&help_after(&[], 80, 24).0, 80, 24);
+            let y = text_of(&buffer)
+                .iter()
+                .position(|r| r.contains(" rows"))
+                .unwrap();
+            buffer[(
+                find(&row_chars(&buffer, y as u16), "of").unwrap() as u16,
+                y as u16,
+            )]
+                .fg
+        };
+        assert_eq!(x, theme::MUTED);
+    }
+
+    // The case a reader at 80x24 hit: the group and the note that explain the
+    // collision were the rows the cut always took
+    #[test]
+    fn the_end_of_the_page_at_80_by_24_shows_the_program_group_and_the_case_note() {
+        let (app, rows) = help_after(&[KeyCode::Char('G')], 80, 24);
+        let all = rows.join("\n");
+        assert!(all.contains("THE PROGRAM"), "{all}");
+        assert!(all.contains("Ctrl+C"), "{all}");
+        assert!(all.contains("Case is load-bearing"), "{all}");
+        // The note wraps, so its last words are checked, not a phrase across rows
+        assert!(all.contains("has to be stated."), "{all}");
+        let (_, last, total) = counter(&rows).expect("a counter");
+        assert_eq!(last, total, "G lands on the last row");
+        assert!(app.help_scroll > 0);
+        // g is the way back
+        let (app, rows) = help_after(&[KeyCode::Char('G'), KeyCode::Char('g')], 80, 24);
+        assert_eq!(app.help_scroll, 0);
+        assert!(rows.iter().any(|r| r.contains("TUNNEL ")));
+    }
+
+    #[test]
+    fn every_key_is_reachable_on_the_help_page_at_80_by_24() {
+        let mut app = help_app();
+        let mut seen = String::new();
+        for _ in 0..40 {
+            let rows = text_of(&screen(&app, 80, 24));
+            seen.push_str(&rows.join("\n"));
+            app.handle_key(key(KeyCode::PageDown));
+        }
+        for doc in ui::KEYMAP {
+            let row = format!("{:<8}{}", doc.key, doc.label);
+            assert!(seen.contains(&row), "{} never reaches the screen", doc.key);
+        }
+    }
+
+    // The keys go no further than the last row: past it each press would be a
+    // dead one that `k` then has to undo before the page moves back
+    #[test]
+    fn the_scroll_position_never_exceeds_the_page() {
+        let mut app = help_app();
+        for _ in 0..200 {
+            screen(&app, 80, 24);
+            app.handle_key(key(KeyCode::Char('j')));
+        }
+        let end = app.help_scroll;
+        assert_eq!(end, app.help_extent.get().max_scroll);
+        assert!(end > 0);
+        for code in [KeyCode::PageDown, KeyCode::Down, KeyCode::Char('G')] {
+            screen(&app, 80, 24);
+            app.handle_key(key(code));
+            assert_eq!(app.help_scroll, end, "{code:?}");
+        }
+        screen(&app, 80, 24);
+        app.handle_key(key(KeyCode::Char('k')));
+        assert_eq!(
+            app.help_scroll,
+            end - 1,
+            "one k moves, it does not pay a debt"
+        );
+        // And the top is a floor
+        for code in [KeyCode::Char('g'), KeyCode::Up, KeyCode::PageUp] {
+            screen(&app, 80, 24);
+            app.handle_key(key(code));
+        }
+        assert_eq!(app.help_scroll, 0);
+    }
+
+    #[test]
+    fn page_keys_move_by_a_screen_and_arrows_by_a_row() {
+        let (app, _) = help_after(&[KeyCode::Down], 80, 24);
+        assert_eq!(app.help_scroll, 1);
+        let (app, _) = help_after(&[KeyCode::PageDown], 80, 24);
+        let view = app.help_extent.get().view;
+        assert!(view > 1);
+        assert_eq!(app.help_scroll, view - 1, "a page keeps one row of overlap");
+        let (app, _) = help_after(&[KeyCode::PageDown, KeyCode::PageUp], 80, 24);
+        assert_eq!(app.help_scroll, 0);
+    }
+
+    // The scroll keys are the help page's alone: in the list `j` and `k` move the
+    // selection and the rest are not bound, and none may leak a position into a
+    // page that is closed
+    #[test]
+    fn the_scroll_keys_leave_the_help_position_alone_outside_the_page() {
+        let mut app = app_with_two();
+        for code in [
+            KeyCode::Char('j'),
+            KeyCode::Char('k'),
+            KeyCode::PageDown,
+            KeyCode::PageUp,
+            KeyCode::Char('g'),
+            KeyCode::Char('G'),
+        ] {
+            app.handle_key(key(code));
+            assert_eq!(app.help_scroll, 0, "{code:?}");
+            assert_eq!(app.input_mode, InputMode::Normal, "{code:?}");
+        }
+    }
+
+    #[test]
+    fn closing_the_help_page_resets_where_it_was_scrolled_to() {
+        for close in [KeyCode::Esc, KeyCode::Char('?'), KeyCode::Char('q')] {
+            let (mut app, _) = help_after(&[KeyCode::Char('G')], 80, 24);
+            assert!(app.help_scroll > 0);
+            app.handle_key(key(close));
+            assert_eq!(app.input_mode, InputMode::Normal, "{close:?}");
+            assert_eq!(app.help_scroll, 0, "{close:?}");
+            assert!(!app.should_quit, "q closes the page, it does not quit");
+            app.handle_key(key(KeyCode::Char('?')));
+            let rows = text_of(&screen(&app, 80, 24));
+            assert_eq!(counter(&rows).map(|c| c.0), Some(1), "{close:?}");
+        }
+    }
+
+    // After a resize the position is clamped by the draw, so a terminal that
+    // grows shows the whole page and not a window past its end
+    #[test]
+    fn a_terminal_that_grows_shows_the_whole_page_again() {
+        let (app, _) = help_after(&[KeyCode::Char('G')], 80, 24);
+        let rows = text_of(&screen(&app, 80, 60));
+        assert!(
+            rows.iter().any(|r| r.contains("TUNNEL ")),
+            "{}",
+            rows.join("\n")
+        );
+        assert!(counter(&rows).is_none(), "{}", rows.join("\n"));
+        assert_eq!(
+            keys_shown(&rows),
+            ui::KEYMAP
+                .iter()
+                .map(|d| d.key.split('/').count())
+                .sum::<usize>()
+        );
+    }
+
+    // Two columns are one page: scrolling a row moves both, so a row never pairs
+    // the left column's key with a right column that did not move
+    #[test]
+    fn two_columns_scroll_together() {
+        let (_, rows) = help_after(&[], 100, 16);
+        assert!(
+            rows.iter()
+                .any(|r| r.contains("TUNNEL ") && r.contains("THIS TUNNEL'S URL AND LOG")),
+            "{}",
+            rows.join("\n")
+        );
+        let (_, rows) = help_after(&[KeyCode::Char('j')], 100, 16);
+        assert!(
+            rows.iter()
+                .any(|r| r.contains("start the selected tunnel")
+                    && r.contains("copy the tunnel URL")),
+            "{}",
+            rows.join("\n")
+        );
+        assert!(
+            !rows
+                .iter()
+                .any(|r| r.contains("TUNNEL ") && r.contains("THIS TUNNEL'S")),
+            "the headings scrolled off in both columns"
+        );
+    }
+
+    // The page documents itself, and the count line counts the new rows
+    #[test]
+    fn the_keymap_documents_the_scroll_keys_in_the_program_group() {
+        for key in ["PgUp/Dn", "g/G"] {
+            let doc = ui::KEYMAP
+                .iter()
+                .find(|d| d.key == key)
+                .unwrap_or_else(|| panic!("{key} is not in KEYMAP"));
+            assert_eq!(doc.group, ui::Group::Program, "{key}");
+        }
+        let rows = text_of(&screen(&help_app(), 120, 40));
+        assert!(
+            rows.iter().any(|r| r.contains("27 keys bound")),
+            "{}",
+            rows.join("\n")
+        );
     }
 
     #[test]
     fn a_page_that_fits_says_nothing_about_cuts() {
         for (w, h) in [(120, 40), (80, 60)] {
             let rows = text_of(&screen(&help_app(), w, h));
-            assert!(
-                !rows.iter().any(|r| r.contains("more keys")),
-                "{w}x{h}:\n{}",
-                rows.join("\n")
-            );
-            assert_eq!(keys_shown(&rows), 23, "{w}x{h}");
+            assert!(counter(&rows).is_none(), "{w}x{h}:\n{}", rows.join("\n"));
+            assert_eq!(keys_shown(&rows), 27, "{w}x{h}");
         }
     }
 
@@ -1898,6 +2160,39 @@ mod tests {
             first.contains("name") && first.contains("mongo-activitylog-dev"),
             "{first}"
         );
+    }
+
+    // The header names the project once for the whole list, where it is a
+    // property of the account; Details answers it for the tunnel in front of
+    // you, which is the pane open while a gcloud command of your own is typed
+    #[test]
+    fn details_name_the_project_behind_the_account() {
+        let mut app = columns_app();
+        app.projects
+            .insert("dev".to_string(), "example-dev-1a2b".to_string());
+        let buffer = screen(&app, 160, 30);
+        let title = (0..buffer.area.height)
+            .find(|y| find(&row_chars(&buffer, *y), "DETAILS").is_some())
+            .expect("the details pane has a title");
+        let pane: String = (title + 1..buffer.area.height)
+            .flat_map(|y| row_chars(&buffer, y))
+            .collect();
+        assert!(
+            pane.contains("project") && pane.contains("example-dev-1a2b"),
+            "{pane}"
+        );
+    }
+
+    // An account whose config names no project prints no row for it, the same
+    // silence the header keeps rather than a label over a blank
+    #[test]
+    fn details_drop_the_project_row_when_the_config_has_none() {
+        let app = columns_app();
+        let buffer = screen(&app, 160, 30);
+        let text: String = (0..buffer.area.height)
+            .flat_map(|y| row_chars(&buffer, y))
+            .collect();
+        assert!(!text.contains("project"), "{text}");
     }
 
     // The name row must not be the reason `started by` is off the pane, for a
@@ -2559,5 +2854,318 @@ mod tests {
         assert_eq!(keys(&mut app, ";"), None);
         assert_eq!(app.account, "demo");
         assert_eq!(app.entries.len(), demo_entries);
+    }
+
+    // Every dialog and picker with the longest text it carries, so a size that
+    // clips one shows. Each phrase is what a reader needs to see whole.
+    fn dialog_cases() -> Vec<(&'static str, App, Vec<&'static str>)> {
+        let base = || {
+            let mut app = app_with_two();
+            app.instances = (0..12)
+                .map(|i| InstanceChoice {
+                    name: format!("sample-instance-{i:02}"),
+                    zone: "europe-west1-b".to_string(),
+                })
+                .collect();
+            app.domains = (0..6).map(|i| format!("svc{i}.example.test")).collect();
+            app
+        };
+        let prompt = |mode: InputMode, input: &str, words: Vec<&'static str>| {
+            let mut app = base();
+            app.input_mode = mode;
+            app.input = input.to_string();
+            (app, words)
+        };
+        let mut cases = Vec::new();
+        let mut add = |name, (app, words): (App, Vec<&'static str>)| cases.push((name, app, words));
+
+        let mut app = base();
+        app.input_mode = InputMode::ChooseMode;
+        add(
+            "choose",
+            (
+                app,
+                vec![
+                    "Access - forward a remote port to localhost over IAP",
+                    "Public - publish a local service at an HTTPS URL",
+                    "Esc to cancel",
+                ],
+            ),
+        );
+        let hint = "Enter to continue, Esc to cancel";
+        add(
+            "name",
+            prompt(
+                InputMode::AddName,
+                "sample-name",
+                vec!["Name:", "sample-name_", hint],
+            ),
+        );
+        add(
+            "host",
+            prompt(
+                InputMode::AddJumpHost,
+                "10.0.0.10",
+                vec![
+                    "Host it reaches (Enter for the instance itself):",
+                    "10.0.0.10_",
+                    hint,
+                ],
+            ),
+        );
+        add(
+            "local port",
+            prompt(
+                InputMode::AddLocalPort,
+                "15000",
+                vec!["Local port (Enter keeps the suggestion):", "15000_", hint],
+            ),
+        );
+        add(
+            "target",
+            prompt(
+                InputMode::AddLocalTarget,
+                "localhost:3000",
+                vec![
+                    "Local target (e.g. localhost:3000):",
+                    "localhost:3000_",
+                    hint,
+                ],
+            ),
+        );
+        add(
+            "edit",
+            prompt(
+                InputMode::EditTarget,
+                "10.0.0.10:443",
+                vec!["New value:", "10.0.0.10:443_", hint],
+            ),
+        );
+        let mut app = base();
+        app.input_mode = InputMode::Confirm;
+        app.confirm_message = Some("Delete sample-platform-redis-session? (y/n)".to_string());
+        add(
+            "confirm",
+            (app, vec!["Delete sample-platform-redis-session? (y/n)"]),
+        );
+        let mut app = base();
+        app.input_mode = InputMode::AddInstance;
+        app.instance_selected = 5;
+        add(
+            "instances",
+            (
+                app,
+                vec!["Instance (type to filter):", "6/12", "sample-instance-05"],
+            ),
+        );
+        let mut app = base();
+        app.input_mode = InputMode::AddDomain;
+        app.domain_selected = 3;
+        add(
+            "domains",
+            (app, vec!["Domain:", "4/6", "svc3.example.test"]),
+        );
+        cases
+    }
+
+    // Where the dialog's frame is on the screen, found by its corners: the panes
+    // behind it use rounded ones. None when any corner is missing, which is how a
+    // dialog clipped by the terminal's edge shows.
+    fn dialog_box(buffer: &ratatui::buffer::Buffer) -> Option<(u16, u16, u16, u16)> {
+        let at = |x: u16, y: u16| buffer[(x, y)].symbol().to_string();
+        let (w, h) = (buffer.area.width, buffer.area.height);
+        let (x0, y0) =
+            (0..h).find_map(|y| (0..w).find(|x| at(*x, y) == "\u{250c}").map(|x| (x, y)))?;
+        let x1 = (x0 + 1..w).find(|x| at(*x, y0) == "\u{2510}")?;
+        let y1 = (y0 + 1..h).find(|y| at(x0, *y) == "\u{2514}")?;
+        (at(x1, y1) == "\u{2518}").then_some((x0, y0, x1, y1))
+    }
+
+    // What the dialog says, rows joined and runs of blanks collapsed, so a phrase
+    // that wraps still reads as the phrase
+    fn dialog_text(buffer: &ratatui::buffer::Buffer) -> String {
+        let (x0, y0, x1, y1) = dialog_box(buffer).expect("a dialog on screen");
+        let rows: Vec<String> = (y0 + 1..y1)
+            .map(|y| {
+                (x0 + 1..x1)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect()
+            })
+            .collect();
+        rows.join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn dialog_case(name: &str) -> (App, Vec<&'static str>) {
+        let (_, app, words) = dialog_cases()
+            .into_iter()
+            .find(|(n, _, _)| *n == name)
+            .unwrap_or_else(|| panic!("no dialog case {name}"));
+        (app, words)
+    }
+
+    // The cancel hint was the row the dialog's height cut: a quarter of 24 rows
+    // is six, a frame and four rows of text, for a dialog that needs five. The
+    // one line that says how to get out of a prompt was off screen at 80x24.
+    #[test]
+    fn a_prompt_shows_how_to_cancel_at_the_sizes_a_terminal_starts_at() {
+        for (name, width, height) in [("host", 80, 24), ("name", 60, 24), ("edit", 80, 24)] {
+            let (app, _) = dialog_case(name);
+            let text = dialog_text(&screen(&app, width, height));
+            assert!(
+                text.contains("Esc to cancel"),
+                "{name} {width}x{height}: {text}"
+            );
+        }
+    }
+
+    // `Host it reaches (Enter for the instance itself):` is 48 cells and the
+    // dialog was 60 percent of the width, so the end of the question, the part
+    // that says what Enter does, was cut at every width under 83.
+    #[test]
+    fn a_long_prompt_wraps_inside_the_dialog_instead_of_being_clipped() {
+        for (width, height) in [(40, 12), (48, 20), (60, 24)] {
+            let (app, _) = dialog_case("host");
+            let text = dialog_text(&screen(&app, width, height));
+            assert!(
+                text.contains("Host it reaches (Enter for the instance itself):"),
+                "{width}x{height}: {text}"
+            );
+        }
+    }
+
+    // The cursor sits at the end of what was typed; a value longer than the
+    // dialog used to push it out of sight and leave the head on screen
+    #[test]
+    fn a_long_value_keeps_the_end_of_it_and_the_cursor_on_screen() {
+        let (mut app, _) = dialog_case("name");
+        app.input = format!("{}-tail", "x".repeat(60));
+        for (width, height) in [(40, 12), (60, 24), (120, 40)] {
+            let text = dialog_text(&screen(&app, width, height));
+            assert!(text.contains("-tail_"), "{width}x{height}: {text}");
+        }
+    }
+
+    // Two options of fifty cells each, in a dialog that was 60 percent wide
+    #[test]
+    fn the_mode_dialog_wraps_its_options_and_keeps_its_cancel_row() {
+        for (width, height) in [(40, 12), (48, 20), (60, 24)] {
+            let (app, words) = dialog_case("choose");
+            let text = dialog_text(&screen(&app, width, height));
+            for phrase in words {
+                assert!(
+                    text.contains(phrase),
+                    "{width}x{height}: {phrase:?} in {text}"
+                );
+            }
+        }
+    }
+
+    // Half of 48 columns is 24, and the question is 43 cells with its answer keys
+    #[test]
+    fn the_delete_question_is_asked_whole_at_the_widths_it_was_clipped() {
+        for (width, height) in [(40, 12), (48, 20)] {
+            let (app, words) = dialog_case("confirm");
+            let text = dialog_text(&screen(&app, width, height));
+            assert!(text.contains(words[0]), "{width}x{height}: {text}");
+        }
+    }
+
+    // The prompt line carries the position counter, and a prompt wider than the
+    // dialog pushed the counter off the end; at 20x8 the header took the whole
+    // frame and not one row of the list was left, so the selection was invisible
+    #[test]
+    fn a_picker_keeps_its_counter_and_always_shows_the_selected_row() {
+        let (app, words) = dialog_case("instances");
+        let text = dialog_text(&screen(&app, 40, 12));
+        for phrase in &words {
+            assert!(text.contains(phrase), "40x12: {phrase:?} in {text}");
+        }
+        for name in ["instances", "domains"] {
+            let (app, _) = dialog_case(name);
+            for (width, height) in [(20, 8), (10, 4)] {
+                let buffer = screen(&app, width, height);
+                let (x0, y0, x1, y1) = dialog_box(&buffer)
+                    .unwrap_or_else(|| panic!("{name} {width}x{height}: no frame"));
+                let selected = (y0..=y1).any(|y| {
+                    (x0..=x1).any(|x| {
+                        buffer[(x, y)].fg == theme::ACCENT
+                            && buffer[(x, y)]
+                                .modifier
+                                .contains(ratatui::style::Modifier::BOLD)
+                            && y > y0
+                            && y < y1
+                            && x > x0
+                            && x < x1
+                    })
+                });
+                assert!(
+                    selected,
+                    "{name} {width}x{height}: no selected row in the frame"
+                );
+            }
+        }
+    }
+
+    // Whatever the terminal, a dialog is a box inside it with a row to draw in;
+    // `TestBackend` clips what overflows, so this reads the rectangle itself
+    #[test]
+    fn a_dialog_is_never_laid_out_outside_the_terminal() {
+        for width in 1..=70u16 {
+            for height in 1..=40u16 {
+                let screen = ratatui::layout::Rect::new(0, 0, width, height);
+                for (want_w, want_h) in [(0, 0), (30, 5), (200, 100), (u16::MAX, u16::MAX)] {
+                    let r = ui::dialog_rect(screen, want_w, want_h);
+                    assert!(
+                        r.x + r.width <= width && r.y + r.height <= height,
+                        "{width}x{height} want {want_w}x{want_h}: {r:?}"
+                    );
+                    assert!(
+                        r.width <= want_w.max(width.min(6)),
+                        "{width}x{height}: {r:?}"
+                    );
+                    assert!(r.height >= height.min(3), "{width}x{height}: {r:?}");
+                }
+            }
+        }
+    }
+
+    // The matrix: every dialog and picker at every size draws without panicking,
+    // keeps its whole frame on the screen from 10x4 up, and from 40x12 up says
+    // everything it has to say
+    #[test]
+    fn every_dialog_and_picker_fits_every_terminal_size() {
+        let sizes = [
+            (1, 1),
+            (10, 4),
+            (20, 8),
+            (40, 12),
+            (48, 20),
+            (60, 24),
+            (80, 24),
+            (120, 40),
+        ];
+        for (name, app, words) in dialog_cases() {
+            for (width, height) in sizes {
+                let buffer = screen(&app, width, height);
+                if width < 10 || height < 4 {
+                    continue;
+                }
+                let (x0, y0, x1, y1) = dialog_box(&buffer)
+                    .unwrap_or_else(|| panic!("{name} {width}x{height}: the frame is clipped"));
+                assert!(x1 < width && y1 < height && x0 <= x1 && y0 <= y1);
+                if width >= 40 && height >= 12 {
+                    let text = dialog_text(&buffer);
+                    for phrase in &words {
+                        assert!(
+                            text.contains(phrase),
+                            "{name} {width}x{height}: {phrase:?} in {text}"
+                        );
+                    }
+                }
+            }
+        }
     }
 }
