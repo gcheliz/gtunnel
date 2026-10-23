@@ -1,5 +1,5 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Sparkline, Wrap,
@@ -7,11 +7,68 @@ use ratatui::widgets::{
 use ratatui::Frame;
 
 use super::app::{App, InputMode, TunnelMode};
+use super::theme;
 use crate::probe::{HealthStatus, LB_WINDOW_MINUTES};
 use crate::state::{TunnelSpec, TunnelStatus};
 use crate::tunnel::diagnose_log_line;
 
 pub const LOG_LINES: usize = 200;
+
+/// Three rows of logo and subtitle, with no border: the panels below carry
+/// enough lines already.
+pub const HEADER_HEIGHT_FULL: u16 = 3;
+/// One row, for a terminal too narrow to hold the logo without breaking it.
+pub const HEADER_HEIGHT_COMPACT: u16 = 1;
+/// Below this the block letters wrap mid-glyph, which reads worse than no logo.
+const HEADER_MIN_WIDTH: u16 = 60;
+
+// Half-block characters, so the name reads as one object at two rows high
+// without needing a font that has box drawing
+const LOGO: [&str; 2] = ["▛▀▖ ▜▘  ▌ ▌ ▛▀▖ ▛▀▖ ▛▀▘ ▌  ", "▙▄▌ ▐▖  ▙▄▌ ▌ ▌ ▌ ▌ ▙▄▖ ▙▄▖"];
+
+/// The logo, the subtitle and the account, or one line of the same facts when
+/// the terminal is too narrow for the logo to survive.
+pub fn header_lines(width: u16, account: &str) -> Vec<Line<'static>> {
+    if width < HEADER_MIN_WIDTH {
+        return vec![Line::from(vec![
+            Span::styled(
+                "gtunnel",
+                Style::default()
+                    .fg(theme::ACCENT)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!("  {account}"), Style::default().fg(theme::MUTED)),
+        ])];
+    }
+    vec![
+        Line::from(vec![
+            Span::styled(LOGO[0], Style::default().fg(theme::ACCENT)),
+            Span::styled(
+                "  IAP tunnel manager",
+                Style::default()
+                    .fg(theme::MUTED)
+                    .add_modifier(Modifier::DIM),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(LOGO[1], Style::default().fg(theme::ACCENT)),
+            Span::styled(
+                format!("  account {account}"),
+                Style::default().fg(theme::MUTED),
+            ),
+        ]),
+        Line::raw(""),
+    ]
+}
+
+/// How many rows the header takes at this width.
+pub fn header_height(width: u16) -> u16 {
+    if width < HEADER_MIN_WIDTH {
+        HEADER_HEIGHT_COMPACT
+    } else {
+        HEADER_HEIGHT_FULL
+    }
+}
 
 const HELP_BAR: &str =
     " s start  S stop  R restart  d delete  a add  e edit  A auto  c copy  o open  L clear log  ; account  r refresh  ? help  q quit";
@@ -25,26 +82,41 @@ fn panel(title: &str) -> Block<'_> {
 
 fn status_style(status: TunnelStatus) -> Style {
     match status {
-        TunnelStatus::Running => Style::default().fg(Color::Green),
-        TunnelStatus::Stopped => Style::default().fg(Color::DarkGray),
-        TunnelStatus::Error => Style::default().fg(Color::Red),
+        TunnelStatus::Running => Style::default().fg(theme::OK),
+        TunnelStatus::Stopped => Style::default().fg(theme::MUTED),
+        TunnelStatus::Error => Style::default().fg(theme::BAD),
     }
 }
 
 pub fn render(f: &mut Frame, app: &App) {
+    // A terminal short enough that the header would cost the list its last row
+    // keeps the list: the header says what the app is, the list is the app
+    let header_height = if f.area().height >= 16 {
+        header_height(f.area().width)
+    } else {
+        0
+    };
     let main = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(header_height),
             Constraint::Min(0),
             Constraint::Length(1),
             Constraint::Length(1),
         ])
         .split(f.area());
 
+    if header_height > 0 {
+        f.render_widget(
+            Paragraph::new(header_lines(f.area().width, &app.account)),
+            main[0],
+        );
+    }
+
     let content = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(46), Constraint::Percentage(54)])
-        .split(main[0]);
+        .split(main[1]);
 
     render_tunnels(f, app, content[0]);
 
@@ -70,8 +142,8 @@ pub fn render(f: &mut Frame, app: &App) {
         render_metrics(f, app, right[2]);
     }
 
-    render_status_line(f, app, main[1]);
-    render_help_bar(f, main[2]);
+    render_status_line(f, app, main[2]);
+    render_help_bar(f, main[3]);
 
     match app.input_mode {
         InputMode::Normal => {}
@@ -109,24 +181,24 @@ fn render_tunnels(f: &mut Frame, app: &App, area: Rect) {
                 ),
                 Span::styled(
                     format!("{:<7}", entry.mode()),
-                    Style::default().fg(Color::Cyan),
+                    Style::default().fg(theme::ACCENT),
                 ),
                 Span::raw(entry.url()),
             ];
             if entry.tunnel.auto_start {
-                spans.push(Span::styled(" ⟳", Style::default().fg(Color::Blue)));
+                spans.push(Span::styled(" ⟳", Style::default().fg(theme::FLAG)));
             }
             if entry.health == HealthStatus::Unhealthy {
-                spans.push(Span::styled(" ⚠", Style::default().fg(Color::Yellow)));
+                spans.push(Span::styled(" ⚠", Style::default().fg(theme::WARN)));
             }
             if let Some(tag) = entry.tag() {
                 spans.push(Span::styled(
                     format!(" {tag}"),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(theme::MUTED),
                 ));
             }
             let style = if i == app.selected {
-                Style::default().bg(Color::Indexed(236))
+                Style::default().bg(theme::SELECTED_BG)
             } else {
                 Style::default()
             };
@@ -229,7 +301,7 @@ fn access_zone(target: &crate::state::AccessTarget) -> String {
 
 fn detail<'a>(label: &'a str, value: &str) -> Line<'a> {
     Line::from(vec![
-        Span::styled(format!("{label:<11}"), Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("{label:<11}"), Style::default().fg(theme::MUTED)),
         Span::raw(value.to_string()),
     ])
 }
@@ -275,7 +347,7 @@ fn render_logs(f: &mut Frame, app: &App, area: Rect) {
         if let Some(hint) = diagnose_log_line(&text) {
             annotated.push(Line::styled(
                 format!("  {hint}"),
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(theme::WARN),
             ));
         }
     }
@@ -284,7 +356,7 @@ fn render_logs(f: &mut Frame, app: &App, area: Rect) {
         if let Some(entry) = app.selected_entry() {
             annotated.push(Line::styled(
                 empty_log_note(&entry.tunnel.spec, entry.status),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme::MUTED),
             ));
         }
     }
@@ -386,7 +458,7 @@ fn render_metrics(f: &mut Frame, app: &App, area: Rect) {
             field("Peak"),
             Span::styled(
                 format_latency(std::time::Duration::from_micros(entry.history.peak())),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme::MUTED),
             ),
         ]));
     }
@@ -402,7 +474,7 @@ fn render_metrics(f: &mut Frame, app: &App, area: Rect) {
         f.render_widget(
             Sparkline::default()
                 .data(sparkline_slice(&samples, chunks[1].width))
-                .style(Style::default().fg(Color::Cyan)),
+                .style(Style::default().fg(theme::ACCENT)),
             chunks[1],
         );
     }
@@ -420,7 +492,7 @@ pub fn format_latency(rtt: std::time::Duration) -> String {
 }
 
 fn field(label: &str) -> Span<'static> {
-    Span::styled(format!("{label}: "), Style::default().fg(Color::DarkGray))
+    Span::styled(format!("{label}: "), Style::default().fg(theme::MUTED))
 }
 
 fn format_uptime(up: std::time::Duration) -> String {
@@ -438,19 +510,19 @@ fn format_uptime(up: std::time::Duration) -> String {
 fn render_status_line(f: &mut Frame, app: &App, area: Rect) {
     let mut spans = vec![Span::styled(
         format!(" {} ", app.account),
-        Style::default().fg(Color::Black).bg(Color::Cyan),
+        Style::default().fg(theme::ON_ACCENT).bg(theme::ACCENT),
     )];
     if app.spinner.is_running() {
         spans.push(Span::styled(
             format!(" {} ", app.spinner.frame()),
-            Style::default().fg(Color::Cyan),
+            Style::default().fg(theme::ACCENT),
         ));
         if let Some(message) = &app.spinner.message {
             spans.push(Span::raw(message.clone()));
         }
     } else if let Some(status) = &app.status {
         let style = if app.status_error {
-            Style::default().fg(Color::Red)
+            Style::default().fg(theme::BAD)
         } else {
             Style::default()
         };
@@ -461,7 +533,7 @@ fn render_status_line(f: &mut Frame, app: &App, area: Rect) {
 
 fn render_help_bar(f: &mut Frame, area: Rect) {
     f.render_widget(
-        Paragraph::new(Line::styled(HELP_BAR, Style::default().fg(Color::DarkGray))),
+        Paragraph::new(Line::styled(HELP_BAR, Style::default().fg(theme::MUTED))),
         area,
     );
 }
@@ -528,7 +600,7 @@ fn render_help_modal(f: &mut Frame) {
     let block = Block::default()
         .title(" Help - Press Esc to close ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(theme::ACCENT));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -537,13 +609,13 @@ fn render_help_modal(f: &mut Frame) {
         lines.push(Line::styled(
             *heading,
             Style::default()
-                .fg(Color::Yellow)
+                .fg(theme::WARN)
                 .add_modifier(Modifier::BOLD),
         ));
         lines.push(Line::raw(""));
         for (key, what) in *keys {
             lines.push(Line::from(vec![
-                Span::styled(format!("  {key:<9}"), Style::default().fg(Color::Cyan)),
+                Span::styled(format!("  {key:<9}"), Style::default().fg(theme::ACCENT)),
                 Span::raw(*what),
             ]));
         }
@@ -553,11 +625,11 @@ fn render_help_modal(f: &mut Frame) {
         format!(
             "  Metrics every 5s, health every 30s, load balancer traffic every 60s ({LB_WINDOW_MINUTES}m window)"
         ),
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(theme::MUTED),
     ));
     lines.push(Line::styled(
         "  A tunnel going unhealthy raises a system notification",
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(theme::MUTED),
     ));
     f.render_widget(Paragraph::new(lines), inner);
 }
@@ -568,7 +640,7 @@ fn render_dialog(f: &mut Frame, title: &str, lines: Vec<Line>, width: u16, heigh
     let block = Block::default()
         .title(format!(" {title} "))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(theme::ACCENT));
     let inner = block.inner(area);
     f.render_widget(block, area);
     f.render_widget(Paragraph::new(lines), inner);
@@ -580,15 +652,15 @@ fn render_choose_mode(f: &mut Frame) {
         "New tunnel",
         vec![
             Line::from(vec![
-                Span::styled("  1  ", Style::default().fg(Color::Cyan)),
+                Span::styled("  1  ", Style::default().fg(theme::ACCENT)),
                 Span::raw("Access - forward a remote port to localhost over IAP"),
             ]),
             Line::from(vec![
-                Span::styled("  2  ", Style::default().fg(Color::Cyan)),
+                Span::styled("  2  ", Style::default().fg(theme::ACCENT)),
                 Span::raw("Public - publish a local service at an HTTPS URL"),
             ]),
             Line::raw(""),
-            Line::styled("  Esc to cancel", Style::default().fg(Color::DarkGray)),
+            Line::styled("  Esc to cancel", Style::default().fg(theme::MUTED)),
         ],
         60,
         25,
@@ -609,16 +681,16 @@ fn render_prompt(f: &mut Frame, app: &App, mode: InputMode) {
         f,
         title,
         vec![
-            Line::styled(mode.prompt(), Style::default().fg(Color::Yellow)),
+            Line::styled(mode.prompt(), Style::default().fg(theme::WARN)),
             Line::raw(""),
             Line::from(vec![
                 Span::raw(format!("  {}", app.input)),
-                Span::styled("_", Style::default().fg(Color::Cyan)),
+                Span::styled("_", Style::default().fg(theme::ACCENT)),
             ]),
             Line::raw(""),
             Line::styled(
                 "  Enter to continue, Esc to cancel",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme::MUTED),
             ),
         ],
         60,
@@ -636,19 +708,19 @@ fn picker_header<'a>(
     selected: usize,
     total: usize,
 ) -> Vec<Line<'a>> {
-    let mut head = vec![Span::styled(prompt, Style::default().fg(Color::Yellow))];
+    let mut head = vec![Span::styled(prompt, Style::default().fg(theme::WARN))];
     if total > 0 {
         // Says how far down a list that does not fit the selection is
         head.push(Span::styled(
             format!("  {}/{}", selected.min(total - 1) + 1, total),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::MUTED),
         ));
     }
     vec![
         Line::from(head),
         Line::from(vec![
             Span::raw(format!("  {filter}")),
-            Span::styled("_", Style::default().fg(Color::Cyan)),
+            Span::styled("_", Style::default().fg(theme::ACCENT)),
         ]),
         Line::raw(""),
     ]
@@ -658,7 +730,7 @@ fn picker_rows<'a>(rows: Vec<String>, selected: usize) -> Vec<Line<'a>> {
     if rows.is_empty() {
         return vec![Line::styled(
             "  nothing matches",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::MUTED),
         )];
     }
     rows.into_iter()
@@ -667,7 +739,7 @@ fn picker_rows<'a>(rows: Vec<String>, selected: usize) -> Vec<Line<'a>> {
             let style = if i == selected {
                 Style::default()
                     .add_modifier(Modifier::BOLD)
-                    .fg(Color::Cyan)
+                    .fg(theme::ACCENT)
             } else {
                 Style::default()
             };
@@ -703,7 +775,7 @@ fn render_picker(f: &mut Frame, p: Picker) {
     let block = Block::default()
         .title(format!(" {title} "))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(theme::ACCENT));
     let inner = block.inner(area);
     f.render_widget(block, area);
 

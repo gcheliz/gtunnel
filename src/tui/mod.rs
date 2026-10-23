@@ -1,6 +1,7 @@
 pub mod app;
 pub mod demo;
 pub mod ops;
+pub mod theme;
 pub mod ui;
 
 use anyhow::Result;
@@ -554,6 +555,42 @@ mod tests {
         assert!(ui::empty_log_note(&jump, TunnelStatus::Running).contains("silent"));
         // Review Focus 5: a failed tunnel is not a quiet healthy one
         assert!(!ui::empty_log_note(&jump, TunnelStatus::Error).contains("silent"));
+    }
+
+    // A logo that wraps is worse than no logo: the glyphs break mid-row and the
+    // subtitle lands inside them
+    #[test]
+    fn the_header_steps_down_before_it_wraps() {
+        let wide = ui::header_lines(120, "dev");
+        assert_eq!(wide.len() as u16, ui::HEADER_HEIGHT_FULL);
+        for line in &wide {
+            assert!(
+                line.to_string().chars().count() <= 120,
+                "{}",
+                line.to_string()
+            );
+        }
+        let narrow = ui::header_lines(50, "dev");
+        assert_eq!(narrow.len() as u16, ui::HEADER_HEIGHT_COMPACT);
+        assert!(narrow[0].to_string().chars().count() <= 50);
+        assert!(narrow[0].to_string().contains("dev"), "{:?}", narrow[0]);
+    }
+
+    // Review Focus: the header must never be the reason the list has no rows
+    #[test]
+    fn a_short_terminal_keeps_a_visible_tunnel_row() {
+        let app = App::new_demo();
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 20)).expect("terminal");
+        terminal.draw(|f| ui::render(f, &app)).expect("draw");
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("localhost:15432"), "{text}");
     }
 
     // A sparkline draws one cell per sample, so 60 samples left two fifths of a
