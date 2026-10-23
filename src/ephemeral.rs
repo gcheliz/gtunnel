@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use rand::Rng;
+use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::process::Stdio;

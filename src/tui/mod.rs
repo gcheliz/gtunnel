@@ -512,6 +512,18 @@ mod tests {
         assert_eq!(ui::format_latency(Duration::from_millis(340)), "340 ms");
     }
 
+    // A gcloud error is a paragraph, not a line: clipped at the pane's width it
+    // loses the half that names the cause, so the pane wraps and the count of
+    // rows a wrapped line takes is what scrolls it to the newest one
+    #[test]
+    fn a_log_line_too_wide_for_the_pane_counts_as_the_rows_it_wraps_to() {
+        use ratatui::text::Line;
+        let lines = vec![Line::raw("0123456789"), Line::raw(""), Line::raw("abc")];
+        assert_eq!(ui::wrapped_rows(&lines, 4), 3 + 1 + 1);
+        // A pane with no width to speak of must not divide by zero
+        assert_eq!(ui::wrapped_rows(&lines, 0), 3);
+    }
+
     // A sparkline with no scale cannot be read: 60 bars of "some latency" say
     // nothing without the number the tallest one stands for
     #[test]

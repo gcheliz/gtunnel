@@ -1,3 +1,8 @@
+// The mirror of the waiver in systemd.rs: off macOS nothing reaches this
+// module but its own tests, and `clippy -D warnings` reads the binary target,
+// where a test is not a caller
+#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
+
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 use std::process::Stdio;

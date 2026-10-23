@@ -1,7 +1,9 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Sparkline};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Sparkline, Wrap,
+};
 use ratatui::Frame;
 
 use super::app::{App, InputMode, TunnelMode};
@@ -216,7 +218,35 @@ fn render_logs(f: &mut Frame, app: &App, area: Rect) {
         }
     }
 
-    f.render_widget(Paragraph::new(annotated).block(panel(&title)), area);
+    // The pane shows the newest lines, so it scrolls past everything that wraps
+    // above them; without this a Paragraph renders from its first line and the
+    // line the user is waiting for is the one cut off the bottom
+    let inner_width = area.width.saturating_sub(2);
+    let inner_height = area.height.saturating_sub(2);
+    let rows = wrapped_rows(&annotated, inner_width);
+    let scroll = rows.saturating_sub(inner_height);
+    f.render_widget(
+        Paragraph::new(annotated)
+            .block(panel(&title))
+            .wrap(Wrap { trim: false })
+            .scroll((scroll, 0)),
+        area,
+    );
+}
+
+/// How many rows these lines occupy once wrapped to `width`. An empty line
+/// still takes one, and a pane too narrow to hold anything takes one per line.
+pub fn wrapped_rows(lines: &[Line], width: u16) -> u16 {
+    if width == 0 {
+        return lines.len() as u16;
+    }
+    lines
+        .iter()
+        .map(|line| {
+            let chars = line.to_string().chars().count().max(1) as u16;
+            chars.div_ceil(width)
+        })
+        .sum()
 }
 
 fn render_metrics(f: &mut Frame, app: &App, area: Rect) {

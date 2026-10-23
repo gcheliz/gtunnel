@@ -181,6 +181,9 @@ pub mod testing {
     static CONFIG_DIR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     pub struct TempConfigDir {
+        // Held to keep the directory alive for the test's lifetime, and read
+        // only by `path`, whose single caller is the launchd lifecycle test
+        #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
         dir: tempfile::TempDir,
         _guard: std::sync::MutexGuard<'static, ()>,
     }
@@ -193,6 +196,7 @@ pub mod testing {
             Self { dir, _guard: guard }
         }
 
+        #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
         pub fn path(&self) -> &std::path::Path {
             self.dir.path()
         }

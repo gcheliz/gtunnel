@@ -182,7 +182,3 @@ pub async fn runtime_info(label: &str) -> RuntimeInfo {
         None => RuntimeInfo::default(),
     }
 }
-
-pub async fn is_running(label: &str) -> bool {
-    status(label).await == TunnelStatus::Running
-}

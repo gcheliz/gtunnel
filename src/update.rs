@@ -227,7 +227,7 @@ fn create_private_dir(path: &Path) -> Result<()> {
 // A private directory under `parent`, cleaned up when the guard drops. The
 // name is random because the staged binary is about to replace the running one
 fn staging_dir(parent: &Path) -> Result<TempDirGuard> {
-    use rand::Rng;
+    use rand::RngExt;
     for _ in 0..8 {
         let suffix: u64 = rand::rng().random();
         let path = parent.join(format!(".gtunnel-update-{suffix:016x}"));

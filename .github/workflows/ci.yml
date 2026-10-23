@@ -27,3 +27,20 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: Test
         run: cargo test
+
+  # A vulnerable crate reaches users as a signed-for binary `gtunnel update`
+  # installs, so the advisory check gates the same commits the tests do.
+  # cargo-audit is installed rather than wrapped in an action: one less
+  # third-party step with a token in scope, and the version is pinned here
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: audit
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked --version 0.22.2
+      - name: Audit dependencies
+        run: cargo audit --deny warnings

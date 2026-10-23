@@ -3,6 +3,10 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # The matrix is the only proof the four targets still compile, and a tag is
+  # an expensive place to find out they do not. This runs the build on demand;
+  # publishing stays tag-only, below.
+  workflow_dispatch:
 
 # The release job alone may write; a build step runs third-party actions and
 # must not be able to publish, and every action below is pinned to a commit
@@ -66,6 +70,9 @@ jobs:
 
   release:
     needs: build
+    # A dispatched run builds and stops there: it has no tag to name a release
+    # after, and `gtunnel update` must never meet one it cannot resolve
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
