@@ -626,7 +626,10 @@ mod tests {
             (run_record("gt-access", "dev", false), true),
             (run_record("gt-other", "prod", true), true),
         ];
-        assert_eq!(live_public_runs(&records, "dev"), vec!["gt-live".to_string()]);
+        assert_eq!(
+            live_public_runs(&records, "dev"),
+            vec!["gt-live".to_string()]
+        );
     }
 
     fn client(server: &MockServer) -> GcpClient {

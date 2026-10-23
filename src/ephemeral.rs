@@ -401,9 +401,9 @@ async fn teardown(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
     use crate::config::testing::TempConfigDir;
     use crate::state::AccessTarget;
+    use std::time::Duration;
 
     fn spec() -> TunnelSpec {
         TunnelSpec::Access {

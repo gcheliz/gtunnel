@@ -256,7 +256,11 @@ impl GcpClient {
                 let base = base.ok_or_else(|| {
                     anyhow!("Operation '{name}' has no selfLink and no API base to resolve it")
                 })?;
-                format!("{}/{}", base.trim_end_matches('/'), name.trim_start_matches('/'))
+                format!(
+                    "{}/{}",
+                    base.trim_end_matches('/'),
+                    name.trim_start_matches('/')
+                )
             }
             (None, None) => return Err(anyhow!("Operation has neither selfLink nor name")),
         };

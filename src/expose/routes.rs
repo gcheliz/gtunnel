@@ -438,7 +438,11 @@ mod tests {
             .await
             .expect("ensure route");
 
-        assert!(server.received_requests().await.unwrap_or_default().is_empty());
+        assert!(server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .is_empty());
     }
 
     // Review Focus 4: two gtunnel runs editing the url map at once get a 412,
