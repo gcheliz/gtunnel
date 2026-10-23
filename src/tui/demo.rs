@@ -162,6 +162,11 @@ impl App {
         let mut app = App::new("demo");
         app.demo = true;
         app.accounts = vec!["demo".to_string(), "staging".to_string()];
+        app.projects = [
+            ("demo".to_string(), "gtunnel-demo-000000".to_string()),
+            ("staging".to_string(), "gtunnel-staging-000000".to_string()),
+        ]
+        .into();
         app.load_demo_account();
         app.set_status("demo data: nothing here touches GCP");
         app

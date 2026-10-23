@@ -1,4 +1,5 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use std::collections::HashMap;
 use std::time::Duration;
 
 use crate::discovery::ExternalTunnel;
@@ -270,6 +271,9 @@ impl Spinner {
 pub struct App {
     pub account: String,
     pub accounts: Vec<String>,
+    // Keyed by account name so `;` swaps the subtitle in the same draw as the
+    // name, with no second piece of state to fall out of step
+    pub projects: HashMap<String, String>,
     pub entries: Vec<TunnelEntry>,
     pub selected: usize,
     pub logs: Vec<String>,
@@ -301,6 +305,7 @@ impl App {
         Self {
             account: initial_account.to_string(),
             accounts: vec![initial_account.to_string()],
+            projects: HashMap::new(),
             entries: Vec::new(),
             selected: 0,
             logs: Vec::new(),
@@ -322,6 +327,15 @@ impl App {
             force_refresh: false,
             demo: false,
         }
+    }
+
+    /// The GCP project behind the current account, empty when the config does
+    /// not say, so the header can drop the subtitle rather than print a blank.
+    pub fn project(&self) -> &str {
+        self.projects
+            .get(&self.account)
+            .map(String::as_str)
+            .unwrap_or("")
     }
 
     pub fn selected_entry(&self) -> Option<&TunnelEntry> {

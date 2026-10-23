@@ -14,11 +14,12 @@ use crate::tunnel::diagnose_log_line;
 
 pub const LOG_LINES: usize = 200;
 
-/// The lockup, the name beneath it, and the rule that closes the header off
-/// from the panes, straight under the account box: the rule is what keeps the
-/// header from reading as another pane, so no blank row is spent on it. One size at every width: the design draws the same eleven
-/// cells on a 1200-pixel board as on a narrow one, and a mark that grows with
-/// the terminal is a second mark, not a responsive one.
+/// A blank row, the lockup and the name beneath it, and the rule that closes
+/// the header off from the panes: the rule is what keeps the header from
+/// reading as another pane, so no blank row is spent between it and the name.
+/// One size at every width: the design draws the same eleven cells on a
+/// 1200-pixel board as on a narrow one, and a mark that grows with the
+/// terminal is a second mark, not a responsive one.
 pub const HEADER_HEIGHT_FULL: u16 = 4;
 /// One row, for a terminal too narrow to hold the lockup without breaking it.
 pub const HEADER_HEIGHT_COMPACT: u16 = 1;
@@ -74,8 +75,10 @@ const MARK_BANDS: [Color; MARK_WIDTH as usize] = [
     theme::LOGO_LINE,
 ];
 
-/// The label beside the account value. Its spaces are part of the field.
-const ACCOUNT_LABEL: &str = "ACCOUNT";
+/// The shortest a project id may be cut to, ellipsis included. Below it the
+/// id says nothing a reader could match against a console, so it is dropped
+/// whole instead of left as a stub.
+const PROJECT_FLOOR: usize = 4;
 
 /// Colour one row of art by cell index, merging consecutive cells that share a
 /// hue so a row costs a handful of spans rather than one per cell.
@@ -108,12 +111,6 @@ pub fn mark_spans(braille: bool, row: usize) -> Vec<Span<'static>> {
     band_spans(art[row], &MARK_BANDS)
 }
 
-/// How many cells the account field occupies: the label, the name, and the cell
-/// of padding on each side that makes it read as a field and not as more text.
-fn account_field_width(account: &str) -> usize {
-    account_box_width(account)
-}
-
 /// The rule that closes the header off from the panes, inset by the margin so
 /// it starts and ends where the panes below it do.
 fn rule_line(w: usize) -> Line<'static> {
@@ -139,10 +136,9 @@ const DIVIDER_WIDTH: usize = 5;
 /// The two caption lines, one per lockup row: the platform beside the mark and
 /// the subtitle beside the name. Two lines on a two-row lockup is the one
 /// pairing a cell grid can centre exactly.
-fn caption_spans(w: usize, mark_cells: usize, account: &str) -> Option<[Span<'static>; 2]> {
+fn caption_spans(w: usize, mark_cells: usize, field: usize) -> Option<[Span<'static>; 2]> {
     const PLATFORM: &str = "Google Cloud Platform";
     const SUBTITLE: &str = "IAP tunnel manager";
-    let field = account_field_width(account);
     let used = MARGIN + mark_cells + field + MARGIN;
 
     // The captions appear only when the longer one fits whole, behind the
@@ -155,38 +151,64 @@ fn caption_spans(w: usize, mark_cells: usize, account: &str) -> Option<[Span<'st
     })
 }
 
-/// How wide the account box is: two borders, the label, the value, and the
-/// air around them.
-fn account_box_width(account: &str) -> usize {
-    ACCOUNT_LABEL.chars().count() + account.chars().count() + 6
+/// The project id as it will be drawn: whole when it fits, cut with an
+/// ellipsis when it does not, and gone when even the floor will not fit.
+///
+/// The id is the part that gives way because it is the longer and the less
+/// urgent of the two lines: the account name is the state that changes what
+/// every key acts on, so it is never cut while a field can still be drawn.
+fn fit_project(project: &str, max_width: usize) -> String {
+    let room = max_width.saturating_sub(2);
+    let len = project.chars().count();
+    if len <= room {
+        return project.to_string();
+    }
+    if room < PROJECT_FLOOR {
+        return String::new();
+    }
+    let kept: String = project.chars().take(room - 1).collect();
+    format!("{kept}\u{2026}")
 }
 
-/// The three rows of the account box, top to bottom.
+/// How many cells the field occupies: the longer line and a cell of padding on
+/// each side, which is what makes it read as a field and not as more text.
+fn account_field_width(account: &str, project: &str, max_width: usize) -> usize {
+    let shown = fit_project(project, max_width);
+    account.chars().count().max(shown.chars().count()) + 2
+}
+
+/// One row of the field: the text, left-aligned, on the fill out to `width`.
+fn field_row(text: &str, width: usize, style: Style) -> Vec<Span<'static>> {
+    vec![Span::styled(
+        format!("{:<width$}", format!(" {text}")),
+        style,
+    )]
+}
+
+/// The two rows of the account field: the name, and the project id under it.
 ///
-/// The account is drawn as a box rather than a filled chip because it is the
-/// one control on the header: a block of solid colour reads as a status
-/// light, something the program is telling you, while an outline reads as a
-/// field — something you can change, which `;` does.
-fn account_box(account: &str) -> [Vec<Span<'static>>; 3] {
-    let w = account_box_width(account);
-    let edge = Style::default().fg(theme::MUTED);
-    let rule = "\u{2500}".repeat(w.saturating_sub(2));
-    [
-        vec![Span::styled(format!("\u{256d}{rule}\u{256e}"), edge)],
-        vec![
-            Span::styled("\u{2502} ", edge),
-            Span::styled(ACCOUNT_LABEL, Style::default().fg(theme::ACCENT)),
-            Span::raw("  "),
-            Span::styled(
-                account.to_string(),
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" \u{2502}", edge),
-        ],
-        vec![Span::styled(format!("\u{2570}{rule}\u{256f}"), edge)],
-    ]
+/// A filled block is enough to mark the field, so it carries no border and no
+/// `ACCOUNT` label: a border needs a row above and below it, which would grow
+/// the header to five rows, and the name is the only thing it could label. The
+/// fill is `SELECTED_BG`, the one background the theme already names, so the
+/// terminal's own palette still decides the shade. With no project the second
+/// row is empty and the field is one row tall, rather than a blank line on the
+/// fill.
+fn account_field(account: &str, project: &str, max_width: usize) -> [Vec<Span<'static>>; 2] {
+    let width = account_field_width(account, project, max_width);
+    let shown = fit_project(project, max_width);
+    let fill = Style::default().bg(theme::SELECTED_BG);
+    let name = field_row(
+        account,
+        width,
+        fill.fg(Color::White).add_modifier(Modifier::BOLD),
+    );
+    let second = if shown.is_empty() {
+        Vec::new()
+    } else {
+        field_row(&shown, width, fill.fg(theme::MUTED))
+    };
+    [name, second]
 }
 
 /// How many cells a row of spans occupies.
@@ -217,14 +239,19 @@ fn name_spans(row: &'static str, caption: Option<Span<'static>>) -> Vec<Span<'st
 /// right, and the rule that closes the header off.
 ///
 /// One size. What gives way as the terminal narrows is the subtitle, then the
-/// lockup itself: the account field has priority over both, because it is the
-/// one piece of state that changes what every other key acts on. When even it
-/// will not fit beside the mark, the header falls to a single line.
-pub fn header_lines(width: u16, _height: u16, account: &str) -> Vec<Line<'static>> {
+/// project id, then the lockup itself: the account name has priority over all
+/// of them, because it is the one piece of state that changes what every other
+/// key acts on. When even the name will not fit beside the mark, the header
+/// falls to a single line.
+pub fn header_lines(width: u16, _height: u16, account: &str, project: &str) -> Vec<Line<'static>> {
     let w = width as usize;
-    let field = account_field_width(account);
 
-    if w < MARGIN + MARK_WIDTH as usize + 1 + field + MARGIN {
+    // What the field may occupy once the mark, the cell between them and the
+    // two margins are paid for. The name alone is the narrowest field there is.
+    let room = w.saturating_sub(MARGIN + MARK_WIDTH as usize + 1 + MARGIN);
+    let narrowest = account.chars().count() + 2;
+
+    if room < narrowest {
         let name: String = "gtunnel".chars().take(w).collect();
         let mut spans = vec![Span::styled(
             name.clone(),
@@ -245,9 +272,11 @@ pub fn header_lines(width: u16, _height: u16, account: &str) -> Vec<Line<'static
         return vec![Line::from(spans)];
     }
 
+    let field = account_field_width(account, project, room);
+
     // The divider belongs to the captions: with no room for them there is
     // nothing for it to separate, and it would point at empty space.
-    let (platform, subtitle) = match caption_spans(w, MARK_WIDTH as usize, account) {
+    let (platform, subtitle) = match caption_spans(w, MARK_WIDTH as usize, field) {
         Some([platform, subtitle]) => (Some(platform), Some(subtitle)),
         None => (None, None),
     };
@@ -259,27 +288,35 @@ pub fn header_lines(width: u16, _height: u16, account: &str) -> Vec<Line<'static
         top.push(platform);
     }
 
-    // The box is three rows tall and the lockup is two, so it starts on the
-    // blank row above the mark: that centres it on the mark rather than on
-    // the word, and the mark is what the eye lands on first.
-    let boxw = account_box_width(account);
-    let mut rows = [Vec::new(), top, name_spans(NAME_ROW, subtitle)];
-    for (row, segment) in rows.iter_mut().zip(account_box(account)) {
-        let pad = w.saturating_sub(row_cells(row) + boxw + MARGIN);
+    // The field is two rows tall, the lockup is two, and they share rows 1 and
+    // 2. Row 0 stays blank so the mark has air above it, and the rule sits
+    // directly under the name on row 3.
+    let [name_row, project_row] = account_field(account, project, room);
+    let mut rows = [top, name_spans(NAME_ROW, subtitle)];
+    for (row, segment) in rows.iter_mut().zip([name_row, project_row]) {
+        if segment.is_empty() {
+            continue;
+        }
+        let pad = w.saturating_sub(row_cells(row) + field + MARGIN);
         row.push(Span::raw(" ".repeat(pad)));
         row.extend(segment);
         row.push(Span::raw(" ".repeat(MARGIN)));
     }
-    let [r0, r1, r2] = rows;
+    let [r1, r2] = rows;
 
-    vec![Line::from(r0), Line::from(r1), Line::from(r2), rule_line(w)]
+    vec![
+        Line::from(Vec::new()),
+        Line::from(r1),
+        Line::from(r2),
+        rule_line(w),
+    ]
 }
 
 /// How many rows the header takes here. Derived from `header_lines` rather than
 /// recomputed, because a layout that reserves a different number of rows than
 /// the header draws is a bug with no symptom until it clips.
-pub fn header_height(width: u16, height: u16, account: &str) -> u16 {
-    match header_lines(width, height, account).len() {
+pub fn header_height(width: u16, height: u16, account: &str, project: &str) -> u16 {
+    match header_lines(width, height, account, project).len() {
         1 => HEADER_HEIGHT_COMPACT,
         _ => HEADER_HEIGHT_FULL,
     }
@@ -449,7 +486,7 @@ pub fn render(f: &mut Frame, app: &App) {
     // A terminal short enough that the header would cost the list its last row
     // keeps the list: the header says what the app is, the list is the app
     let header_height = if f.area().height >= 16 {
-        header_height(f.area().width, f.area().height, &app.account)
+        header_height(f.area().width, f.area().height, &app.account, app.project())
     } else {
         0
     };
@@ -469,7 +506,12 @@ pub fn render(f: &mut Frame, app: &App) {
 
     if header_height > 0 {
         f.render_widget(
-            Paragraph::new(header_lines(f.area().width, f.area().height, &app.account)),
+            Paragraph::new(header_lines(
+                f.area().width,
+                f.area().height,
+                &app.account,
+                app.project(),
+            )),
             main[0],
         );
     }

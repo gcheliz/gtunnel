@@ -51,6 +51,10 @@ GCP relay in place of Cloudflare Tunnel.
   the list stacks above the other panes instead of sharing a row with them; the list
   scrolls with the selection; long Details values wrap; and Logs keeps a minimum height,
   so it is still on screen at 24 rows.
+- **Account field** - the header shows the active account and its GCP project id as a
+  two-row filled field, so the project a key will act on is on screen. `;` switches both
+  together. A long project id is cut with a `…` before the account name is ever shortened,
+  and an account with no project shows the name alone.
 - **Health notifications** - a tunnel going unhealthy raises a system notification.
 - **`gtunnel demo`** - the whole dashboard filled with synthetic data, touching no GCP
   project and no config file.

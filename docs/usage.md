@@ -80,6 +80,12 @@ data and never touches GCP or a config file.
 | `L` | Clear this tunnel's log | | |
 | `?` | Help | `q` | Quit |
 
+The header's right edge is the account field: the account name over its GCP project id, on
+the same two rows as the logo. `;` switches both at once. When the terminal narrows, the
+subtitle beside the logo goes first, then the project id is cut with a `…` (never below four
+cells, and dropped whole if there is no room for that), and the account name is the last to
+go. An account with no project shows the name alone.
+
 Unmanaged `gcloud start-iap-tunnel` processes started outside gtunnel appear in the list
 tagged `[not managed by gtunnel]`. Every action on them is refused except `m`, which takes
 them over.

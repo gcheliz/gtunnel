@@ -34,6 +34,11 @@ pub async fn run_tui(initial_account: Option<&str>) -> Result<()> {
 
     let mut app = App::new(&account);
     app.accounts = config.accounts.iter().map(|a| a.name.clone()).collect();
+    app.projects = config
+        .accounts
+        .iter()
+        .map(|a| (a.name.clone(), a.project.clone()))
+        .collect();
     set_relay(&mut app, &config);
 
     let (tx, mut rx) = mpsc::unbounded_channel::<Msg>();
@@ -672,12 +677,12 @@ mod tests {
     // acts on, so it is pinned to the corner where nothing else can push it.
     #[test]
     fn the_account_sits_flush_right_and_never_touches_the_logo() {
-        let lines = ui::header_lines(120, 24, "dev");
+        let lines = ui::header_lines(120, 24, "dev", "sample-dev-1");
         assert_eq!(lines.len() as u16, ui::HEADER_HEIGHT_FULL);
-        // The box is three rows tall and opens on the row above the mark, so
-        // it is centred on the lockup rather than hanging off its top.
+        // The field is two rows tall and shares the lockup's two rows, so row
+        // 0 is air: no box character, nothing at all.
         let top = line_text(&lines[0]);
-        assert!(top.trim_end().ends_with('\u{256e}'), "{top:?}");
+        assert!(top.trim().is_empty(), "{top:?}");
         // The two caption lines are as tall as the lockup: the platform on the
         // mark's row, the subtitle on the name's row, both in the same column.
         let platform = line_text(&lines[1]);
@@ -692,13 +697,17 @@ mod tests {
             col(&subtitle, "IAP tunnel manager"),
             "{platform:?} / {subtitle:?}"
         );
-        assert!(line_text(&lines[2]).trim_end().ends_with('\u{256f}'));
-        // the rule follows the box's closing row directly
+        // the rule follows the name row directly
         assert!(line_text(&lines[3]).starts_with(" \u{2500}"));
         let row0 = line_text(&lines[1]);
         // One cell of margin at each end, the same the footer and the panes
         // have, so the field stops a cell short of the edge rather than on it.
-        assert!(row0.ends_with(" ACCOUNT  dev \u{2502} "), "{row0:?}");
+        // The field is as wide as its longer line plus a cell each side.
+        assert!(
+            row0.ends_with(&format!(" dev{}", " ".repeat(11))),
+            "{row0:?}"
+        );
+        assert!(line_text(&lines[2]).ends_with(" sample-dev-1  "));
         assert!(row0.starts_with(' '), "{row0:?}");
         assert_eq!(row0.chars().count(), 120);
         // The captions are separated from the mark by a divider, not by air
@@ -726,10 +735,138 @@ mod tests {
         assert_eq!(rule.matches('\u{2500}').count(), 118);
     }
 
+    // The field's two rows are the lockup's two rows. If they drift apart by
+    // one the name sits level with the rule and the project id with the air.
+    #[test]
+    fn the_name_and_the_project_share_a_column_on_the_lockups_rows() {
+        for w in [120u16, 100, 80, 60] {
+            let lines = ui::header_lines(w, 24, "dev", "sample-dev-1");
+            let col = |row: usize, needle: &str| {
+                let t = line_text(&lines[row]);
+                t.find(needle).map(|i| t[..i].chars().count())
+            };
+            let name = col(1, "dev").unwrap_or_else(|| panic!("name on row 1 at {w}"));
+            // The mark's braille cells never contain letters, so the first
+            // "dev" on the row is the account.
+            assert_eq!(Some(name), col(2, "sample-dev-1"), "{w}");
+            assert_eq!(line_text(&lines[1]).chars().count(), w as usize);
+            assert_eq!(line_text(&lines[2]).chars().count(), w as usize);
+            assert!(line_text(&lines[3]).starts_with(" \u{2500}"));
+        }
+    }
+
+    // No border, no label: a box character on any row would mean the field has
+    // grown past two rows again.
+    #[test]
+    fn the_field_has_no_border_and_no_label() {
+        let lines = ui::header_lines(120, 24, "dev", "sample-dev-1");
+        let all: String = lines.iter().take(3).map(line_text).collect();
+        for banned in ['\u{256d}', '\u{256e}', '\u{2570}', '\u{256f}'] {
+            assert!(!all.contains(banned), "{all:?}");
+        }
+        assert!(!all.contains("ACCOUNT"), "{all:?}");
+    }
+
+    // The fill is what makes the two rows a field, and it must come from the
+    // theme rather than an exact hue.
+    #[test]
+    fn the_field_is_filled_with_a_theme_colour_and_the_name_is_bold() {
+        let lines = ui::header_lines(120, 24, "dev", "sample-dev-1");
+        let name = lines[1]
+            .spans
+            .iter()
+            .find(|s| s.content.contains("dev"))
+            .expect("name span");
+        assert_eq!(name.style.bg, Some(theme::SELECTED_BG));
+        assert!(name
+            .style
+            .add_modifier
+            .contains(ratatui::style::Modifier::BOLD));
+        let project = lines[2]
+            .spans
+            .iter()
+            .find(|s| s.content.contains("sample-dev-1"))
+            .expect("project span");
+        assert_eq!(project.style.bg, Some(theme::SELECTED_BG));
+        assert_eq!(project.style.fg, Some(theme::MUTED));
+    }
+
+    // Review Focus 2: cut, never wrapped, never into the lockup
+    #[test]
+    fn a_long_project_id_is_cut_with_an_ellipsis_and_the_row_fits() {
+        let project = "sample-platform-production-emea-0123456789";
+        assert_eq!(project.chars().count(), 42);
+        for w in [120u16, 80, 60, 55, 48] {
+            let lines = ui::header_lines(w, 24, "dev", project);
+            for line in &lines {
+                assert!(line_text(line).chars().count() <= w as usize, "{w}");
+            }
+            let row = line_text(&lines[2]);
+            // the field may take everything but the mark and the margins: 42
+            // cells need a 56-column terminal
+            if w >= 56 {
+                assert!(row.contains(project), "{w}: wide enough to show it whole");
+            } else {
+                assert!(row.contains('\u{2026}'), "{w}: {row:?}");
+                // the mark's row still starts with the whole mark
+                let mark: String = ui::mark_spans(true, 0)
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect();
+                assert!(line_text(&lines[1]).contains(&mark), "{w}");
+            }
+            assert!(line_text(&lines[1]).contains("dev"), "{w}");
+        }
+    }
+
+    // The name is cut last: at the narrowest width that still draws the
+    // lockup, the project is dropped before a letter of the name is, and it
+    // is never left as a stub shorter than the floor.
+    #[test]
+    fn the_project_goes_before_the_account_name_does() {
+        let project = "sample-dev-1";
+        // 1 + 11 + 1 + (len("dev") + 2) + 1 = 19: room for the name only
+        let lines = ui::header_lines(19, 24, "dev", project);
+        assert_eq!(lines.len() as u16, ui::HEADER_HEIGHT_FULL);
+        assert!(line_text(&lines[1]).contains("dev"));
+        assert!(!line_text(&lines[2]).contains("sam"), "{:?}", lines[2]);
+        // one cell wider and the id returns at the four-cell floor
+        let lines = ui::header_lines(20, 24, "dev", project);
+        assert!(
+            line_text(&lines[2]).contains(" sam\u{2026} "),
+            "{:?}",
+            lines[2]
+        );
+        // one cell fewer than the name needs and the single-line fallback
+        // takes over
+        assert_eq!(ui::header_lines(18, 24, "dev", project).len(), 1);
+    }
+
+    // An empty project is a field one row tall, not a field with a blank line
+    #[test]
+    fn an_account_with_no_project_shows_the_name_alone() {
+        let lines = ui::header_lines(120, 24, "dev", "");
+        assert_eq!(lines.len() as u16, ui::HEADER_HEIGHT_FULL);
+        assert!(line_text(&lines[1]).trim_end().ends_with("dev"));
+        assert!(
+            lines[2]
+                .spans
+                .iter()
+                .all(|s| s.style.bg != Some(theme::SELECTED_BG)),
+            "row 2 must carry no fill: {:?}",
+            lines[2]
+        );
+    }
+
     // Review Focus 3: an account name long enough to push the field off the edge
     #[test]
     fn a_long_account_name_does_not_overflow_the_row() {
-        let lines = ui::header_lines(60, 24, "platform-production-emea");
+        let lines = ui::header_lines(
+            60,
+            24,
+            "platform-production-emea",
+            "sample-production-emea-1",
+        );
         assert!(lines.iter().all(|l| line_text(l).chars().count() <= 60));
     }
 
@@ -737,10 +874,10 @@ mod tests {
     // a row rather than wrapping the mark mid-glyph
     #[test]
     fn a_terminal_too_narrow_for_the_lockup_gets_one_line() {
-        let lines = ui::header_lines(20, 24, "dev");
+        let lines = ui::header_lines(18, 24, "dev", "sample-dev-1");
         assert_eq!(lines.len(), 1);
-        assert_eq!(ui::header_height(20, 24, "dev"), 1);
-        assert!(line_text(&lines[0]).chars().count() <= 20);
+        assert_eq!(ui::header_height(18, 24, "dev", "sample-dev-1"), 1);
+        assert!(line_text(&lines[0]).chars().count() <= 18);
     }
 
     // The design draws the same eleven cells on a 1200-pixel board as on a
@@ -749,13 +886,16 @@ mod tests {
     #[test]
     fn the_lockup_is_one_size_at_every_width() {
         for (w, h) in [(80, 24), (100, 30), (160, 40), (200, 60)] {
-            let lines = ui::header_lines(w, h, "dev");
+            let lines = ui::header_lines(w, h, "dev", "sample-dev-1");
             assert_eq!(
                 lines.len() as u16,
                 ui::HEADER_HEIGHT_FULL,
                 "{w}x{h} must draw the mark, the name and the rule"
             );
-            assert_eq!(ui::header_height(w, h, "dev"), ui::HEADER_HEIGHT_FULL);
+            assert_eq!(
+                ui::header_height(w, h, "dev", "sample-dev-1"),
+                ui::HEADER_HEIGHT_FULL
+            );
             for row in 0..ui::MARK_ROWS {
                 let drawn: String = line_text(&lines[1 + row])
                     .chars()
@@ -884,7 +1024,7 @@ mod tests {
     // it still has to carry the account.
     #[test]
     fn the_header_steps_down_before_it_wraps() {
-        let wide = ui::header_lines(120, 24, "dev");
+        let wide = ui::header_lines(120, 24, "dev", "sample-dev-1");
         assert_eq!(wide.len() as u16, ui::HEADER_HEIGHT_FULL);
         for line in &wide {
             assert!(
@@ -893,7 +1033,7 @@ mod tests {
                 line_text(line)
             );
         }
-        let narrow = ui::header_lines(18, 24, "dev");
+        let narrow = ui::header_lines(18, 24, "dev", "sample-dev-1");
         assert_eq!(narrow.len() as u16, ui::HEADER_HEIGHT_COMPACT);
         assert!(line_text(&narrow[0]).chars().count() <= 18);
         assert!(line_text(&narrow[0]).contains("dev"), "{:?}", narrow[0]);
@@ -964,6 +1104,26 @@ mod tests {
         assert_eq!(app.account, "prod");
         app.handle_key(key(KeyCode::Char(';')));
         assert_eq!(app.account, "dev");
+    }
+
+    // The subtitle under the account name is wrong the moment it lags the name,
+    // so both must come from the same switch.
+    #[test]
+    fn semicolon_carries_the_project_with_the_account() {
+        let mut app = app_with_two();
+        app.accounts = vec!["dev".to_string(), "prod".to_string()];
+        app.projects = [
+            ("dev".to_string(), "sample-dev-1".to_string()),
+            ("prod".to_string(), "sample-prod-2".to_string()),
+        ]
+        .into();
+        app.account = "dev".to_string();
+        assert_eq!(app.project(), "sample-dev-1");
+        app.handle_key(key(KeyCode::Char(';')));
+        assert_eq!(app.account, "prod");
+        assert_eq!(app.project(), "sample-prod-2");
+        app.projects.clear();
+        assert_eq!(app.project(), "", "an unknown account has no project");
     }
 
     #[test]
