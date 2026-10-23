@@ -84,6 +84,16 @@ async fn main() -> Result<()> {
         Some(Commands::Start { name }) => commands::access::cmd_start(account, &name).await,
         Some(Commands::Stop { name }) => commands::access::cmd_stop(account, &name).await,
         Some(Commands::Restart { name }) => commands::access::cmd_restart(account, &name).await,
+        Some(Commands::Autostart { name, on, off }) => {
+            let wanted = if on {
+                Some(true)
+            } else if off {
+                Some(false)
+            } else {
+                None
+            };
+            commands::access::cmd_auto_start(account, &name, wanted).await
+        }
         Some(Commands::Logs {
             name,
             follow,

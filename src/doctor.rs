@@ -16,21 +16,62 @@ pub const TUNNEL_ROLE: &str = "roles/iap.tunnelResourceAccessor";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Finding {
     GcloudMissing,
-    GcloudAuth { account: String },
+    GcloudAuth {
+        account: String,
+    },
     NumpyMissing,
-    StaleState { tunnel: String },
-    MissingInstance { tunnel: String },
-    FirewallMissing { tunnel: String, command: String },
-    IamMissing { tunnel: String, role: &'static str },
-    PortConflict { tunnel: String, port: u16 },
-    DeadEphemeral { name: String },
-    RelayMissing { account: String },
-    CertNotActive { domain: String, state: String },
-    OrphanDns { zone: String, fqdn: String },
-    UnknownDns { zone: String, fqdn: String },
-    OrphanBackend { name: String },
-    OrphanHostRule { host: String },
-    OrphanNamedPort { name: String },
+    StaleState {
+        tunnel: String,
+    },
+    MissingInstance {
+        tunnel: String,
+    },
+    FirewallMissing {
+        tunnel: String,
+        command: String,
+    },
+    IamMissing {
+        tunnel: String,
+        role: &'static str,
+    },
+    PortConflict {
+        tunnel: String,
+        port: u16,
+    },
+    // tunnels.toml says one thing about starting at login, the service manager
+    // another. The record is what the user edits, so the record wins the fix.
+    AutoStartDrift {
+        tunnel: String,
+        record: bool,
+        installed: bool,
+    },
+    DeadEphemeral {
+        name: String,
+    },
+    RelayMissing {
+        account: String,
+    },
+    CertNotActive {
+        domain: String,
+        state: String,
+    },
+    OrphanDns {
+        zone: String,
+        fqdn: String,
+    },
+    UnknownDns {
+        zone: String,
+        fqdn: String,
+    },
+    OrphanBackend {
+        name: String,
+    },
+    OrphanHostRule {
+        host: String,
+    },
+    OrphanNamedPort {
+        name: String,
+    },
 }
 
 impl Finding {
@@ -40,6 +81,7 @@ impl Finding {
         matches!(
             self,
             Finding::StaleState { .. }
+                | Finding::AutoStartDrift { .. }
                 | Finding::DeadEphemeral { .. }
                 | Finding::OrphanDns { .. }
                 | Finding::OrphanBackend { .. }
@@ -75,6 +117,25 @@ impl Finding {
             }
             Finding::PortConflict { tunnel, port } => {
                 format!("Tunnel '{tunnel}' wants local port {port}, which is already in use")
+            }
+            Finding::AutoStartDrift {
+                tunnel,
+                record,
+                installed,
+            } => {
+                if *installed {
+                    format!(
+                        "Tunnel '{tunnel}' starts at login, but tunnels.toml has auto-start off. \
+                         Run `gtunnel autostart {tunnel} --off` to match the record, or \
+                         `--on` to keep it"
+                    )
+                } else {
+                    let _ = record;
+                    format!(
+                        "Tunnel '{tunnel}' has auto-start on in tunnels.toml but nothing starts it \
+                         at login. Run `gtunnel autostart {tunnel} --on` to install it"
+                    )
+                }
             }
             Finding::DeadEphemeral { name } => {
                 format!("Run record '{name}' belongs to a process that is gone")
@@ -382,6 +443,17 @@ async fn account_findings(_cfg: &Config, state: &TunnelState, acct: &Account) ->
             });
         }
 
+        // A tunnel the user set to start at login, or set not to, against what
+        // the service manager will actually do at the next login
+        let at_login = starts_at_login(&label);
+        if at_login != tunnel.auto_start {
+            findings.push(Finding::AutoStartDrift {
+                tunnel: tunnel.name.clone(),
+                record: tunnel.auto_start,
+                installed: at_login,
+            });
+        }
+
         match &tunnel.spec {
             TunnelSpec::Access {
                 target,
@@ -456,17 +528,44 @@ async fn account_findings(_cfg: &Config, state: &TunnelState, acct: &Account) ->
     findings
 }
 
+// On macOS the definition gtunnel loads and unloads lives in <config>/agents;
+// LaunchAgents holds a copy only while auto-start is on, so asking it whether a
+// service exists reported every stopped tunnel as stale state to be deleted.
+#[cfg(target_os = "macos")]
+fn service_installed(label: &str) -> bool {
+    match crate::daemon::launchd::plist_path(label) {
+        Ok(path) => path.exists(),
+        Err(_) => true,
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
 fn service_installed(label: &str) -> bool {
     let Some(home) = dirs::home_dir() else {
         return true;
     };
+    home.join(".config/systemd/user").join(label).exists()
+}
+
+// Whether something will start this tunnel at login, which on macOS is the
+// LaunchAgents copy and on Linux the systemd `enable` symlink
+fn starts_at_login(label: &str) -> bool {
     #[cfg(target_os = "macos")]
-    let path = home
-        .join("Library/LaunchAgents")
-        .join(format!("{label}.plist"));
+    {
+        crate::daemon::launchd::agent_path(label)
+            .map(|p| p.exists())
+            .unwrap_or(false)
+    }
     #[cfg(not(target_os = "macos"))]
-    let path = home.join(".config/systemd/user").join(label);
-    path.exists()
+    {
+        dirs::home_dir()
+            .map(|home| {
+                home.join(".config/systemd/user/default.target.wants")
+                    .join(label)
+                    .exists()
+            })
+            .unwrap_or(false)
+    }
 }
 
 async fn relay_findings(
@@ -602,7 +701,7 @@ pub async fn cmd_doctor(
     if !fix {
         let fixable = findings.iter().filter(|(_, f)| f.fixable()).count();
         if fixable > 0 {
-            println!("\n{fixable} of these can be removed with `gtunnel doctor --fix`");
+            println!("\n{fixable} of these can be fixed with `gtunnel doctor --fix`");
         }
         return Ok(());
     }
@@ -624,7 +723,8 @@ pub async fn cmd_doctor(
     let mut state = TunnelState::load()?;
     for (account_name, finding) in fixable {
         match apply_fix(&config, &mut state, &account_name, &finding).await {
-            Ok(()) => println!("  removed: {}", finding.describe()),
+            // Not every fix is a removal: auto-start drift is reconciled, not deleted
+            Ok(()) => println!("  fixed: {}", finding.describe()),
             Err(e) => eprintln!("  failed: {} ({e:#})", finding.describe()),
         }
     }
@@ -653,6 +753,16 @@ async fn apply_fix(
         Finding::StaleState { tunnel } => {
             state.remove_for_account(tunnel, account_name);
             Ok(())
+        }
+        // tunnels.toml is what the user edits, so the record is the truth the
+        // service manager is brought back to
+        Finding::AutoStartDrift { tunnel, .. } => {
+            let t = state
+                .find_for_account(tunnel, account_name)
+                .ok_or_else(|| anyhow::anyhow!("Tunnel '{tunnel}' is gone"))?
+                .clone();
+            let spec = crate::daemon::service_spec(config, &t)?;
+            crate::daemon::set_auto_start(&spec).await
         }
         Finding::DeadEphemeral { name } => {
             let path = crate::ephemeral::run_dir()?.join(format!("{account_name}-{name}.json"));
@@ -1020,6 +1130,50 @@ mod tests {
             "gcloud compute firewall-rules create gt-allow-iap-5432 --project=proj-1 \
              --network=default --direction=INGRESS --allow=tcp:5432 \
              --source-ranges=35.235.240.0/20"
+        );
+    }
+
+    // doctor reported "Nothing to report" while four tunnels were set to start at
+    // login, because it never compared the record against what launchd holds
+    #[test]
+    fn auto_start_drift_describes_both_sides() {
+        let on_disk = Finding::AutoStartDrift {
+            tunnel: "k8s-dev".to_string(),
+            record: false,
+            installed: true,
+        };
+        let text = on_disk.describe();
+        assert!(text.contains("k8s-dev"), "{text}");
+        assert!(text.contains("login"), "{text}");
+        assert!(on_disk.fixable());
+
+        let other_way = Finding::AutoStartDrift {
+            tunnel: "k8s-dev".to_string(),
+            record: true,
+            installed: false,
+        }
+        .describe();
+        assert!(other_way.contains("k8s-dev"), "{other_way}");
+        assert_ne!(other_way, text, "the two directions must not read alike");
+    }
+
+    // The canonical definition moved to <config>/agents when auto-start stopped
+    // meaning "loaded": looking in LaunchAgents reported every stopped tunnel
+    // with auto-start off as stale, and the fix for stale is to delete it
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_installed_service_is_found_by_its_own_definition_not_the_login_copy() {
+        let _temp = crate::config::testing::TempConfigDir::new();
+        let label = "com.gtunnel.test.doctor-installed";
+        assert!(!service_installed(label), "nothing is installed yet");
+
+        let path = crate::daemon::launchd::plist_path(label).expect("path");
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&path, "<plist/>").expect("write");
+        assert!(
+            service_installed(label),
+            "a definition in {} is an installed service",
+            path.display()
         );
     }
 

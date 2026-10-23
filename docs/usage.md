@@ -138,7 +138,7 @@ gtunnel run db my-vm:5432              # access, under a name
 gtunnel run --public 3000              # https://gt-<random>.<domain>
 ```
 
-## start, stop, restart, logs, list, delete
+## start, stop, restart, autostart, logs, list, delete
 
 ```
 $ gtunnel list
@@ -152,9 +152,26 @@ $ gtunnel logs nope
 Error: Tunnel 'nope' not found for account 'evidence'
 ```
 
+```
+$ gtunnel autostart db           # ask
+db auto-start is off
+$ gtunnel autostart db --on      # set
+db auto-start is on
+```
+
+`autostart` with no flag reports and changes nothing. `--on` and `--off` write the record and
+bring the service manager to it, which is the same thing `A` does in the TUI. When the two
+disagree — a plist left at login by an older gtunnel, say — `gtunnel doctor` reports the
+drift and `doctor --fix` reconciles the service manager to the record.
+
 `logs -f` follows. `restart` rewrites the service file before starting, so it also picks up
 an edited target. Starting a tunnel empties its log first, so what the pane shows belongs to
 the run in front of you; `L` in the TUI clears the selected tunnel's log without restarting it. `delete` removes the relay route first, then the service, then the record and the log.
+
+A tunnel's log opens with the tunnel's own name and target, and gtunnel adds a line of its
+own for every start, stop and clear. A tunnel reached through a jump host prints nothing
+else while it is healthy, so without those lines its log was empty whether it had just
+started, failed, or never existed at all.
 
 Starting a public tunnel re-creates its backend, host rule, named port and DNS record if any
 of them went missing, so `gtunnel restart <name>` is the fix for a tunnel that comes up
@@ -220,12 +237,13 @@ account evidence:
 
 | Flag | Effect |
 |---|---|
-| `--fix` | Remove what can be removed safely |
+| `--fix` | Fix what can be fixed safely |
 | `-y`, `--yes` | Skip the confirmation that `--fix` asks for |
 | `-a`, `--all` | Check every account, not only the selected one |
 
 `--fix` only ever removes stale local records, dead ephemeral records, and relay resources
-tagged `gtunnel:<account>` that no live tunnel claims. It re-checks that claim immediately
+tagged `gtunnel:<account>` that no live tunnel claims, and reconciles auto-start to what
+`tunnels.toml` says. It re-checks that claim immediately
 before each removal, so a tunnel started during the scan is left alone. Findings it cannot
 fix, such as a missing firewall rule, are printed with the exact command that fixes them.
 

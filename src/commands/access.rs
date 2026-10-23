@@ -222,6 +222,45 @@ pub async fn cmd_stop(account: Option<&str>, name: &str) -> Result<()> {
     Ok(())
 }
 
+// What `gtunnel autostart` should do: nothing when it was only asked, and
+// nothing when the record already says what was asked for
+fn auto_start_change(current: bool, wanted: Option<bool>) -> Option<bool> {
+    wanted.filter(|w| *w != current)
+}
+
+// The record is the side the user edits, so it changes first and the service
+// manager is brought to it
+fn set_record_auto_start(account: &str, name: &str, on: bool) -> Result<PersistentTunnel> {
+    let mut state = TunnelState::load()?;
+    let tunnel = state
+        .find_for_account_mut(name, account)
+        .with_context(|| format!("Tunnel '{name}' not found"))?;
+    tunnel.auto_start = on;
+    let updated = tunnel.clone();
+    state.save()?;
+    Ok(updated)
+}
+
+pub async fn cmd_auto_start(account: Option<&str>, name: &str, wanted: Option<bool>) -> Result<()> {
+    let (config, acct) = resolve(account)?;
+    let state = TunnelState::load()?;
+    let tunnel = find_tunnel(&state, name, &acct.name)?;
+
+    let Some(on) = auto_start_change(tunnel.auto_start, wanted) else {
+        println!(
+            "{name} auto-start is {}",
+            if tunnel.auto_start { "on" } else { "off" }
+        );
+        return Ok(());
+    };
+
+    let updated = set_record_auto_start(&acct.name, name, on)?;
+    let spec = daemon::service_spec(&config, &updated)?;
+    daemon::set_auto_start(&spec).await?;
+    println!("{name} auto-start is {}", if on { "on" } else { "off" });
+    Ok(())
+}
+
 pub async fn cmd_restart(account: Option<&str>, name: &str) -> Result<()> {
     let (_, acct) = resolve(account)?;
     let state = TunnelState::load()?;
@@ -412,6 +451,49 @@ mod tests {
         assert_eq!(
             parse_access_target("10.0.0.5:5432").expect("parse"),
             ("10.0.0.5".to_string(), 5432)
+        );
+    }
+
+    // `gtunnel autostart db` with no flag asks a question. It must not answer it
+    // by changing anything, least of all by loading a job into launchd.
+    #[test]
+    fn asking_without_a_flag_changes_nothing() {
+        assert_eq!(auto_start_change(true, None), None);
+        assert_eq!(auto_start_change(false, None), None);
+        assert_eq!(auto_start_change(false, Some(false)), None);
+        assert_eq!(auto_start_change(true, Some(true)), None);
+        assert_eq!(auto_start_change(false, Some(true)), Some(true));
+        assert_eq!(auto_start_change(true, Some(false)), Some(false));
+    }
+
+    #[test]
+    fn turning_auto_start_off_clears_the_record() {
+        let _temp = crate::config::testing::TempConfigDir::new();
+        let mut state = TunnelState::default();
+        state.tunnels.push(PersistentTunnel {
+            name: "db".to_string(),
+            account_name: "dev".to_string(),
+            auto_start: true,
+            spec: TunnelSpec::Access {
+                target: crate::state::AccessTarget::Instance {
+                    instance: "postgres-1".to_string(),
+                    zone: "europe-west1-b".to_string(),
+                },
+                remote_port: 5432,
+                local_port: 15432,
+            },
+        });
+        state.save().expect("save");
+
+        let updated = set_record_auto_start("dev", "db", false).expect("update");
+        assert!(!updated.auto_start);
+        let reloaded = TunnelState::load().expect("load");
+        assert!(
+            !reloaded
+                .find_for_account("db", "dev")
+                .expect("tunnel")
+                .auto_start,
+            "the record on disk is what the next doctor run reads"
         );
     }
 }

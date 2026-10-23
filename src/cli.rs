@@ -151,6 +151,18 @@ pub enum Commands {
         name: String,
     },
 
+    // Start a tunnel at login, or stop doing so
+    #[command(about = "Show or set whether a tunnel starts at login")]
+    Autostart {
+        // Tunnel name
+        #[arg(help = "Tunnel name")]
+        name: String,
+        #[arg(long, help = "Start this tunnel at login", conflicts_with = "off")]
+        on: bool,
+        #[arg(long, help = "Do not start this tunnel at login")]
+        off: bool,
+    },
+
     // Restart a tunnel (stop, rewrite the service, start)
     #[command(about = "Restart a tunnel (stop, rewrite the service, start)")]
     Restart {
