@@ -305,6 +305,15 @@ fn render_logs(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
+/// The newest `width` samples. A `Sparkline` draws one cell per sample and
+/// starts at the left edge, so a buffer shorter than the pane left the rest of
+/// it blank and the chart read as one that had stopped. The buffer is longer
+/// than any terminal instead, and the pane takes the tail it has room for.
+pub fn sparkline_slice(samples: &[u64], width: u16) -> &[u64] {
+    let width = width as usize;
+    &samples[samples.len().saturating_sub(width)..]
+}
+
 /// How many rows these lines occupy once wrapped to `width`. An empty line
 /// still takes one, and a pane too narrow to hold anything takes one per line.
 pub fn wrapped_rows(lines: &[Line], width: u16) -> u16 {
@@ -389,9 +398,10 @@ fn render_metrics(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(lines), chunks[0]);
 
     if !entry.history.is_empty() {
+        let samples = app.selected_sparkline();
         f.render_widget(
             Sparkline::default()
-                .data(app.selected_sparkline())
+                .data(sparkline_slice(&samples, chunks[1].width))
                 .style(Style::default().fg(Color::Cyan)),
             chunks[1],
         );

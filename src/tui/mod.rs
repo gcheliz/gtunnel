@@ -556,6 +556,23 @@ mod tests {
         assert!(!ui::empty_log_note(&jump, TunnelStatus::Error).contains("silent"));
     }
 
+    // A sparkline draws one cell per sample, so 60 samples left two fifths of a
+    // wide pane empty and the chart read as a chart that had stopped
+    #[test]
+    fn the_chart_uses_every_column_it_is_given() {
+        let samples: Vec<u64> = (0..240).collect();
+        let shown = ui::sparkline_slice(&samples, 100);
+        assert_eq!(shown.len(), 100);
+        assert_eq!(
+            shown.last(),
+            samples.last(),
+            "the newest sample must be drawn"
+        );
+        // Fewer samples than columns is the first minute, not an error
+        assert_eq!(ui::sparkline_slice(&samples[..10], 100).len(), 10);
+        assert!(ui::sparkline_slice(&samples, 0).is_empty());
+    }
+
     // A sparkline with no scale cannot be read: 60 bars of "some latency" say
     // nothing without the number the tallest one stands for
     #[test]

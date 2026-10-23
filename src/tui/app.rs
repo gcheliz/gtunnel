@@ -5,7 +5,9 @@ use crate::discovery::ExternalTunnel;
 use crate::probe::{HealthStatus, MetricsHistory, TunnelMetrics};
 use crate::state::{PersistentTunnel, TunnelSpec, TunnelStatus};
 
-pub const SPARKLINE_SAMPLES: usize = 60;
+// Longer than any terminal is wide: the pane draws the tail it has room for, so
+// a buffer sized to one guess at the width left the rest of the chart blank
+pub const SPARKLINE_SAMPLES: usize = 240;
 pub const METRICS_EVERY: Duration = Duration::from_secs(5);
 pub const HEALTH_EVERY: Duration = Duration::from_secs(30);
 pub const LB_EVERY: Duration = Duration::from_secs(60);
