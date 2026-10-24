@@ -14,6 +14,12 @@ use crate::state::{PersistentTunnel, TunnelSpec, TunnelStatus};
 // a buffer sized to one guess at the width left the rest of the chart blank
 pub const SPARKLINE_SAMPLES: usize = 240;
 pub const METRICS_EVERY: Duration = Duration::from_secs(5);
+// A connection count read once every five seconds lands between two requests
+// and reports an idle tunnel under real traffic, so the count is sampled on
+// its own clock and the pane reports the peak. Ten samples a render is as fine
+// as the reading is worth: one listing covers every tunnel, so the cost is two
+// short `lsof` runs a second however many tunnels are open.
+pub const SAMPLE_EVERY: Duration = Duration::from_millis(500);
 pub const HEALTH_EVERY: Duration = Duration::from_secs(30);
 pub const LB_EVERY: Duration = Duration::from_secs(60);
 pub const DISCOVERY_EVERY: Duration = Duration::from_secs(60);
@@ -105,11 +111,7 @@ impl TunnelEntry {
     }
 
     pub fn mode(&self) -> &'static str {
-        if self.tunnel.is_expose() {
-            "public"
-        } else {
-            "access"
-        }
+        self.tunnel.display_kind()
     }
 
     // The suffix that says a row is not an ordinary managed tunnel
@@ -484,6 +486,11 @@ pub struct App {
     // An editor drew over the alternate screen, so the terminal's idea of what
     // is on it is wrong: the loop clears it and redraws in full, then lowers this
     pub clear_screen: bool,
+    // The most clients the sampler has seen on each local port since the last
+    // metrics round, which is what that round reports and then clears. Keyed
+    // by port rather than by tunnel: the sampler reads ports, and a row whose
+    // tunnel has just been renamed or replaced is still the same socket
+    peaks: HashMap<u16, u64>,
 }
 
 impl App {
@@ -534,7 +541,23 @@ impl App {
             editor: refuse_editor,
             input_gate: Arc::new(InputGate::default()),
             clear_screen: false,
+            peaks: HashMap::new(),
         }
+    }
+
+    // One sample of every port at once. A port missing from a sample has no
+    // client at this instant, which says nothing about the window: only a
+    // larger reading moves a peak.
+    pub fn record_samples(&mut self, samples: HashMap<u16, u64>) {
+        for (port, seen) in samples {
+            let peak = self.peaks.entry(port).or_default();
+            *peak = (*peak).max(seen);
+        }
+    }
+
+    // The window ends when it is reported, so the next one starts from nothing
+    pub fn take_peaks(&mut self) -> HashMap<u16, u64> {
+        std::mem::take(&mut self.peaks)
     }
 
     /// The GCP project behind the current account, empty when the config does
@@ -1495,6 +1518,43 @@ pub fn edit_in_terminal(path: &Path) -> anyhow::Result<()> {
         anyhow::bail!("{program} exited with {status}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod peak_tests {
+    use super::*;
+
+    // A client that opens and closes between two renders is still traffic.
+    // The sampler reads far more often than the pane draws, and what the pane
+    // reports is the most any of those readings saw, per port
+    #[test]
+    fn a_peak_keeps_the_most_clients_any_sample_saw() {
+        let mut app = App::new("dev");
+        app.record_samples(HashMap::from([(8443u16, 1u64), (15432, 4)]));
+        app.record_samples(HashMap::from([(8443, 3)]));
+        app.record_samples(HashMap::from([(8443, 0), (15432, 1)]));
+        assert_eq!(
+            app.take_peaks(),
+            HashMap::from([(8443u16, 3u64), (15432, 4)]),
+            "an idle reading erased the traffic the one before it saw"
+        );
+    }
+
+    // The window is the gap between two metrics ticks, so taking it ends it:
+    // held, the rush of five minutes ago would still read as current
+    #[test]
+    fn taking_the_peaks_starts_the_next_window_empty() {
+        let mut app = App::new("dev");
+        app.record_samples(HashMap::from([(8443u16, 5u64)]));
+        assert_eq!(app.take_peaks(), HashMap::from([(8443u16, 5u64)]));
+        assert!(app.take_peaks().is_empty());
+        app.record_samples(HashMap::from([(8443, 1)]));
+        assert_eq!(
+            app.take_peaks(),
+            HashMap::from([(8443u16, 1u64)]),
+            "the window kept a count the traffic no longer supports"
+        );
+    }
 }
 
 #[cfg(test)]

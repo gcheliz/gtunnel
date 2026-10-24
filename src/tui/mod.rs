@@ -25,6 +25,9 @@ enum Msg {
     Entries(Vec<TunnelEntry>),
     EntriesFailed(String),
     Metrics(Vec<(String, crate::probe::TunnelMetrics)>),
+    // One reading of every local port's established connections, far more
+    // often than a metrics round, so a request shorter than a round is seen
+    Samples(std::collections::HashMap<u16, u64>),
     Health(Vec<(String, HealthStatus)>),
     Logs(String, Vec<String>),
     OpDone(OpResult),
@@ -134,6 +137,7 @@ fn spawn_ticker(tx: mpsc::UnboundedSender<Msg>) {
 struct Timers {
     entries: Instant,
     metrics: Instant,
+    sample: Instant,
     health: Instant,
     lb: Instant,
 }
@@ -145,6 +149,7 @@ impl Timers {
         Self {
             entries: past,
             metrics: past,
+            sample: past,
             health: past,
             lb: past,
         }
@@ -252,6 +257,7 @@ async fn event_loop(
                     }
                 }
             }
+            Msg::Samples(samples) => app.record_samples(samples),
             Msg::Health(results) => {
                 for (name, health) in results {
                     let Some(entry) = app.entries.iter_mut().find(|e| e.name() == name) else {
@@ -357,19 +363,22 @@ fn schedule(app: &mut App, timers: &mut Timers, tx: &mpsc::UnboundedSender<Msg>)
         });
     }
 
-    if timers.metrics.elapsed() >= app::METRICS_EVERY {
-        timers.metrics = Instant::now();
-        let include_lb = timers.lb.elapsed() >= app::LB_EVERY;
-        if include_lb {
-            timers.lb = Instant::now();
-        }
-        let targets = ops::metric_targets(&app.entries);
+    // Blocking: `lsof` is a process, and it runs ten times per metrics round
+    if timers.sample.elapsed() >= app::SAMPLE_EVERY && ports_worth_sampling(app) {
+        timers.sample = Instant::now();
+        let tx = tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let _ = tx.send(Msg::Samples(crate::probe::established_by_port()));
+        });
+    }
+
+    if let Some(round) = metrics_round(app, timers) {
         let tx = tx.clone();
         tokio::spawn(async move {
             let mut out = Vec::new();
-            for target in targets {
+            for target in round.targets {
                 let name = target.tunnel.name.clone();
-                if let Some(m) = ops::collect(&target, include_lb).await {
+                if let Some(m) = ops::collect(&target, round.include_lb, Some(&round.peaks)).await {
                     out.push((name, m));
                 }
             }
@@ -388,6 +397,47 @@ fn schedule(app: &mut App, timers: &mut Timers, tx: &mpsc::UnboundedSender<Msg>)
             let _ = tx.send(Msg::Health(results));
         });
     }
+}
+
+// Whether any port on screen can have clients at all. The sampler runs ten
+// times per metrics round, and a screen of stopped tunnels, or of public ones
+// that have no local port, is no reason to spawn `lsof` twice a second.
+fn ports_worth_sampling(app: &App) -> bool {
+    app.entries.iter().any(|e| {
+        e.status == crate::state::TunnelStatus::Running
+            && matches!(
+                e.tunnel.spec,
+                crate::state::TunnelSpec::Access { local_port, .. } if local_port != 0
+            )
+    })
+}
+
+// What one metrics round measures, and the sampler window it reports
+struct MetricsRound {
+    targets: Vec<ops::MetricTarget>,
+    include_lb: bool,
+    peaks: std::collections::HashMap<u16, u64>,
+}
+
+/// The round due now, or `None` when the clock has not come round yet.
+///
+/// Taking the peaks is what ends the sampler's window: `active` is the most
+/// clients seen since the last round, so a round that left them in place would
+/// report the same burst every five seconds until a larger one replaced it.
+fn metrics_round(app: &mut App, timers: &mut Timers) -> Option<MetricsRound> {
+    if timers.metrics.elapsed() < app::METRICS_EVERY {
+        return None;
+    }
+    timers.metrics = Instant::now();
+    let include_lb = timers.lb.elapsed() >= app::LB_EVERY;
+    if include_lb {
+        timers.lb = Instant::now();
+    }
+    Some(MetricsRound {
+        targets: ops::metric_targets(&app.entries),
+        include_lb,
+        peaks: app.take_peaks(),
+    })
 }
 
 /// The tunnels to probe this round, empty when the round is not due or has
@@ -490,6 +540,40 @@ mod tests {
             connection_change(Some(2), 2),
             None,
             "a line per poll is 17,280 a day that say nothing"
+        );
+    }
+
+    // The sampler spawns a process ten times per round, so it only runs while
+    // there is a port for the count to be about
+    #[test]
+    fn nothing_listening_means_nothing_to_sample() {
+        let mut app = app_with_two();
+        assert!(ports_worth_sampling(&app));
+        app.entries[0].status = TunnelStatus::Stopped;
+        assert!(
+            !ports_worth_sampling(&app),
+            "a stopped tunnel has no clients to count, and the expose row has no local port"
+        );
+    }
+
+    // What the round reports is the sampler's window, and reporting it ends
+    // it: carried over, a burst would be re-reported every five seconds until
+    // a larger one replaced it
+    #[test]
+    fn a_metrics_round_carries_the_peaks_and_starts_the_window_again() {
+        let mut app = app_with_two();
+        app.record_samples(std::collections::HashMap::from([(15432u16, 3u64)]));
+        let mut timers = Timers::due();
+
+        let round = metrics_round(&mut app, &mut timers).expect("every timer starts due");
+        assert_eq!(round.peaks.get(&15432).copied(), Some(3));
+        assert!(
+            app.take_peaks().is_empty(),
+            "the window still holds a count the round has already reported"
+        );
+        assert!(
+            metrics_round(&mut app, &mut timers).is_none(),
+            "the round did not reset its own clock"
         );
     }
 
@@ -2703,6 +2787,51 @@ mod tests {
             rows[4][mode_x..mode_x + 6].iter().collect::<String>(),
             "access"
         );
+    }
+
+    // Three access shapes reach three different kinds of thing, and an expose
+    // behind IAP is not reachable by the public at all. One word each, because
+    // the column is what a reader checks before trusting a URL
+    #[test]
+    fn the_mode_column_names_the_kind_of_tunnel_not_just_the_direction() {
+        let mut app = columns_app();
+        app.entries[0].tunnel.spec = TunnelSpec::Access {
+            target: crate::state::AccessTarget::Jump {
+                instance: "bastion".to_string(),
+                zone: "europe-west1-b".to_string(),
+                host: "10.0.0.10".to_string(),
+            },
+            remote_port: 443,
+            local_port: 8443,
+        };
+        app.entries[2].tunnel.spec = TunnelSpec::Access {
+            target: crate::state::AccessTarget::DestGroup {
+                host: "10.0.0.5".to_string(),
+                region: "europe-west1".to_string(),
+                group: "prod".to_string(),
+                network: "default".to_string(),
+            },
+            remote_port: 5432,
+            local_port: 15002,
+        };
+        if let TunnelSpec::Expose { private, .. } = &mut app.entries[1].tunnel.spec {
+            *private = true;
+        }
+
+        let buffer = screen(&app, 160, 30);
+        let (_, rows) = list_rows(&buffer, app.entries.len());
+        let mode_x = find(&rows[0], "MODE").unwrap();
+        let cell = |row: usize| -> String {
+            rows[row][mode_x..mode_x + 6]
+                .iter()
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        };
+        assert_eq!(cell(1), "jump");
+        assert_eq!(cell(2), "gated");
+        assert_eq!(cell(3), "group");
+        assert_eq!(cell(4), "access");
     }
 
     // The note that a process is not gtunnel's belongs where the URL would be:

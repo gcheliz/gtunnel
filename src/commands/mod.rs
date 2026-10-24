@@ -8,7 +8,7 @@ use std::io::Write;
 
 use crate::config::{load_config, Account, Config};
 use crate::daemon;
-use crate::state::{PersistentTunnel, TunnelSpec, TunnelState, TunnelStatus};
+use crate::state::{PersistentTunnel, TunnelState, TunnelStatus};
 
 // The narrowest each column is allowed to be. A column grows to fit its
 // widest value and never shrinks below this, so a listing of short names
@@ -45,10 +45,7 @@ impl ListRow {
         Self {
             status,
             name: t.name.clone(),
-            mode: match t.spec {
-                TunnelSpec::Access { .. } => "access",
-                TunnelSpec::Expose { .. } => "expose",
-            },
+            mode: t.display_kind(),
             url: t.display_url(),
             target: t.display_target(),
             note: None,
@@ -235,7 +232,7 @@ mod tests {
     fn list_row_marks_an_expose_tunnel() {
         let rows = vec![ListRow::from_tunnel(TunnelStatus::Stopped, &expose())];
         let row = rows[0].render(&ListLayout::fit(&rows));
-        assert!(row.contains("expose"), "{row}");
+        assert!(row.contains("public"), "{row}");
         assert!(row.contains("https://api.dev.example.com"), "{row}");
     }
 

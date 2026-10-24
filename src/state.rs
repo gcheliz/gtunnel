@@ -122,6 +122,23 @@ impl PersistentTunnel {
         }
     }
 
+    // What kind of tunnel this is, in one word of at most six characters, so
+    // the CLI's list and the TUI's MODE column name the same thing the same
+    // way. An expose behind IAP is "gated" rather than "public" because the
+    // difference is who may reach it, which is the first thing to know about
+    // a published URL.
+    pub fn display_kind(&self) -> &'static str {
+        match &self.spec {
+            TunnelSpec::Expose { private: true, .. } => "gated",
+            TunnelSpec::Expose { .. } => "public",
+            TunnelSpec::Access { target, .. } => match target {
+                AccessTarget::Instance { .. } => "access",
+                AccessTarget::DestGroup { .. } => "group",
+                AccessTarget::Jump { .. } => "jump",
+            },
+        }
+    }
+
     pub fn is_expose(&self) -> bool {
         matches!(self.spec, TunnelSpec::Expose { .. })
     }
@@ -349,6 +366,55 @@ mod tests {
         }
     }
 
+    fn access_jump(name: &str) -> PersistentTunnel {
+        PersistentTunnel {
+            name: name.to_string(),
+            account_name: "dev".to_string(),
+            auto_start: false,
+            spec: TunnelSpec::Access {
+                target: AccessTarget::Jump {
+                    instance: "bastion".to_string(),
+                    zone: "europe-west1-b".to_string(),
+                    host: "10.0.0.10".to_string(),
+                },
+                remote_port: 443,
+                local_port: 8443,
+            },
+        }
+    }
+
+    // Every kind a tunnel can be gets its own word, and each word fits the
+    // six cells the TUI's MODE column is drawn with
+    #[test]
+    fn display_kind_distinguishes_every_spec_shape() {
+        assert_eq!(access_instance("db", 15432).display_kind(), "access");
+        assert_eq!(access_dest_group("pg").display_kind(), "group");
+        assert_eq!(access_jump("k8s").display_kind(), "jump");
+        assert_eq!(expose("api", 30123).display_kind(), "public");
+
+        let mut gated = expose("admin", 30124);
+        if let TunnelSpec::Expose { private, .. } = &mut gated.spec {
+            *private = true;
+        }
+        assert_eq!(gated.display_kind(), "gated");
+    }
+
+    #[test]
+    fn every_display_kind_fits_the_mode_column() {
+        for t in [
+            access_instance("db", 15432),
+            access_dest_group("pg"),
+            access_jump("k8s"),
+            expose("api", 30123),
+        ] {
+            assert!(
+                t.display_kind().len() <= 6,
+                "{} is wider than the MODE column",
+                t.display_kind()
+            );
+        }
+    }
+
     #[test]
     fn state_round_trips_all_three_spec_shapes() {
         let state = TunnelState {
@@ -541,6 +607,18 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         assert!(!local_port_is_free(port));
         drop(listener);
-        assert!(local_port_is_free(port));
+        // Releasing an ephemeral port offers it back to the whole machine, so
+        // another test binding port 0 in a sibling thread can take this one
+        // before the check runs. The predicate is a bind attempt and nothing
+        // more: retry briefly so a lost race reads as a slow pass rather than
+        // a failure, and only give up once it is clear nothing is coming back.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !local_port_is_free(port) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "port {port} never came back: something else holds it"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
     }
 }
