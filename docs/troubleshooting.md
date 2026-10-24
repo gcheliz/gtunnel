@@ -23,15 +23,35 @@ gtunnel  gtunnel-client  gtunnel-server
 one, is untouched — that crate ships neither binary under that name, which is the only
 reason a bare `cargo install` does not overwrite it.
 
+If you also have a real gtunnel, cargo now has two packages under one name and refuses to
+guess which you mean:
+
 ```
-cargo uninstall gtunnel --root ~/.cargo
+$ cargo uninstall gtunnel
+error: specification `gtunnel` is ambiguous
+help: re-run this command with one of the following specifications
+  path+file:///Users/you/workspace/gtunnel#0.1.0
+  registry+https://github.com/rust-lang/crates.io-index#gtunnel@0.1.0
+```
+
+That error is the useful part: it prints both specifications, and the one to remove is
+always the `registry+` line. Pass it verbatim, quoted, because it contains a `#`:
+
+```
+$ cargo uninstall 'registry+https://github.com/rust-lang/crates.io-index#gtunnel@0.1.0'
+    Removing /Users/you/.cargo/bin/gtunnel-client
+    Removing /Users/you/.cargo/bin/gtunnel-server
+```
+
+With no real gtunnel installed there is nothing to disambiguate and a bare
+`cargo uninstall gtunnel` works. Either way, install the right one afterwards:
+
+```
 cargo install --git https://github.com/gcheliz/gtunnel --force
 ```
 
-The first command removes whichever `gtunnel` entry cargo has registered, so run the
-second afterwards whether or not you had a working copy. `cargo install --list` shows what
-is left, and the entry you want names a `path+` or `git+` source, never
-`registry+https://github.com/rust-lang/crates.io-index`.
+`cargo install --list` shows what is left. The entry you want names a `git+` or `path+`
+source, never `registry+https://github.com/rust-lang/crates.io-index`.
 
 v0.1.0 is how most people get here: its `gtunnel update` printed `cargo install gtunnel`
 for a cargo-installed copy, sending its own users to the wrong crate. v0.1.1 and later
