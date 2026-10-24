@@ -51,19 +51,51 @@ for the port you are tunnelling to rather than making you compose it.
 
 ### 4. Install gtunnel
 
+Four routes, in rough order of how most people arrive:
+
+| Route | Command |
+|---|---|
+| A published binary | the block below |
+| From the repository | `cargo install --git https://github.com/gcheliz/gtunnel` |
+| From a clone | `cargo install --path .` |
+| Already installed | [`gtunnel update`](#update) |
+
+There is no `cargo install gtunnel`. The name on crates.io belongs to an unrelated crate
+by another author, so a bare name would install somebody else's binary.
+
+The release URL carries no version, so the same four lines always fetch the current one.
+Substitute your machine's file: `gtunnel-macos-arm64`, `gtunnel-macos-intel`,
+`gtunnel-linux-amd64` or `gtunnel-linux-arm64`.
+
 ```
-cargo install --path .                    # from source
-gtunnel --version
+F=gtunnel-macos-arm64.tar.gz
+curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/latest/download/$F"
+curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/latest/download/$F.sha256"
+shasum -a 256 -c "$F.sha256" && tar -xzf "$F" && sudo mv gtunnel /usr/local/bin/
 ```
+
+On Linux the checksum tool is `sha256sum -c`. Both Linux builds are static musl binaries,
+so they run on any glibc.
 
 ```
 $ gtunnel --version
 gtunnel 0.1.0
 ```
 
-Or take `gtunnel-<target>.tar.gz` and its `.sha256` from Releases, verify with
-`shasum -a 256 -c gtunnel-<target>.tar.gz.sha256`, and extract onto your `PATH`. Later
-upgrades are [`gtunnel update`](#update).
+#### Proving where the binary came from
+
+The `.sha256` tells you the download arrived intact. It does not tell you who built it:
+anyone able to replace the tarball could replace the checksum beside it. Every release
+asset also carries a build attestation, signed by GitHub with a short-lived certificate
+tied to this repository's Release workflow and recorded in a public transparency log.
+
+```
+gh attestation verify gtunnel-macos-arm64.tar.gz -o gcheliz
+```
+
+It prints the policy it enforced — the predicate type and the source repository owner —
+and exits non-zero if the file was not produced by this repository's workflow, whatever
+its checksum says. Attestations begin with v0.1.1; v0.1.0 predates them.
 
 ### 5. Create the account
 
