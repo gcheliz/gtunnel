@@ -67,11 +67,13 @@ every step: [docs/usage.md](docs/usage.md#getting-set-up).
 
 ## Installation
 
-| Route | Command |
-|---|---|
-| From source | `cargo install --path .` |
-| From a release | download the file for your machine below and its `.sha256`, check with `shasum -a 256 -c`, then extract onto your `PATH` |
-| Upgrade in place | `gtunnel update` |
+| Route | Command | Upgrade with |
+|---|---|---|
+| A published binary | the four lines below | `gtunnel update` |
+| From a clone | `cargo install --path .` | `git pull` and run it again |
+| From the repository | `cargo install --git https://github.com/gcheliz/gtunnel` | the same command with `--force` |
+
+Pick your machine, and the release download needs no version in the URL:
 
 | Machine | File |
 |---|---|
@@ -80,11 +82,30 @@ every step: [docs/usage.md](docs/usage.md#getting-set-up).
 | Linux, amd64 | `gtunnel-linux-amd64.tar.gz` |
 | Linux, arm64 | `gtunnel-linux-arm64.tar.gz` |
 
-The Linux builds are static musl binaries, so they do not depend on the host's glibc.
-`gtunnel update` replaces a downloaded binary after verifying
-the published SHA-256, and prints the right upgrade command instead when cargo or Homebrew
-installed it. Confirm the install with `gtunnel --version`, then run `gtunnel doctor` before
-the first tunnel.
+```
+F=gtunnel-macos-arm64.tar.gz
+curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/latest/download/$F"
+curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/latest/download/$F.sha256"
+shasum -a 256 -c "$F.sha256" && tar -xzf "$F" && sudo mv gtunnel /usr/local/bin/
+```
+
+`sha256sum -c` in place of `shasum -a 256 -c` on Linux. The Linux builds are static musl
+binaries, so they do not depend on the host's glibc.
+
+The checksum proves the download arrived intact. To prove this repository built it, verify
+the [attestation](https://docs.github.com/actions/security-guides/using-artifact-attestations-to-establish-provenance-for-builds)
+with the GitHub CLI:
+
+```
+gh attestation verify gtunnel-macos-arm64.tar.gz -o gcheliz
+```
+
+There is no `cargo install gtunnel`: the name on crates.io belongs to an unrelated crate.
+Use `--git` or `--path`, as above.
+
+`gtunnel update` replaces a downloaded binary after verifying the published SHA-256, and
+prints the right upgrade command instead when cargo or Homebrew installed it. Confirm the
+install with `gtunnel --version`, then run `gtunnel doctor` before the first tunnel.
 
 ## Quick start
 

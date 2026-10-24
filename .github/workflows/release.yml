@@ -8,9 +8,11 @@ on:
   # publishing stays tag-only, below.
   workflow_dispatch:
 
-# The release job alone may write; a build step runs third-party actions and
-# must not be able to publish, and every action below is pinned to a commit
-# because these binaries are what `gtunnel update` installs
+# Nothing inherits write access. The release job alone may write repository
+# contents, and the build job's extra grants only let it sign what it just built
+# — a build step runs third-party actions and must not be able to publish. Every
+# action below is pinned to a commit because these binaries are what
+# `gtunnel update` installs
 permissions:
   contents: read
 
@@ -41,6 +43,13 @@ jobs:
             slug: linux-arm64
             os: ubuntu-latest
     runs-on: ${{ matrix.os }}
+    # id-token mints the short-lived signing certificate from this job's OIDC
+    # identity; attestations writes the signed bundle to the repository's
+    # attestation store. Neither can push, tag or publish a release
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -71,6 +80,18 @@ jobs:
           else
             shasum -a 256 "$asset" > "$asset.sha256"
           fi
+      # A .sha256 published beside its tarball proves the file was not corrupted in
+      # transit, not that we built it: whoever could replace the asset could replace
+      # the checksum. The attestation is signed with a short-lived certificate tied to
+      # this workflow's OIDC identity and recorded in Sigstore's public transparency
+      # log, so `gh attestation verify <file> -o gcheliz` establishes that this
+      # repository's Release workflow produced that exact byte sequence, with no key
+      # for us to keep or lose. Only tag builds are attested; a dispatched run builds
+      # throwaway artifacts that nobody downloads
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          subject-path: gtunnel-${{ matrix.slug }}.tar.gz
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: gtunnel-${{ matrix.slug }}

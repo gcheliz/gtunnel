@@ -112,6 +112,24 @@ enum InstallMethod {
     Binary(PathBuf),
 }
 
+// What to tell someone whose copy a package manager owns, or None when the binary is
+// ours to replace. `gtunnel` on crates.io is an unrelated crate by another author, so
+// the cargo route has to name this repository: a bare `cargo install gtunnel` would
+// install a stranger's binary over this one.
+fn upgrade_hint(method: &InstallMethod) -> Option<String> {
+    match method {
+        InstallMethod::Homebrew => {
+            Some("gtunnel was installed with Homebrew. Run:\n  brew upgrade gtunnel".to_string())
+        }
+        InstallMethod::Cargo => Some(
+            "gtunnel was installed with cargo. Run:\n  \
+             cargo install --git https://github.com/gcheliz/gtunnel --force"
+                .to_string(),
+        ),
+        InstallMethod::Binary(_) => None,
+    }
+}
+
 fn detect_install_method() -> InstallMethod {
     let exe = std::env::current_exe().unwrap_or_default();
     let path = exe.to_string_lossy();
@@ -144,16 +162,15 @@ pub async fn cmd_update(check_only: bool) -> Result<()> {
         return Ok(());
     }
 
-    match detect_install_method() {
-        InstallMethod::Homebrew => {
-            eprintln!("\ngtunnel was installed with Homebrew. Run:");
-            eprintln!("  brew upgrade gtunnel");
+    let method = detect_install_method();
+    match upgrade_hint(&method) {
+        Some(hint) => eprintln!("\n{hint}"),
+        None => {
+            let InstallMethod::Binary(exe) = method else {
+                unreachable!("only a downloaded binary has no upgrade hint")
+            };
+            perform_update(&exe, &latest).await?
         }
-        InstallMethod::Cargo => {
-            eprintln!("\ngtunnel was installed with cargo. Run:");
-            eprintln!("  cargo install gtunnel");
-        }
-        InstallMethod::Binary(exe) => perform_update(&exe, &latest).await?,
     }
     Ok(())
 }
@@ -432,6 +449,29 @@ mod tests {
             sha256_bytes(b"abc").unwrap(),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
+    }
+
+    #[test]
+    fn a_cargo_install_is_sent_to_the_git_url_not_to_the_crates_io_name() {
+        let hint = upgrade_hint(&InstallMethod::Cargo).expect("cargo carries a hint");
+        assert!(
+            hint.contains("cargo install --git https://github.com/gcheliz/gtunnel"),
+            "the hint must name the repository: {hint}"
+        );
+        // `gtunnel` on crates.io is an unrelated crate by another author, so a bare
+        // `cargo install gtunnel` would install a stranger's binary over this one
+        assert!(
+            !hint.contains("cargo install gtunnel"),
+            "the hint must never send anyone to crates.io: {hint}"
+        );
+    }
+
+    #[test]
+    fn a_downloaded_binary_updates_itself_rather_than_printing_a_hint() {
+        assert!(upgrade_hint(&InstallMethod::Binary(PathBuf::from(
+            "/usr/local/bin/gtunnel"
+        )))
+        .is_none());
     }
 
     #[test]

@@ -5,6 +5,20 @@ what is on `main` and not yet tagged.
 
 ## Unreleased
 
+### Installing and proving what you installed
+
+- **Every release asset carries a build attestation** - a `.sha256` proves the download
+  arrived intact, not who produced it, since whoever could swap the tarball could swap the
+  checksum beside it. Each asset is now signed by GitHub with a short-lived certificate
+  tied to this repository's Release workflow and recorded in a public transparency log.
+  `gh attestation verify <file> -o gcheliz` checks it. Attestations begin with v0.1.1.
+- **`gtunnel update` no longer sends a cargo install to crates.io** - the `gtunnel` name
+  there belongs to an unrelated crate by another author, so the old hint would have
+  installed a stranger's binary over this one. It now names the repository:
+  `cargo install --git https://github.com/gcheliz/gtunnel --force`.
+- **Installing is documented for four routes** - a published binary through a URL that
+  carries no version, `cargo install --git`, `cargo install --path`, and `gtunnel update`.
+
 ### Project documentation
 
 - **`CONTRIBUTING.md`** - what to install, the six CI gate commands to run before pushing,
