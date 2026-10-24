@@ -1,0 +1,49 @@
+name: Release PR
+
+# Every merge to main recomputes what the next version would be from the
+# conventional-commit subjects since the last tag, and keeps one open pull
+# request holding that bump: Cargo.toml, Cargo.lock and the CHANGELOG entry.
+#
+# It deliberately stops there. Tagging is a human step — `git tag -a vX.Y.Z -m
+# vX.Y.Z && git push origin vX.Y.Z` — because a tag pushed by GITHUB_TOKEN does
+# not trigger another workflow, so release.yml would never build the binaries.
+# Closing that gap automatically would mean storing a long-lived push credential
+# in a repository whose whole design is not to store credentials.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# A second merge while the first run is still open would race it for the same
+# release branch. Let the newer one win; it has the newer commits anyway.
+concurrency:
+  group: release-pr
+  cancel-in-progress: true
+
+jobs:
+  release-pr:
+    runs-on: ubuntu-latest
+    permissions:
+      # Pushes the release branch and opens the pull request against it. It cannot
+      # tag and it cannot publish a release: release.yml owns both, and the main
+      # ruleset requires a pull request and five green checks before anything
+      # reaches main.
+      contents: write
+      pull-requests: write
+    steps:
+      # Full history, because release-plz finds the last tag and reads every commit
+      # since it. Credentials are not persisted into .git/config: release-plz
+      # authenticates its own push from GITHUB_TOKEN below, so leaving them there
+      # would only widen what a later step could reach.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: release-plz/action@7ef5e4d4b0420630cfcaeb182c01e13651d4c577 # v0.5.145
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

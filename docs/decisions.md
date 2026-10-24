@@ -215,3 +215,26 @@ request. Command output in the docs is captured from a real run, not written by 
 
 The cost is that a code-only pull request is rare. The alternative is a README that
 describes a program that no longer exists.
+
+## 14. Releases are computed automatically and tagged by hand
+
+**Status:** Accepted, 0.1.1 (2026-10-24)
+
+Deciding a version by hand means deciding it from memory, and a changelog written at
+release time is written from the diff rather than from the intent.
+
+`release-plz` runs on every merge to `main` in `git_only` mode — crates.io is not
+available to this project, so versions come from git tags rather than the registry. It
+computes the next version from the conventional-commit subjects, rewrites `Cargo.toml`,
+`Cargo.lock` and `CHANGELOG.md`, and keeps one open pull request holding the bump. A
+maintainer merges it and pushes the tag; the tag starts `release.yml`, which builds, signs
+and publishes.
+
+The tag is the one manual step, and it is manual for a mechanical reason: a tag pushed
+with `GITHUB_TOKEN` does not trigger another workflow, so an automated tag would publish a
+release with no binaries in it. Closing that gap means a GitHub App or a long-lived
+personal token with push rights, stored in this repository — a standing credential in a
+project whose first decision was to hold none. One command is a cheaper price.
+
+The cost is that the commit prefix is now load-bearing: a `feat` typed as a `chore` ships
+without a version bump and without a changelog line.
