@@ -164,6 +164,8 @@ breakdown.
 | [docs/architecture.md](docs/architecture.md) | Topology, process model, resource names |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Error table, firewall and IAM, services, cost |
 | [docs/design.md](docs/design.md) | How the TUI displays information: hierarchy, density, colour |
+| [docs/decisions.md](docs/decisions.md) | Why gtunnel is shaped the way it is, and what each choice costs |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Setting up, the CI gate, and how a change lands |
 | [CHANGELOG.md](CHANGELOG.md) | Release history |
 | [SECURITY.md](SECURITY.md) | Reporting a vulnerability |
 
