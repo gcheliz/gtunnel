@@ -437,7 +437,9 @@ gtunnel expose <NAME> <TARGET> [-d DOMAIN] [--private] [-s]
 ```
 
 `TARGET` is `3000` or `localhost:3000`. The URL is `https://<NAME>.<DOMAIN>`. `--private`
-puts IAP in front of the load balancer, so a visitor must sign in with Google.
+puts IAP in front of the load balancer, so a visitor must sign in with Google. That
+sign-in only holds if the relay's own port range is closed to everything but the load
+balancer: see [The relay's firewall is yours to close](#the-relays-firewall-is-yours-to-close).
 
 Without a relay the command stops before changing anything:
 
@@ -572,6 +574,24 @@ already there. `down` refuses while tunnels still use the relay unless `--force`
 $ gtunnel relay status
 No relay for account 'evidence'. Run `gtunnel relay up`
 ```
+
+### The relay's firewall is yours to close
+
+A public tunnel forwards with `ssh -R 0.0.0.0:<relay-port>:<local target>`, so the port
+listens on every interface of the relay VM. It has to: the load balancer reaches it from
+another host, and a loopback bind would leave the URL unreachable. gtunnel allocates the
+port; it never opens or closes a firewall for it.
+
+| | |
+|---|---|
+| Port range | `30000-30999` |
+| Should reach it | the load balancer, and Google's health checkers at `35.191.0.0/16` and `130.211.0.0/22` |
+| Must not reach it | anything else, and above all the internet |
+
+Leave that range open and a client who knows the relay's address and a port connects to
+the forwarded service directly. That skips the load balancer, and with `--private` it
+skips the IAP sign-in in front of it too, which is the whole protection that flag buys.
+Restrict the range on the relay's network tag before the first `gtunnel expose`.
 
 ## account
 
