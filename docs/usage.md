@@ -61,7 +61,9 @@ Four routes, in rough order of how most people arrive:
 | Already installed | [`gtunnel update`](#update) |
 
 There is no `cargo install gtunnel`. The name on crates.io belongs to an unrelated crate
-by another author, so a bare name would install somebody else's binary.
+by another author, so a bare name would install somebody else's binary. If you have
+already run it, [troubleshooting.md](troubleshooting.md#cargo-install-gtunnel-installed-something-else)
+says what it left behind and how to undo it.
 
 The release URL carries no version, so the same four lines always fetch the current one.
 Substitute your machine's file: `gtunnel-macos-arm64`, `gtunnel-macos-intel`,
@@ -159,6 +161,7 @@ account: [domains](#zones-and-domains), [relay](#relay), then [expose](#expose).
 | `expose` | Publish a local service at `https://<name>.<domain>` | write |
 | `run` | Ephemeral tunnel in the foreground, gone on Ctrl+C | read, or write with `--public` |
 | `start` / `stop` / `restart` | Service control | write, for a public tunnel only |
+| `autostart` | Turn start-at-login on or off for a tunnel | no |
 | `logs` | Read a tunnel's log | no |
 | `list` | Every tunnel, managed or not | no |
 | `delete` | Remove a tunnel and its route | write for public tunnels |
@@ -739,3 +742,114 @@ gtunnel v9.9.9 is available (current: v0.1.0). Run `gtunnel update`.
 The check runs at most once a day, in the background, and never blocks a command. An install
 from Homebrew or cargo is detected and `update` prints the right upgrade command instead of
 replacing the binary.
+
+## Reference
+
+The command sections above are task-ordered; this one is exhaustive. It describes the two
+files gtunnel writes, the environment it reads, and what it exits with.
+
+### config.toml
+
+Written by `init`, `account` and `relay up`, and editable in the TUI's config page. Lives
+in the configuration directory (see [Environment](#environment) below).
+
+| Key | Type | Required | What it is |
+|---|---|---|---|
+| `selected_account` | string | yes | The account used when no `--account` is given |
+| `accounts` | array of tables | yes | One entry per account; may be empty |
+
+Each entry in `accounts`:
+
+| Key | Type | Required | What it is |
+|---|---|---|---|
+| `name` | string | yes | What you type after `--account`, and the first half of the service label |
+| `gcloud_configuration` | string | yes | The gcloud configuration whose credentials and project gtunnel uses |
+| `project` | string | yes | The GCP project every API call targets |
+| `default_zone` | string | yes | The zone assumed when `add` is given an instance and no `--zone` |
+| `impersonate_service_account` | string | no | A service account to impersonate; omitted entirely when unset. The logged-in user needs `roles/iam.serviceAccountTokenCreator` on it |
+| `expose` | table | no | The account's relay, written by `relay up` and removed by `relay down` |
+
+`expose`, when present:
+
+| Key | Type | Required | What it is |
+|---|---|---|---|
+| `relay_instance` | string | yes | The relay VM's instance name |
+| `relay_zone` | string | yes | The zone that VM is in |
+| `network` | string | yes | The VPC network the relay and its load balancer sit in |
+| `default_domain` | string | yes | The domain used when `expose` is given no `--domain` |
+| `domains` | array of tables | no | Every registered domain; `default_domain` must name one of them |
+
+Each entry in `domains` has `domain` (the DNS name) and `managed_zone` (the Cloud DNS
+managed zone that serves it). `domains add` writes these; `domains list` reads them.
+
+### tunnels.toml
+
+Written by `add`, `expose`, `rename`, `move`, `autostart` and `delete`. Never edit it by
+hand while a tunnel is running: the service label is derived from the name, so a renamed
+tunnel leaves its old launchd or systemd job behind. Use `rename`, which moves both.
+
+Every tunnel is an entry in a `[[tunnels]]` array:
+
+| Key | Type | Required | What it is |
+|---|---|---|---|
+| `name` | string | yes | Up to 40 characters of `[a-z0-9-]`, unique within the account |
+| `account_name` | string | yes | Which account owns it; the same name may exist in another account |
+| `auto_start` | bool | no, defaults false | Start at login |
+| `spec` | table | yes | What the tunnel does, tagged by `mode` |
+
+`spec` is one of two shapes, told apart by `mode`.
+
+`mode = "access"` forwards a remote port to localhost over IAP:
+
+| Key | Type | What it is |
+|---|---|---|
+| `remote_port` | u16 | The port on the far side |
+| `local_port` | u16 | The port on this machine, derived from the name unless `--local-port` was given |
+| `target` | table | Where the far side is, tagged by `kind` |
+
+`target` is one of three shapes:
+
+| `kind` | Keys | Reaches |
+|---|---|---|
+| `instance` | `instance`, `zone` | A port on a Compute Engine VM |
+| `dest_group` | `host`, `region`, `group`, `network` | A host behind an IAP destination group, with no VM in the path |
+| `jump` | `instance`, `zone`, `host` | A host only the VM can see, forwarded by ssh on the VM with IAP carrying the ssh connection |
+
+`mode = "expose"` publishes a local service through the relay:
+
+| Key | Type | What it is |
+|---|---|---|
+| `local_target` | string | The local address being published, as `host:port` |
+| `domain` | string | Which registered domain serves it |
+| `hostname` | string | The full name the service answers on |
+| `relay_port` | u16 | The port reserved on the relay VM, derived from the name |
+| `private` | bool | Whether IAP sign-in sits in front of the URL |
+
+### Environment
+
+| Variable | Read by | Effect |
+|---|---|---|
+| `GTUNNEL_CONFIG_DIR` | every command | Moves `config.toml`, `tunnels.toml`, `agents/` and `logs/` into that directory. The service label is still `com.gtunnel.<account>.<name>`, so give a throwaway configuration an account name of its own or `install` restarts the live job that shares the label |
+| `VISUAL`, then `EDITOR` | the TUI's config page | Which editor `e` opens. `VISUAL` wins because it names the full-screen editor. An empty value counts as unset, since `EDITOR=` is how a shell clears one, and neither set falls back to the platform default |
+| `PATH` | startup | Where `gcloud` is found |
+
+The value of `VISUAL` or `EDITOR` is split into a program and its arguments here, never
+handed to a shell, so `code -w` works and nothing in the variable is interpreted as a
+command line. Quotes group a path containing spaces and do nothing else.
+
+With `GTUNNEL_CONFIG_DIR` unset the directory is `~/Library/Application Support/gtunnel` on
+macOS and `$XDG_CONFIG_HOME/gtunnel` on Linux, which is `~/.config/gtunnel` unless that
+variable says otherwise.
+
+### Exit codes
+
+gtunnel never calls `exit` with a code of its own, so there are only two:
+
+| Code | Meaning |
+|---|---|
+| `0` | The command did what it said |
+| `1` | It did not, and the reason is on stderr |
+
+A failure is one line on stderr beginning `Error:`, so a script can branch on the status
+and show the line. Do not branch on which error it was: the text is written for a person
+and is not a stable interface.

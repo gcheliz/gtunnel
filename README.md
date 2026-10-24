@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.1.1-blue.svg" alt="Version 0.1.1"></a>
+  <a href="https://github.com/gcheliz/gtunnel/releases/latest"><img src="https://img.shields.io/github/v/release/gcheliz/gtunnel?color=blue" alt="Latest release"></a>
   <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/rust-1.88%2B-orange.svg" alt="Rust 1.88 or newer"></a>
   <a href="Cargo.toml"><img src="https://img.shields.io/badge/edition-2024-orange.svg" alt="Rust 2024 edition"></a>
   <a href="SECURITY.md"><img src="https://img.shields.io/badge/security-policy-green.svg" alt="Security policy"></a>
@@ -106,7 +106,8 @@ it — [docs/usage.md](docs/usage.md#4-install-gtunnel) shows that output. Attes
 begin with v0.1.1.
 
 There is no `cargo install gtunnel`: the name on crates.io belongs to an unrelated crate.
-Use `--git` or `--path`, as above.
+Use `--git` or `--path`, as above. Already ran it?
+[docs/troubleshooting.md](docs/troubleshooting.md#installation) says what it left behind.
 
 `gtunnel update` replaces a downloaded binary after verifying the published SHA-256, and
 prints the right upgrade command instead when cargo or Homebrew installed it. Confirm the
