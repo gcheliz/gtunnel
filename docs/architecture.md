@@ -149,12 +149,17 @@ flowchart TB
   proc --> log["logs/&lt;account&gt;-&lt;name&gt;.log"]
   cli -.reads.-> log
   cli -.polls.-> api["Compute, DNS, Certificate Manager,<br/>IAP, Monitoring REST APIs"]
+  wd["launchd StartInterval / systemd timer<br/>one for the machine"] --> once["gtunnel watch --once"]
+  once -.probes.-> svc
+  once --> brk["breakers.toml"]
+  once --> log
 ```
 
 | Concern | Decision |
 |---|---|
 | Supervision | launchd on macOS, systemd `--user` on Linux. Both restart on failure |
 | Reboot | Auto-start is per tunnel; off by default, toggled with `A` in the TUI. On macOS it is the presence of the plist in `~/Library/LaunchAgents`, because launchd loads everything there at login and a `KeepAlive` job runs the moment it is loaded. The definition gtunnel starts and stops itself lives outside that directory |
+| Wedged tunnels | Supervision only catches a process that exits. A tunnel that stays up and refuses connections is caught instead by one watchdog job for the whole machine, which wakes every 30s, makes one pass over every tunnel and exits. It is an interval job rather than a supervised one precisely because it is supposed to exit every time |
 | PATH | A daemon does not inherit a shell, so gcloud's directory is written into the unit. Without it the service dies at every start |
 | Credentials | None stored. Each API call shells out to `gcloud auth print-access-token` for the account's configuration |
 | Ephemeral runs | `run` writes a record with its pid, so `list`, the TUI and `doctor` see it. Every exit path tears the route down, including signals |
@@ -196,6 +201,8 @@ separate switch, with `loginctl enable-linger` deciding whether it survives a lo
 | `<config>/run/<account>-<name>.json` | One record per live `gtunnel run` |
 | `<config>/agents/<label>.plist` | macOS: the service definition gtunnel loads and unloads |
 | `~/Library/LaunchAgents/<label>.plist` | macOS: present only while auto-start is on |
+| `<config>/breakers.toml` | One row per tunnel: what the watchdog has seen of it, and how far up the restart ladder it is. Rewritten whole on every pass, by writing a sibling file and renaming it, and pruned to the tunnels that still exist |
+| `<config>/logs/watchdog.log` | What the watchdog did. A pass where nothing needed doing writes nothing |
 | `<config>/logs/<account>-<name>.log` | Per-tunnel log, written by the service |
 | `<config>/update-check.json` | Last version check |
 

@@ -172,6 +172,7 @@ account: [domains](#zones-and-domains), [relay](#relay), then [expose](#expose).
 | `zones` / `domains` | Defaults for new tunnels | read |
 | `relay up` / `down` / `status` | The shared relay for an account | write |
 | `account` | Accounts: `list`, `select`, `add`, `edit`, `remove` | read, for `add` |
+| `watch` | Restart tunnels that are running but refusing connections | no |
 | `doctor` | Report, and optionally remove, leftovers | read, write with `--fix` |
 | `reset` | Remove all local configuration | no |
 | `demo` | TUI with synthetic data | no |
@@ -673,6 +674,95 @@ offering a flag that would strand the services:
 $ gtunnel account remove dev
 Error: Account 'dev' still has 1 tunnel(s). Delete them with `gtunnel delete`, or move them to another account with `gtunnel move`, then remove the account
 ```
+
+## watch
+
+A tunnel can be running and useless at the same time: the process is alive, so nothing
+restarts it, and every new client is refused. `watch` is the thing that notices. It looks
+at every tunnel, and for each one asks two questions: does the service manager call it
+running, and does its local port accept a connection. A tunnel that answers its port is
+healthy, whatever its log says. When one does not answer, the log decides what to call the
+failure — a listener that said `Too many open files` since the last pass is out of
+descriptors, anything else is simply refusing connections — and that word is what ends up
+in the log line and in `gtunnel doctor`.
+
+```
+$ gtunnel watch --once --verbose
+dev.mongodb: NotRunning -> Nothing
+dev.kubernetes: Pass -> Nothing
+prod.kubernetes: Pass -> Nothing
+```
+
+Three lines of a longer pass: there is one per tunnel it watches, whether or not anything
+happened. `Pass` means the port accepted a connection, `NotRunning` that the service is not
+up, and the word after the arrow is what the watchdog did about it.
+
+A public tunnel gets a `skipped <account>.<name>: …` line instead of an arrow, because its
+health lives in a load balancer and a TCP probe to a local port would answer a different
+question. Both kinds of line appear only under `-v`.
+
+| Form | What it does |
+|---|---|
+| `gtunnel watch` | The loop, in the foreground, one pass every 30s until Ctrl+C |
+| `gtunnel watch --once` | One pass, then exit. What the agent runs |
+| `gtunnel watch -v` | Say what each pass saw, rather than only what it did |
+| `gtunnel watch install` | Install the agent, so the loop runs with no terminal open |
+| `gtunnel watch uninstall` | Remove the agent |
+| `gtunnel watch status` | Whether the agent is installed, and where its log is |
+
+`watch` needs no Google credentials, and asks for none: it runs from an agent with no
+terminal, where a login prompt would hang forever rather than fail.
+
+### What it does about a tunnel that is failing
+
+Nothing, the first time. One failed check is a slow moment; two in a row is a tunnel. From
+there it restarts, waits longer each time, and eventually stops rather than restarting a
+tunnel that will never come back.
+
+| Failed check | What the watchdog does | Then waits |
+|---|---|---|
+| 1st | Counts it | |
+| 2nd in a row | Trips: from here this is a problem, not a blip | 10s |
+| The first one after that wait | Restart 1 | 20s |
+| The first one after that wait | Restart 2 | 40s |
+| The first one after that wait | Restart 3 | 80s |
+| The first one after that wait | Restart 4 | |
+| The one after restart 4 | Stops it, with a line in the log saying why | |
+
+A failed check inside a wait does nothing at all, so at one pass every 30 seconds the
+longer waits cost a pass or two before the next restart. At that interval the earliest a
+tunnel can be stopped is six minutes after its first failed check.
+
+Two passing checks in a row clear the breaker outright, so a restart that holds costs
+nothing afterwards; so does stopping the tunnel yourself, because the breaker only has an
+opinion about tunnels that are meant to be running.
+
+Stopping it is the end of the ladder, and it is deliberate — four restarts that did not
+hold mean the problem is not the tunnel. The log says what the watchdog saw and who was
+holding the connections. Nothing starts it again by itself: the next pass sees a tunnel
+that is not running, forgets everything it knew about it, and leaves it alone. `gtunnel
+start <name>` is how it comes back, once the cause is dealt with — and if the cause is
+still there, the ladder runs again from the beginning.
+
+### The agent
+
+`watch install` writes one job for the machine, not one per tunnel: `com.gtunnel.watchdog`
+on macOS, `gtunnel-watchdog.timer` on Linux. It wakes every 30 seconds, makes one pass,
+and exits — it is a timer, not a service, because a job that exits immediately under
+`KeepAlive` is one the service manager respawns in a tight loop.
+
+```
+$ gtunnel watch install
+Watchdog installed: /usr/local/bin/gtunnel every 30s
+Log: ~/Library/Application Support/gtunnel/logs/watchdog.log
+```
+
+The job runs the binary that installed it, by absolute path. Move or replace that binary
+and `gtunnel watch install` again. The log holds only what the watchdog did: a pass where
+every tunnel passed writes nothing.
+
+`gtunnel doctor` reports a machine that has tunnels but no watchdog, and `--fix` installs
+it.
 
 ## doctor
 

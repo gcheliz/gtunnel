@@ -19,7 +19,9 @@ URL in front of a service running on your laptop. Tunnels are declared once, run
 supervised user services, and are watched from a dashboard that shows whether each
 one is actually carrying traffic.
 
-![gtunnel topology: a private port inward through IAP, a public URL outward through a relay VM](docs/images/architecture/gtunnel-overview.png)
+<p align="center">
+  <img src="docs/demo-tui.gif" alt="The gtunnel TUI: tunnel list, details, logs and metrics" width="720">
+</p>
 
 | Why | What it means in practice |
 |---|---|
@@ -32,7 +34,7 @@ one is actually carrying traffic.
 Everything in the table below ships in the current version. This README has no roadmap
 section because it describes only what the binary already does.
 
-![The gtunnel TUI: tunnel list, details, logs and metrics](docs/demo-tui.gif)
+![gtunnel topology: a private port inward through IAP, a public URL outward through a relay VM](docs/images/architecture/gtunnel-overview.png)
 
 ## Features
 
@@ -123,7 +125,9 @@ gtunnel add db my-vm:5432 -s    # localhost:15432 -> my-vm:5432, started now
 psql -h localhost -p 15432
 ```
 
-![gtunnel add, list, start, stop and delete](docs/demo-access.gif)
+<p align="center">
+  <img src="docs/demo-access.gif" alt="gtunnel add, list, start, stop and delete" width="720">
+</p>
 
 ### A public URL to a local service
 
@@ -165,8 +169,9 @@ Each one, its output, and which of them write to GCP:
 ## Configuration
 
 `~/Library/Application Support/gtunnel` on macOS, `~/.config/gtunnel` on Linux;
-`GTUNNEL_CONFIG_DIR` overrides it. It holds `config.toml` (accounts, relay, domains and the log level),
-`tunnels.toml`, the service definitions and one log per tunnel — the full table is in
+`GTUNNEL_CONFIG_DIR` overrides it. It holds `config.toml` (accounts, relay, domains and the
+log level), `tunnels.toml`, `breakers.toml` (what the watchdog has seen of each tunnel), the
+service definitions and one log per tunnel — the full table is in
 [docs/architecture.md](docs/architecture.md#files). Local ports come from 15000-15999 and
 are derived from the tunnel name, so the same name gets the same port on every machine
 unless it is taken; relay ports come from 30000-30998.
