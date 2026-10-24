@@ -62,26 +62,24 @@ pub struct Config {
     pub accounts: Vec<Account>,
 }
 
-/// The log level in force, highest precedence first: the `--log-level` flag,
-/// then `GTUNNEL_LOG_LEVEL`, then `log_level` in `config.toml`.
-///
-/// Pure, and takes the environment string rather than reading it, so the
-/// precedence is testable without touching a process-wide variable.
-pub fn resolve_log_level(
-    flag: Option<LogLevel>,
-    env: Option<&str>,
-    cfg: LogLevel,
-) -> Result<LogLevel> {
+/// The part of the precedence that cannot change while the process runs: the
+/// `--log-level` flag, then `GTUNNEL_LOG_LEVEL`. `None` when neither is set,
+/// which leaves `config.toml` to decide - and leaves it free to decide again
+/// after someone edits it, which a TUI session does.
+pub fn resolve_log_override(flag: Option<LogLevel>, env: Option<&str>) -> Result<Option<LogLevel>> {
     if let Some(level) = flag {
-        return Ok(level);
+        return Ok(Some(level));
     }
     // An exported-but-empty variable is how a shell spells "unset"
     match env.map(str::trim).filter(|s| !s.is_empty()) {
         // Naming the variable matters: the value comes from a shell profile
         // the user is not looking at, and without it the error says only that
         // some string somewhere is wrong
-        Some(raw) => raw.parse().map_err(|e| anyhow!("GTUNNEL_LOG_LEVEL: {e}")),
-        None => Ok(cfg),
+        Some(raw) => raw
+            .parse()
+            .map(Some)
+            .map_err(|e| anyhow!("GTUNNEL_LOG_LEVEL: {e}")),
+        None => Ok(None),
     }
 }
 
@@ -380,6 +378,18 @@ mod tests {
         assert!(validate_account_name("").is_err());
         assert!(validate_account_name("abcdefghijklmnopq").is_err());
         assert!(validate_account_name("abcdefghijklmnop").is_ok());
+    }
+
+    // The whole precedence, through the two functions `main` actually calls.
+    fn resolve_log_level(
+        flag: Option<LogLevel>,
+        env: Option<&str>,
+        cfg: LogLevel,
+    ) -> Result<LogLevel> {
+        Ok(crate::loglevel::resolve_effective(
+            resolve_log_override(flag, env)?,
+            cfg,
+        ))
     }
 
     // Precedence exists so a one-off `--log-level debug` can answer "why is

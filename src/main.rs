@@ -32,11 +32,14 @@ async fn main() -> Result<()> {
     let from_file = config::load_config()
         .map(|c| c.log_level)
         .unwrap_or_default();
-    loglevel::set_current(config::resolve_log_level(
+    // The override is kept apart from the resolved level: it is the half of
+    // the answer that stays true for a session that outlives this moment,
+    // while `config.toml` may be edited under a running TUI.
+    let over = config::resolve_log_override(
         args.log_level,
         std::env::var("GTUNNEL_LOG_LEVEL").ok().as_deref(),
-        from_file,
-    )?);
+    )?;
+    loglevel::set_current(loglevel::resolve_effective(over, from_file), over);
 
     let account = args.account.as_deref();
     // The hint reads a cache file; `update` does the real check itself
