@@ -3333,6 +3333,73 @@ mod tests {
         last
     }
 
+    fn at_the_name_prompt() -> App {
+        let mut app = app_with_two();
+        keys(&mut app, "a1");
+        assert_eq!(app.input_mode, InputMode::AddName);
+        app
+    }
+
+    #[test]
+    fn a_name_the_account_already_holds_is_refused_in_the_dialog() {
+        let mut app = at_the_name_prompt();
+        keys(&mut app, "db\n");
+        assert_eq!(app.input_mode, InputMode::AddName, "advanced past a clash");
+        assert_eq!(app.input, "db", "the typed text was discarded");
+        let error = app.draft_error.as_deref().expect("no message");
+        assert!(error.contains("'db'"), "does not name the clash: {error}");
+    }
+
+    #[test]
+    fn a_name_that_collides_with_an_unmanaged_row_is_refused() {
+        let mut app = at_the_name_prompt();
+        app.entries.push(TunnelEntry::new(
+            access("cache", 16379),
+            TunnelStatus::Running,
+            TunnelKind::External,
+        ));
+        keys(&mut app, "cache\n");
+        assert_eq!(app.input_mode, InputMode::AddName);
+    }
+
+    #[test]
+    fn an_invalid_name_is_refused_in_the_dialog() {
+        let mut app = at_the_name_prompt();
+        keys(&mut app, "Db!\n");
+        assert_eq!(app.input_mode, InputMode::AddName);
+        assert_eq!(app.input, "Db!");
+        let error = app.draft_error.as_deref().expect("no message");
+        assert!(error.contains("lowercase"), "reports no rule: {error}");
+    }
+
+    #[test]
+    fn a_valid_new_name_advances_to_the_instance_step() {
+        let mut app = at_the_name_prompt();
+        keys(&mut app, "cache\n");
+        assert_eq!(app.input_mode, InputMode::AddInstance);
+        assert_eq!(app.draft.name, "cache");
+        assert!(app.draft_error.is_none());
+    }
+
+    #[test]
+    fn typing_again_clears_the_refusal() {
+        let mut app = at_the_name_prompt();
+        keys(&mut app, "db\n");
+        keys(&mut app, "2");
+        assert!(app.draft_error.is_none());
+    }
+
+    #[test]
+    fn the_refusal_is_on_screen_at_80_by_24() {
+        let mut app = at_the_name_prompt();
+        keys(&mut app, "db\n");
+        let rendered = render_to_string(&app, 80, 24);
+        assert!(
+            rendered.contains("already used in this account"),
+            "the reason is not on screen"
+        );
+    }
+
     #[test]
     fn adding_an_access_tunnel_walks_the_prompts_and_creates_it() {
         let mut app = app_with_two();
@@ -3342,12 +3409,12 @@ mod tests {
         }];
 
         // a, mode 1, name, instance, host (empty: the instance itself), ports
-        let op = keys(&mut app, "a1db\n\n\n5432\n\n");
+        let op = keys(&mut app, "a1cache\n\n\n5432\n\n");
         assert_eq!(
             op,
             Some(Op::Create(NewTunnel {
                 account: "dev".to_string(),
-                name: "db".to_string(),
+                name: "cache".to_string(),
                 mode: TunnelMode::Access,
                 instance: "my-vm".to_string(),
                 zone: "europe-west1-b".to_string(),

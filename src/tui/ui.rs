@@ -2369,7 +2369,15 @@ fn render_prompt(f: &mut Frame, app: &App, mode: InputMode) {
         .max(cells(PROMPT_HINT) + 2);
     render_dialog(f, title, dialog_width(widest, title), |width, rows| {
         let ask = wrapped_indent(prompt, 0, width, Style::default().fg(theme::WARN));
-        let field = vec![input_row(&app.input, width)];
+        let mut field = vec![input_row(&app.input, width)];
+        if let Some(error) = &app.draft_error {
+            field.extend(wrapped_indent(
+                error,
+                0,
+                width,
+                Style::default().fg(theme::BAD),
+            ));
+        }
         let hint = wrapped_indent(PROMPT_HINT, 2, width, Style::default().fg(theme::MUTED));
         // What goes first when the terminal is short: the blank rows, then the
         // hint, then the end of a prompt that wraps. The field is never shed,

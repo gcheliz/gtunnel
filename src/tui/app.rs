@@ -452,6 +452,10 @@ pub struct App {
     pub should_quit: bool,
     pub suspend: bool,
     pub input: String,
+    // Why the name just submitted was refused. It lives beside `input` and not
+    // in `status`, because the dialog covers the status line and the reason
+    // has to be read where the text is being corrected.
+    pub draft_error: Option<String>,
     pub draft: NewTunnel,
     pub instances: Vec<InstanceChoice>,
     pub instance_selected: usize,
@@ -509,6 +513,7 @@ impl App {
             should_quit: false,
             suspend: false,
             input: String::new(),
+            draft_error: None,
             draft: NewTunnel::default(),
             instances: Vec::new(),
             instance_selected: 0,
@@ -1073,7 +1078,15 @@ impl App {
     fn cancel_dialog(&mut self) {
         self.input_mode = InputMode::Normal;
         self.input.clear();
+        self.draft_error = None;
         self.confirm_message = None;
+    }
+
+    // `entries` holds the active account only, so a scan is account-scoped.
+    // Unmanaged rows count: they are named for their target, and two rows
+    // with one name would be indistinguishable in the list.
+    fn name_is_taken(&self, name: &str) -> bool {
+        self.entries.iter().any(|e| e.name() == name)
     }
 
     fn open_add(&mut self) {
@@ -1082,6 +1095,7 @@ impl App {
             ..NewTunnel::default()
         };
         self.input.clear();
+        self.draft_error = None;
         self.input_mode = InputMode::ChooseMode;
     }
 
@@ -1176,10 +1190,12 @@ impl App {
             }
             KeyCode::Backspace => {
                 self.input.pop();
+                self.draft_error = None;
                 None
             }
             KeyCode::Char(c) => {
                 self.input.push(c);
+                self.draft_error = None;
                 None
             }
             KeyCode::Enter => self.advance(),
@@ -1195,7 +1211,19 @@ impl App {
                     self.input = value;
                     return None;
                 }
-                self.draft.name = value.trim().to_string();
+                let name = value.trim().to_string();
+                if let Err(e) = crate::state::validate_tunnel_name(&name) {
+                    self.draft_error = Some(e.to_string());
+                    self.input = value;
+                    return None;
+                }
+                if self.name_is_taken(&name) {
+                    self.draft_error = Some(format!("'{name}' is already used in this account"));
+                    self.input = value;
+                    return None;
+                }
+                self.draft_error = None;
+                self.draft.name = name;
                 self.input_mode = match self.draft.mode {
                     TunnelMode::Access => {
                         self.want_instances = true;
