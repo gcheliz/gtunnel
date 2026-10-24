@@ -192,7 +192,12 @@ pub mod testing {
         pub fn new() -> Self {
             let guard = CONFIG_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
             let dir = tempfile::tempdir().expect("tempdir");
-            std::env::set_var("GTUNNEL_CONFIG_DIR", dir.path());
+            // SAFETY: every test that reads or writes this variable holds
+            // CONFIG_DIR_LOCK through the guard above, so none of them races this
+            // write. A test that never takes the lock and reads the environment
+            // concurrently is outside that guarantee, as it was before the edition
+            // made the call `unsafe`.
+            unsafe { std::env::set_var("GTUNNEL_CONFIG_DIR", dir.path()) };
             Self { dir, _guard: guard }
         }
 
@@ -204,7 +209,9 @@ pub mod testing {
 
     impl Drop for TempConfigDir {
         fn drop(&mut self) {
-            std::env::remove_var("GTUNNEL_CONFIG_DIR");
+            // SAFETY: `_guard` is still held here (fields drop after this body), so
+            // the lock covering `set_var` covers this removal too.
+            unsafe { std::env::remove_var("GTUNNEL_CONFIG_DIR") };
         }
     }
 }

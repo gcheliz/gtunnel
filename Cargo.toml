@@ -1,7 +1,7 @@
 [package]
 name = "gtunnel"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 # ratatui 0.30 sets this floor; every other dependency is at 1.85 or below.
 rust-version = "1.88"
 description = "TUI-first CLI for GCP IAP tunnels and public URLs via a GCP relay"
@@ -31,3 +31,9 @@ humantime = "2"
 [dev-dependencies]
 wiremock = "0.6"
 tempfile = "3"
+
+[lints.clippy]
+# TODO: collapse these into let chains (stable in edition 2024) once the files they
+# sit in are no longer under edit; rewriting them with the migration would reflow
+# code unrelated to it.
+collapsible_if = "allow"

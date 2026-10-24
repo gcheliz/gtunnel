@@ -1,0 +1,3 @@
+# Edition 2024 changes the default style, which would reflow 24 files; keep the
+# 2021 style until a formatting-only change can take it on its own.
+style_edition = "2021"
