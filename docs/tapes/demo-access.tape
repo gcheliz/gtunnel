@@ -1,0 +1,80 @@
+# The life of an Access tunnel: add, start, stop, delete.
+#
+# The hidden preamble builds a throwaway account in a temporary directory and
+# puts a stand-in `gcloud` on PATH, so the recording needs no GCP project. Every
+# line gtunnel prints below is its own, unedited. The target is an IAP
+# destination group, which is the one Access target gtunnel does not look up
+# through the Compute API.
+#
+# The preamble also wraps `ps` to drop foreign `start-iap-tunnel` processes, so
+# the listing shows this recording's tunnel rather than whatever else happens to
+# be tunnelling on the machine doing the recording.
+#
+#   vhs docs/tapes/demo-access.tape
+#
+Output docs/demo-access.gif
+
+Require gtunnel
+
+Set FontSize 16
+Set Width 1500
+Set Height 500
+Set Padding 24
+Set TypingSpeed 55ms
+
+Hide
+Type `export GT=$(mktemp -d) && mkdir -p "$GT/bin" "$GT/cfg"`
+Enter
+Type `printf '#!/bin/sh\ncase "$1" in auth) echo ya29.demo-token ;; *) exec sleep 3600 ;; esac\n' > "$GT/bin/gcloud" && chmod +x "$GT/bin/gcloud"`
+Enter
+Type `printf '#!/bin/sh\n/bin/ps "$@" | grep -v start-iap-tunnel || true\n' > "$GT/bin/ps" && chmod +x "$GT/bin/ps"`
+Enter
+Type `printf 'selected_account = "demo"\n[[accounts]]\nname = "demo"\ngcloud_configuration = "demo"\nproject = "acme-dev"\ndefault_zone = "europe-west1-b"\n' > "$GT/cfg/config.toml"`
+Enter
+Type `export PATH="$GT/bin:$PATH" GTUNNEL_CONFIG_DIR="$GT/cfg" PS1="$ "`
+Enter
+Type "clear"
+Enter
+Show
+
+Sleep 800ms
+Type "gtunnel add db 10.0.0.5:5432 --dest-group prod-hosts --region europe-west1"
+Sleep 600ms
+Enter
+Sleep 2s
+
+Type "gtunnel list"
+Sleep 400ms
+Enter
+Sleep 2500ms
+
+Type "gtunnel start db"
+Sleep 400ms
+Enter
+# `start` holds the terminal until the service reports running; typing the next
+# command before it returns echoes a stray character into its output
+Sleep 6s
+
+Type "gtunnel list"
+Sleep 400ms
+Enter
+Sleep 3s
+
+Type "gtunnel stop db"
+Sleep 400ms
+Enter
+Sleep 2500ms
+
+Type "gtunnel delete db"
+Sleep 400ms
+Enter
+Sleep 2500ms
+
+Type "gtunnel list"
+Sleep 400ms
+Enter
+Sleep 2500ms
+
+Hide
+Type `rm -rf "$GT"`
+Enter
