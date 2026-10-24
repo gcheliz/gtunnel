@@ -7,6 +7,7 @@ mod doctor;
 mod ephemeral;
 mod expose;
 mod gcp;
+mod loglevel;
 mod notify;
 mod probe;
 mod state;
