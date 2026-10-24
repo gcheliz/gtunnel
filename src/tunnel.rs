@@ -63,6 +63,12 @@ pub fn access_argv(acct: &Account, t: &PersistentTunnel) -> Result<Vec<String>> 
                 "ServerAliveInterval=30",
                 "-o",
                 "ServerAliveCountMax=3",
+                // gcloud's --verbosity governs gcloud, not the ssh it execs.
+                // At the default level ssh says nothing once connected, so a
+                // healthy jump tunnel's log was empty; VERBOSE reports the
+                // forward being established and each channel opened on it
+                "-o",
+                "LogLevel=VERBOSE",
                 "-L",
             ]
             .into_iter()
@@ -331,6 +337,18 @@ mod tests {
                 "--impersonate-service-account=sa@proj-1.iam.gserviceaccount.com",
             ]
         );
+    }
+
+    // gcloud's --verbosity governs gcloud, not the ssh it execs, and a jump
+    // tunnel is ssh. Without this a healthy --via tunnel still logs nothing.
+    #[test]
+    fn a_jump_tunnel_asks_ssh_to_say_when_it_forwards() {
+        let argv = access_argv(&account(), &jump_tunnel()).expect("argv");
+        let i = argv
+            .iter()
+            .position(|a| a == "LogLevel=VERBOSE")
+            .expect("ssh is silent by default, so a healthy --via tunnel logs nothing");
+        assert_eq!(argv[i - 1], "-o", "{argv:?}");
     }
 
     // The lines that say a client connected are log.info in iap_tunnel.py,
