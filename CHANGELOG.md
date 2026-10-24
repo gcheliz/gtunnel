@@ -3,6 +3,21 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.2](https://github.com/gcheliz/gtunnel/compare/v0.1.1...v0.1.2) - 2026-10-24
+
+### Added
+
+- the help frame names the running version, so a bug report can quote it
+  ([#15](https://github.com/gcheliz/gtunnel/pull/15)). Press `?`; the title reads
+  `Keys - gtunnel 0.1.2`, and sheds the version below 28 columns rather than clipping it
+
+### Documentation
+
+- the version table described a 1.0 project, and this one is not ([#17](https://github.com/gcheliz/gtunnel/pull/17))
+- the cargo uninstall recovery hits an ambiguity, so show it ([#16](https://github.com/gcheliz/gtunnel/pull/16))
+- installation recovery, a full config reference, and a release tag gate ([#15](https://github.com/gcheliz/gtunnel/pull/15))
+- say what gh attestation verify actually prints ([#11](https://github.com/gcheliz/gtunnel/pull/11))
+
 ## v0.1.1 - 2026-10-24
 
 ### Installing and proving what you installed
