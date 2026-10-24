@@ -1456,12 +1456,12 @@ impl App {
         // Ops run concurrently, so only a create's own result settles its
         // draft. A dialog already open is someone's work in progress and is
         // not overwritten; the failure still reaches the status line.
-        if result.from_create {
-            if let Some((draft, step)) = self.last_draft.take() {
-                if !result.ok && self.input_mode == InputMode::Normal {
-                    self.reopen(draft, step, &result.message);
-                }
-            }
+        if result.from_create
+            && let Some((draft, step)) = self.last_draft.take()
+            && !result.ok
+            && self.input_mode == InputMode::Normal
+        {
+            self.reopen(draft, step, &result.message);
         }
         if result.reload {
             self.force_refresh = true;
