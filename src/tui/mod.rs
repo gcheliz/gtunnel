@@ -784,6 +784,113 @@ mod tests {
         assert_eq!(ui::NAME_ROW, "  gtunnel  ");
     }
 
+    /// A braille glyph cannot be enlarged, so the README carries a vector of
+    /// the same dots rather than a second drawing. Two drawings drift the
+    /// moment nothing compares them, which is how the repository came to hold
+    /// a cloud the terminal never draws.
+    ///
+    /// One dot is one circle on the same lattice, separated as braille
+    /// separates its dots. The gaps are the drawing: they are what keeps the
+    /// full-width row reading as a line running behind the cloud rather than
+    /// as its base. Squares as wide as the pitch close those gaps, and the
+    /// mark then reads as one bottom-heavy blob with the line swallowed.
+    /// The lattice is read off the file here, so this pins the shape and the
+    /// colours without pinning the pitch, the radius or the margins.
+    #[test]
+    fn the_readme_banner_is_the_mark_dot_for_dot() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let svg = std::fs::read_to_string(root.join("docs/logo.svg")).unwrap();
+
+        // Only the dots are circles; the ground is the file's one <rect>.
+        let mut dots: Vec<(f64, f64, String)> = Vec::new();
+        for tag in svg.split("<circle").skip(1) {
+            let head = tag.split('>').next().expect("an unclosed <circle");
+            let attr = |name: &str| -> String {
+                let key = format!(" {name}=\"");
+                let at = head
+                    .find(&key)
+                    .unwrap_or_else(|| panic!("a dot <circle> with no {name}"));
+                head[at + key.len()..]
+                    .split('"')
+                    .next()
+                    .unwrap()
+                    .to_string()
+            };
+            dots.push((
+                attr("cx").parse().expect("cx is a number"),
+                attr("cy").parse().expect("cy is a number"),
+                attr("fill").to_ascii_uppercase(),
+            ));
+        }
+
+        let axis = |vals: Vec<f64>| -> Vec<f64> {
+            let mut v = vals;
+            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            v.dedup_by(|a, b| (*a - *b).abs() < 0.5);
+            v
+        };
+        let xs = axis(dots.iter().map(|c| c.0).collect());
+        let ys = axis(dots.iter().map(|c| c.1).collect());
+        assert_eq!(
+            xs.len(),
+            2 * ui::MARK_WIDTH as usize,
+            "a braille cell is two dots wide, so the grid is 2 x MARK_WIDTH across"
+        );
+        assert_eq!(ys.len(), 4, "a braille cell is four dots tall");
+
+        let index = |v: f64, axis: &[f64]| -> u16 {
+            axis.iter().position(|a| (a - v).abs() < 0.5).unwrap() as u16
+        };
+        let mut drawn: Vec<(u16, u16, String)> = dots
+            .iter()
+            .map(|(x, y, fill)| (index(*x, &xs), index(*y, &ys), fill.clone()))
+            .collect();
+        drawn.sort();
+
+        let hex = |c: ratatui::style::Color| match c {
+            ratatui::style::Color::Rgb(r, g, b) => format!("#{r:02X}{g:02X}{b:02X}"),
+            other => panic!("the mark's bands must be exact hues, found {other:?}"),
+        };
+        let mut want: Vec<(u16, u16, String)> = ui::mark_dots()
+            .into_iter()
+            .map(|(x, y, colour)| (x, y, hex(colour)))
+            .collect();
+        want.sort();
+
+        assert_eq!(
+            drawn, want,
+            "docs/logo.svg is no longer the mark the TUI draws"
+        );
+    }
+
+    /// The design canvas drew a different fallback. The code's is the one a
+    /// terminal without braille coverage actually shows, so it is the one the
+    /// canvas and the docs follow, not the other way round.
+    ///
+    /// The upper-half block is barred by name: the shape has no cell whose
+    /// lower rows are empty, so any `▀` in here is a hole punched under the
+    /// cloud. The fallback carried one for exactly that long.
+    #[test]
+    fn the_fallback_is_the_one_the_code_draws_not_the_canvas() {
+        let drawn: String = ui::mark_spans(false, 0)
+            .iter()
+            .flat_map(|s| s.content.chars())
+            .collect();
+        assert_eq!(
+            drawn, "\u{2500}\u{2500}\u{2584}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2584}\u{2500}\u{2500}",
+            "the fallback is the code's, not the canvas's"
+        );
+        assert_eq!(
+            drawn.chars().count(),
+            ui::MARK_WIDTH as usize,
+            "the fallback keeps the lockup's geometry"
+        );
+        assert!(
+            !drawn.contains('\u{2580}'),
+            "an upper-half block opens a hole under the cloud"
+        );
+    }
+
     // The lockup only centres if the mark and the name are the same number of
     // cells. A terminal has no half cells, so this is an equality, not a target.
     #[test]
