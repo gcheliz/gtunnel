@@ -2499,7 +2499,7 @@ fn render_instance_picker(f: &mut Frame, app: &App) {
             filter: &app.input,
             rows,
             selected: app.instance_selected,
-            error: None,
+            error: app.draft_error.as_deref(),
         },
     );
 }

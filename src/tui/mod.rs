@@ -31,6 +31,15 @@ enum Msg {
     OpDone(OpResult),
 }
 
+// A seam of its own so the failure path is testable: an `if let Ok` here once
+// dropped the error and left an unreadable account looking merely empty
+fn instances_msg(result: Result<Vec<app::InstanceChoice>>) -> Msg {
+    match result {
+        Ok(instances) => Msg::Instances(instances),
+        Err(e) => Msg::InstancesFailed(format!("{e:#}")),
+    }
+}
+
 pub async fn run_tui(initial_account: Option<&str>) -> Result<()> {
     let config = load_config()?;
     let account = config.get_account(initial_account)?.name.clone();
@@ -216,11 +225,7 @@ async fn event_loop(
                     let account = app.account.clone();
                     let tx = tx.clone();
                     tokio::spawn(async move {
-                        let msg = match ops::load_instances(&account).await {
-                            Ok(instances) => Msg::Instances(instances),
-                            Err(e) => Msg::InstancesFailed(format!("{e:#}")),
-                        };
-                        let _ = tx.send(msg);
+                        let _ = tx.send(instances_msg(ops::load_instances(&account).await));
                     });
                 }
                 schedule(app, &mut timers, tx);
@@ -3430,6 +3435,55 @@ mod tests {
         keys(&mut app, "a1cache\nbastion\n");
         assert_eq!(app.input_mode, InputMode::AddJumpHost);
         assert_eq!(app.draft.zone, "europe-west4-a");
+    }
+
+    #[test]
+    fn a_filter_that_matches_none_of_the_listed_instances_accepts_what_was_typed() {
+        let mut app = at_the_name_prompt();
+        app.default_zone = "europe-west1-b".to_string();
+        app.instances = vec![InstanceChoice {
+            name: "my-vm".to_string(),
+            zone: "europe-west4-a".to_string(),
+        }];
+        keys(&mut app, "cache\nbastion\n");
+        assert_eq!(app.input_mode, InputMode::AddJumpHost);
+        assert_eq!(app.draft.instance, "bastion");
+        assert_eq!(app.draft.zone, "europe-west1-b");
+    }
+
+    #[test]
+    fn accepting_a_typed_instance_clears_the_failed_list_error_from_the_status_line() {
+        let mut app = at_the_name_prompt();
+        keys(&mut app, "cache\n");
+        app.instances_failed("gcloud exited 1");
+        keys(&mut app, "bastion\n");
+        assert!(!app.status_error, "a standing error about the list");
+        let status = app.status.as_deref().unwrap_or("");
+        assert!(!status.contains("gcloud exited 1"), "{status}");
+    }
+
+    #[test]
+    fn the_instance_picker_draws_the_error_set_for_it() {
+        let mut app = at_the_name_prompt();
+        keys(&mut app, "cache\n");
+        app.instances_failed("gcloud exited 1");
+        let buffer = screen(&app, 120, 40);
+        let text: String = (0..buffer.area.height)
+            .map(|y| row_chars(&buffer, y).into_iter().collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        // The dialog wraps the line, so only a fragment that fits one row is stable
+        assert!(text.contains("Could not list instances"), "{text}");
+    }
+
+    #[test]
+    fn a_failed_instance_list_becomes_a_message_carrying_the_reason() {
+        let failed = instances_msg(Err(anyhow::anyhow!("gcloud exited 1")));
+        match failed {
+            Msg::InstancesFailed(reason) => assert_eq!(reason, "gcloud exited 1"),
+            _ => panic!("the error was dropped"),
+        }
+        assert!(matches!(instances_msg(Ok(Vec::new())), Msg::Instances(_)));
     }
 
     #[test]

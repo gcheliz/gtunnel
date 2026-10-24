@@ -409,6 +409,12 @@ impl Drop for Pause {
     }
 }
 
+const LIST_FAILURE: &str = "Could not list instances: ";
+
+fn is_list_failure(status: &str) -> bool {
+    status.starts_with(LIST_FAILURE)
+}
+
 pub struct App {
     pub account: String,
     pub accounts: Vec<String>,
@@ -581,7 +587,7 @@ impl App {
     // inside the dialog; the status line carries it for after the dialog closes.
     // It is an error about the account's list, not about what was typed.
     pub fn instances_failed(&mut self, reason: &str) {
-        let message = format!("Could not list instances: {reason}");
+        let message = format!("{LIST_FAILURE}{reason}");
         if self.input_mode == InputMode::AddInstance {
             self.draft_error = Some(format!("{message}. Type the instance name instead"));
         }
@@ -1383,6 +1389,13 @@ impl App {
                 self.draft.instance = instance;
                 self.draft.zone = zone;
                 self.draft_error = None;
+                // Typing a name worked around a failed list, so the list's
+                // error no longer describes anything the person must act on
+                // other errors on the line are not the list's to clear
+                if self.status_error && self.status.as_deref().is_some_and(is_list_failure) {
+                    self.status = None;
+                    self.status_error = false;
+                }
                 self.input.clear();
                 self.input_mode = InputMode::AddJumpHost;
             }
