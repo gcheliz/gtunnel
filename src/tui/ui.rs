@@ -111,6 +111,52 @@ pub fn mark_spans(braille: bool, row: usize) -> Vec<Span<'static>> {
     band_spans(art[row], &MARK_BANDS)
 }
 
+/// Every lit dot of the mark as `(x, y, colour)`, on the grid a row of braille
+/// cells describes: two dots wide per cell, four tall, so `2 * MARK_WIDTH` by
+/// four. Left to right, then top to bottom.
+///
+/// This is here so the README's banner can be the same drawing as the
+/// terminal's rather than a second one. The art cannot be enlarged *as
+/// braille* -- see `MARK_BRAILLE` for why -- but the dots behind it can be
+/// re-plotted at any size, and plotting them from here is what keeps the two
+/// in step. `the_readme_banner_is_the_mark_dot_for_dot` holds `docs/logo.svg`
+/// to exactly what this returns. The four rows are a property of a braille
+/// cell, not of the art; `MARK_ROWS` is pinned at one.
+///
+/// Test-only, because that test is its only caller: the TUI draws the glyphs
+/// themselves and never needs the dots behind them. Keeping it out of the
+/// release build is cheaper than an `allow(dead_code)`, which would silence a
+/// lint the crate turns on deliberately.
+#[cfg(test)]
+pub fn mark_dots() -> Vec<(u16, u16, Color)> {
+    // A braille cell numbers its dots down the left column and then down the
+    // right, with the two fourth-row dots appended last: bit 0 is (0,0) and
+    // bit 2 is (0,2), bit 3 is (1,0) and bit 5 is (1,2), then bit 6 is (0,3)
+    // and bit 7 is (1,3).
+    const PLACES: [(u16, u16); 8] = [
+        (0, 0),
+        (0, 1),
+        (0, 2),
+        (1, 0),
+        (1, 1),
+        (1, 2),
+        (0, 3),
+        (1, 3),
+    ];
+    let mut dots = Vec::new();
+    for y in 0..4 {
+        for (cell, ch) in MARK_BRAILLE[0].chars().enumerate() {
+            let bits = ch as u32 - 0x2800;
+            for (bit, (dx, dy)) in PLACES.iter().enumerate() {
+                if *dy == y && bits & (1 << bit) != 0 {
+                    dots.push((2 * cell as u16 + dx, y, MARK_BANDS[cell]));
+                }
+            }
+        }
+    }
+    dots
+}
+
 /// The rule that closes the header off from the panes, inset by the margin so
 /// it starts and ends where the panes below it do.
 fn rule_line(w: usize) -> Line<'static> {
