@@ -3,6 +3,14 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.4](https://github.com/gcheliz/gtunnel/compare/v0.1.3...v0.1.4) - 2026-10-25
+
+### Added
+
+- ~/.gtunnel configuration directory path with backwards-compatible fallback ([#22](https://github.com/gcheliz/gtunnel/pull/22))
+- SESSION PATHS section in the `?` help modal displaying active config, tunnels, and logs paths ([#22](https://github.com/gcheliz/gtunnel/pull/22))
+- interactive confirmation prompt before launching `gcloud auth login` on unauthenticated startup ([#22](https://github.com/gcheliz/gtunnel/pull/22))
+
 ## [0.1.3](https://github.com/gcheliz/gtunnel/compare/v0.1.2...v0.1.3) - 2026-10-24
 
 ### Added
