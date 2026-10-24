@@ -15,6 +15,20 @@ what is on `main` and not yet tagged.
   broad permissions, unpinned actions and persisted credentials. Checkouts no longer keep
   the token, CI jobs are read-only, and the release build no longer restores a build cache.
 
+### Documentation
+
+- **A security policy** - `SECURITY.md` names the supported version, routes reports through
+  GitHub's private vulnerability reporting rather than a public issue, and says what gtunnel
+  holds: no stored credential, a fresh token per call from `gcloud auth print-access-token`,
+  and nothing secret in `config.toml` or `tunnels.toml`.
+- **Badges that a private repository can back** - the CI badge is gone. GitHub's image proxy
+  fetches anonymously, so every dynamic badge against a private repository renders as a broken
+  image; the workflow badge returned 404 while the static ones returned 200. In its place are
+  static badges for the version, the Rust floor, the edition, the security policy and the
+  licence, and a line naming what CI actually runs. **The version badge is written by hand and
+  has to be bumped in `README.md` as part of cutting a release.** The CI badge can come back
+  the day the repository goes public.
+
 ## v0.1.0 - unreleased
 
 First release. gtunnel is a port of [ytunnel](https://yetidevworks.com/ytunnel) to GCP
