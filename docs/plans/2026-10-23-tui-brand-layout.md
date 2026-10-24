@@ -8,7 +8,7 @@
 
 **Tech Stack:** Rust, ratatui, crossterm.
 
-**Spec:** the approved canvas — https://claude.ai/artifact/TwZjfGhQ2ZuNLcMdJMkYgJ (boards: `Main` the layout, `States` every state and width, `Keys` the full keymap). The boards are the binding reference for colour, grouping and shedding order.
+**Spec:** the approved design canvas (boards: `Main` the layout, `States` every state and width, `Keys` the full keymap). The boards are the binding reference for colour, grouping and shedding order.
 
 ## Global Constraints
 

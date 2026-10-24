@@ -89,8 +89,7 @@ whether to commit it first as its own change or let Task 2 subsume it; leaving i
 across phase 1 makes the task's diff unreadable.
 
 **Exit condition:** the six tasks are complete under their own plan's verification, and the TUI
-rendered in a real terminal matches the approved canvas at
-`https://claude.ai/artifact/TwZjfGhQ2ZuNLcMdJMkYgJ`.
+rendered in a real terminal matches the approved design canvas.
 
 ---
 
