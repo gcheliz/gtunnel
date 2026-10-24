@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
+use std::sync::OnceLock;
 
 /// How much a tunnel says about itself.
 ///
@@ -93,6 +94,26 @@ impl FromStr for LogLevel {
             _ => Err(ParseLogLevelError(s.to_string())),
         }
     }
+}
+
+/// The level this process resolved at startup.
+///
+/// A value rather than a parameter because the argv builders sit behind a
+/// dozen call sites - `service_spec` alone has twelve - that have no business
+/// knowing about verbosity. The builders themselves still take the level
+/// explicitly, so a test can pin any level without touching this.
+static CURRENT: OnceLock<LogLevel> = OnceLock::new();
+
+/// Record the level `main` resolved. The first call wins; later ones are
+/// ignored, so no code path can quietly change the level mid-run.
+pub fn set_current(level: LogLevel) {
+    let _ = CURRENT.set(level);
+}
+
+/// The level in force. `info` before `main` has resolved one, which is what
+/// every test and every argv built outside the binary's startup path gets.
+pub fn current() -> LogLevel {
+    CURRENT.get().copied().unwrap_or_default()
 }
 
 #[cfg(test)]

@@ -23,6 +23,21 @@ use cli::{AccountCommands, Cli, Commands, DomainsCommands, RelayCommands, ZonesC
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Cli::parse();
+
+    // Before anything builds an argv or calls gcloud, and before the config
+    // is needed for anything else: a bad GTUNNEL_LOG_LEVEL should fail here,
+    // naming the variable, rather than somewhere downstream. A config that
+    // does not load yet - `gtunnel init` has not run - is not an error at
+    // this point, so its contribution falls back to the default.
+    let from_file = config::load_config()
+        .map(|c| c.log_level)
+        .unwrap_or_default();
+    loglevel::set_current(config::resolve_log_level(
+        args.log_level,
+        std::env::var("GTUNNEL_LOG_LEVEL").ok().as_deref(),
+        from_file,
+    )?);
+
     let account = args.account.as_deref();
     // The hint reads a cache file; `update` does the real check itself
     let quiet = matches!(args.command, None | Some(Commands::Update { .. }));

@@ -53,7 +53,7 @@ pub fn service_spec(cfg: &Config, t: &PersistentTunnel) -> Result<ServiceSpec> {
     let acct = cfg.get_account(Some(&t.account_name))?;
     let gcloud = crate::gcp::gcloud::require_gcloud()?;
     let args = match &t.spec {
-        TunnelSpec::Access { .. } => tunnel::access_argv(acct, t)?,
+        TunnelSpec::Access { .. } => tunnel::access_argv(acct, t, crate::loglevel::current())?,
         TunnelSpec::Expose { .. } => {
             let ex = acct.expose.as_ref().with_context(|| {
                 format!(
@@ -61,7 +61,7 @@ pub fn service_spec(cfg: &Config, t: &PersistentTunnel) -> Result<ServiceSpec> {
                     acct.name
                 )
             })?;
-            tunnel::expose_argv(acct, ex, t)?
+            tunnel::expose_argv(acct, ex, t, crate::loglevel::current())?
         }
     };
     Ok(ServiceSpec {

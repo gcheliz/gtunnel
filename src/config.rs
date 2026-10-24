@@ -442,6 +442,16 @@ mod tests {
         );
     }
 
+    // The flag is the way out of a typo in a shell profile, so it must not
+    // need that typo fixed first. The value is never read, so it never fails.
+    #[test]
+    fn an_explicit_flag_overrides_even_an_unreadable_environment() {
+        assert_eq!(
+            resolve_log_level(Some(LogLevel::Debug), Some("nonsense"), LogLevel::Info).unwrap(),
+            LogLevel::Debug
+        );
+    }
+
     // An empty variable is how a shell spells "unset" in practice, and
     // failing on it would make `GTUNNEL_LOG_LEVEL= gtunnel list` an error
     #[test]
