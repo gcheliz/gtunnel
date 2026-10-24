@@ -37,12 +37,12 @@ pub async fn run_tui(initial_account: Option<&str>) -> Result<()> {
 
     let mut app = App::new(&account);
     app.reload_config(&config);
-    app.default_zone = config
+    app.zones = config
         .accounts
         .iter()
-        .find(|a| a.name == account)
-        .map(|a| a.default_zone.clone())
-        .unwrap_or_default();
+        .map(|a| (a.name.clone(), a.default_zone.clone()))
+        .collect();
+    app.default_zone = app.zones.get(&account).cloned().unwrap_or_default();
 
     let (tx, mut rx) = mpsc::unbounded_channel::<Msg>();
     spawn_input(tx.clone(), app.input_gate.clone());
@@ -3413,6 +3413,23 @@ mod tests {
         assert_eq!(app.draft.instance, "bastion");
         assert_eq!(app.draft.zone, "europe-west1-b");
         assert!(app.draft_error.is_none(), "an accepted name kept the error");
+    }
+
+    #[test]
+    fn a_typed_instance_takes_the_zone_of_the_account_switched_to() {
+        let mut app = app_with_two();
+        app.accounts = vec!["dev".to_string(), "prod".to_string()];
+        app.zones = [
+            ("dev".to_string(), "europe-west1-b".to_string()),
+            ("prod".to_string(), "europe-west4-a".to_string()),
+        ]
+        .into();
+        app.default_zone = "europe-west1-b".to_string();
+        keys(&mut app, ";");
+        assert_eq!(app.account, "prod");
+        keys(&mut app, "a1cache\nbastion\n");
+        assert_eq!(app.input_mode, InputMode::AddJumpHost);
+        assert_eq!(app.draft.zone, "europe-west4-a");
     }
 
     #[test]

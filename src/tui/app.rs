@@ -422,6 +422,10 @@ pub struct App {
     // Zone for an instance the person typed, which the picker never saw and so
     // never learned a zone for; an account whose list cannot be read still needs one
     pub default_zone: String,
+    // Every account's zone, so `;` can re-point `default_zone` in the same
+    // switch that changes the account and a typed instance never inherits the
+    // previous account's zone
+    pub zones: HashMap<String, String>,
     pub entries: Vec<TunnelEntry>,
     // False until a load has answered for this account. An empty list means
     // nothing before that, so the pane must not claim the account is empty
@@ -507,6 +511,7 @@ impl App {
             projects: HashMap::new(),
             relays: HashMap::new(),
             default_zone: String::new(),
+            zones: HashMap::new(),
             entries: Vec::new(),
             loaded: false,
             load_failed: false,
@@ -656,6 +661,7 @@ impl App {
         let current = self.accounts.iter().position(|a| *a == self.account);
         let next = current.map(|i| (i + 1) % self.accounts.len()).unwrap_or(0);
         self.account = self.accounts[next].clone();
+        self.default_zone = self.zones.get(&self.account).cloned().unwrap_or_default();
         self.selected = 0;
         self.entries.clear();
         // The old account's answer says nothing about the new one's

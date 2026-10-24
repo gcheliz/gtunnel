@@ -167,6 +167,11 @@ impl App {
             ("staging".to_string(), "gtunnel-staging-000000".to_string()),
         ]
         .into();
+        app.zones = [
+            ("demo".to_string(), "europe-west1-b".to_string()),
+            ("staging".to_string(), "europe-west4-a".to_string()),
+        ]
+        .into();
         app.default_zone = "europe-west1-b".to_string();
         app.load_demo_account();
         app.set_status("demo data: nothing here touches GCP");
