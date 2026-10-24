@@ -1,7 +1,9 @@
 [package]
 name = "gtunnel"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
+# ratatui 0.30 sets this floor; every other dependency is at 1.85 or below.
+rust-version = "1.88"
 description = "TUI-first CLI for GCP IAP tunnels and public URLs via a GCP relay"
 authors = ["gcheliz"]
 license = "MIT"
@@ -14,17 +16,32 @@ categories = ["command-line-utilities", "network-programming"]
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["full", "process"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-toml = "0.8"
-dirs = "6"
+toml = "1"
+dirs = "7"
 anyhow = "1"
-rand = "0.9"
+rand = "0.10"
 ratatui = "0.30"
 crossterm = "0.29"
 libc = "0.2"
+humantime = "2"
 
 [dev-dependencies]
 wiremock = "0.6"
 tempfile = "3"
+
+[lints.rust]
+# Edition 2024 makes this warn by default; stating it keeps the policy
+# readable in one place and holds if the edition ever changes.
+unsafe_op_in_unsafe_fn = "warn"
+
+[lints.clippy]
+# Each of these is an error in CI through `-D warnings`. An unsafe block must
+# carry the invariant that makes it sound, and a stray debug or placeholder
+# macro must not reach a release binary.
+undocumented_unsafe_blocks = "warn"
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"

@@ -1,0 +1,22 @@
+version: 2
+
+# Both ecosystems are supply chain for the published binary: a crate ends up
+# inside it, and an action builds and signs it. Actions are pinned by commit,
+# which Dependabot updates along with the version comment
+updates:
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # One PR for the routine patch and minor bumps; a major arrives alone,
+      # because that is the one that needs a human to read a changelog
+      compatible:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

@@ -28,15 +28,25 @@ pub enum Commands {
     // Examples:
     //   gtunnel add db my-vm:5432 -z europe-west1-b --start
     //   gtunnel add pg 10.0.0.5:5432 --dest-group prod --region europe-west1 --network default
+    //   gtunnel add k8s 10.0.0.10:443 --via bastion --local-port 8443
     #[command(about = "Add a persistent Access tunnel (IAP TCP forward to localhost)")]
     Add {
         // Tunnel name
         #[arg(help = "Tunnel name")]
         name: String,
 
-        // INSTANCE:PORT, or HOST:PORT when --dest-group is used
-        #[arg(help = "INSTANCE:PORT, or HOST:PORT with --dest-group")]
+        // INSTANCE:PORT, or HOST:PORT when --dest-group or --via is used
+        #[arg(help = "INSTANCE:PORT, or HOST:PORT with --dest-group or --via")]
         target: String,
+
+        // An instance that can reach the target, when IAP cannot reach it
+        // directly: the forward is made by ssh on that instance
+        #[arg(
+            long,
+            conflicts_with = "dest_group",
+            help = "Instance to forward from, for a host only it can reach"
+        )]
+        via: Option<String>,
 
         // Compute zone of the instance (overrides the account default)
         #[arg(short, long, help = "Compute zone of the instance")]
@@ -141,6 +151,18 @@ pub enum Commands {
         name: String,
     },
 
+    // Start a tunnel at login, or stop doing so
+    #[command(about = "Show or set whether a tunnel starts at login")]
+    Autostart {
+        // Tunnel name
+        #[arg(help = "Tunnel name")]
+        name: String,
+        #[arg(long, help = "Start this tunnel at login", conflicts_with = "off")]
+        on: bool,
+        #[arg(long, help = "Do not start this tunnel at login")]
+        off: bool,
+    },
+
     // Restart a tunnel (stop, rewrite the service, start)
     #[command(about = "Restart a tunnel (stop, rewrite the service, start)")]
     Restart {
@@ -175,6 +197,38 @@ pub enum Commands {
         // Tunnel name
         #[arg(help = "Tunnel name")]
         name: String,
+    },
+
+    // Rename a tunnel
+    #[command(about = "Rename a tunnel and move its service and log with it")]
+    Rename {
+        // Current tunnel name
+        #[arg(help = "Current tunnel name")]
+        old: String,
+
+        // New tunnel name
+        #[arg(help = "New tunnel name")]
+        new: String,
+    },
+
+    // Move an Access tunnel to another account
+    #[command(
+        about = "Move an Access tunnel to another account",
+        long_about = "Move an Access tunnel to another account. The global --account names the \
+source and --to the destination."
+    )]
+    Move {
+        // Tunnel name
+        #[arg(help = "Tunnel name")]
+        name: String,
+
+        // Destination account
+        #[arg(long, help = "Account to move the tunnel to")]
+        to: String,
+
+        // Name to land under when the destination holds the current one
+        #[arg(long, help = "New name, when the destination already has this one")]
+        rename: Option<String>,
     },
 
     // Manage compute zones
@@ -244,6 +298,45 @@ pub enum Commands {
         #[arg(long, help = "Only check, don't install")]
         check: bool,
     },
+}
+
+impl Cli {
+    // No subcommand is the TUI, which talks to GCP from its first refresh
+    pub fn needs_gcp_auth(&self) -> bool {
+        self.command.as_ref().is_none_or(Commands::needs_gcp_auth)
+    }
+}
+
+impl Commands {
+    // Whether the command reaches GCP and so wants credentials up front.
+    // Exhaustive on purpose: a new variant must be decided here, not default.
+    // `doctor` is off the list because it reports missing auth as a finding,
+    // and a login prompt would swallow that; `init` has no account yet.
+    pub fn needs_gcp_auth(&self) -> bool {
+        match self {
+            Commands::Init
+            | Commands::Account { .. }
+            | Commands::Reset { .. }
+            | Commands::Demo
+            | Commands::Update { .. }
+            | Commands::Doctor { .. } => false,
+            Commands::Add { .. }
+            | Commands::Expose { .. }
+            | Commands::Run { .. }
+            | Commands::Start { .. }
+            | Commands::Stop { .. }
+            | Commands::Autostart { .. }
+            | Commands::Restart { .. }
+            | Commands::Logs { .. }
+            | Commands::List
+            | Commands::Delete { .. }
+            | Commands::Rename { .. }
+            | Commands::Move { .. }
+            | Commands::Zones { .. }
+            | Commands::Domains { .. }
+            | Commands::Relay { .. } => true,
+        }
+    }
 }
 
 #[derive(Subcommand, Debug, PartialEq, Eq)]
@@ -336,8 +429,36 @@ pub enum AccountCommands {
         name: String,
     },
 
+    // Add an account from an existing gcloud configuration
+    #[command(about = "Add an account from an existing gcloud configuration")]
+    Add {
+        // Account name
+        #[arg(help = "Account name")]
+        name: String,
+
+        // gcloud configuration to take project and zone from
+        #[arg(long, help = "gcloud configuration to take project and zone from")]
+        configuration: String,
+    },
+
+    // Change an account's project or default zone
+    #[command(about = "Change an account's project or default zone")]
+    Edit {
+        // Account name
+        #[arg(help = "Account name")]
+        name: String,
+
+        // New project
+        #[arg(long, help = "New project")]
+        project: Option<String>,
+
+        // New default zone
+        #[arg(long, help = "New default zone")]
+        zone: Option<String>,
+    },
+
     // Remove an account
-    #[command(about = "Remove an account")]
+    #[command(about = "Remove an account that holds no tunnels")]
     Remove {
         // Account name
         #[arg(help = "Account name")]
@@ -355,6 +476,45 @@ mod tests {
 
     fn parse(args: &[&str]) -> Cli {
         Cli::try_parse_from(args).expect("should parse")
+    }
+
+    #[test]
+    fn rename_takes_the_old_and_the_new_name_and_an_account() {
+        let cli = parse(&["gtunnel", "rename", "db", "pg", "--account", "dev"]);
+        assert_eq!(cli.account.as_deref(), Some("dev"));
+        match cli.command.expect("command") {
+            Commands::Rename { old, new } => assert_eq!((old.as_str(), new.as_str()), ("db", "pg")),
+            other => panic!("parsed as {other:?}"),
+        }
+    }
+
+    #[test]
+    fn move_takes_a_name_a_destination_and_an_optional_rename() {
+        let cli = parse(&[
+            "gtunnel",
+            "move",
+            "db",
+            "--to",
+            "prod",
+            "--rename",
+            "pg",
+            "--account",
+            "dev",
+        ]);
+        assert_eq!(cli.account.as_deref(), Some("dev"));
+        match cli.command.expect("command") {
+            Commands::Move { name, to, rename } => {
+                assert_eq!((name.as_str(), to.as_str()), ("db", "prod"));
+                assert_eq!(rename.as_deref(), Some("pg"));
+            }
+            other => panic!("parsed as {other:?}"),
+        }
+        assert!(Cli::try_parse_from(["gtunnel", "move", "db"]).is_err());
+        let help = Cli::try_parse_from(["gtunnel", "move", "--help"])
+            .err()
+            .expect("help exits")
+            .to_string();
+        assert!(help.contains("--account names the source"), "{help}");
     }
 
     #[test]
@@ -384,6 +544,39 @@ mod tests {
                 assert_eq!(zone.as_deref(), Some("europe-west1-b"));
                 assert_eq!(local_port, Some(15432));
                 assert!(start);
+            }
+            other => panic!("expected Add, got {other:?}"),
+        }
+    }
+
+    // The k9s shape: a private endpoint the bastion can reach, forwarded from
+    // the bastion rather than dialled through IAP directly
+    #[test]
+    fn add_parses_a_jump_host() {
+        let cli = parse(&[
+            "gtunnel",
+            "add",
+            "k8s",
+            "10.0.0.10:443",
+            "--via",
+            "bastion",
+            "--zone",
+            "europe-west1-b",
+            "--local-port",
+            "8443",
+        ]);
+        match cli.command.expect("command") {
+            Commands::Add {
+                target,
+                via,
+                zone,
+                local_port,
+                ..
+            } => {
+                assert_eq!(target, "10.0.0.10:443");
+                assert_eq!(via.as_deref(), Some("bastion"));
+                assert_eq!(zone.as_deref(), Some("europe-west1-b"));
+                assert_eq!(local_port, Some(8443));
             }
             other => panic!("expected Add, got {other:?}"),
         }
@@ -519,5 +712,49 @@ mod tests {
     fn no_subcommand_is_none() {
         let cli = parse(&["gtunnel"]);
         assert!(cli.command.is_none());
+    }
+
+    // Every variant is listed on purpose: a new command must be sorted into
+    // one side or the other here, not inherit a default
+    #[test]
+    fn only_commands_that_touch_gcp_need_a_login() {
+        let skip = ["init", "account", "reset", "demo", "update", "doctor"];
+        for name in skip {
+            let cli = parse(&["gtunnel", name]);
+            assert!(
+                !cli.command.expect("command").needs_gcp_auth(),
+                "{name} must not need a login"
+            );
+        }
+        let check: [&[&str]; 12] = [
+            &["gtunnel", "add", "db", "vm:5432"],
+            &["gtunnel", "expose", "api", "3000"],
+            &["gtunnel", "run", "vm:5432"],
+            &["gtunnel", "start", "db"],
+            &["gtunnel", "stop", "db"],
+            &["gtunnel", "autostart", "db"],
+            &["gtunnel", "restart", "db"],
+            &["gtunnel", "logs", "db"],
+            &["gtunnel", "list"],
+            &["gtunnel", "delete", "db"],
+            &["gtunnel", "zones"],
+            &["gtunnel", "relay", "status"],
+        ];
+        for argv in check {
+            let cli = parse(argv);
+            assert!(
+                cli.command.expect("command").needs_gcp_auth(),
+                "{argv:?} must need a login"
+            );
+        }
+        assert!(parse(&["gtunnel", "domains"])
+            .command
+            .expect("command")
+            .needs_gcp_auth());
+    }
+
+    #[test]
+    fn the_tui_needs_a_login() {
+        assert!(parse(&["gtunnel"]).needs_gcp_auth());
     }
 }
