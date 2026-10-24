@@ -175,8 +175,11 @@ impl Finding {
             }
             Finding::DescriptorsExhausted { tunnel, holder } => {
                 let who = match holder {
+                    // The line in the log may be hours old; the count is
+                    // from a listing taken just now, so say which is which
+                    // rather than letting a bystander read as the cause
                     Some(h) => format!(
-                        "{} (pid {}) holds {} of its connections",
+                        "{} (pid {}) is holding {} of its connections right now",
                         h.command, h.pid, h.count
                     ),
                     None => "the process holding its connections could not be identified, \

@@ -679,9 +679,12 @@ Error: Account 'dev' still has 1 tunnel(s). Delete them with `gtunnel delete`, o
 
 A tunnel can be running and useless at the same time: the process is alive, so nothing
 restarts it, and every new client is refused. `watch` is the thing that notices. It looks
-at every tunnel, and for each one asks two questions — does the service manager call it
-running, and does its local port accept a connection — plus a third from the log: has it
-said `Too many open files` since the last look.
+at every tunnel, and for each one asks two questions: does the service manager call it
+running, and does its local port accept a connection. A tunnel that answers its port is
+healthy, whatever its log says. When one does not answer, the log decides what to call the
+failure — a listener that said `Too many open files` since the last pass is out of
+descriptors, anything else is simply refusing connections — and that word is what ends up
+in the log line and in `gtunnel doctor`.
 
 ```
 $ gtunnel watch --once --verbose
@@ -723,8 +726,8 @@ tunnel that will never come back.
 | The one after restart 4 | Stops it, with a line in the log saying why | |
 
 A failed check inside a wait does nothing at all, so at one pass every 30 seconds the
-longer waits cost a pass or two before the next restart. The whole ladder, from the first
-failure to the stop, takes about five minutes.
+longer waits cost a pass or two before the next restart. At that interval the earliest a
+tunnel can be stopped is six minutes after its first failed check.
 
 Two passing checks in a row clear the breaker outright, so a restart that holds costs
 nothing afterwards; so does stopping the tunnel yourself, because the breaker only has an

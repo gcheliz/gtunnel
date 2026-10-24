@@ -7,11 +7,6 @@
 //! watchdog in `commands::watch` supplies the observations and carries out
 //! the actions.
 
-// Nothing calls this yet: `gtunnel watch` is the only caller there will be,
-// and it lands in Task 6 of the same plan. The tests below exercise every
-// branch in the meantime.
-#![allow(dead_code)]
-
 use std::time::{Duration, SystemTime};
 
 /// Restarts a tunnel is allowed before the breaker concludes that restarting
@@ -202,12 +197,36 @@ pub mod persist {
     /// breaker closed, which is what a first run should see; a file that is
     /// there and unreadable is an error, because silently starting over
     /// would restart tunnels a previous run had deliberately stopped.
+    ///
+    /// Only *not there* is a fresh start. A file we were refused, or that
+    /// the disk could not give us, might be the one saying a tunnel was
+    /// stopped on purpose, and reading that as "every breaker closed" is
+    /// the single wrong answer.
     pub fn load() -> Result<BreakerFile> {
         let path = path()?;
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            return Ok(BreakerFile::new());
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(BreakerFile::new()),
+            Err(err) => {
+                return Err(anyhow::Error::new(err))
+                    .with_context(|| format!("Failed to read {}", path.display()))
+            }
         };
         toml::from_str(&text).with_context(|| format!("Failed to parse {}", path.display()))
+    }
+
+    /// Move an unusable file out of the way and report where it went.
+    ///
+    /// [`load`] refusing to guess is right, but a refusal repeated every
+    /// thirty seconds is the watchdog going silent, which is worse than the
+    /// watchdog forgetting. The caller recovers by calling this, saying so,
+    /// and starting from closed. The file stays on disk as evidence.
+    pub fn set_aside() -> Result<PathBuf> {
+        let path = path()?;
+        let moved = path.with_extension("toml.bad");
+        std::fs::rename(&path, &moved)
+            .with_context(|| format!("Failed to move {} to {}", path.display(), moved.display()))?;
+        Ok(moved)
     }
 
     /// Writes the breakers of tunnels that still exist, and only those: a
@@ -230,7 +249,11 @@ pub mod persist {
             .collect();
         let text = toml::to_string_pretty(&kept).context("Failed to serialize the breakers")?;
 
-        let temp = path.with_extension("toml.new");
+        // The temp name carries the pid: `gtunnel watch` in a terminal and
+        // the agent's `watch --once` are a documented pair, and one fixed
+        // name lets the second writer truncate the first one's half-written
+        // temp before both rename it into place.
+        let temp = path.with_extension(format!("{}.new", std::process::id()));
         write_private(&temp, &text)
             .with_context(|| format!("Failed to write {}", temp.display()))?;
         std::fs::rename(&temp, &path).with_context(|| {
@@ -325,6 +348,52 @@ mod persist_tests {
             "the error must name the file: {err:#}"
         );
         assert!(path.exists(), "a corrupt file is evidence, not litter");
+    }
+
+    // An error every pass forever is the watchdog going silent, which is
+    // worse than the watchdog forgetting. There has to be a way out that
+    // keeps the evidence
+    #[test]
+    fn a_file_that_cannot_be_parsed_can_be_moved_aside_and_started_over() {
+        let _dir = TempConfigDir::new();
+        let path = persist::path().expect("path");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "this is not toml {{{").unwrap();
+
+        let moved = persist::set_aside().expect("set aside");
+        assert!(!path.exists(), "the unparseable file is out of the way");
+        assert!(moved.exists(), "and still on disk to look at");
+        assert_eq!(
+            std::fs::read_to_string(&moved).unwrap(),
+            "this is not toml {{{"
+        );
+        assert_eq!(persist::load().expect("load").len(), 0);
+    }
+
+    // `read_to_string` fails for more reasons than a missing file, and the
+    // others are not "every breaker closed": a file we cannot read might
+    // say a tunnel was stopped on purpose
+    #[test]
+    fn a_file_that_exists_but_cannot_be_read_is_an_error_not_a_fresh_start() {
+        let _dir = TempConfigDir::new();
+        let path = persist::path().expect("path");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "").unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+            // root reads anything, so there is nothing to assert there
+            if std::fs::read_to_string(&path).is_err() {
+                let err = persist::load().expect_err("an unreadable file is an error");
+                assert!(
+                    format!("{err:#}").contains("breakers.toml"),
+                    "the error must name the file: {err:#}"
+                );
+            }
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
     }
 
     #[test]

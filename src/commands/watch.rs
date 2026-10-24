@@ -14,6 +14,10 @@ use crate::daemon;
 use crate::probe::{self, Holder};
 use crate::state::{PersistentTunnel, TunnelState, TunnelStatus};
 
+/// What a listener out of file descriptors writes before it starts refusing
+/// everything. The same words `diagnose_log_line` keys on.
+const DESCRIPTOR_ERROR: &str = "Too many open files";
+
 /// How long a healthy tunnel has to answer its own local port. Generous: a
 /// slow answer is a working tunnel, and a false trip costs a restart.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
@@ -40,17 +44,23 @@ fn observe(status: TunnelStatus, probe_ok: bool, gained_error: bool) -> Observat
     })
 }
 
-/// Whether the part of the log that arrived since `seen` carries a
-/// descriptor error.
+/// Where in the log this pass starts reading: the offset the last pass
+/// stopped at, as a position in the file.
 ///
-/// A log shorter than `seen` was rotated or truncated, so all of it is new.
-fn gained_descriptor_error(log: &str, seen: u64) -> bool {
-    let from = if (log.len() as u64) < seen {
+/// A file shorter than `seen` was emptied by a restart, so all of it is new.
+///
+/// This has to be a file offset read with [`daemon::read_from`], not an index
+/// into a tail window: the window is at most [`daemon::TAIL_WINDOW`] bytes and
+/// is lossily decoded, so on any longer log the two numbers disagree, the
+/// whole window is rescanned every pass, and a descriptor error from hours ago
+/// is read as news - which blames every later failure of that tunnel on
+/// descriptors.
+fn unread_from(len: u64, seen: u64) -> u64 {
+    if len < seen {
         0
     } else {
-        seen as usize
-    };
-    log[from..].contains("Too many open files")
+        seen
+    }
 }
 
 fn reason_text(reason: Reason) -> &'static str {
@@ -64,6 +74,34 @@ fn reason_text(reason: Reason) -> &'static str {
 ///
 /// Nothing is the common case and has to stay silent: a line every thirty
 /// seconds would bury the lines that matter.
+/// What to write after trying to carry an action out. `failed` is the error
+/// the service manager gave, when it refused.
+///
+/// The line describes what happened rather than what was decided: a `stop`
+/// that failed leaves the tunnel running and still refusing connections, and
+/// a log saying it was stopped sends the person hunting for a tunnel that is
+/// right there in `gtunnel list`.
+fn action_line(
+    action: Action,
+    reason: Option<Reason>,
+    holders: &[Holder],
+    failed: Option<&str>,
+) -> Option<String> {
+    let Some(err) = failed else {
+        return log_line(action, reason, holders);
+    };
+    match action {
+        Action::Nothing => None,
+        Action::Restart => Some(format!("could not restart it: {err}")),
+        Action::StopAndReport(reason) => Some(format!(
+            "could not stop it after {} restarts that did not hold: {err}. It is still \
+             running and still failing: {}",
+            crate::breaker::MAX_ATTEMPTS,
+            reason_text(reason),
+        )),
+    }
+}
+
 fn log_line(action: Action, reason: Option<Reason>, holders: &[Holder]) -> Option<String> {
     match action {
         Action::Nothing => None,
@@ -140,7 +178,18 @@ pub async fn one_pass(verbose: bool) -> Result<()> {
         }
     }
 
-    let mut rows = persist::load()?;
+    // A file that cannot be read would abort every pass before a single
+    // tunnel was looked at, forever, with nothing but a line in the
+    // watchdog's own log to say so. Keep it as evidence, say where it went,
+    // and start from closed.
+    let mut rows = match persist::load() {
+        Ok(rows) => rows,
+        Err(err) => {
+            let moved = persist::set_aside()?;
+            eprintln!("{err:#}. Moved it to {} and started over", moved.display());
+            persist::BreakerFile::new()
+        }
+    };
     let live: Vec<String> = watched.iter().map(|t| key(t)).collect();
 
     for tunnel in watched {
@@ -169,7 +218,6 @@ async fn visit(
     let probe_ok = probe::tcp_probe(&addr, PROBE_TIMEOUT).await.is_some();
 
     let log_path = tunnel.log_path()?;
-    let log = daemon::read_tail(&log_path, daemon::TAIL_WINDOW);
     let len = std::fs::metadata(&log_path).map_or(0, |m| m.len());
 
     let row = rows.entry(key(tunnel)).or_insert_with(|| Row {
@@ -178,7 +226,8 @@ async fn visit(
         log_len: len,
         ..Row::default()
     });
-    let gained = gained_descriptor_error(&log, row.log_len);
+    let gained =
+        daemon::read_from(&log_path, unread_from(len, row.log_len)).contains(DESCRIPTOR_ERROR);
     row.log_len = len;
 
     let obs = observe(status, probe_ok, gained);
@@ -186,6 +235,8 @@ async fn visit(
         Observation::Failed(reason) => Some(reason),
         _ => None,
     };
+    // Kept so a decision the service manager refuses can be undone
+    let before = row.breaker.clone();
     let action = row.breaker.observe(obs, now);
     if verbose {
         println!("{}: {obs:?} -> {action:?}", key(tunnel));
@@ -197,25 +248,41 @@ async fn visit(
         Action::StopAndReport(_) => probe::holders_for_port(local_port(tunnel).unwrap_or(0)),
         _ => Vec::new(),
     };
-    if let Some(line) = log_line(action, reason, &holders) {
-        let _ = daemon::log_event(&log_path, &line);
-    }
-
-    match action {
-        Action::Nothing => {}
+    // The action first, then the line that describes it. A breaker that
+    // moved on a restart the service manager refused would spend the whole
+    // ladder on restarts that never happened, and park in Stopped reporting
+    // a tunnel that is still up.
+    let outcome = match action {
+        Action::Nothing => Ok(()),
         // Stop first, exactly as `gtunnel restart` does. Starting alone is
         // not a restart: `launchctl kickstart` without `-k` and `systemctl
         // start` are both no-ops on a service that is already running, and
         // a tunnel that is running is the only kind the breaker ever trips
         // on. Verified by watching the pid: without the stop it does not
-        // change, and four restarts cost four nothings.
-        Action::Restart => {
-            let _ = daemon::stop(&label).await;
-            daemon::start(&label).await?
-        }
-        Action::StopAndReport(_) => daemon::stop(&label).await?,
+        // change, and four restarts cost four nothings. Unlike `gtunnel
+        // restart`, a failed stop is fatal here rather than ignored, because
+        // nobody is watching the start that would quietly do nothing.
+        Action::Restart => match daemon::stop(&label).await {
+            Ok(()) => daemon::start(&label).await,
+            Err(err) => Err(err),
+        },
+        Action::StopAndReport(_) => daemon::stop(&label).await,
+    };
+
+    let failed = outcome.as_ref().err().map(|e| format!("{e:#}"));
+    if failed.is_some() {
+        // The decision assumed the action took. Put the breaker back so the
+        // next pass tries again rather than living in a state it never
+        // actually reached.
+        *row = Row {
+            breaker: before,
+            log_len: row.log_len,
+        };
     }
-    Ok(())
+    if let Some(line) = action_line(action, reason, &holders, failed.as_deref()) {
+        let _ = daemon::log_event(&log_path, &line);
+    }
+    outcome
 }
 
 fn local_port(tunnel: &PersistentTunnel) -> Option<u16> {
@@ -288,6 +355,43 @@ mod tests {
     use crate::breaker::{Action, Reason};
     use crate::probe::Holder;
     use crate::state::TunnelStatus;
+
+    // The offset a pass remembers is a position in the FILE. Reading a
+    // tail window and indexing it with that offset compares two different
+    // numbers, and on any log past the window it silently rescans the whole
+    // window: an error from hours ago is then read as news on every pass,
+    // and every probe failure of that tunnel is blamed on descriptors
+    #[test]
+    fn a_descriptor_error_the_last_pass_already_saw_is_not_read_as_news() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log = dir.path().join("dev-k8s.log");
+
+        // Bigger than one tail window, with the error well inside it
+        let filler = "debug1: forwarding a connection\n".repeat(5000);
+        let old = format!("{filler}error: accept: Too many open files\n{filler}");
+        assert!(old.len() as u64 > crate::daemon::TAIL_WINDOW);
+        std::fs::write(&log, &old).expect("write");
+        let seen = old.len() as u64;
+
+        // The pass after it: the log gained a line, but not that one
+        std::fs::write(&log, format!("{old}debug1: another connection\n")).expect("write");
+        let len = std::fs::metadata(&log).expect("metadata").len();
+
+        let fresh = crate::daemon::read_from(&log, unread_from(len, seen));
+        assert!(
+            !fresh.contains("Too many open files"),
+            "read {} bytes of history as new: {fresh:.120}",
+            fresh.len()
+        );
+
+        // A log emptied by a restart is shorter than the offset, and then
+        // everything in it really is new
+        std::fs::write(&log, "error: accept: Too many open files\n").expect("write");
+        let shorter = std::fs::metadata(&log).expect("metadata").len();
+        assert_eq!(unread_from(shorter, seen), 0);
+        assert!(crate::daemon::read_from(&log, unread_from(shorter, seen))
+            .contains("Too many open files"));
+    }
 
     fn holder(command: &str, pid: u32, count: u64) -> Holder {
         Holder {
@@ -389,30 +493,66 @@ mod tests {
         assert!(skipped[0].contains("docs"), "{:?}", skipped[0]);
     }
 
+    // The log must describe what happened, not what was decided. A
+    // `launchctl bootout` that fails leaves the tunnel running and still
+    // refusing connections, and a log line saying it was stopped sends the
+    // person looking for a tunnel that is right there in `gtunnel list`
+    #[test]
+    fn an_action_the_service_manager_refused_is_not_logged_as_done() {
+        let refused = action_line(
+            Action::Restart,
+            Some(Reason::ProbeRefused),
+            &[],
+            Some("launchctl bootout failed: Operation not permitted"),
+        )
+        .expect("a line");
+        assert!(!refused.contains("restarting it"), "{refused}");
+        assert!(refused.contains("Operation not permitted"), "{refused}");
+
+        let unstopped = action_line(
+            Action::StopAndReport(Reason::DescriptorsExhausted),
+            None,
+            &[],
+            Some("launchctl bootout failed: Operation not permitted"),
+        )
+        .expect("a line");
+        assert!(!unstopped.contains("stopped after"), "{unstopped}");
+        assert!(unstopped.contains("still running"), "{unstopped}");
+
+        // Nothing to do is still nothing to say, however it went
+        assert_eq!(action_line(Action::Nothing, None, &[], Some("boom")), None);
+    }
+
+    // Reads the log the way a pass does: from a file, at a file offset
+    fn read_since(log: &std::path::Path, seen: u64) -> bool {
+        let len = std::fs::metadata(log).expect("metadata").len();
+        crate::daemon::read_from(log, unread_from(len, seen)).contains(DESCRIPTOR_ERROR)
+    }
+
     // A line already in the log when the watchdog first looks is history,
     // not news: tripping on it would stop a tunnel that is working
     #[test]
     fn a_descriptor_error_already_in_the_log_is_not_news() {
-        let log = "accept: Too many open files\n";
-        assert!(!gained_descriptor_error(log, log.len() as u64));
-        assert!(gained_descriptor_error(log, 0));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log = dir.path().join("dev-k8s.log");
+        let text = "accept: Too many open files\n";
+        std::fs::write(&log, text).expect("write");
+        assert!(!read_since(&log, text.len() as u64));
+        assert!(read_since(&log, 0));
     }
 
     // The log is read from where the last pass stopped, so a line that
     // arrived since is the only kind that counts
     #[test]
     fn only_the_part_of_the_log_that_is_new_is_read_for_the_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log = dir.path().join("dev-k8s.log");
         let old = "starting kubernetes on localhost:8443\n";
-        let whole = format!("{old}accept: Too many open files\n");
-        assert!(gained_descriptor_error(&whole, old.len() as u64));
-    }
+        std::fs::write(&log, old).expect("write");
+        assert!(!read_since(&log, old.len() as u64));
 
-    // A log that was rotated or truncated is shorter than it was. Reading
-    // from the old offset would read past the end and see nothing forever
-    #[test]
-    fn a_log_that_shrank_is_read_from_the_beginning_again() {
-        let fresh = "accept: Too many open files\n";
-        assert!(gained_descriptor_error(fresh, 10_000));
+        std::fs::write(&log, format!("{old}accept: Too many open files\n")).expect("write");
+        assert!(read_since(&log, old.len() as u64));
     }
 
     fn access(name: &str) -> crate::state::PersistentTunnel {

@@ -393,6 +393,16 @@ The agent runs the gtunnel binary, not gcloud, so it needs the same `PATH` treat
 | The descriptor check runs before `doctor`'s access-token probe | expired credentials and a wedged tunnel arrive together, and the early return on a bad token would have hidden the finding entirely | one `lsof` listing on an account that cannot reach GCP |
 | `watch`'s subcommand is optional rather than a separate `watchdog` command | the bare word keeps meaning the loop, so nothing that already worked changed | `gtunnel watch` with a typo'd subcommand runs the loop instead of erroring |
 
+### Rulings made in the review fix pass
+
+| Ruling | Why | Cost if wrong |
+|---|---|---|
+| The unread part of a log is read with `read_from(path, offset)`, never by indexing `read_tail`'s window | the window is capped at `TAIL_WINDOW` and lossily decoded, so a stored file length is not an index into it. On any longer log the old arithmetic rescanned the whole window every pass and read a descriptor error from hours ago as news | a pass can reread a line it has already seen if a log is truncated to exactly its previous length |
+| The action runs first and the log line describes what happened, and a refused action restores the breaker | a line written before a `launchctl bootout` that fails leaves a tunnel running while its log says it was stopped, and the breaker parks in `Stopped`, whose only exit is a `NotRunning` observation that will never come | a line is written a moment later than it used to be |
+| A failed stop is fatal to the pass, though `gtunnel restart` ignores one | `restart` stops a tunnel it is about to start regardless; the watchdog's stop **is** the decision, so swallowing its failure would report a tunnel as stopped that is still carrying traffic | a transient service-manager error ends the pass instead of continuing to the next tunnel; the next pass is thirty seconds away |
+| `persist::load` distinguishes `NotFound` from every other error, and `one_pass` recovers by renaming the file to `.toml.bad` | only an absent file means a fresh start. Treating EACCES or a parse error as "every breaker closed" is the single wrong answer, and returning the error instead would silence the watchdog every thirty seconds forever | a file the user hand-edited is moved aside rather than repaired |
+| The temp file written before the rename carries the pid | `gtunnel watch` in a terminal and the agent's `watch --once` are a documented pair, and `std::fs::write` opens `O_TRUNC`, so one fixed name lets the second writer truncate the first one's half-written temp before both rename it into place | a crash between write and rename leaves a `breakers.<pid>.new` behind |
+
 ## Self-review
 
 **Spec coverage.** Each of the four pieces the scope named has a task: the ceiling is Task 1,

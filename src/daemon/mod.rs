@@ -62,6 +62,8 @@ fn daemon_env(gcloud: &std::path::Path) -> Vec<(String, String)> {
 /// `kern.maxfilesperproc` of 61440, so it is a raise that cannot be refused.
 /// Only the soft limit is set: the hard limit is root's to raise, and a
 /// plist asking for it fails to load rather than being ignored.
+pub const TUNNEL_MAX_FILES: u64 = 4096;
+
 /// How often the watchdog wakes to look at every tunnel. Short enough that a
 /// wedged tunnel is noticed before a person reaches for the terminal, long
 /// enough that the probe it runs costs nothing worth measuring.
@@ -76,8 +78,6 @@ pub fn watchdog_label() -> &'static str {
         "gtunnel-watchdog"
     }
 }
-
-pub const TUNNEL_MAX_FILES: u64 = 4096;
 
 // Both bounds hold at build time: above launchd's 256 default so the limit is
 // a raise, and under macOS's `kern.maxfilesperproc` of 61440 so it cannot be

@@ -247,13 +247,14 @@ tunnel's log, and when it finds that line it names the process holding the conne
 ```
 $ gtunnel doctor
 account dev:
-  ! Tunnel 'k8s' ran out of file descriptors: my-client (pid 4471) holds 3804 of its connections. Deal with that, then `gtunnel restart k8s`
+  ! Tunnel 'k8s' ran out of file descriptors: my-client (pid 4471) is holding 3804 of its connections right now. Deal with that, then `gtunnel restart k8s`
 ```
 
 The numbers above are an example; the shape is what the line looks like.
 
-It names the client, not the listener: the tunnel's own process holds the other end of
-every one of those connections, so reporting it would only ever point at the victim. The
+Both ends of a loopback connection are listed, which is why the two counts match: the
+tunnel's own process holds one end of every one of them. gtunnel names the client, because
+naming the listener would only ever point at the victim. The
 check runs before the credentials check, because a wedged tunnel and an expired login tend
 to arrive together and the one must not hide the other.
 
@@ -262,9 +263,9 @@ name — without `+c 0` lsof cuts it to nine characters, which is enough to misl
 enough to grep for:
 
 ```
-$ lsof -nP +c 0 -iTCP:8443 -sTCP:ESTABLISHED | awk '{print $1, $2}' | sort | uniq -c | sort -rn
+$ lsof -nP +c 0 -iTCP:8443 -sTCP:ESTABLISHED | awk 'NR>1{print $1, $2}' | sort | uniq -c | sort -rn
 3804 my-client 4471
-   8 gcloud 1546
+3804 ssh 1545
 ```
 
 A tunnel in this state is what the watchdog exists for: it restarts one that is running but
