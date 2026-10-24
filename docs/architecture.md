@@ -6,13 +6,10 @@ A local port forwarded to a port inside the VPC. Nothing is created in GCP: IAP 
 accepts the connection, and the only requirement is a firewall rule that lets IAP's range
 reach the target port.
 
-```mermaid
-flowchart LR
-  app[Your client] --> lp["localhost:15432"]
-  lp --> gc["gcloud start-iap-tunnel<br/>user service"]
-  gc --> iap["IAP<br/>35.235.240.0/20"]
-  iap --> vm["VM :5432<br/>no public IP"]
-```
+Both inward paths, in one picture: the upper one is access mode, the lower one is the jump
+tunnel described in the next section.
+
+![Access and jump tunnels: a client on localhost reaching a VM through IAP, and a second client reaching a host behind a bastion](images/architecture/gtunnel-access-jump.png)
 
 The service runs:
 
@@ -34,16 +31,8 @@ reaches a host that is not a compute instance.
 
 `--via <instance>` reaches a host that only that instance can reach: a private GKE control
 plane, a managed database on a private address, anything inside the VPC with no IAP
-endpoint of its own. The diagram above stops at the VM; this one has a second hop.
-
-```mermaid
-flowchart TB
-  app["Your client"] --> lp["localhost:8443"]
-  lp --> svc["gcloud compute ssh --tunnel-through-iap<br/>user service"]
-  svc --> iap["IAP<br/>35.235.240.0/20"]
-  iap --> bastion["bastion :22<br/>no public IP"]
-  bastion -->|"ssh -L, forwarded from the far side"| host["10.0.0.10:443<br/>no route from your laptop"]
-```
+endpoint of its own. It is the lower path in the diagram above: IAP stops at the bastion,
+and the hop from there to `db.internal` is an `ssh -L` forward made from the far side.
 
 This is a different gcloud command, not a different flag. IAP carries an SSH connection and
 SSH makes the forward, so the service runs:
@@ -71,17 +60,15 @@ open against a host that is gone.
 A relay VM holds a reverse SSH tunnel back to your laptop. A global HTTPS load balancer
 terminates TLS and sends each hostname to the relay port that belongs to that tunnel.
 
-```mermaid
-flowchart LR
-  net[Internet] --> fr["Forwarding rule<br/>gt-ACCT-fr"]
-  fr --> proxy["HTTPS proxy<br/>gt-ACCT-https<br/>cert map gt-ACCT-certs"]
-  proxy --> um["URL map<br/>gt-ACCT-urlmap<br/>host rule per tunnel"]
-  um --> be["Backend service<br/>gt-ACCT-NAME<br/>description gtunnel:ACCT"]
-  be --> ig["Instance group gt-ACCT-ig<br/>named port gt-NAME -> 30001"]
-  ig --> relay["Relay VM gt-ACCT-relay<br/>e2-micro, no public IP<br/>listens on 0.0.0.0:30001"]
-  relay -. reverse SSH over IAP .-> local["localhost:3000<br/>your laptop"]
-  dns["Cloud DNS A record<br/>NAME.DOMAIN -> gt-ACCT-ip"] -.-> fr
-```
+![Public mode: a visitor reaching a global HTTPS load balancer, which forwards to a relay VM holding a reverse SSH tunnel back to the laptop](images/architecture/gtunnel-public-mode.png)
+
+The load balancer is drawn as one card. Behind it a request crosses five resources, which
+[What belongs to whom](#what-belongs-to-whom) below lists in full: the forwarding rule
+`gt-<acct>-fr`, the HTTPS proxy `gt-<acct>-https` with cert map `gt-<acct>-certs`, the URL
+map `gt-<acct>-urlmap` carrying one host rule per tunnel, the per-tunnel backend service
+`gt-<acct>-<tunnel>`, and the instance group `gt-<acct>-ig` whose named port `gt-<tunnel>`
+selects the relay port. The Cloud DNS A record `<tunnel>.<domain>` resolves to the global
+address `gt-<acct>-ip`.
 
 The tunnel process runs:
 
@@ -170,7 +157,7 @@ flowchart TB
 | Credentials | None stored. Each API call shells out to `gcloud auth print-access-token` for the account's configuration |
 | Ephemeral runs | `run` writes a record with its pid, so `list`, the TUI and `doctor` see it. Every exit path tears the route down, including signals |
 | Concurrent writes | Read-modify-write against a fingerprinted resource (URL map, named ports) retries up to 5 times on HTTP 412 |
-| Metrics | Latency and connection count every 5s, health every 30s, load-balancer request counts every 60s over a 10-minute window |
+| Metrics | Latency every 5s, health every 30s, load-balancer request counts every 60s over a 10-minute window. Connections are sampled every 500ms from one `lsof` listing covering every tunnel, and the 5s figure is the peak of that window: a request shorter than the window would otherwise be missed entirely |
 
 ### Service lifecycle
 
