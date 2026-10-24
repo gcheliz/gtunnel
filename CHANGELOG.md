@@ -5,6 +5,17 @@ what is on `main` and not yet tagged.
 
 ## Unreleased
 
+### Project documentation
+
+- **`CONTRIBUTING.md`** - what to install, the six CI gate commands to run before pushing,
+  the placeholder rule for a public repository and how to capture real output without
+  breaking it, commit and pull-request conventions, and which doc a given change updates.
+- **`docs/decisions.md`** - thirteen records covering the choices that would otherwise be
+  re-litigated: no stored credential, Access mode creating nothing in GCP, user services
+  instead of a daemon, ports derived from the tunnel name, naming, the operator owning the
+  relay firewall, static musl builds, the shape of the CI gate, and squash-only merges.
+  Each says what it costs, not only what was chosen.
+
 ### Accounts, renaming and moving
 
 - **`gtunnel rename` renames the tunnel, not just the record** - a name is also the
