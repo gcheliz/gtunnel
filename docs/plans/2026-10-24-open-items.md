@@ -81,7 +81,7 @@
 **Files:** modify `src/tui/theme.rs`, `src/tui/ui.rs`
 
 - [x] Add `FIELD_BG` (an indexed colour one step from `SELECTED_BG`) and use it for the account field; the theme test that names every exported colour gains it.
-- [ ] Render the header beside a selected row and check by eye in a real terminal that the two read as different things; if they still do not, say so and stop.
+- [x] Render the header beside a selected row and check by eye in a real terminal that the two read as different things; if they still do not, say so and stop. Checked: 238 reads as its own plate beside the 236 selection; the project id needed its own lighter grey (`FIELD_SUBTITLE`, 248) to read on the fill.
 
 ### Task A6: Weak handlers in the keymap test
 
