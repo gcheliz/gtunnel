@@ -24,7 +24,7 @@ concurrency:
 
 jobs:
   release-pr:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       # Pushes the release branch and opens the pull request against it. It cannot
       # tag and it cannot publish a release: release.yml owns both, and the main
@@ -37,7 +37,7 @@ jobs:
       # since it. Credentials are not persisted into .git/config: release-plz
       # authenticates its own push from GITHUB_TOKEN below, so leaving them there
       # would only widen what a later step could reach.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
