@@ -17,6 +17,50 @@ emptied when its tunnel starts, so a line in it was written by the process runni
 | `remote port forwarding failed` | The relay port is busy on the relay VM | `gtunnel restart <name>`, then `gtunnel doctor` |
 | `numpy` | gcloud's Python has no NumPy | See NumPy below |
 
+### Who writes what
+
+Two processes append to the same file. The service's child writes continuously, whether
+or not anyone is watching; gtunnel writes the few facts only it knows, and only while a
+gtunnel process is running.
+
+| Writer | Lines | When |
+|---|---|---|
+| The service's child | gcloud's own output at `--verbosity=info`, and for a `--via` tunnel ssh's at `LogLevel=VERBOSE` | Always, from start to exit |
+| gtunnel | `gtunnel: <message>`, always prefixed and timestamped | Only while the TUI or a gtunnel command is running |
+
+The shapes below are what each kind of line looks like, not a captured transcript:
+
+| Kind | Looks like | Written by |
+|---|---|---|
+| Access, listener up | `Listening on port [15432].` | gcloud |
+| Access, a client connects | an `INFO` line naming the new connection | gcloud |
+| Jump (`--via`), forward up | `debug1: Local forwarding listening on ...` | ssh |
+| Jump, a client connects | `debug1: Connection to port ... forwarding to ...` | ssh |
+| Any kind, count changed | `gtunnel: connections: 0 -> 2` | gtunnel |
+| Any kind, health changed | `gtunnel: unhealthy`, `gtunnel: healthy again` | gtunnel |
+
+A `--via` tunnel never prints `Listening on port`. It runs `gcloud compute ssh
+--tunnel-through-iap`, which is a different command from `start-iap-tunnel` rather than a
+flag on it, and there is no listener inside gcloud to announce one. Its equivalent is
+ssh's forwarding line.
+
+### A gap in the connection counts is not an idle tunnel
+
+gtunnel counts the established connections on a tunnel's local port every 5 seconds and
+writes a line only when that count changes. It can only do so while a gtunnel process is
+running. A log showing `connections: 0 -> 2` at 14:03 and nothing afterwards means nobody
+was watching after 14:03, not that the tunnel went idle. The lines the service's child
+writes have no such gap.
+
+A tunnel gtunnel does not manage owns no log here, so it gets neither kind of line.
+
+### A log that grows without bound
+
+`--verbosity=info` and `LogLevel=VERBOSE` make a tunnel talkative, and nothing rotates
+these files. A tunnel left up for weeks, or one restarting in a loop, writes its whole
+verbose startup each time. A log is emptied when its tunnel starts, so `gtunnel restart
+<name>` is the blunt fix; `du -sh` over the logs directory is how to notice.
+
 ## gtunnel needs a logged-in Google account
 
 ```

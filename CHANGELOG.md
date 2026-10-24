@@ -5,6 +5,24 @@ what is on `main` and not yet tagged.
 
 ## Unreleased
 
+### Logs
+
+- **A running tunnel's log now shows that it is running** - four causes, all fixed.
+  gcloud is Python and block-buffered its stdout into the redirected log, so lines
+  arrived 4 KiB at a time or at exit; `PYTHONUNBUFFERED=1` ends that. gcloud's
+  per-connection lines are `log.info` and the default verbosity is `warning`, so a tunnel
+  carrying traffic said nothing; every command now passes `--verbosity=info`. A `--via`
+  tunnel is `gcloud compute ssh`, which gcloud's verbosity does not govern and which is
+  silent once connected, so it also passes `-o LogLevel=VERBOSE`. `New connection from`,
+  the line this was measured against, does not exist anywhere in gcloud 590.0.0.
+- **gtunnel writes what only gtunnel knows** - the connection count it already measured
+  every 5 seconds reached the Metrics pane and nothing else. A change in it is now a log
+  line, and so is a health transition, which until now existed only as a desktop
+  notification that was gone once dismissed. Both are written only while a gtunnel
+  process runs, and `docs/troubleshooting.md` says so: a gap in the counts means nobody
+  was watching, not that the tunnel was idle. These logs are now talkative and nothing
+  rotates them, which the same document covers.
+
 ### TUI
 
 - **A config page** - `C` shows `config.toml` and `tunnels.toml` with their paths, and `e`
