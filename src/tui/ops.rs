@@ -220,11 +220,16 @@ pub async fn execute(account: &str, op: Op) -> OpResult {
             message,
             ok: true,
             reload: true,
+            from_create: matches!(op, Op::Create(_)),
         },
         Err(e) => OpResult {
             message: format!("{e:#}"),
             ok: false,
-            reload: matches!(op, Op::Delete(_) | Op::Import(_)),
+            // A failed create may already have saved its record: `add` saves
+            // before it installs and starts, so the list must be re-read or
+            // the name check cannot see the half-made tunnel.
+            reload: matches!(op, Op::Delete(_) | Op::Import(_) | Op::Create(_)),
+            from_create: matches!(op, Op::Create(_)),
         },
     }
 }

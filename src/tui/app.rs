@@ -174,6 +174,8 @@ pub struct OpResult {
     pub ok: bool,
     // The op changed tunnels.toml or a service, so the list is stale
     pub reload: bool,
+    // Ops overlap, so only a create's own result may settle a create's draft
+    pub from_create: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1094,6 +1096,20 @@ impl App {
         self.entries.iter().any(|e| e.name() == name)
     }
 
+    // The name step is skipped when a failed create reopens the dialog, and
+    // `add` saves the record before it installs the job, so a retry would
+    // otherwise reach the daemon only to fail as "already exists".
+    fn refuse_taken_name(&mut self) -> bool {
+        if !self.name_is_taken(&self.draft.name) {
+            return false;
+        }
+        self.draft_error = Some(format!(
+            "'{}' is already used in this account",
+            self.draft.name
+        ));
+        true
+    }
+
     fn open_add(&mut self) {
         self.draft = NewTunnel {
             account: self.account.clone(),
@@ -1266,6 +1282,10 @@ impl App {
                         }
                     }
                 }
+                if self.refuse_taken_name() {
+                    self.input = value;
+                    return None;
+                }
                 let draft = std::mem::take(&mut self.draft);
                 self.cancel_dialog();
                 self.spinner.start(&format!("create {}", draft.name));
@@ -1353,6 +1373,9 @@ impl App {
                     self.set_status("This account has no domain. Run `gtunnel domains add`");
                     return None;
                 };
+                if self.refuse_taken_name() {
+                    return None;
+                }
                 self.draft.domain = domain;
                 let draft = std::mem::take(&mut self.draft);
                 self.cancel_dialog();
@@ -1381,11 +1404,15 @@ impl App {
         self.spinner.stop();
         self.set_status(result.message.clone());
         self.status_error = !result.ok;
-        // Whatever result arrives first settles the create in flight: only one
-        // op runs at a time, so a later failure is never the draft's.
-        match self.last_draft.take() {
-            Some((draft, step)) if !result.ok => self.reopen(draft, step, &result.message),
-            _ => {}
+        // Ops run concurrently, so only a create's own result settles its
+        // draft. A dialog already open is someone's work in progress and is
+        // not overwritten; the failure still reaches the status line.
+        if result.from_create {
+            if let Some((draft, step)) = self.last_draft.take() {
+                if !result.ok && self.input_mode == InputMode::Normal {
+                    self.reopen(draft, step, &result.message);
+                }
+            }
         }
         if result.reload {
             self.force_refresh = true;

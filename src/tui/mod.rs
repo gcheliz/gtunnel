@@ -74,6 +74,7 @@ async fn demo_loop(
                         message: format!("demo: {op:?} does nothing here"),
                         ok: true,
                         reload: false,
+                        from_create: matches!(op, Op::Create(_)),
                     });
                 }
                 if app.should_quit {
@@ -814,6 +815,7 @@ mod tests {
             message: "permission denied".to_string(),
             ok: false,
             reload: false,
+            from_create: false,
         });
         assert_eq!(app.status.as_deref(), Some("permission denied"));
         assert!(app.status_error, "a failure must be marked");
@@ -822,6 +824,7 @@ mod tests {
             message: "db starting".to_string(),
             ok: true,
             reload: true,
+            from_create: false,
         });
         assert!(!app.status_error, "success must clear the mark");
     }
@@ -3431,6 +3434,16 @@ mod tests {
             message: message.to_string(),
             ok: false,
             reload: false,
+            from_create: true,
+        }
+    }
+
+    fn unrelated(ok: bool, message: &str) -> OpResult {
+        OpResult {
+            message: message.to_string(),
+            ok,
+            reload: false,
+            from_create: false,
         }
     }
 
@@ -3466,6 +3479,7 @@ mod tests {
             message: "cache created".to_string(),
             ok: true,
             reload: true,
+            from_create: true,
         });
         assert_eq!(app.input_mode, InputMode::Normal);
         app.apply(failed("some later failure"));
@@ -3481,6 +3495,85 @@ mod tests {
         assert!(app.draft_error.is_none());
         app.apply(failed("again"));
         assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn another_ops_failure_does_not_reopen_the_creates_draft() {
+        let mut app = submitted_access_draft();
+        app.apply(unrelated(false, "no such job"));
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.draft_error.is_none());
+        app.apply(failed("instance not found"));
+        assert_eq!(
+            app.input_mode,
+            InputMode::AddLocalPort,
+            "the draft was lost"
+        );
+        assert_eq!(app.draft_error.as_deref(), Some("instance not found"));
+    }
+
+    #[test]
+    fn another_ops_success_does_not_swallow_the_creates_draft() {
+        let mut app = submitted_access_draft();
+        app.apply(unrelated(true, "db stopped"));
+        app.apply(failed("instance not found"));
+        assert_eq!(
+            app.input_mode,
+            InputMode::AddLocalPort,
+            "the draft was lost"
+        );
+        assert_eq!(app.draft.name, "cache");
+    }
+
+    #[test]
+    fn a_failed_create_does_not_overwrite_a_second_add_in_progress() {
+        let mut app = submitted_access_draft();
+        keys(&mut app, "a1half");
+        app.apply(failed("instance not found"));
+        assert_eq!(app.input_mode, InputMode::AddName);
+        assert_eq!(app.input, "half");
+        assert!(app.draft_error.is_none());
+        assert_eq!(app.status.as_deref(), Some("instance not found"));
+    }
+
+    fn submitted_public_draft() -> App {
+        let mut app = app_with_two();
+        app.has_relay = true;
+        app.domains = vec!["svc.example.test".to_string()];
+        keys(&mut app, "a2site\nlocalhost:3000\n\n");
+        assert_eq!(app.input_mode, InputMode::Normal);
+        app
+    }
+
+    #[test]
+    fn a_public_create_that_failed_reopens_the_domain_picker_with_the_reason() {
+        let mut app = submitted_public_draft();
+        app.apply(failed("relay unreachable"));
+        assert_eq!(app.input_mode, InputMode::AddDomain);
+        assert_eq!(app.draft.name, "site");
+        assert_eq!(app.draft.local_target, "localhost:3000");
+        assert_eq!(app.input, "");
+        let rendered = render_to_string(&app, 80, 24);
+        assert!(rendered.contains("relay unreachable"), "{rendered}");
+    }
+
+    #[test]
+    fn resubmitting_a_name_the_failed_create_already_saved_is_refused_in_the_dialog() {
+        let mut app = submitted_access_draft();
+        app.apply(OpResult {
+            reload: true,
+            ..failed("could not install the job")
+        });
+        assert!(app.force_refresh, "the saved record must be reloaded");
+        // the reload brings in the record the failed create had saved
+        let mut saved = app.entries[0].clone();
+        saved.tunnel.name = "cache".to_string();
+        app.entries.push(saved);
+        let op = keys(&mut app, "\n");
+        assert_eq!(op, None, "the clash went to the daemon");
+        assert_eq!(app.input_mode, InputMode::AddLocalPort);
+        let error = app.draft_error.clone().expect("a refusal");
+        assert!(error.contains("already used"), "{error}");
     }
 
     #[test]

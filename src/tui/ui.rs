@@ -2410,6 +2410,8 @@ struct Picker<'a> {
     filter: &'a str,
     rows: Vec<String>,
     selected: usize,
+    // Why the dialog came back, drawn where the dialog covers the status line
+    error: Option<&'a str>,
 }
 
 /// A dialog whose row list is taller than the dialog: the header is fixed and
@@ -2424,6 +2426,7 @@ fn render_picker(f: &mut Frame, p: Picker) {
         filter,
         rows,
         selected,
+        error,
     } = p;
     let total = rows.len();
     let counter = if total > 0 {
@@ -2453,6 +2456,12 @@ fn render_picker(f: &mut Frame, p: Picker) {
         head.extend(ask.into_iter().take(asked));
         if keep_filter {
             head.push(input_row(filter, width));
+            if let Some(error) = error {
+                let lines = wrapped_indent(error, 0, width, Style::default().fg(theme::BAD));
+                let shown = lines.len().min(budget);
+                budget -= shown;
+                head.extend(lines.into_iter().take(shown));
+            }
             if budget > 0 {
                 head.push(Line::raw(""));
             }
@@ -2490,6 +2499,7 @@ fn render_instance_picker(f: &mut Frame, app: &App) {
             filter: &app.input,
             rows,
             selected: app.instance_selected,
+            error: None,
         },
     );
 }
@@ -2503,6 +2513,7 @@ fn render_domain_picker(f: &mut Frame, app: &App) {
             filter: "",
             rows: app.domains.clone(),
             selected: app.domain_selected,
+            error: app.draft_error.as_deref(),
         },
     );
 }
