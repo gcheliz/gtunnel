@@ -2630,6 +2630,7 @@ mod tests {
         let config = Config {
             selected_account: "dev".to_string(),
             accounts: vec![account("dev", Some(relay)), account("prod", None)],
+            ..Default::default()
         };
         let mut app = App::new("dev");
         app.reload_config(&config);

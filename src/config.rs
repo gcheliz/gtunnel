@@ -2,6 +2,8 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+use crate::loglevel::LogLevel;
+
 // A Cloud DNS managed zone registered with the relay, and the domain it serves
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DomainConfig {
@@ -50,8 +52,37 @@ pub struct Account {
 pub struct Config {
     #[serde(default)]
     pub selected_account: String,
+    // How much every tunnel and every gcloud call says. Global rather than
+    // per account, because it answers "how much do I want to see right now",
+    // which is a property of the moment and not of a tunnel. It sits above
+    // `accounts` because toml writes a value before a table.
+    #[serde(default)]
+    pub log_level: LogLevel,
     #[serde(default)]
     pub accounts: Vec<Account>,
+}
+
+/// The log level in force, highest precedence first: the `--log-level` flag,
+/// then `GTUNNEL_LOG_LEVEL`, then `log_level` in `config.toml`.
+///
+/// Pure, and takes the environment string rather than reading it, so the
+/// precedence is testable without touching a process-wide variable.
+pub fn resolve_log_level(
+    flag: Option<LogLevel>,
+    env: Option<&str>,
+    cfg: LogLevel,
+) -> Result<LogLevel> {
+    if let Some(level) = flag {
+        return Ok(level);
+    }
+    // An exported-but-empty variable is how a shell spells "unset"
+    match env.map(str::trim).filter(|s| !s.is_empty()) {
+        // Naming the variable matters: the value comes from a shell profile
+        // the user is not looking at, and without it the error says only that
+        // some string somewhere is wrong
+        Some(raw) => raw.parse().map_err(|e| anyhow!("GTUNNEL_LOG_LEVEL: {e}")),
+        None => Ok(cfg),
+    }
 }
 
 impl Config {
@@ -349,6 +380,76 @@ mod tests {
         assert!(validate_account_name("").is_err());
         assert!(validate_account_name("abcdefghijklmnopq").is_err());
         assert!(validate_account_name("abcdefghijklmnop").is_ok());
+    }
+
+    // Precedence exists so a one-off `--log-level debug` can answer "why is
+    // this tunnel quiet" without editing a file and putting it back after.
+    #[test]
+    fn the_flag_beats_the_environment_which_beats_the_file() {
+        let from_file = LogLevel::Quiet;
+        assert_eq!(
+            resolve_log_level(Some(LogLevel::Debug), Some("quiet"), from_file).unwrap(),
+            LogLevel::Debug
+        );
+        assert_eq!(
+            resolve_log_level(None, Some("info"), from_file).unwrap(),
+            LogLevel::Info
+        );
+        assert_eq!(
+            resolve_log_level(None, None, from_file).unwrap(),
+            LogLevel::Quiet
+        );
+    }
+
+    #[test]
+    fn nothing_set_anywhere_is_info() {
+        assert_eq!(
+            resolve_log_level(None, None, LogLevel::default()).unwrap(),
+            LogLevel::Info
+        );
+    }
+
+    // Every config.toml written before this field existed has to keep loading
+    #[test]
+    fn a_config_without_the_field_still_loads_and_is_info() {
+        let cfg: Config = toml::from_str(
+            r#"
+            selected_account = "dev"
+
+            [[accounts]]
+            name = "dev"
+            gcloud_configuration = "default"
+            project = "proj-1"
+            default_zone = "europe-west1-b"
+            "#,
+        )
+        .expect("a config written before the field existed");
+        assert_eq!(cfg.log_level, LogLevel::Info);
+    }
+
+    // A typo in a shell profile would otherwise make every command fail with
+    // an error that does not say which variable to fix
+    #[test]
+    fn a_bad_value_in_the_environment_is_an_error_naming_the_variable() {
+        let err = resolve_log_level(None, Some("verbose"), LogLevel::Info)
+            .expect_err("an unknown level is not a level");
+        let err = err.to_string();
+        assert!(err.contains("GTUNNEL_LOG_LEVEL"), "{err}");
+        assert!(err.contains("verbose"), "{err}");
+        assert!(
+            err.contains("quiet") && err.contains("info") && err.contains("debug"),
+            "{err}"
+        );
+    }
+
+    // An empty variable is how a shell spells "unset" in practice, and
+    // failing on it would make `GTUNNEL_LOG_LEVEL= gtunnel list` an error
+    #[test]
+    fn an_empty_environment_variable_is_the_same_as_an_unset_one() {
+        assert_eq!(
+            resolve_log_level(None, Some(""), LogLevel::Quiet).unwrap(),
+            LogLevel::Quiet
+        );
     }
 
     #[test]
