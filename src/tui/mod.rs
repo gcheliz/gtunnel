@@ -163,6 +163,8 @@ async fn event_loop(
 ) -> Result<()> {
     let mut timers = Timers::due();
     let mut logs_for: Option<String> = None;
+    // The tunnel whose running op empties its log, held until the op is done
+    let mut forget_after: Option<String> = None;
 
     terminal.draw(|f| ui::render(f, app))?;
 
@@ -170,6 +172,9 @@ async fn event_loop(
         match msg {
             Msg::Key(key) => {
                 if let Some(op) = app.handle_key(key) {
+                    // Applied when the op finishes rather than here: a
+                    // metrics tick landing mid-op would put the count back
+                    forget_after = empties_the_log(&op).map(String::from);
                     let account = app.account.clone();
                     let tx = tx.clone();
                     tokio::spawn(async move {
@@ -266,6 +271,9 @@ async fn event_loop(
                 app.instance_selected = 0;
             }
             Msg::OpDone(result) => {
+                if let Some(name) = forget_after.take() {
+                    app.forget_metrics(&name);
+                }
                 app.apply(result);
                 // The CLI commands this ran print to the same terminal
                 terminal.clear()?;
@@ -294,6 +302,16 @@ fn connection_change(was: Option<u64>, now: u64) -> Option<String> {
         None => Some(format!("connections: {now}")),
         Some(before) if before == now => None,
         Some(before) => Some(format!("connections: {before} -> {now}")),
+    }
+}
+
+// The ops that empty a tunnel's log: start and restart both reinstall the
+// service, which truncates, and clear-log is the user asking for it. The
+// count measured before one of these belongs to lines that are gone.
+fn empties_the_log(op: &Op) -> Option<&str> {
+    match op {
+        Op::Start(name) | Op::Restart(name) | Op::ClearLog(name) => Some(name),
+        _ => None,
     }
 }
 
@@ -511,6 +529,36 @@ mod tests {
             connection_change(None, 0),
             None,
             "every idle tunnel would otherwise write a line on every TUI start"
+        );
+    }
+
+    // Starting a tunnel empties its log, but the count measured during the
+    // run before it survives in memory. Without this, a restart writes
+    // `connections: 2 -> 0` into a fresh log, which reads as two clients
+    // having been here on this run and left.
+    #[test]
+    fn the_ops_that_empty_a_log_also_drop_the_count_it_belonged_to() {
+        assert_eq!(empties_the_log(&Op::Start("db".to_string())), Some("db"));
+        assert_eq!(empties_the_log(&Op::Restart("db".to_string())), Some("db"));
+        assert_eq!(empties_the_log(&Op::ClearLog("db".to_string())), Some("db"));
+        assert_eq!(
+            empties_the_log(&Op::Stop("db".to_string())),
+            None,
+            "a stop leaves the log alone, and its clients really did go"
+        );
+    }
+
+    #[test]
+    fn a_forgotten_count_makes_the_next_one_a_first_sight() {
+        let mut app = app_with_two();
+        app.entries[0].metrics = Some(crate::probe::TunnelMetrics {
+            active_connections: 2,
+            ..Default::default()
+        });
+        app.forget_metrics("db");
+        assert!(
+            app.entries[0].metrics.is_none(),
+            "the count from the run before belongs to a log that is gone"
         );
     }
 

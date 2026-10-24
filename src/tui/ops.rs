@@ -125,9 +125,7 @@ pub fn read_logs(tunnel: &PersistentTunnel, lines: usize) -> Vec<String> {
     let Ok(path) = tunnel.log_path() else {
         return Vec::new();
     };
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return Vec::new();
-    };
+    let text = daemon::read_tail(&path, daemon::TAIL_WINDOW);
     let all: Vec<&str> = text.lines().collect();
     all[all.len().saturating_sub(lines)..]
         .iter()

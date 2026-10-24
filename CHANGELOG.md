@@ -11,17 +11,23 @@ what is on `main` and not yet tagged.
   gcloud is Python and block-buffered its stdout into the redirected log, so lines
   arrived 4 KiB at a time or at exit; `PYTHONUNBUFFERED=1` ends that. gcloud's
   per-connection lines are `log.info` and the default verbosity is `warning`, so a tunnel
-  carrying traffic said nothing; every command now passes `--verbosity=info`. A `--via`
-  tunnel is `gcloud compute ssh`, which gcloud's verbosity does not govern and which is
-  silent once connected, so it also passes `-o LogLevel=VERBOSE`. `New connection from`,
-  the line this was measured against, does not exist anywhere in gcloud 590.0.0.
+  carrying traffic said nothing; every command now passes `--verbosity=info`. The `--via`
+  and public kinds run `gcloud compute ssh`, which gcloud's verbosity does not govern and
+  which is silent once connected, so both also pass `-o LogLevel=DEBUG` - not `VERBOSE`,
+  which is one level short of every line worth having. `New connection from`, the line
+  this was measured against, does not exist anywhere in gcloud 590.0.0.
 - **gtunnel writes what only gtunnel knows** - the connection count it already measured
   every 5 seconds reached the Metrics pane and nothing else. A change in it is now a log
   line, and so is a health transition, which until now existed only as a desktop
   notification that was gone once dismissed. Both are written only while a gtunnel
   process runs, and `docs/troubleshooting.md` says so: a gap in the counts means nobody
-  was watching, not that the tunnel was idle. These logs are now talkative and nothing
-  rotates them, which the same document covers.
+  was watching, not that the tunnel was idle. The count is an Access and jump fact - a
+  public tunnel has no local port of its own to count - and the same document says that
+  too. An op that empties a log also drops the count that belonged to it, so a restart
+  no longer reports a drop that nobody caused.
+- **A talkative log is a bounded one** - past 8 MiB gtunnel keeps the last 2 MiB and
+  says on the first line what it dropped, and the TUI reads the end of a log rather
+  than all of it to show the last 200 lines.
 
 ### TUI
 
