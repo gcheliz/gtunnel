@@ -270,6 +270,25 @@ source and --to the destination."
         command: Option<AccountCommands>,
     },
 
+    // Restart tunnels that are running but refusing connections
+    #[command(about = "Restart tunnels that are running but refusing connections")]
+    Watch {
+        // One pass over every tunnel, then exit: what the watchdog agent runs
+        #[arg(
+            long,
+            help = "One pass over every tunnel, then exit (what the agent runs)"
+        )]
+        once: bool,
+
+        // Say what each pass saw, rather than only acting on it
+        #[arg(
+            short,
+            long,
+            help = "Say what each pass saw, rather than only acting on it"
+        )]
+        verbose: bool,
+    },
+
     // Report leftovers and misconfiguration gtunnel can see
     #[command(about = "Report leftovers and misconfiguration gtunnel can see")]
     Doctor {
@@ -330,7 +349,10 @@ impl Commands {
             | Commands::Reset { .. }
             | Commands::Demo
             | Commands::Update { .. }
-            | Commands::Doctor { .. } => false,
+            | Commands::Doctor { .. }
+            // Runs from an agent with no terminal: a login prompt here would
+            // hang the watchdog forever rather than fail
+            | Commands::Watch { .. } => false,
             Commands::Add { .. }
             | Commands::Expose { .. }
             | Commands::Run { .. }

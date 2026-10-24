@@ -176,9 +176,23 @@ pub mod persist {
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
 
-    /// Every breaker, keyed `"<account>.<name>"`. Ordered, so the file does
-    /// not churn between saves that changed nothing.
-    pub type BreakerFile = BTreeMap<String, Breaker>;
+    /// One tunnel's row: its breaker, and how long its log was when the
+    /// watchdog last looked.
+    ///
+    /// The log length is what makes "the log *gained* a `Too many open
+    /// files` line since the last check" answerable at all. Without it a
+    /// line from last week reads as news on every pass, and the breaker
+    /// would trip on a tunnel that has been healthy for days.
+    #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    #[serde(default)]
+    pub struct Row {
+        pub breaker: Breaker,
+        pub log_len: u64,
+    }
+
+    /// Every row, keyed `"<account>.<name>"`. Ordered, so the file does not
+    /// churn between saves that changed nothing.
+    pub type BreakerFile = BTreeMap<String, Row>;
 
     pub fn path() -> Result<PathBuf> {
         Ok(crate::config::config_dir()?.join("breakers.toml"))
@@ -212,7 +226,7 @@ pub mod persist {
         let kept: BreakerFile = breakers
             .iter()
             .filter(|(key, _)| live.iter().any(|k| k == *key))
-            .map(|(key, breaker)| (key.clone(), breaker.clone()))
+            .map(|(key, row)| (key.clone(), row.clone()))
             .collect();
         let text = toml::to_string_pretty(&kept).context("Failed to serialize the breakers")?;
 
@@ -243,7 +257,7 @@ pub mod persist {
 
 #[cfg(test)]
 mod persist_tests {
-    use super::persist::{self, BreakerFile};
+    use super::persist::{self, BreakerFile, Row};
     use super::{Breaker, Observation, Reason};
     use crate::config::testing::TempConfigDir;
     use std::time::SystemTime;
@@ -259,7 +273,14 @@ mod persist_tests {
     }
 
     fn one(key: &str, breaker: Breaker) -> BreakerFile {
-        BreakerFile::from([(key.to_string(), breaker)])
+        BreakerFile::from([(key.to_string(), row(breaker))])
+    }
+
+    fn row(breaker: Breaker) -> Row {
+        Row {
+            breaker,
+            log_len: 0,
+        }
     }
 
     // The agent is a fresh process every thirty seconds, so this is the
@@ -271,7 +292,11 @@ mod persist_tests {
         persist::save(&one(&key, armed()), std::slice::from_ref(&key)).expect("save");
 
         let back = persist::load().expect("load");
-        assert_eq!(back.get(&key), Some(&armed()), "a round trip lost state");
+        assert_eq!(
+            back.get(&key),
+            Some(&row(armed())),
+            "a round trip lost state"
+        );
     }
 
     #[test]
@@ -306,8 +331,8 @@ mod persist_tests {
     fn rows_for_tunnels_that_no_longer_exist_are_forgotten_on_save() {
         let _dir = TempConfigDir::new();
         let mut file = BreakerFile::new();
-        file.insert("dev.kubernetes".to_string(), armed());
-        file.insert("dev.deleted-last-week".to_string(), armed());
+        file.insert("dev.kubernetes".to_string(), row(armed()));
+        file.insert("dev.deleted-last-week".to_string(), row(armed()));
         persist::save(&file, &["dev.kubernetes".to_string()]).expect("save");
 
         let back = persist::load().expect("load");

@@ -188,6 +188,7 @@ async fn main() -> Result<()> {
                 commands::account::cmd_account_remove(&name, yes)
             }
         },
+        Some(Commands::Watch { once, verbose }) => commands::watch::cmd_watch(once, verbose).await,
         Some(Commands::Doctor { fix, yes, all }) => {
             doctor::cmd_doctor(account, fix, yes, all).await
         }
