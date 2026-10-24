@@ -20,7 +20,37 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # release-plz computes the next version inside a pull request and a human
+  # types the tag afterwards, so the two can disagree. They must not: the
+  # binaries carry whatever Cargo.toml said, while the release is named after
+  # the tag, and `gtunnel update` compares the running binary's
+  # CARGO_PKG_VERSION against the latest tag. A tag ahead of Cargo.toml would
+  # offer every user an update that installs a binary still reporting the old
+  # number, on a loop. Everything else waits on this job, so a mismatch costs
+  # nothing but a deleted tag.
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      # A dispatched run has no tag to check, and skipping the job itself
+      # would skip everything that needs it. The step is what is conditional.
+      - name: The tag must name the version in Cargo.toml
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          crate=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          if [ "${TAG}" != "v${crate}" ]; then
+            echo "::error::tag ${TAG} does not name the crate version ${crate}; expected v${crate}"
+            exit 1
+          fi
+          echo "tag ${TAG} matches Cargo.toml ${crate}"
+
   build:
+    needs: verify
     strategy:
       fail-fast: false
       matrix:

@@ -3,6 +3,90 @@
 Start with `gtunnel doctor`. It reports everything below that can be detected, and prints
 the exact command for the things it cannot fix itself.
 
+`doctor` runs after gtunnel is installed and working, so the installation problems come
+first: nothing below the next section is reachable until `gtunnel --version` answers.
+
+## Installation
+
+### `cargo install gtunnel` installed something else
+
+`gtunnel` on crates.io is an unrelated crate by another author, published in 2022. It is a
+tcp-over-grpc proxy and has nothing to do with this project. Installing it is harmless but
+useless, and it leaves two foreign binaries behind:
+
+```
+$ ls ~/.cargo/bin
+gtunnel  gtunnel-client  gtunnel-server
+```
+
+`gtunnel-client` and `gtunnel-server` are the stranger's. Your own `gtunnel`, if you have
+one, is untouched — that crate ships neither binary under that name, which is the only
+reason a bare `cargo install` does not overwrite it.
+
+```
+cargo uninstall gtunnel --root ~/.cargo
+cargo install --git https://github.com/gcheliz/gtunnel --force
+```
+
+The first command removes whichever `gtunnel` entry cargo has registered, so run the
+second afterwards whether or not you had a working copy. `cargo install --list` shows what
+is left, and the entry you want names a `path+` or `git+` source, never
+`registry+https://github.com/rust-lang/crates.io-index`.
+
+v0.1.0 is how most people get here: its `gtunnel update` printed `cargo install gtunnel`
+for a cargo-installed copy, sending its own users to the wrong crate. v0.1.1 and later
+print the `--git` command above instead.
+
+### `gtunnel --version` reports an older version than the latest release
+
+A binary reports the version its source tree carried when it was compiled, not the newest
+one published. A `cargo install --path .` from a checkout that is behind `main` produces
+exactly this, and nothing about it is broken.
+
+| Check | Command | What it means |
+|---|---|---|
+| Which binary is running | `which gtunnel` | `~/.cargo/bin` means cargo installed it, `/usr/local/bin` a download |
+| Where cargo got it | `cargo install --list` | the source in parentheses is the truth |
+| What is published | `gh release list --repo gcheliz/gtunnel --limit 1` | compare the tag against `--version` |
+
+Fix it the way it was installed: `git pull && cargo install --path .` from a clone,
+`cargo install --git https://github.com/gcheliz/gtunnel --force` from the repository, or
+`gtunnel update` for a downloaded binary.
+
+### `gtunnel: command not found` right after installing
+
+The directory holding the binary is not on `PATH`. Cargo installs to `~/.cargo/bin`, which
+some shells do not add; the download instructions move the binary to `/usr/local/bin`,
+which can be absent on a fresh machine.
+
+```
+$ echo "$PATH" | tr ':' '\n' | grep -c -e "$HOME/.cargo/bin" -e /usr/local/bin
+0
+```
+
+A zero means neither is there. Add the one that holds your binary to `PATH` in
+`~/.zshrc`, then open a new shell.
+
+### The checksum or the attestation fails
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `shasum: WARNING: 1 computed checksum did NOT match` | truncated or corrupted download | delete both files and fetch them again |
+| `gh attestation verify` exits 1 with `HTTP 404: Not Found` | no attestation exists for that exact file | check the file is a release asset and not rebuilt or re-compressed locally; v0.1.0 predates attestations entirely |
+| `gh: To get started with GitHub CLI, please run: gh auth login` | `gh` is not authenticated | `gh auth login`, or skip the attestation and rely on the checksum |
+
+A verification that succeeds says nothing at all and exits 0. Silence is the pass.
+
+### macOS refuses to run the downloaded binary
+
+Gatekeeper quarantines anything fetched by a browser. `curl` does not set the quarantine
+attribute, so the download block in [usage.md](usage.md#4-install-gtunnel) avoids this
+entirely — it appears when the tarball came from the releases page in a browser.
+
+```
+xattr -d com.apple.quarantine /usr/local/bin/gtunnel
+```
+
 ## What the log says, and what it means
 
 gtunnel annotates these lines in `gtunnel logs <name>` and in the TUI's log pane. A log is

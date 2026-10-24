@@ -1912,9 +1912,35 @@ fn help_counter(top: usize, view: usize, total: usize, width: usize) -> Line<'st
 /// The modal's frame width on a screen this wide: a margin of two cells on each
 /// side, and no wider than the two columns can use, since past that the labels
 /// only drift away from the keys.
-fn help_modal_width(screen_width: u16) -> u16 {
+pub fn help_modal_width(screen_width: u16) -> u16 {
     screen_width.saturating_sub(4).min(112)
 }
+
+/// The frame's title at this modal width.
+///
+/// The version belongs here because nothing else on screen carries it: the
+/// header's cells are spoken for by the account and the project, and the
+/// footer sheds keys under width pressure rather than gaining text. Someone
+/// filing a bug already opens this page to say which key they pressed.
+///
+/// ratatui truncates a title that does not fit without saying so, which would
+/// leave ` Keys - gtunn` on a narrow terminal, so the title sheds instead: the
+/// version goes, then the subject, in that order.
+pub fn help_modal_title(modal_width: u16) -> String {
+    // The two corners are not the title's to use
+    let room = modal_width.saturating_sub(2) as usize;
+    let full = format!(" Keys - gtunnel {} ", env!("CARGO_PKG_VERSION"));
+    if full.chars().count() <= room {
+        return full;
+    }
+    if HELP_TITLE_SHORT.chars().count() <= room {
+        return HELP_TITLE_SHORT.to_string();
+    }
+    String::new()
+}
+
+/// The title with the version shed, and the widest one a tiny frame can hold.
+const HELP_TITLE_SHORT: &str = " Keys ";
 
 /// The width `help_page` lays out in, for a screen this wide: the frame less
 /// two cells of border and two of air. Shared so a test measures the width the
@@ -1951,7 +1977,7 @@ fn render_help_modal(f: &mut Frame, app: &App) {
     f.render_widget(Clear, area);
 
     let block = Block::default()
-        .title(" Keys ")
+        .title(help_modal_title(width))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme::ACCENT));
     let inner = block.inner(area);
