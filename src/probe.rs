@@ -122,17 +122,17 @@ pub fn parse_lsof_established(text: &str, port: u16) -> u64 {
 /// opens; a sampler on a clock of its own cannot, so it drops every row whose
 /// peer is a socket of the excluded process instead.
 pub fn parse_lsof_by_port(text: &str, exclude: Option<u32>) -> HashMap<u16, u64> {
-    let rows: Vec<(u32, &str, &str)> = established_rows(text).collect();
+    let rows: Vec<(&str, u32, &str, &str)> = established_rows(text).collect();
     let ours: std::collections::HashSet<&str> = match exclude {
         Some(pid) => rows
             .iter()
-            .filter(|(owner, ..)| *owner == pid)
-            .map(|(_, local, _)| *local)
+            .filter(|(_, owner, ..)| *owner == pid)
+            .map(|(_, _, local, _)| *local)
             .collect(),
         None => std::collections::HashSet::new(),
     };
     let mut counts = HashMap::new();
-    for (owner, local, peer) in rows {
+    for (_, owner, local, peer) in rows {
         if exclude == Some(owner) || ours.contains(peer) {
             continue;
         }
@@ -145,11 +145,13 @@ pub fn parse_lsof_by_port(text: &str, exclude: Option<u32>) -> HashMap<u16, u64>
 
 // Who owns each established connection, and its two ends. The pid is the first
 // numeric field: a command with a space in its name is escaped (`Slack\x20`),
-// so no field but COMMAND can precede it
-fn established_rows(text: &str) -> impl Iterator<Item = (u32, &str, &str)> {
+// so no field but COMMAND can precede it - which is also why COMMAND is simply
+// the first field.
+fn established_rows(text: &str) -> impl Iterator<Item = (&str, u32, &str, &str)> {
     text.lines()
         .filter(|line| line.contains("ESTABLISHED"))
         .filter_map(|line| {
+            let command = line.split_whitespace().next()?;
             let pid = line
                 .split_whitespace()
                 .find_map(|f| f.parse::<u32>().ok())?;
@@ -157,8 +159,62 @@ fn established_rows(text: &str) -> impl Iterator<Item = (u32, &str, &str)> {
                 .split_whitespace()
                 .find(|field| field.contains("->"))?
                 .split_once("->")?;
-            Some((pid, local, peer))
+            Some((command, pid, local, peer))
         })
+}
+
+/// A process holding connections to one local port, and how many.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Holder {
+    pub pid: u32,
+    pub command: String,
+    pub count: u64,
+}
+
+/// Who is holding a tunnel's connections open, worst offender first.
+///
+/// The holder is read off the *client* row, not the server row: every server
+/// row belongs to the one ssh or gcloud the tunnel runs, so attributing by
+/// local port would only ever name the tunnel itself. A client's row has the
+/// tunnel's port as its *peer*.
+///
+/// Empty when nothing can be attributed - no `lsof`, an unparseable listing,
+/// or a client on another machine, whose row exists only on that machine.
+/// Naming nobody is correct there; naming a guess would not be.
+pub fn parse_lsof_holders(text: &str, port: u16, exclude: Option<u32>) -> Vec<Holder> {
+    let mut by_pid: HashMap<u32, (String, u64)> = HashMap::new();
+    for (command, pid, _, peer) in established_rows(text) {
+        if exclude == Some(pid) || endpoint_port(peer) != Some(port) {
+            continue;
+        }
+        let entry = by_pid
+            .entry(pid)
+            .or_insert_with(|| (command.to_string(), 0));
+        entry.1 += 1;
+    }
+    let mut holders: Vec<Holder> = by_pid
+        .into_iter()
+        .map(|(pid, (command, count))| Holder {
+            pid,
+            command,
+            count,
+        })
+        .collect();
+    // Ties broken by pid so the order is the same on every run; a message
+    // that names a different process each time is not evidence of anything
+    holders.sort_by(|a, b| b.count.cmp(&a.count).then(a.pid.cmp(&b.pid)));
+    holders
+}
+
+/// [`parse_lsof_holders`] against the machine, excluding this process.
+///
+/// The watchdog is its consumer and lands with the breaker; until then only
+/// the parser above is exercised, which is where the judgement lives.
+#[allow(dead_code)]
+pub fn holders_for_port(port: u16) -> Vec<Holder> {
+    lsof_listing()
+        .map(|text| parse_lsof_holders(&text, port, Some(std::process::id())))
+        .unwrap_or_default()
 }
 
 // `127.0.0.1:8443` and `[::1]:8443` both end in the port, so what follows the
@@ -179,10 +235,18 @@ pub fn established_by_port() -> HashMap<u16, u64> {
 }
 
 // Every established TCP connection on the machine, with no port filter: the
-// filter saves lsof no work, and one listing is one process for the whole list
+// filter saves lsof no work, and one listing is one process for the whole list.
+//
+// `+c 0` prints COMMAND whole. Without it lsof cuts the name to nine
+// characters, so the process holding a tunnel's connections reads as
+// `mcp-serve` - a name that matches nothing a person could then grep or kill.
+// Widening the column does not disturb the counting parsers: a command with a
+// space in it is escaped, so COMMAND is still one whitespace-separated field.
+const LSOF_LISTING_ARGS: [&str; 5] = ["-nP", "+c", "0", "-iTCP", "-sTCP:ESTABLISHED"];
+
 fn lsof_listing() -> Option<String> {
     let out = std::process::Command::new("lsof")
-        .args(["-nP", "-iTCP", "-sTCP:ESTABLISHED"])
+        .args(LSOF_LISTING_ARGS)
         .output()
         .ok()?;
     listing(&out)
@@ -631,6 +695,105 @@ ssh      2146     you   11u  IPv4 0x8              0t0  TCP 127.0.0.1:8443->127.
 
     // What the sampler reads: two tunnels, each with a client of its own, plus
     // a port that only listens
+    // One client holding many connections is the shape that exhausts a
+    // tunnel's descriptors, so the answer has to name it, not just count it.
+    // The holder is on the *client* row: every server row belongs to ssh.
+    const ONE_HOG: &str = "\
+COMMAND            PID    USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+ssh               2146     you    8u  IPv4 0x1              0t0  TCP 127.0.0.1:8443->127.0.0.1:64301 (ESTABLISHED)
+connection-hog   19191     you   23u  IPv4 0x2              0t0  TCP 127.0.0.1:64301->127.0.0.1:8443 (ESTABLISHED)
+ssh               2146     you    9u  IPv4 0x3              0t0  TCP 127.0.0.1:8443->127.0.0.1:64302 (ESTABLISHED)
+connection-hog   19191     you   24u  IPv4 0x4              0t0  TCP 127.0.0.1:64302->127.0.0.1:8443 (ESTABLISHED)
+ssh               2146     you   10u  IPv4 0x5              0t0  TCP 127.0.0.1:8443->127.0.0.1:64303 (ESTABLISHED)
+connection-hog   19191     you   25u  IPv4 0x6              0t0  TCP 127.0.0.1:64303->127.0.0.1:8443 (ESTABLISHED)
+ssh               2146     you   11u  IPv4 0x7              0t0  TCP 127.0.0.1:8443->127.0.0.1:64304 (ESTABLISHED)
+kubectl           2200     you    3u  IPv4 0x8              0t0  TCP 127.0.0.1:64304->127.0.0.1:8443 (ESTABLISHED)
+ssh               2148     you   12u  IPv4 0x9              0t0  TCP 127.0.0.1:15432->127.0.0.1:64305 (ESTABLISHED)
+psql              2400     you    4u  IPv4 0xa              0t0  TCP 127.0.0.1:64305->127.0.0.1:15432 (ESTABLISHED)
+";
+
+    #[test]
+    fn the_holder_of_a_ports_connections_is_named_with_its_count() {
+        let holders = parse_lsof_holders(ONE_HOG, 8443, None);
+        assert_eq!(holders[0].command, "connection-hog");
+        assert_eq!(holders[0].pid, 19191);
+        assert_eq!(holders[0].count, 3);
+    }
+
+    // `lsof` truncates COMMAND to nine characters without `+c 0`, so the
+    // culprit reads `connecti` and a `pgrep` for it finds nothing. The
+    // listing asks for the full name; the parser must not re-truncate it.
+    #[test]
+    fn a_command_longer_than_lsofs_default_column_is_kept_whole() {
+        assert!(
+            parse_lsof_holders(ONE_HOG, 8443, None)[0].command.len() > 9,
+            "the name is what someone types into pgrep"
+        );
+    }
+
+    // The fixture above cannot catch a truncated name, because a fixture is
+    // whatever it was written to be. Only the flag we hand lsof can
+    #[test]
+    fn the_listing_asks_lsof_for_whole_command_names() {
+        let args = super::LSOF_LISTING_ARGS;
+        let width = args
+            .iter()
+            .position(|arg| *arg == "+c")
+            .expect("lsof truncates COMMAND to nine characters unless asked otherwise");
+        assert_eq!(
+            args.get(width + 1),
+            Some(&"0"),
+            "+c takes the column width, and 0 is the whole name"
+        );
+    }
+
+    // The message names one process, so the worst offender has to be the one
+    // it names
+    #[test]
+    fn holders_are_ordered_so_the_worst_offender_is_first() {
+        let holders = parse_lsof_holders(ONE_HOG, 8443, None);
+        assert_eq!(holders.len(), 2, "{holders:?}");
+        assert_eq!(holders[0].command, "connection-hog");
+        assert_eq!(holders[1].command, "kubectl");
+        assert_eq!(holders[1].count, 1);
+    }
+
+    // Only the port asked about: a second tunnel's clients are not holding
+    // this one's descriptors
+    #[test]
+    fn a_holder_of_another_port_is_not_a_holder_of_this_one() {
+        let holders = parse_lsof_holders(ONE_HOG, 15432, None);
+        assert_eq!(holders.len(), 1, "{holders:?}");
+        assert_eq!(holders[0].command, "psql");
+    }
+
+    // The probe connects to the very port it is attributing, so gtunnel would
+    // otherwise appear in its own accusation
+    #[test]
+    fn gtunnels_own_probe_is_never_named_as_a_holder() {
+        let probed = format!(
+            "{ONE_HOG}\
+gtunnel           9100     you    9u  IPv4 0xb              0t0  TCP 127.0.0.1:52999->127.0.0.1:8443 (ESTABLISHED)
+ssh               2146     you   13u  IPv4 0xc              0t0  TCP 127.0.0.1:8443->127.0.0.1:52999 (ESTABLISHED)
+"
+        );
+        assert!(
+            parse_lsof_holders(&probed, 8443, None)
+                .iter()
+                .any(|h| h.pid == 9100),
+            "without the exclusion the probe is in the listing"
+        );
+        let holders = parse_lsof_holders(&probed, 8443, Some(9100));
+        assert!(holders.iter().all(|h| h.pid != 9100), "{holders:?}");
+    }
+
+    // A machine without lsof must degrade, not invent a culprit
+    #[test]
+    fn nothing_parseable_names_nobody() {
+        assert!(parse_lsof_holders("", 8443, None).is_empty());
+        assert!(parse_lsof_holders("lsof: command not found", 8443, None).is_empty());
+    }
+
     const TWO_TUNNELS: &str = "\
 COMMAND   PID    USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
 ssh      2146     you    8u  IPv4 0x1              0t0  TCP 127.0.0.1:8443->127.0.0.1:64306 (ESTABLISHED)
