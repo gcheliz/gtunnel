@@ -16,7 +16,7 @@ Three tiers and no more. The datum is the only bright thing on its row.
 
 Why: a label that matches its value forces the eye to read both, and a row of equals has no entry point. Labels are one step brighter than furniture so they stay legible on their own, and still lose to the figure beside them.
 
-The account field is the one filled element: `account_field` draws the account bold over its project id in `theme::MUTED`, on `theme::FIELD_BG`, with no border and no `ACCOUNT` label. A border would cost a fifth header row, and the name is the only thing a label could name. The account is the one piece of state that changes what every key acts on, so it is the brightest thing in the header.
+The account field is the one filled element: `account_field` draws the account bold over its project id in `theme::FIELD_SUBTITLE`, on `theme::FIELD_BG`, with no border and no `ACCOUNT` label. A border would cost a fifth header row, and the name is the only thing a label could name. The account is the one piece of state that changes what every key acts on, so it is the brightest thing in the header.
 
 The selection is a shade, not a colour: `theme::SELECTED_BG` plus a bold name in `render_tunnels`. `FIELD_BG` is a different shade on purpose, so the selected row never reads as the same control as the field above it.
 
@@ -47,6 +47,7 @@ One colour, one question. A setting is not a verdict. `src/tui/theme.rs` states 
 | `FLAG` | is a setting on, which is a choice and not a verdict | the auto-start flag |
 | `SELECTED_BG` | which row has the cursor | the selected list row |
 | `FIELD_BG` | what is the account field | the header's account plate |
+| `FIELD_SUBTITLE` | what is the text under the account name | the project id on the account plate, lighter than `MUTED` so it reads on the fill |
 | `LOGO_LINE`, `LOGO_BLUE`, `LOGO_RED`, `LOGO_YELLOW`, `LOGO_GREEN` | what is the mark | the mark and nothing else; the only exact hues |
 
 Rules that follow: a status colour is never reused to decorate; `FLAG` is never `OK`; no `Color::Rgb` outside the `LOGO_*` constants. White, as a bold name or the footer's lead label, is emphasis and is not a palette entry.

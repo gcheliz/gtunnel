@@ -56,6 +56,11 @@ pub const SELECTED_BG: Color = Color::Indexed(236);
 /// and the two stay apart even when the cursor row is directly under it.
 pub const FIELD_BG: Color = Color::Indexed(238);
 
+/// The project id under the account name. `MUTED` is ANSI bright black, chosen
+/// for a black background; on `FIELD_BG` it sits a few steps away and the text
+/// all but disappears, so the field's subtitle takes a lighter grey of its own.
+pub const FIELD_SUBTITLE: Color = Color::Indexed(248);
+
 /// The line the cloud rests on, and the two cells at each end of the mark.
 pub const LOGO_LINE: Color = Color::Rgb(0x4D, 0xD0, 0xE1);
 

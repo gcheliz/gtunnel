@@ -971,7 +971,7 @@ mod tests {
             .find(|s| s.content.contains("sample-dev-1"))
             .expect("project span");
         assert_eq!(project.style.bg, Some(theme::FIELD_BG));
-        assert_eq!(project.style.fg, Some(theme::MUTED));
+        assert_eq!(project.style.fg, Some(theme::FIELD_SUBTITLE));
     }
 
     // Review Focus 2: cut, never wrapped, never into the lockup

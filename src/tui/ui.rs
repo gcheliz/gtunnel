@@ -209,7 +209,7 @@ fn account_field(account: &str, project: &str, max_width: usize) -> [Vec<Span<'s
     let second = if shown.is_empty() {
         Vec::new()
     } else {
-        field_row(&shown, width, fill.fg(theme::MUTED))
+        field_row(&shown, width, fill.fg(theme::FIELD_SUBTITLE))
     };
     [name, second]
 }
