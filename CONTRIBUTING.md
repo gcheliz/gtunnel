@@ -146,12 +146,29 @@ conventional-commit subjects since the last tag, works out the next version, and
 open pull request holding the bump: `Cargo.toml`, `Cargo.lock` and a `CHANGELOG.md` entry.
 It rewrites that pull request as more commits land, so there is only ever one.
 
-| Prefix | Effect on the version |
-|---|---|
-| `feat` | minor |
-| `fix`, `perf` | patch |
-| `feat!`, or a `BREAKING CHANGE:` trailer | major, and minor while the version is below 1.0 |
-| `docs`, `test`, `ci`, `chore`, `build` | none, and no changelog entry |
+gtunnel is below 1.0, and semver treats a `0.x` version as unstable throughout, so every
+bump is smaller than it would be after 1.0. The right-hand column is what happens today,
+not after the first stable release.
+
+| Prefix | Version | Changelog |
+|---|---|---|
+| `feat` | patch, because a feature is not breaking and `0.x` has no minor to spend on it | Added |
+| `fix` | patch | Fixed |
+| `perf` | patch | Performance |
+| `refactor` | patch | Changed |
+| `docs` | patch | Documentation |
+| `feat!`, or a `BREAKING CHANGE:` trailer | minor; it becomes major at 1.0 | under its own prefix |
+| `test`, `ci`, `chore`, `build` | none | none |
+
+Only the last row is silent. Everything above it produces a changelog line and a release,
+`docs` included — `release-plz.toml` files documentation under its own heading on purpose,
+because a documentation fix is something a user can be waiting for.
+
+**The pull request title is the commit message.** `main` takes squash merges, so the title
+is the only subject that reaches the history and the only one release-plz reads. A branch
+whose commits are a `feat` and two `docs` merged under a `docs:` title ships the feature
+with no Added line and no sign of it in the release. Title the pull request after the most
+significant change in it.
 
 Cutting the release is two steps, both for a maintainer:
 
