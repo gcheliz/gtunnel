@@ -202,14 +202,17 @@ pub fn metric_targets(entries: &[TunnelEntry]) -> Vec<MetricTarget> {
         .collect()
 }
 
+// `peaks` is what the sampler saw on each local port since the last round, so
+// a round that happens to fall between two short requests still reports them
 pub async fn collect(
     target: &MetricTarget,
     include_lb: bool,
+    peaks: Option<&std::collections::HashMap<u16, u64>>,
 ) -> Option<crate::probe::TunnelMetrics> {
     let config = load_config().ok()?;
     Some(match target.pid {
-        Some(pid) => collect_unmanaged(&config, &target.tunnel, pid).await,
-        None => collect_metrics(&config, &target.tunnel, include_lb).await,
+        Some(pid) => collect_unmanaged(&config, &target.tunnel, pid, peaks).await,
+        None => collect_metrics(&config, &target.tunnel, include_lb, peaks).await,
     })
 }
 

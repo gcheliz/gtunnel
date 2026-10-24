@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
 
 use crate::config::Config;
@@ -106,6 +106,96 @@ pub fn parse_lsof_established(text: &str, port: u16) -> u64 {
         .count() as u64
 }
 
+/// The same count as `parse_lsof_established`, for every port at once. The TUI
+/// samples far more often than it renders, so one listing without a port
+/// filter costs one process for the whole list rather than one per tunnel.
+///
+/// Keyed by the *local* port for the reason `parse_lsof_established` filters on
+/// it: both ends of a loopback connection are in the listing, and only the row
+/// whose local side is the tunnel's port is the tunnel's end of it. The client
+/// ends land under their own ephemeral ports, which nobody looks up.
+///
+/// `exclude` leaves one process's sockets out, and the caller passes its own:
+/// `tcp_probe` opens a connection to the very port being measured, and the
+/// tunnel's end of that connection is ESTABLISHED on the tunnel's port.
+/// `measure` keeps the probe out of its own count by reading before the probe
+/// opens; a sampler on a clock of its own cannot, so it drops every row whose
+/// peer is a socket of the excluded process instead.
+pub fn parse_lsof_by_port(text: &str, exclude: Option<u32>) -> HashMap<u16, u64> {
+    let rows: Vec<(u32, &str, &str)> = established_rows(text).collect();
+    let ours: std::collections::HashSet<&str> = match exclude {
+        Some(pid) => rows
+            .iter()
+            .filter(|(owner, ..)| *owner == pid)
+            .map(|(_, local, _)| *local)
+            .collect(),
+        None => std::collections::HashSet::new(),
+    };
+    let mut counts = HashMap::new();
+    for (owner, local, peer) in rows {
+        if exclude == Some(owner) || ours.contains(peer) {
+            continue;
+        }
+        if let Some(port) = endpoint_port(local) {
+            *counts.entry(port).or_insert(0) += 1;
+        }
+    }
+    counts
+}
+
+// Who owns each established connection, and its two ends. The pid is the first
+// numeric field: a command with a space in its name is escaped (`Slack\x20`),
+// so no field but COMMAND can precede it
+fn established_rows(text: &str) -> impl Iterator<Item = (u32, &str, &str)> {
+    text.lines()
+        .filter(|line| line.contains("ESTABLISHED"))
+        .filter_map(|line| {
+            let pid = line
+                .split_whitespace()
+                .find_map(|f| f.parse::<u32>().ok())?;
+            let (local, peer) = line
+                .split_whitespace()
+                .find(|field| field.contains("->"))?
+                .split_once("->")?;
+            Some((pid, local, peer))
+        })
+}
+
+// `127.0.0.1:8443` and `[::1]:8443` both end in the port, so what follows the
+// last colon is it either way
+fn endpoint_port(endpoint: &str) -> Option<u16> {
+    endpoint.rsplit(':').next()?.parse().ok()
+}
+
+/// Established connections per local port, for every tunnel in one process.
+///
+/// Empty when `lsof` is not there to ask, which is the Linux case: the caller
+/// falls back to `active_connections`, whose own `ss` branch still answers per
+/// port.
+pub fn established_by_port() -> HashMap<u16, u64> {
+    lsof_listing()
+        .map(|text| parse_lsof_by_port(&text, Some(std::process::id())))
+        .unwrap_or_default()
+}
+
+// Every established TCP connection on the machine, with no port filter: the
+// filter saves lsof no work, and one listing is one process for the whole list
+fn lsof_listing() -> Option<String> {
+    let out = std::process::Command::new("lsof")
+        .args(["-nP", "-iTCP", "-sTCP:ESTABLISHED"])
+        .output()
+        .ok()?;
+    listing(&out)
+}
+
+// What a listing said, whatever it exited with. `lsof` exits 1 when nothing
+// matched, and non-zero again when it merely warns about something it could
+// not stat while still printing the rows it found: gating on the status
+// discarded a real count.
+fn listing(out: &std::process::Output) -> Option<String> {
+    (!out.stdout.is_empty()).then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
 pub fn parse_ss_established(text: &str) -> u64 {
     text.lines()
         .filter(|line| {
@@ -120,21 +210,31 @@ pub fn active_connections(port: u16) -> u64 {
     if let Ok(out) = std::process::Command::new("lsof")
         .args(["-nP", &format!("-iTCP:{port}"), "-sTCP:ESTABLISHED"])
         .output()
-        && out.status.success()
+        && let Some(text) = listing(&out)
     {
-        return parse_lsof_established(&String::from_utf8_lossy(&out.stdout), port);
+        return parse_lsof_established(&text, port);
     }
     if let Ok(out) = std::process::Command::new("ss")
         .args(["-tnH", "state", "established", &format!("sport = :{port}")])
         .output()
-        && out.status.success()
+        && let Some(text) = listing(&out)
     {
-        let text = String::from_utf8_lossy(&out.stdout);
         // `ss -H` drops the header, so every row counts
         let rows = text.lines().filter(|l| !l.trim().is_empty()).count() as u64;
         return rows.max(parse_ss_established(&text));
     }
     0
+}
+
+// What the pane reports as `active`: the most clients the sampler saw since
+// the last tick, because a reading taken once every five seconds lands between
+// two short requests and reports nothing of a busy tunnel. A port the sampler
+// has no figure for is read directly, so the first tick, and a machine with no
+// `lsof`, are no worse than before there was a sampler.
+fn connections_for(peaks: Option<&HashMap<u16, u64>>, port: u16) -> u64 {
+    peaks
+        .and_then(|p| p.get(&port).copied())
+        .unwrap_or_else(|| active_connections(port))
 }
 
 // `ps -o etime=` prints MM:SS, HH:MM:SS or D-HH:MM:SS
@@ -188,22 +288,28 @@ pub async fn collect_metrics(
     cfg: &Config,
     t: &PersistentTunnel,
     include_lb: bool,
+    peaks: Option<&HashMap<u16, u64>>,
 ) -> TunnelMetrics {
     let label = daemon::platform_label(&t.account_name, &t.name);
     let status = daemon::status(&label).await;
     let runtime = daemon::runtime_info(&label).await;
-    measure(cfg, t, include_lb, status, runtime).await
+    measure(cfg, t, include_lb, status, runtime, peaks).await
 }
 
 // An unmanaged tunnel has no service to ask: discovery saw the process, and
 // `ps` already gave the pid its uptime is read from. Nothing restarts it, so a
 // restart count would be a number gtunnel invented.
-pub async fn collect_unmanaged(cfg: &Config, t: &PersistentTunnel, pid: u32) -> TunnelMetrics {
+pub async fn collect_unmanaged(
+    cfg: &Config,
+    t: &PersistentTunnel,
+    pid: u32,
+    peaks: Option<&HashMap<u16, u64>>,
+) -> TunnelMetrics {
     let runtime = daemon::RuntimeInfo {
         pid: Some(pid),
         restarts: 0,
     };
-    measure(cfg, t, false, TunnelStatus::Running, runtime).await
+    measure(cfg, t, false, TunnelStatus::Running, runtime, peaks).await
 }
 
 async fn measure(
@@ -212,6 +318,7 @@ async fn measure(
     include_lb: bool,
     status: TunnelStatus,
     runtime: daemon::RuntimeInfo,
+    peaks: Option<&HashMap<u16, u64>>,
 ) -> TunnelMetrics {
     let mut metrics = TunnelMetrics {
         restarts: runtime.restarts,
@@ -222,7 +329,9 @@ async fn measure(
 
     match &t.spec {
         TunnelSpec::Access { local_port, .. } => {
-            metrics.active_connections = active_connections(*local_port);
+            // Read before the probe opens its own socket, so the probe is
+            // never one of the clients it reports
+            metrics.active_connections = connections_for(peaks, *local_port);
             if let Some(rtt) = tcp_probe(&format!("127.0.0.1:{local_port}"), TCP_TIMEOUT).await {
                 metrics.latency = Some(rtt);
             } else {
@@ -468,6 +577,142 @@ Python  12253     you    3u  IPv4 0xc78928f83ee41eb7      0t0  TCP 127.0.0.1:643
     fn a_remote_client_counts_once() {
         let text = "ssh 2146 you 8u IPv4 0x1 0t0 TCP 10.0.0.2:8443->10.0.0.9:51234 (ESTABLISHED)\n";
         assert_eq!(parse_lsof_established(text, 8443), 1);
+    }
+
+    // One listing covers every tunnel on the machine, so the parser tells the
+    // ports apart itself. Both loopback ends of a connection are in it, and
+    // only the row whose *local* side is the tunnel's port is the tunnel's end
+    #[test]
+    fn one_listing_counts_every_port_by_its_local_side() {
+        let counts = parse_lsof_by_port(TWO_TUNNELS, None);
+        assert_eq!(
+            counts.get(&8443).copied(),
+            Some(2),
+            "one IPv4 client and one IPv6 client reach the same tunnel"
+        );
+        assert_eq!(counts.get(&15432).copied(), Some(1));
+        assert_eq!(
+            counts.get(&5432).copied(),
+            None,
+            "a port that only listens carries no client"
+        );
+    }
+
+    // gtunnel's own probe opens a connection to the tunnel it is measuring, and
+    // the tunnel's end of that connection is ESTABLISHED on the tunnel's port.
+    // `measure` reads the count before the probe opens so it never counts
+    // itself; a sampler on its own clock cannot, so it drops whatever answers a
+    // socket of this process instead
+    #[test]
+    fn a_sample_does_not_count_gtunnels_own_probe() {
+        let probed = format!(
+            "{TWO_TUNNELS}\
+gtunnel  9100     you    9u  IPv4 0x7              0t0  TCP 127.0.0.1:52999->127.0.0.1:8443 (ESTABLISHED)
+ssh      2146     you   11u  IPv4 0x8              0t0  TCP 127.0.0.1:8443->127.0.0.1:52999 (ESTABLISHED)
+"
+        );
+        assert_eq!(
+            parse_lsof_by_port(&probed, None).get(&8443).copied(),
+            Some(3),
+            "the listing has both ends of the probe's connection in it"
+        );
+        let counts = parse_lsof_by_port(&probed, Some(9100));
+        assert_eq!(
+            counts.get(&8443).copied(),
+            Some(2),
+            "the probe counted itself as a third client"
+        );
+        assert_eq!(
+            counts.get(&52999).copied(),
+            None,
+            "the probe's own end of it is gone too"
+        );
+    }
+
+    // What the sampler reads: two tunnels, each with a client of its own, plus
+    // a port that only listens
+    const TWO_TUNNELS: &str = "\
+COMMAND   PID    USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+ssh      2146     you    8u  IPv4 0x1              0t0  TCP 127.0.0.1:8443->127.0.0.1:64306 (ESTABLISHED)
+kubectl  2200     you    3u  IPv4 0x2              0t0  TCP 127.0.0.1:64306->127.0.0.1:8443 (ESTABLISHED)
+ssh      2146     you    9u  IPv6 0x3              0t0  TCP [::1]:8443->[::1]:64813 (ESTABLISHED)
+mongosh  2300     you    5u  IPv6 0x4              0t0  TCP [::1]:64813->[::1]:8443 (ESTABLISHED)
+ssh      2148     you   10u  IPv4 0x5              0t0  TCP 127.0.0.1:15432->127.0.0.1:51234 (ESTABLISHED)
+ssh      2150     you    7u  IPv4 0x6              0t0  TCP 127.0.0.1:5432 (LISTEN)
+";
+
+    // The sampler against a real listing, where nothing is a fixture: it
+    // proves the arguments still match, that the parse reads what `lsof`
+    // prints on this machine, and that a connection this process opened is
+    // left out — which is how a sample keeps `tcp_probe` from counting itself.
+    // macOS only, because the Linux path has no `lsof` to ask and falls back
+    // to `active_connections` and its `ss` branch
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_real_listing_leaves_out_this_processs_own_connections() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let client = std::net::TcpStream::connect(("127.0.0.1", port)).expect("connect");
+        let (accepted, _) = listener.accept().expect("accept");
+
+        let text = lsof_listing().expect("lsof answered");
+        assert_eq!(
+            parse_lsof_by_port(&text, None).get(&port).copied(),
+            Some(1),
+            "the listing has the listener's end of a live connection in it"
+        );
+        assert_eq!(
+            parse_lsof_by_port(&text, Some(std::process::id()))
+                .get(&port)
+                .copied(),
+            None,
+            "a sample counted a socket of this process as a client of the port it measures"
+        );
+        drop(accepted);
+        drop(client);
+    }
+
+    // lsof exits 1 when nothing matched, and non-zero again when it merely
+    // warns about something it could not stat while still printing the rows it
+    // found. Gating on the status threw a real count away
+    #[cfg(unix)]
+    #[test]
+    fn a_listing_is_read_whatever_the_exit_status_was() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let warned = std::process::Output {
+            status: std::process::ExitStatus::from_raw(1 << 8),
+            stdout: TWO_TUNNELS.as_bytes().to_vec(),
+            stderr: b"lsof: WARNING: can't stat() nfs file system\n".to_vec(),
+        };
+        assert_eq!(
+            listing(&warned)
+                .as_deref()
+                .map(|text| parse_lsof_by_port(text, None)),
+            Some(parse_lsof_by_port(TWO_TUNNELS, None)),
+            "a warning threw away rows lsof had already found"
+        );
+        let nothing = std::process::Output {
+            status: std::process::ExitStatus::from_raw(1 << 8),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        };
+        assert_eq!(listing(&nothing), None);
+    }
+
+    // The sampler has not run yet on the first metrics tick, and a port with no
+    // traffic since the last one has no entry of its own. Neither may read
+    // worse than the direct call did before there was a sampler
+    #[test]
+    fn a_port_the_sampler_has_not_seen_is_measured_directly() {
+        let sampled = HashMap::from([(8443u16, 4u64)]);
+        assert_eq!(connections_for(Some(&sampled), 8443), 4);
+        assert_eq!(
+            connections_for(Some(&sampled), 1),
+            0,
+            "port 1 has no client, and the direct reading says so"
+        );
+        assert_eq!(connections_for(None, 1), 0);
     }
 
     #[test]
