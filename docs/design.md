@@ -69,7 +69,18 @@ What a pane sheds as the terminal narrows is decided and tested, never emergent.
 
 The mark is fixed: 11 cells (`MARK_WIDTH`), one row (`MARK_ROWS`), never rescaled. Braille draws separated dots, so scaling the raster scales the gaps and the cloud turns into a dot matrix; the word beneath it cannot grow at all because a terminal cannot scale type. One size is the mark, not a limitation of it.
 
-Code: `src/tui/ui.rs` (`MARK_BRAILLE`, `MARK_FALLBACK`, `NAME_ROW`). The test `the_mark_is_the_one_drawn_for_the_design_and_never_another` in `src/tui/mod.rs` pins the cells. The README carries a separate raster, `docs/logo.png`; it is documentation artwork and does not follow these rules.
+There is one mark, and print does not get a second one. The eleven cells of `MARK_BRAILLE` are the drawing; `docs/logo.svg` is those same dots re-plotted, one rounded square per lit braille dot on the 22 by 4 lattice a row of braille cells describes, in the same five hues. `docs/logo.png` is rendered from that SVG, and the README embeds it. The non-braille `MARK_FALLBACK` is the same silhouette again in quadrant blocks, for a font with no braille coverage.
+
+What changes between the three is only what the medium forces. A terminal cell is a dot, so the terminal shows separated dots and has no choice. Print has a choice, and takes the other one: the squares are as wide as the pitch, so they meet and the silhouette closes. Drawn as separated points at banner size the enlargement fails exactly as the paragraph above says it will.
+
+| | |
+|---|---|
+| Code | `src/tui/ui.rs` (`MARK_BRAILLE`, `MARK_FALLBACK`, `NAME_ROW`, `mark_dots`) |
+| The cells are pinned by | `the_mark_is_the_one_drawn_for_the_design_and_never_another` in `src/tui/mod.rs` |
+| The banner is pinned to them by | `the_readme_banner_is_the_mark_dot_for_dot`, which reads every square out of `docs/logo.svg` and compares it to `mark_dots()` |
+| The fallback is pinned by | `the_fallback_is_the_one_the_code_draws_not_the_canvas` |
+
+Regenerating the banner means editing `docs/logo.svg` and re-rendering `docs/logo.png` from it; the test fails until the two agree again.
 
 ## Tables
 
