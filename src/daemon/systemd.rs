@@ -58,6 +58,7 @@ Type=simple
 {env}ExecStart={exec}
 Restart=on-failure
 RestartSec=5
+LimitNOFILE={max_files}
 StandardOutput=append:{log}
 StandardError=append:{log}
 
@@ -65,6 +66,7 @@ StandardError=append:{log}
 WantedBy=default.target
 "#,
         label = spec.label,
+        max_files = super::TUNNEL_MAX_FILES,
     )
 }
 
