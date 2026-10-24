@@ -79,7 +79,7 @@ so they run on any glibc.
 
 ```
 $ gtunnel --version
-gtunnel 0.1.0
+gtunnel 0.1.1
 ```
 
 #### Proving where the binary came from

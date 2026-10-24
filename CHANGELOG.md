@@ -3,7 +3,7 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
-## Unreleased
+## v0.1.1 - 2026-10-24
 
 ### Installing and proving what you installed
 
@@ -150,7 +150,7 @@ what is on `main` and not yet tagged.
   has to be bumped in `README.md` as part of cutting a release.** The CI badge can come back
   the day the repository goes public.
 
-## v0.1.0 - unreleased
+## v0.1.0 - 2026-10-24
 
 First release. gtunnel is a port of [ytunnel](https://yetidevworks.com/ytunnel) to GCP
 Identity-Aware Proxy: the same two modes and the same TUI-first shape, with IAP and a
