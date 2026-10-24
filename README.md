@@ -100,6 +100,11 @@ with the GitHub CLI:
 gh attestation verify gtunnel-macos-arm64.tar.gz -o gcheliz
 ```
 
+Silence and exit 0 mean it checked out; a file this repository did not build fails with
+`HTTP 404` instead. Add `--format json` to read which workflow, tag and commit produced
+it — [docs/usage.md](docs/usage.md#4-install-gtunnel) shows that output. Attestations
+begin with v0.1.1.
+
 There is no `cargo install gtunnel`: the name on crates.io belongs to an unrelated crate.
 Use `--git` or `--path`, as above.
 
