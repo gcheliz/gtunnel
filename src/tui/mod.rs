@@ -617,6 +617,55 @@ mod tests {
         );
     }
 
+    // A refusal that never reaches the screen is a key that does nothing and
+    // says nothing. Only a status marked as an error survives to be drawn: the
+    // rest are cleared results, which the pane title deliberately drops the
+    // moment the operation behind them has finished.
+    #[test]
+    fn refusing_an_unmanaged_action_puts_the_reason_on_screen() {
+        let mut app = app_with_two();
+        app.entries[0].kind = TunnelKind::External;
+        app.handle_key(key(KeyCode::Char('m')));
+        assert!(app.status_error, "a refusal has to survive to be drawn");
+
+        let buffer = screen(&app, 120, 30);
+        let text: String = (0..buffer.area.height)
+            .map(|y| row_chars(&buffer, y).into_iter().collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("not managed by gtunnel"), "{text}");
+    }
+
+    // Every action in the running set refuses on someone else's process, so a
+    // footer built from the status alone offered five keys that all did
+    // nothing. What is left is the one key that still works on the list.
+    #[test]
+    fn an_unmanaged_row_offers_no_action_that_would_refuse() {
+        let (ctx, _) = ui::footer_groups(Some((TunnelStatus::Running, TunnelKind::External)), true);
+        let keys: Vec<&str> = ctx.iter().map(|a| a.key).collect();
+        assert_eq!(keys, vec!["a"], "{keys:?}");
+    }
+
+    // The pane read `started by gtunnel (auto-start off)` over a process
+    // gtunnel did not start and cannot stop: the restart count behind that
+    // sentence is zero because nothing is counting, not because nothing
+    // restarted.
+    #[test]
+    fn details_do_not_credit_gtunnel_with_someone_elses_process() {
+        let mut app = app_with_two();
+        app.entries[0].kind = TunnelKind::External;
+        let buffer = screen(&app, 120, 30);
+        let text: String = (0..buffer.area.height)
+            .map(|y| row_chars(&buffer, y).into_iter().collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains("started by"),
+            "the row is still there: {text}"
+        );
+        assert!(!text.contains("started by gtunnel"), "{text}");
+    }
+
     // A failed operation and a successful one both end up on the status line,
     // so the line has to say which one it is
     #[test]
@@ -690,6 +739,17 @@ mod tests {
         assert!(ui::empty_log_note(&jump, TunnelStatus::Running).contains("silent"));
         // Review Focus 5: a failed tunnel is not a quiet healthy one
         assert!(!ui::empty_log_note(&jump, TunnelStatus::Error).contains("silent"));
+    }
+
+    // The field and the selected list row are two roles. If they shared a
+    // shade the header would read as a second selection, and the field must
+    // stay an indexed colour so the terminal's palette still shapes it.
+    #[test]
+    fn the_field_background_is_its_own_indexed_colour_and_not_the_selection() {
+        use ratatui::style::Color;
+        assert!(matches!(theme::FIELD_BG, Color::Indexed(_)));
+        assert_ne!(theme::FIELD_BG, theme::SELECTED_BG);
+        assert_ne!(theme::FIELD_BG, Color::Reset);
     }
 
     // The brand hues are the one exception to the named-ANSI contract. The
@@ -907,7 +967,7 @@ mod tests {
             .iter()
             .find(|s| s.content.contains("dev"))
             .expect("name span");
-        assert_eq!(name.style.bg, Some(theme::SELECTED_BG));
+        assert_eq!(name.style.bg, Some(theme::FIELD_BG));
         assert!(name
             .style
             .add_modifier
@@ -917,7 +977,7 @@ mod tests {
             .iter()
             .find(|s| s.content.contains("sample-dev-1"))
             .expect("project span");
-        assert_eq!(project.style.bg, Some(theme::SELECTED_BG));
+        assert_eq!(project.style.bg, Some(theme::FIELD_BG));
         assert_eq!(project.style.fg, Some(theme::MUTED));
     }
 
@@ -982,7 +1042,7 @@ mod tests {
             lines[2]
                 .spans
                 .iter()
-                .all(|s| s.style.bg != Some(theme::SELECTED_BG)),
+                .all(|s| s.style.bg != Some(theme::FIELD_BG)),
             "row 2 must carry no fill: {:?}",
             lines[2]
         );
@@ -1086,12 +1146,12 @@ mod tests {
     // instead of annotating it.
     #[test]
     fn the_footer_offers_only_what_the_selection_can_do() {
-        let (ctx, _) = ui::footer_groups(Some(TunnelStatus::Running), true);
+        let (ctx, _) = ui::footer_groups(Some((TunnelStatus::Running, TunnelKind::Managed)), true);
         let keys: Vec<_> = ctx.iter().map(|a| a.key).collect();
         assert_eq!(keys, ["S", "R", "c", "o", "L"]);
         assert!(!keys.contains(&"s"), "a running tunnel cannot be started");
 
-        let (ctx, _) = ui::footer_groups(Some(TunnelStatus::Stopped), true);
+        let (ctx, _) = ui::footer_groups(Some((TunnelStatus::Stopped, TunnelKind::Managed)), true);
         let keys: Vec<_> = ctx.iter().map(|a| a.key).collect();
         assert_eq!(keys, ["s", "e", "d", "A"]);
         assert!(!keys.contains(&"S"), "s and S are never on screen together");
@@ -1110,7 +1170,11 @@ mod tests {
     #[test]
     fn the_footer_sheds_whole_actions_and_never_half_of_one() {
         for width in 20u16..=140 {
-            let text = line_text(&ui::footer_line(width, Some(TunnelStatus::Running), true));
+            let text = line_text(&ui::footer_line(
+                width,
+                Some((TunnelStatus::Running, TunnelKind::Managed)),
+                true,
+            ));
             assert!(
                 text.chars().count() <= width as usize,
                 "overflows at {width}"
@@ -1146,7 +1210,7 @@ mod tests {
     #[test]
     fn a_failed_tunnel_footer_leads_with_restart_in_the_warning_colour() {
         use ratatui::style::Modifier;
-        let line = ui::footer_line(120, Some(TunnelStatus::Error), true);
+        let line = ui::footer_line(120, Some((TunnelStatus::Error, TunnelKind::Managed)), true);
         let at = line
             .spans
             .iter()
@@ -1167,7 +1231,11 @@ mod tests {
             .count();
         assert_eq!(warn_spans, 1, "only the lead action is loud");
 
-        let running = ui::footer_line(120, Some(TunnelStatus::Running), true);
+        let running = ui::footer_line(
+            120,
+            Some((TunnelStatus::Running, TunnelKind::Managed)),
+            true,
+        );
         assert!(
             running
                 .spans
@@ -1181,7 +1249,11 @@ mod tests {
     // still shows any contextual action.
     #[test]
     fn the_failed_footer_keeps_restart_first_at_forty_eight_columns() {
-        let text = line_text(&ui::footer_line(48, Some(TunnelStatus::Error), true));
+        let text = line_text(&ui::footer_line(
+            48,
+            Some((TunnelStatus::Error, TunnelKind::Managed)),
+            true,
+        ));
         assert!(text.trim_start().starts_with("R restart"), "{text:?}");
     }
 
@@ -1268,15 +1340,49 @@ mod tests {
         assert!(!app.loaded, "a failed load is not an answer");
     }
 
+    // `loading` promises an answer. After an error none is coming until the
+    // timer asks again, and a broken tunnels.toml read as a load in progress
+    // for as long as it stayed broken.
+    #[test]
+    fn a_first_load_that_failed_says_so_not_loading() {
+        let mut app = App::new("dev");
+        app.load_failed("tunnels.toml is not valid");
+        let row = list_body_row(&app, 120, 12);
+        assert!(row.contains("could not load tunnels"), "{row:?}");
+        assert!(!row.contains("loading"), "{row:?}");
+        let buffer = screen(&app, 120, 12);
+        let y = text_of(&buffer)
+            .iter()
+            .position(|r| r.contains("could not load tunnels"))
+            .unwrap() as u16;
+        let x = find(&row_chars(&buffer, y), "could not load tunnels").unwrap() as u16;
+        assert_eq!(buffer[(x, y)].fg, theme::MUTED);
+
+        app.replace_entries(Vec::new());
+        let row = list_body_row(&app, 120, 12);
+        assert!(row.contains("no tunnels in this account"), "{row:?}");
+        assert!(!row.contains("could not load"), "{row:?}");
+    }
+
+    #[test]
+    fn a_failure_on_one_account_does_not_follow_the_next() {
+        let mut app = keymap_fixture();
+        app.entries.clear();
+        app.load_failed("tunnels.toml is not valid");
+        app.handle_key(key(KeyCode::Char(';')));
+        assert!(list_body_row(&app, 120, 12).contains("loading"));
+    }
+
     // The footer and the help page are two views of one table. A footer action
     // with no row in it, or a different word for the same key, is the drift the
     // table exists to prevent.
     #[test]
     fn every_footer_action_is_in_the_keymap_under_the_same_label() {
         let states = [
-            (Some(TunnelStatus::Running), true),
-            (Some(TunnelStatus::Stopped), true),
-            (Some(TunnelStatus::Error), true),
+            (Some((TunnelStatus::Running, TunnelKind::Managed)), true),
+            (Some((TunnelStatus::Stopped, TunnelKind::Managed)), true),
+            (Some((TunnelStatus::Error, TunnelKind::Managed)), true),
+            (Some((TunnelStatus::Running, TunnelKind::External)), true),
             (None, false),
         ];
         for (selected, any) in states {
@@ -1337,12 +1443,25 @@ mod tests {
         app
     }
 
+    // Stand-ins for the clipboard and the browser. `App::new` already refuses
+    // both under test, so a test that forgets to install these fails loudly
+    // instead of copying to the clipboard of the machine running it.
+    fn copy_ok(_: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn open_ok(_: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn copy_fails(_: &str) -> anyhow::Result<()> {
+        anyhow::bail!("no clipboard")
+    }
+    fn open_fails(_: &str) -> anyhow::Result<()> {
+        anyhow::bail!("no browser")
+    }
+
     // A help page that lists a key nothing handles is worse than none. `c` and
-    // `o` are the two keys whose only effect is outside the process, on the
-    // clipboard and the browser, so a test that pressed them would do both on
-    // the machine running it, and they act on any selected entry, an unmanaged
-    // one included, so no fixture avoids both; they are checked for being in the
-    // table and for doing nothing when there is no selection.
+    // `o` act outside the process, so they run against stand-ins for the
+    // clipboard and the browser and are checked by what the status line says.
     #[test]
     fn every_key_the_help_page_lists_is_handled() {
         const OUTSIDE_THE_PROCESS: [&str; 2] = ["c", "o"];
@@ -1394,10 +1513,19 @@ mod tests {
                 continue;
             }
             if OUTSIDE_THE_PROCESS.contains(&doc.key) {
-                let mut app = App::new("dev");
-                assert!(app
-                    .handle_key(key(KeyCode::Char(doc.key.chars().next().unwrap())))
-                    .is_none());
+                let mut app = keymap_fixture();
+                app.clipboard = copy_ok;
+                app.opener = open_ok;
+                let op = app.handle_key(key(KeyCode::Char(doc.key.chars().next().unwrap())));
+                assert!(op.is_none(), "{} starts no operation", doc.key);
+                let status = app.status.clone().unwrap_or_default();
+                let wanted = if doc.key == "c" {
+                    "copied localhost:16379"
+                } else {
+                    "opened http://localhost:16379"
+                };
+                assert_eq!(status, wanted, "{} reports what it did", doc.key);
+                assert!(!app.status_error, "{} succeeded", doc.key);
                 continue;
             }
             let codes: Vec<KeyCode> = doc
@@ -1421,6 +1549,30 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn c_and_o_report_a_clipboard_or_browser_that_failed() {
+        let mut app = keymap_fixture();
+        app.clipboard = copy_fails;
+        app.opener = open_fails;
+        app.handle_key(key(KeyCode::Char('c')));
+        assert_eq!(app.status.as_deref(), Some("could not copy: no clipboard"));
+        app.handle_key(key(KeyCode::Char('o')));
+        assert_eq!(
+            app.status.as_deref(),
+            Some("could not open http://localhost:16379: no browser")
+        );
+    }
+
+    #[test]
+    fn c_and_o_do_nothing_without_a_selected_tunnel() {
+        let mut app = App::new("dev");
+        app.clipboard = copy_ok;
+        app.opener = open_ok;
+        assert!(app.handle_key(key(KeyCode::Char('c'))).is_none());
+        assert!(app.handle_key(key(KeyCode::Char('o'))).is_none());
+        assert_eq!(app.status, None);
     }
 
     fn help_app() -> App {
@@ -1824,7 +1976,11 @@ mod tests {
     // read the footer must still be able to leave.
     #[test]
     fn the_way_out_survives_the_narrowest_terminal() {
-        let text = line_text(&ui::footer_line(24, Some(TunnelStatus::Running), true));
+        let text = line_text(&ui::footer_line(
+            24,
+            Some((TunnelStatus::Running, TunnelKind::Managed)),
+            true,
+        ));
         assert!(text.contains("keys") && text.contains("quit"), "{text:?}");
     }
 
@@ -2314,7 +2470,7 @@ mod tests {
     fn the_selected_row_is_on_screen_when_the_list_is_longer_than_the_pane() {
         // only the list's own columns: Details prints the selected name as well
         let list_rows = |app: &App| -> Vec<String> {
-            text_of(&screen(app, 120, 10))
+            text_of(&screen(app, 130, 10))
                 .iter()
                 .map(|r| r.chars().take(54).collect())
                 .collect()
@@ -2330,6 +2486,62 @@ mod tests {
         let rows = list_rows(&app);
         assert!(rows.iter().any(|r| r.contains("svc-00-")), "{rows:#?}");
         assert!(!rows.iter().any(|r| r.contains("svc-19-")), "{rows:#?}");
+    }
+
+    // The names the list pane shows, top to bottom. Only its own columns are
+    // read: Details prints the selected name as well.
+    fn visible_list_names(app: &App, width: u16, height: u16) -> Vec<String> {
+        let list_width = (width as usize * 46 / 100).max(1);
+        text_of(&screen(app, width, height))
+            .iter()
+            .filter_map(|r| {
+                let cells: String = r.chars().take(list_width).collect();
+                let at = cells.find("svc-")?;
+                Some(cells[at..].chars().take(6).collect())
+            })
+            .collect()
+    }
+
+    // Rebuilding the offset from the selection every draw pinned the selected
+    // row to the bottom edge whenever it was above it: moving up one row moved
+    // the whole list under the cursor instead of the cursor over the list.
+    #[test]
+    fn moving_the_selection_inside_the_window_does_not_scroll_the_list() {
+        let mut app = many_entries(20);
+        app.selected = 10;
+        let first = visible_list_names(&app, 130, 14);
+        assert_eq!(first.len(), 8, "the fixture is an 8-row pane: {first:?}");
+        assert_eq!(
+            first.last().map(String::as_str),
+            Some("svc-10"),
+            "{first:?}"
+        );
+
+        app.selected = 9;
+        let second = visible_list_names(&app, 130, 14);
+        assert_eq!(second, first, "the window moved for a selection inside it");
+
+        // and it still follows the selection past either edge
+        app.selected = 2;
+        let up = visible_list_names(&app, 130, 14);
+        assert_eq!(up.first().map(String::as_str), Some("svc-02"), "{up:?}");
+    }
+
+    // A window left scrolled by a short terminal must not leave blank rows
+    // under the last entry once the terminal grows
+    #[test]
+    fn a_taller_terminal_pulls_the_window_back_to_fill_the_pane() {
+        let mut app = many_entries(20);
+        app.selected = 19;
+        let short = visible_list_names(&app, 130, 14);
+        assert_eq!(
+            short.last().map(String::as_str),
+            Some("svc-19"),
+            "{short:?}"
+        );
+        let tall = visible_list_names(&app, 130, 24);
+        assert!(tall.len() > short.len(), "{tall:?}");
+        assert_eq!(tall.last().map(String::as_str), Some("svc-19"), "{tall:?}");
     }
 
     #[test]
@@ -2348,7 +2560,7 @@ mod tests {
     // Side by side the list got 32 cells at 80 columns, which cost it the url;
     // stacked it gets the width of the terminal
     #[test]
-    fn below_one_hundred_columns_the_list_stacks_above_the_other_panes() {
+    fn below_121_columns_the_list_stacks_above_the_other_panes() {
         let app = columns_app();
         let buffer = screen(&app, 80, 30);
         let rows = text_of(&buffer);
@@ -2364,26 +2576,108 @@ mod tests {
         assert!(!second.contains('\u{2026}'), "{second}");
     }
 
+    // Measured at 24 rows: side by side, the list's 46 percent was 46 cells at
+    // 100 columns and 55 at 120. This carries the two urls and the unmanaged
+    // note the stacked layout has to show whole.
+    fn wide_url_app() -> App {
+        let mut app = App::new("dev");
+        app.entries = vec![
+            TunnelEntry::new(
+                expose("api", "api.demo.example.com"),
+                TunnelStatus::Running,
+                TunnelKind::Managed,
+            ),
+            TunnelEntry::new(
+                expose("callback", "checkout-callback.sandbox.internal.ex.com"),
+                TunnelStatus::Running,
+                TunnelKind::Managed,
+            ),
+            TunnelEntry::new(
+                access("pid-24083", 0),
+                TunnelStatus::Running,
+                TunnelKind::External,
+            ),
+        ];
+        app.entries[2].tunnel.account_name = String::new();
+        app
+    }
+
     #[test]
-    fn from_one_hundred_columns_the_list_is_the_left_46_percent() {
-        let app = columns_app();
-        let buffer = screen(&app, 120, 30);
+    fn from_100_to_120_columns_the_list_shows_every_url_uncut() {
+        let app = wide_url_app();
+        assert_eq!(
+            "https://api.demo.example.com".chars().count(),
+            28,
+            "the short url is 28 cells"
+        );
+        assert_eq!(
+            "https://checkout-callback.sandbox.internal.ex.com"
+                .chars()
+                .count(),
+            49,
+            "the long url is 49 cells"
+        );
+        for width in [100, 110, 120] {
+            let buffer = screen(&app, width, 24);
+            let rows = text_of(&buffer);
+            let list_y = rows.iter().position(|r| r.contains("TUNNELS (")).unwrap();
+            let details_y = rows.iter().position(|r| r.contains("DETAILS")).unwrap();
+            assert!(details_y > list_y, "{width}: details sits below the list");
+            let text = rows.join("\n");
+            for wanted in [
+                "https://api.demo.example.com",
+                "https://checkout-callback.sandbox.internal.ex.com",
+                "[not managed by gtunnel]",
+            ] {
+                assert!(text.contains(wanted), "{width}: missing {wanted:?}\n{text}");
+            }
+            assert!(
+                !rows[list_y..list_y + 6].join("").contains('\u{2026}'),
+                "{width}: the list carries an ellipsis\n{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn from_121_columns_the_panes_are_side_by_side() {
+        let app = wide_url_app();
+        let buffer = screen(&app, 121, 24);
         let rows = text_of(&buffer);
         let list_y = rows.iter().position(|r| r.contains("TUNNELS (")).unwrap();
         let details_y = rows.iter().position(|r| r.contains("DETAILS")).unwrap();
         assert_eq!(details_y, list_y, "the panes share a row");
-        // 46 percent of 120 cells is 55, so the list's right edge is cell 54
-        assert_eq!(buffer[(54, list_y as u16 - 1)].symbol(), "\u{256e}");
-        assert_eq!(buffer[(55, list_y as u16 - 1)].symbol(), "\u{256d}");
+        // the first frame on the top edge closes at the 46 percent split, the
+        // same split as at 120 columns, not at the terminal's edge
+        let top = row_chars(&buffer, list_y as u16 - 1);
+        let right_edge = top.iter().position(|c| *c == '\u{256e}').unwrap();
+        assert!((53..=56).contains(&right_edge), "{right_edge}");
+        assert_eq!(top[right_edge + 1], '\u{256d}', "a second pane follows");
     }
 
     #[test]
-    fn the_selection_survives_the_change_of_layout_at_one_hundred_columns() {
+    fn at_100x24_the_stacked_list_keeps_rows_and_the_panes_stay_usable() {
+        let mut app = with_logs(wide_url_app(), 40);
+        app.selected = 1;
+        let rows = text_of(&screen(&app, 100, 24));
+        let text = rows.join("\n");
+        let list_y = rows.iter().position(|r| r.contains("TUNNELS (")).unwrap();
+        let details_y = rows.iter().position(|r| r.contains("DETAILS")).unwrap();
+        assert!(
+            details_y - list_y >= 5,
+            "the list shows its header and two rows"
+        );
+        for wanted in ["DETAILS", "LOGS: ", "the newest log line"] {
+            assert!(text.contains(wanted), "missing {wanted:?}\n{text}");
+        }
+    }
+
+    #[test]
+    fn the_selection_survives_the_change_of_layout_at_121_columns() {
         let mut app = many_entries(20);
         app.selected = 17;
         // The highlight is the proof it is the list's row, not Details printing
         // the same name
-        for width in [99, 100, 99, 120, 60] {
+        for width in [99, 120, 121, 120, 60] {
             let buffer = screen(&app, width, 30);
             let highlighted = (0..buffer.area.height).any(|y| {
                 let row: String = row_chars(&buffer, y).iter().collect();
@@ -3167,5 +3461,51 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The doc cites code. A citation that no longer resolves is worse than no
+    /// citation: it sends the next reader to a file that does not exist and
+    /// quietly teaches them the rule is stale too.
+    #[test]
+    fn the_design_doc_cites_only_files_that_exist() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let doc = std::fs::read_to_string(root.join("docs/design.md")).unwrap();
+        let mut checked = 0;
+        for token in doc.split(|c: char| !(c.is_alphanumeric() || "/._-".contains(c))) {
+            if token.starts_with("src/") && token.ends_with(".rs") {
+                assert!(
+                    root.join(token).exists(),
+                    "docs/design.md cites {token}, which does not exist"
+                );
+                checked += 1;
+            }
+        }
+        assert!(
+            checked >= 6,
+            "the doctrine should cite the code it describes, found {checked}"
+        );
+    }
+
+    /// Every colour the theme exports has a documented job. A colour the doc
+    /// does not name is a colour with no stated meaning, which is how a palette
+    /// turns into decoration.
+    #[test]
+    fn the_design_doc_names_every_colour_the_theme_exports() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let doc = std::fs::read_to_string(root.join("docs/design.md")).unwrap();
+        let theme = std::fs::read_to_string(root.join("src/tui/theme.rs")).unwrap();
+        let mut named = 0;
+        for line in theme.lines() {
+            let Some(rest) = line.strip_prefix("pub const ") else {
+                continue;
+            };
+            let name = rest.split(':').next().unwrap().trim();
+            assert!(
+                doc.contains(name),
+                "docs/design.md never mentions theme::{name}"
+            );
+            named += 1;
+        }
+        assert!(named >= 13, "theme.rs exports its colours, found {named}");
     }
 }

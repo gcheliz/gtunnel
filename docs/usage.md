@@ -83,7 +83,8 @@ both halves of a pair on screen; the keymap page states the difference. When the
 tunnel has failed, `R restart` leads the footer in the warning colour. An account with no
 tunnels shows `no tunnels in this account` under the list header, and the footer offers `a`
 and `m`; until the first load has answered, and after `;` until the new account's has, the
-row says `loading` instead, and a load that fails puts its error on the status line. The
+row says `loading` instead. A first load that fails puts its error on the status line and
+replaces `loading` with `could not load tunnels`, until a load succeeds. The
 keymap page is two columns from 92 cells inside its frame and one below that. On a
 terminal too short for it, the page scrolls: `j` `k` and the arrows move a row, `PgUp` and
 `PgDn` a screen, `g` and `G` jump to the top and the end, and a row such as
@@ -114,9 +115,10 @@ only when the pane could not otherwise hold a 12-cell URL. The Details pane star
 full stored name. `gtunnel list` and every command keep using the full names, so `gtunnel
 start k8s-dev` is still the command.
 
-The layout follows the terminal. From 100 columns the list is the left 46% and Details, Logs
-and Metrics are stacked on the right; below 100 the list takes the full width above them,
-which keeps the URL readable. The list scrolls to keep the selected tunnel on screen, and a
+The layout follows the terminal. From 121 columns the list is the left 46% and Details, Logs
+and Metrics are stacked on the right; below 121 the list takes the full width above them,
+which keeps the URL readable. The list scrolls only when the selected tunnel would leave the
+window, so moving inside it moves the highlight and not the rows, and a
 Details value too long for its row (a URL, a target, how the tunnel was started) wraps under
 its label instead of being cut. When the terminal is short, Logs keeps at least 4 rows and
 Metrics shrinks, then disappears, before Logs does.

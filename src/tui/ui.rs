@@ -6,7 +6,7 @@ use ratatui::widgets::{
 };
 use ratatui::Frame;
 
-use super::app::{App, HelpExtent, InputMode, TunnelEntry, TunnelMode};
+use super::app::{App, HelpExtent, InputMode, TunnelEntry, TunnelKind, TunnelMode};
 use super::theme;
 use crate::probe::{HealthStatus, LB_WINDOW_MINUTES};
 use crate::state::{TunnelSpec, TunnelStatus};
@@ -190,14 +190,15 @@ fn field_row(text: &str, width: usize, style: Style) -> Vec<Span<'static>> {
 /// A filled block is enough to mark the field, so it carries no border and no
 /// `ACCOUNT` label: a border needs a row above and below it, which would grow
 /// the header to five rows, and the name is the only thing it could label. The
-/// fill is `SELECTED_BG`, the one background the theme already names, so the
-/// terminal's own palette still decides the shade. With no project the second
+/// fill is `FIELD_BG`, not `SELECTED_BG`: the selected list row is a different
+/// role and must not read as the same control. It is still an indexed colour,
+/// so the terminal's own palette decides the shade. With no project the second
 /// row is empty and the field is one row tall, rather than a blank line on the
 /// fill.
 fn account_field(account: &str, project: &str, max_width: usize) -> [Vec<Span<'static>>; 2] {
     let width = account_field_width(account, project, max_width);
     let shown = fit_project(project, max_width);
-    let fill = Style::default().bg(theme::SELECTED_BG);
+    let fill = Style::default().bg(theme::FIELD_BG);
     let name = field_row(
         account,
         width,
@@ -544,6 +545,12 @@ const ACTIONS_ERROR: &[Action] = &[
 
 const ACTIONS_EMPTY: &[Action] = &[Action::of("a"), Action::of("m")];
 
+/// Someone else's `gcloud` process. Every tunnel action refuses on it, and the
+/// running set offered five of them, so the footer named five keys that did
+/// nothing. Adding a tunnel of your own is what is left - `r` refresh also
+/// works, but it has no footer word, being a key the screen never advertises.
+const ACTIONS_UNMANAGED: &[Action] = &[Action::of("a")];
+
 /// Always available, always flush right, and the last thing to shed.
 const ACTIONS_PROGRAM: &[Action] = &[Action::of(";"), Action::of("?"), Action::of("q")];
 
@@ -555,6 +562,7 @@ pub fn footer_most() -> usize {
         ACTIONS_STOPPED,
         ACTIONS_ERROR,
         ACTIONS_EMPTY,
+        ACTIONS_UNMANAGED,
     ]
     .iter()
     .map(|set| set.len())
@@ -614,10 +622,15 @@ fn status_style(status: TunnelStatus) -> Style {
     }
 }
 
-/// The terminal width below which the list stacks above the other panes. At 100
-/// columns the list's 46 percent is 46 cells, enough for a name, the mode and a
-/// url of the usual length; below it the url is what gets cut.
-const STACK_BELOW: u16 = 100;
+/// The terminal width below which the list stacks above the other panes. Side by
+/// side the list is 46 percent of the width: 46 cells at 100 columns, 50 at 110,
+/// 55 at 120. Measured at 24 rows, a 28-cell url was cut at 100 and 110 and a
+/// 49-cell url at all three, so the list lost the url it exists to show across
+/// the whole range. Stacked, it takes the full width and none of those is cut;
+/// from 121 the right-hand column is wide enough for Details to carry in full
+/// whatever the list still has to shorten. Stacking costs rows, not columns,
+/// and a list loses a row more cheaply than a url.
+const STACK_BELOW: u16 = 121;
 /// The fewest rows a stacked list gets: its border, its title, its header and
 /// two entries.
 const LIST_MIN_ROWS: u16 = 5;
@@ -802,6 +815,8 @@ fn render_tunnels(f: &mut Frame, app: &App, area: Rect) {
     if app.entries.is_empty() {
         let row = if app.loaded {
             "no tunnels in this account"
+        } else if app.load_failed {
+            "could not load tunnels"
         } else {
             "loading"
         };
@@ -874,14 +889,27 @@ fn render_tunnels(f: &mut Frame, app: &App, area: Rect) {
         .collect();
 
     // The list follows the selection through a state, so a selection past the
-    // pane's last row scrolls into view. The state is rebuilt every draw: the
-    // offset is then a function of the selection and the height alone, which is
-    // what lets a resize keep the selected row on screen with nothing stored.
-    // Row styling stays on the rows; the state is only asked to scroll.
-    let mut state = ListState::default();
-    if !app.entries.is_empty() {
-        state.select(Some(app.selected.min(app.entries.len() - 1)));
+    // pane's last row scrolls into view. The offset is held on `App` and only
+    // moved when the selection would leave the window, so a move inside it
+    // moves the cursor and not the list. It is clamped to the last offset that
+    // still fills the pane: a terminal that grew, or a list that shrank, would
+    // otherwise leave blank rows under the last entry. Row styling stays on the
+    // rows; the state is only asked to scroll.
+    let height = parts[1].height as usize;
+    let selected = app.selected.min(app.entries.len() - 1);
+    let mut offset = app
+        .list_offset
+        .get()
+        .min(app.entries.len().saturating_sub(height));
+    if selected < offset {
+        offset = selected;
+    } else if height > 0 && selected >= offset + height {
+        offset = selected + 1 - height;
     }
+    app.list_offset.set(offset);
+    let mut state = ListState::default()
+        .with_offset(offset)
+        .with_selected(Some(selected));
     f.render_stateful_widget(List::new(items), parts[1], &mut state);
 }
 
@@ -1003,8 +1031,13 @@ fn detail_lines(entry: &TunnelEntry, project: &str, width: usize) -> Vec<Line<'s
     ));
     rows.push((
         "started by",
-        match entry.status {
-            TunnelStatus::Running => started_by(metrics.restarts, entry.tunnel.auto_start),
+        match (entry.kind, entry.status) {
+            // `started_by` reads a restart count off the service manager, and
+            // a stranger has no service: the zero it carries means nothing is
+            // counting, not that nothing revived it. The pane said "gtunnel"
+            // over a process gtunnel did not start and cannot stop.
+            (TunnelKind::External, _) => "another process".to_string(),
+            (_, TunnelStatus::Running) => started_by(metrics.restarts, entry.tunnel.auto_start),
             _ => "-".to_string(),
         },
     ));
@@ -1430,13 +1463,16 @@ fn format_uptime(up: std::time::Duration) -> String {
 
 /// What the selected tunnel can do, and what the program can always do.
 pub fn footer_groups(
-    selected: Option<TunnelStatus>,
+    selected: Option<(TunnelStatus, TunnelKind)>,
     any_tunnels: bool,
 ) -> (&'static [Action], &'static [Action]) {
     let contextual = match (selected, any_tunnels) {
-        (Some(TunnelStatus::Running), _) => ACTIONS_RUNNING,
-        (Some(TunnelStatus::Stopped), _) => ACTIONS_STOPPED,
-        (Some(TunnelStatus::Error), _) => ACTIONS_ERROR,
+        // A stranger's process answers to whoever started it, whatever state
+        // it is in, so its kind decides the footer before its status does
+        (Some((_, TunnelKind::External)), _) => ACTIONS_UNMANAGED,
+        (Some((TunnelStatus::Running, _)), _) => ACTIONS_RUNNING,
+        (Some((TunnelStatus::Stopped, _)), _) => ACTIONS_STOPPED,
+        (Some((TunnelStatus::Error, _)), _) => ACTIONS_ERROR,
         // No tunnels at all: the only useful actions are the ones that make one
         (None, false) => ACTIONS_EMPTY,
         // Tunnels exist but nothing is selected, so nothing is contextual
@@ -1488,7 +1524,11 @@ fn group_spans(actions: &[Action], out: &mut Vec<Span<'static>>) {
 /// are listed in the order a user reaches for them. Only once that group is
 /// empty does `; account` go, leaving the two that must never disappear: `?`
 /// says what the keys are, and `q` is the way out.
-pub fn footer_line(width: u16, selected: Option<TunnelStatus>, any_tunnels: bool) -> Line<'static> {
+pub fn footer_line(
+    width: u16,
+    selected: Option<(TunnelStatus, TunnelKind)>,
+    any_tunnels: bool,
+) -> Line<'static> {
     let (all_contextual, all_program) = footer_groups(selected, any_tunnels);
     let w = width as usize;
 
@@ -1528,7 +1568,7 @@ pub fn footer_line(width: u16, selected: Option<TunnelStatus>, any_tunnels: bool
 }
 
 fn render_help_bar(f: &mut Frame, area: Rect, app: &App) {
-    let selected = app.selected_entry().map(|e| e.status);
+    let selected = app.selected_entry().map(|e| (e.status, e.kind));
     f.render_widget(
         Paragraph::new(footer_line(area.width, selected, !app.entries.is_empty())),
         area,

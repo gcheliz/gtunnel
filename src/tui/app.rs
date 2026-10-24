@@ -286,7 +286,16 @@ pub struct App {
     // False until a load has answered for this account. An empty list means
     // nothing before that, so the pane must not claim the account is empty
     pub loaded: bool,
+    // The last load answered with an error and nothing has answered since. Only
+    // read while `loaded` is false: once a list exists the status line carries
+    // the error and the rows are the answer.
+    pub load_failed: bool,
     pub selected: usize,
+    // The first entry the list pane drew. A draw reads it and writes it back, so
+    // it lives in a `Cell` for the reason `help_extent` does. Held rather than
+    // derived from the selection, or the selected row sits on the bottom edge
+    // after every move up and the list slides under the cursor.
+    pub list_offset: Cell<usize>,
     pub logs: Vec<String>,
     pub status: Option<String>,
     // The last operation failed, so the status line says so in red
@@ -321,6 +330,13 @@ pub struct App {
     pub health_stale: bool,
     // The demo carries its own data and has no runtime to reload it from
     pub demo: bool,
+    // What `c` and `o` reach outside the process, as plain function pointers
+    // so a test can swap them without a trait object or a generic on `App`.
+    // The defaults are the real clipboard and browser; under test they refuse,
+    // so a key press can never copy to or open anything on the machine
+    // running the suite.
+    pub clipboard: fn(&str) -> anyhow::Result<()>,
+    pub opener: fn(&str) -> anyhow::Result<()>,
 }
 
 impl App {
@@ -331,7 +347,9 @@ impl App {
             projects: HashMap::new(),
             entries: Vec::new(),
             loaded: false,
+            load_failed: false,
             selected: 0,
+            list_offset: Cell::new(0),
             logs: Vec::new(),
             status: None,
             status_error: false,
@@ -353,6 +371,14 @@ impl App {
             force_refresh: false,
             health_stale: false,
             demo: false,
+            #[cfg(not(test))]
+            clipboard: copy_to_clipboard,
+            #[cfg(test)]
+            clipboard: refuse_clipboard,
+            #[cfg(not(test))]
+            opener: open_url,
+            #[cfg(test)]
+            opener: refuse_opener,
         }
     }
 
@@ -383,8 +409,11 @@ impl App {
     /// A load that errored leaves `loaded` as it was: the list is still not an
     /// answer, and the timer asks again. The error goes to the status line,
     /// where the next successful operation replaces it, because dropping it left
-    /// a broken `tunnels.toml` looking like an empty account.
+    /// a broken `tunnels.toml` looking like an empty account. The pane says so
+    /// too: `loading` is a claim that an answer is coming, and a broken file
+    /// does not send one.
     pub fn load_failed(&mut self, error: &str) {
+        self.load_failed = true;
         self.set_status(format!("could not load tunnels: {error}"));
         self.status_error = true;
     }
@@ -419,6 +448,11 @@ impl App {
         self.set_status(format!(
             "{name} is not managed by gtunnel: {action} is unavailable"
         ));
+        // A cleared status is dropped the moment it is drawn, because a
+        // finished operation should not leave the pane title claiming it is
+        // still under way. A refusal has nothing behind it to finish, so
+        // leaving it cleared meant the key did nothing and said nothing.
+        self.status_error = true;
     }
 
     fn op_for(&mut self, action: &str, build: fn(String) -> Op) -> Option<Op> {
@@ -443,6 +477,8 @@ impl App {
         self.entries.clear();
         // The old account's answer says nothing about the new one's
         self.loaded = false;
+        self.load_failed = false;
+        self.list_offset.set(0);
         self.logs.clear();
         // The demo has no runtime behind it, so a refresh would leave the
         // screen empty: it swaps in the next account's synthetic data instead
@@ -595,7 +631,7 @@ impl App {
             return;
         };
         let url = entry.tunnel.display_url();
-        match copy_to_clipboard(&url) {
+        match (self.clipboard)(&url) {
             Ok(()) => self.set_status(format!("copied {url}")),
             Err(e) => self.set_status(format!("could not copy: {e}")),
         }
@@ -609,7 +645,7 @@ impl App {
             TunnelSpec::Access { local_port, .. } => format!("http://localhost:{local_port}"),
             TunnelSpec::Expose { hostname, .. } => format!("https://{hostname}"),
         };
-        match open_url(&url) {
+        match (self.opener)(&url) {
             Ok(()) => self.set_status(format!("opened {url}")),
             Err(e) => self.set_status(format!("could not open {url}: {e}")),
         }
@@ -889,6 +925,7 @@ impl App {
     // Keeps the selection on the same tunnel across a reload
     pub fn replace_entries(&mut self, entries: Vec<TunnelEntry>) {
         self.loaded = true;
+        self.load_failed = false;
         let selected_name = self.selected_entry().map(|e| e.name().to_string());
         let carried = std::mem::take(&mut self.entries);
         self.entries = entries
@@ -916,6 +953,9 @@ impl App {
     }
 }
 
+// The three below are what `App::new` wires in outside tests; a test build
+// replaces them with refusals, so they go unused there by design.
+#[cfg_attr(test, allow(dead_code))]
 fn run_piped(program: &str, args: &[&str], input: &str) -> std::io::Result<bool> {
     use std::io::Write;
     use std::process::{Command, Stdio};
@@ -932,6 +972,17 @@ fn run_piped(program: &str, args: &[&str], input: &str) -> std::io::Result<bool>
     Ok(child.wait()?.success())
 }
 
+#[cfg(test)]
+fn refuse_clipboard(_: &str) -> anyhow::Result<()> {
+    anyhow::bail!("the clipboard is off under test")
+}
+
+#[cfg(test)]
+fn refuse_opener(_: &str) -> anyhow::Result<()> {
+    anyhow::bail!("the browser is off under test")
+}
+
+#[cfg_attr(test, allow(dead_code))]
 pub fn copy_to_clipboard(text: &str) -> anyhow::Result<()> {
     let candidates: [(&str, &[&str]); 3] = [
         ("pbcopy", &[]),
@@ -946,6 +997,7 @@ pub fn copy_to_clipboard(text: &str) -> anyhow::Result<()> {
     anyhow::bail!("no pbcopy, wl-copy or xclip on PATH")
 }
 
+#[cfg_attr(test, allow(dead_code))]
 pub fn open_url(url: &str) -> anyhow::Result<()> {
     let program = if cfg!(target_os = "macos") {
         "open"

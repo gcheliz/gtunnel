@@ -49,6 +49,13 @@ pub const FLAG: Color = Color::Blue;
 /// so the row the cursor is on reads as emphasis and not as a warning.
 pub const SELECTED_BG: Color = Color::Indexed(236);
 
+/// The account field in the header. A different role from the selected row, so
+/// a different shade: 238 sits one step lighter than `SELECTED_BG`, where 234
+/// would drop to within a shade of a black terminal background and the field
+/// would vanish. Lighter reads as a raised plate beside the list's selection,
+/// and the two stay apart even when the cursor row is directly under it.
+pub const FIELD_BG: Color = Color::Indexed(238);
+
 /// The line the cloud rests on, and the two cells at each end of the mark.
 pub const LOGO_LINE: Color = Color::Rgb(0x4D, 0xD0, 0xE1);
 

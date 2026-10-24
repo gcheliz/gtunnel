@@ -56,20 +56,26 @@ GCP relay in place of Cloudflare Tunnel.
   including one for the auto-start and health flags. It hides a name suffix equal to the
   tunnel's account; Details shows the full name, and `gtunnel list` is unchanged.
 - **Resizing** - every pane follows the terminal. The name column is as wide as the
-  longest name and shrinks only when the URL would otherwise be cut; below 100 columns
+  longest name and shrinks only when the URL would otherwise be cut; below 121 columns
   the list stacks above the other panes instead of sharing a row with them; the list
-  scrolls with the selection; long Details values wrap; and Logs keeps a minimum height,
-  so it is still on screen at 24 rows.
+  scrolls only when the selection leaves the window; long Details values wrap; and Logs
+  keeps a minimum height, so it is still on screen at 24 rows.
+- **Stacked from 121 columns down** - at 100 to 120 columns the list now takes the full
+  width above the other panes, because its 46 percent share cut a 28-cell URL at 100 and
+  110 columns and a 49-cell URL at 120.
 - **Account field** - the header shows the active account and its GCP project id as a
   two-row filled field, so the project a key will act on is on screen. `;` switches both
   together. A long project id is cut with a `…` before the account name is ever shortened,
   and an account with no project shows the name alone.
+- **Field colour** - the account field is filled with a shade of its own, one step lighter
+  than the selected list row, so the header no longer reads as a second selection.
 - **Keymap page and states** - `?` opens every bound key in four groups, two columns when
   the terminal is wide and one when it is not, with a note on the three case-sensitive
   pairs. A failed tunnel's footer leads with `R restart` in the warning colour, and an
   empty account says `no tunnels in this account` under the list header, and `loading`
-  until its first load has answered. A page taller than the terminal scrolls with
-  `j`/`k`, the arrows, `PgUp`/`PgDn` and `g`/`G`, and says where the reader is in it.
+  until its first load has answered, or `could not load tunnels` if that load failed. A
+  page taller than the terminal scrolls with `j`/`k`, the arrows, `PgUp`/`PgDn` and
+  `g`/`G`, and says where the reader is in it.
 - **Dialogs that fit the terminal** - the add, edit, delete and mode dialogs and the
   instance and domain pickers are sized to their text and the terminal instead of a
   percentage of it, so a prompt wraps instead of being cut, the `Esc to cancel` row is on
