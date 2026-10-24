@@ -231,6 +231,39 @@ const LOOP_INTERVAL: Duration = Duration::from_secs(30);
 
 /// `gtunnel watch`. One pass and out, which is what the agent invokes, or a
 /// foreground loop, which is what a person debugging it runs.
+pub async fn cmd_watch_install() -> Result<()> {
+    // The agent runs this very binary, so the path has to be the one running
+    // now rather than whatever is on PATH at install time
+    let program = std::env::current_exe()?;
+    daemon::install_watchdog(&program).await?;
+    println!(
+        "Watchdog installed: {} every {}s",
+        program.display(),
+        daemon::WATCHDOG_INTERVAL
+    );
+    println!("Log: {}", daemon::watchdog_log()?.display());
+    Ok(())
+}
+
+pub async fn cmd_watch_uninstall() -> Result<()> {
+    daemon::uninstall_watchdog().await?;
+    println!("Watchdog removed");
+    Ok(())
+}
+
+pub async fn cmd_watch_status() -> Result<()> {
+    if daemon::watchdog_installed().await {
+        println!(
+            "Watchdog installed, looking at every tunnel every {}s",
+            daemon::WATCHDOG_INTERVAL
+        );
+        println!("Log: {}", daemon::watchdog_log()?.display());
+    } else {
+        println!("Watchdog not installed. Run `gtunnel watch install`");
+    }
+    Ok(())
+}
+
 pub async fn cmd_watch(once: bool, verbose: bool) -> Result<()> {
     if once {
         return one_pass(verbose).await;

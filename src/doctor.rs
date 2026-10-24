@@ -72,6 +72,8 @@ pub enum Finding {
     OrphanNamedPort {
         name: String,
     },
+    // One job for the whole machine, so it carries no account or tunnel
+    WatchdogMissing,
 }
 
 impl Finding {
@@ -87,6 +89,7 @@ impl Finding {
                 | Finding::OrphanBackend { .. }
                 | Finding::OrphanHostRule { .. }
                 | Finding::OrphanNamedPort { .. }
+                | Finding::WatchdogMissing
         )
     }
 
@@ -163,8 +166,20 @@ impl Finding {
             Finding::OrphanNamedPort { name } => {
                 format!("Named port {name} on the relay has no tunnel")
             }
+            Finding::WatchdogMissing => format!(
+                "No watchdog is installed, so a tunnel that wedges stays wedged until someone \
+                 notices. Run `gtunnel watch install` to check every {}s",
+                crate::daemon::WATCHDOG_INTERVAL
+            ),
         }
     }
+}
+
+// The watchdog is machine-wide, so doctor reports it once rather than once per
+// account. It is only worth reporting when there is a tunnel for it to watch:
+// a fresh install with nothing in tunnels.toml is not missing anything.
+pub fn watchdog_finding(installed: bool, tunnels: usize) -> Option<Finding> {
+    (!installed && tunnels > 0).then_some(Finding::WatchdogMissing)
 }
 
 // The exact command that makes an Access tunnel's port reachable through IAP
@@ -394,6 +409,13 @@ pub async fn run_doctor(
         out.push((String::new(), Finding::GcloudMissing));
     } else if numpy_is_missing().await {
         out.push((String::new(), Finding::NumpyMissing));
+    }
+
+    if let Some(finding) = watchdog_finding(
+        crate::daemon::watchdog_installed().await,
+        state.tunnels.len(),
+    ) {
+        out.push((String::new(), finding));
     }
 
     for (record, alive) in list_ephemeral().unwrap_or_default() {
@@ -836,6 +858,11 @@ async fn apply_fix(
             })
             .await
         }
+        // The binary that runs the watchdog is this one: a path baked from
+        // `cargo run` or a moved binary would install a job that cannot start
+        Finding::WatchdogMissing => {
+            crate::daemon::install_watchdog(&std::env::current_exe()?).await
+        }
         _ => Ok(()),
     }
 }
@@ -1234,5 +1261,17 @@ mod tests {
         for finding in findings {
             assert!(!finding.describe().is_empty());
         }
+    }
+    // The watchdog is what turns the breaker into something that acts while
+    // nobody is watching, so doctor has to say when it is absent. It is a
+    // decision about two facts, and taking them as arguments is what makes it
+    // testable: asking launchd for real would make this a test of the machine
+    #[test]
+    fn doctor_reports_the_watchdog_as_not_installed_when_it_is_not() {
+        assert_eq!(watchdog_finding(false, 2), Some(Finding::WatchdogMissing));
+        assert_eq!(watchdog_finding(true, 2), None);
+        // No tunnels, nothing to watch: an install with nothing in it yet is
+        // not a machine missing its watchdog
+        assert_eq!(watchdog_finding(false, 0), None);
     }
 }

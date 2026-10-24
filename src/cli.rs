@@ -273,6 +273,11 @@ source and --to the destination."
     // Restart tunnels that are running but refusing connections
     #[command(about = "Restart tunnels that are running but refusing connections")]
     Watch {
+        // Absent, `watch` is the loop itself; present, it manages the agent
+        // that runs the loop
+        #[command(subcommand)]
+        command: Option<WatchCommands>,
+
         // One pass over every tunnel, then exit: what the watchdog agent runs
         #[arg(
             long,
@@ -370,6 +375,21 @@ impl Commands {
             | Commands::Relay { .. } => true,
         }
     }
+}
+
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+pub enum WatchCommands {
+    // Install the watchdog agent so the loop runs without a terminal
+    #[command(about = "Install the watchdog agent so the loop runs without a terminal")]
+    Install,
+
+    // Remove the watchdog agent
+    #[command(about = "Remove the watchdog agent")]
+    Uninstall,
+
+    // Say whether the watchdog agent is installed, and where its log is
+    #[command(about = "Say whether the watchdog agent is installed, and where its log is")]
+    Status,
 }
 
 #[derive(Subcommand, Debug, PartialEq, Eq)]
@@ -509,6 +529,43 @@ mod tests {
 
     fn parse(args: &[&str]) -> Cli {
         Cli::try_parse_from(args).expect("should parse")
+    }
+
+    // `watch` is two things under one word: the loop a person runs in a
+    // terminal, and the agent that runs the loop for them. The subcommand is
+    // optional so the bare word keeps meaning the loop
+    #[test]
+    fn watch_takes_an_optional_subcommand_and_still_runs_bare() {
+        match parse(&["gtunnel", "watch", "install"])
+            .command
+            .expect("command")
+        {
+            Commands::Watch { command, .. } => {
+                assert_eq!(command, Some(WatchCommands::Install))
+            }
+            other => panic!("parsed as {other:?}"),
+        }
+        match parse(&["gtunnel", "watch", "--once"])
+            .command
+            .expect("command")
+        {
+            Commands::Watch {
+                command,
+                once,
+                verbose,
+            } => {
+                assert_eq!(command, None);
+                assert!(once);
+                assert!(!verbose);
+            }
+            other => panic!("parsed as {other:?}"),
+        }
+        for word in ["uninstall", "status"] {
+            assert!(
+                Cli::try_parse_from(["gtunnel", "watch", word]).is_ok(),
+                "watch {word} should parse"
+            );
+        }
     }
 
     #[test]

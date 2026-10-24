@@ -19,7 +19,9 @@ mod update;
 use anyhow::Result;
 use clap::Parser;
 
-use cli::{AccountCommands, Cli, Commands, DomainsCommands, RelayCommands, ZonesCommands};
+use cli::{
+    AccountCommands, Cli, Commands, DomainsCommands, RelayCommands, WatchCommands, ZonesCommands,
+};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -188,7 +190,16 @@ async fn main() -> Result<()> {
                 commands::account::cmd_account_remove(&name, yes)
             }
         },
-        Some(Commands::Watch { once, verbose }) => commands::watch::cmd_watch(once, verbose).await,
+        Some(Commands::Watch {
+            command,
+            once,
+            verbose,
+        }) => match command {
+            Some(WatchCommands::Install) => commands::watch::cmd_watch_install().await,
+            Some(WatchCommands::Uninstall) => commands::watch::cmd_watch_uninstall().await,
+            Some(WatchCommands::Status) => commands::watch::cmd_watch_status().await,
+            None => commands::watch::cmd_watch(once, verbose).await,
+        },
         Some(Commands::Doctor { fix, yes, all }) => {
             doctor::cmd_doctor(account, fix, yes, all).await
         }

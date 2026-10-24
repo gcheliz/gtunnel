@@ -32,6 +32,99 @@ fn quote(arg: &str) -> String {
     }
 }
 
+pub fn watchdog_log() -> Result<PathBuf> {
+    Ok(crate::config::config_dir()?
+        .join("logs")
+        .join("watchdog.log"))
+}
+
+/// Install the watchdog timer and start it. The timer is what is enabled;
+/// the service it fires is not enabled on its own, or it would run once at
+/// boot and never again.
+pub async fn install_watchdog(program: &std::path::Path) -> Result<()> {
+    crate::state::ensure_logs_dir()?;
+    let label = super::watchdog_label();
+    let (service, timer) = render_watchdog_units(program, &watchdog_log()?);
+    for (name, text) in [
+        (format!("{label}.service"), service),
+        (format!("{label}.timer"), timer),
+    ] {
+        let path = unit_path(&name)?;
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)
+                .with_context(|| format!("Failed to create {}", dir.display()))?;
+        }
+        std::fs::write(&path, text)
+            .with_context(|| format!("Failed to write {}", path.display()))?;
+    }
+    let _ = systemctl(&["daemon-reload"]).await;
+    let out = systemctl(&["enable", "--now", &format!("{label}.timer")]).await?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "systemctl enable failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+pub async fn uninstall_watchdog() -> Result<()> {
+    let label = super::watchdog_label();
+    let _ = systemctl(&["disable", "--now", &format!("{label}.timer")]).await;
+    for name in [format!("{label}.service"), format!("{label}.timer")] {
+        if let Ok(path) = unit_path(&name)
+            && path.exists()
+        {
+            std::fs::remove_file(&path)
+                .with_context(|| format!("Failed to remove {}", path.display()))?;
+        }
+    }
+    let _ = systemctl(&["daemon-reload"]).await;
+    Ok(())
+}
+
+pub async fn watchdog_installed() -> bool {
+    systemctl(&["is-active", &format!("{}.timer", super::watchdog_label())])
+        .await
+        .map(|out| out.status.success())
+        .unwrap_or(false)
+}
+
+/// The watchdog as systemd spells it: a oneshot service that exits, and a
+/// timer that fires it again. `OnUnitActiveSec` measures from the end of the
+/// last run, so a slow pass delays the next one rather than overlapping it.
+pub fn render_watchdog_units(program: &std::path::Path, log: &std::path::Path) -> (String, String) {
+    let label = super::watchdog_label();
+    let service = format!(
+        r#"[Unit]
+Description=gtunnel - restart tunnels that are refusing connections
+
+[Service]
+Type=oneshot
+ExecStart={program} watch --once
+StandardOutput=append:{log}
+StandardError=append:{log}
+"#,
+        program = quote(&program.to_string_lossy()),
+        log = log.display(),
+    );
+    let timer = format!(
+        r#"[Unit]
+Description=gtunnel - watchdog timer
+
+[Timer]
+OnBootSec={interval}s
+OnUnitActiveSec={interval}s
+Unit={label}.service
+
+[Install]
+WantedBy=timers.target
+"#,
+        interval = super::WATCHDOG_INTERVAL,
+    );
+    (service, timer)
+}
+
 pub fn render_unit(spec: &ServiceSpec) -> String {
     let mut exec = quote(&spec.program.to_string_lossy());
     for arg in &spec.args {

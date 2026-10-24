@@ -39,6 +39,104 @@ fn xml_escape(s: &str) -> String {
         .replace('>', "&gt;")
 }
 
+/// Where the watchdog writes what it did. One file for the machine, beside
+/// the tunnels' own logs.
+pub fn watchdog_log() -> Result<PathBuf> {
+    Ok(crate::config::config_dir()?
+        .join("logs")
+        .join("watchdog.log"))
+}
+
+/// Install the watchdog agent and start it.
+///
+/// Written to both the config directory, which is gtunnel's own record, and
+/// `~/Library/LaunchAgents`, which is what makes it come back after a
+/// reboot. A watchdog that does not survive a login is a watchdog nobody can
+/// rely on.
+pub async fn install_watchdog(program: &std::path::Path) -> Result<()> {
+    crate::state::ensure_logs_dir()?;
+    let label = super::watchdog_label();
+    let text = render_watchdog_plist(program, &watchdog_log()?);
+    for path in [plist_path(label)?, agent_path(label)?] {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)
+                .with_context(|| format!("Failed to create {}", dir.display()))?;
+        }
+        std::fs::write(&path, &text)
+            .with_context(|| format!("Failed to write {}", path.display()))?;
+    }
+    // Reload rather than bootstrap over a running one, so reinstalling picks
+    // up a new binary path
+    let _ = launchctl(&["bootout", &format!("{}/{label}", domain_target())]).await;
+    let out = launchctl(&[
+        "bootstrap",
+        &domain_target(),
+        &plist_path(label)?.to_string_lossy(),
+    ])
+    .await?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "launchctl bootstrap failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+pub async fn uninstall_watchdog() -> Result<()> {
+    uninstall(super::watchdog_label()).await
+}
+
+/// Whether the agent is loaded right now, which is the question a person
+/// means by "is the watchdog running": the file existing is not enough.
+pub async fn watchdog_installed() -> bool {
+    print_service(super::watchdog_label()).await.is_some()
+}
+
+/// The watchdog's plist. Deliberately unlike a tunnel's: no `KeepAlive`,
+/// because this job is supposed to exit every time, and `StartInterval`
+/// instead, because waking on a timer is the whole of what it does. A
+/// `KeepAlive` job that exits immediately is a job launchd respawns in a
+/// tight loop.
+pub fn render_watchdog_plist(program: &std::path::Path, log: &std::path::Path) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{label}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{program}</string>
+        <string>watch</string>
+        <string>--once</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StartInterval</key>
+    <integer>{interval}</integer>
+    <key>StandardOutPath</key>
+    <string>{log}</string>
+    <key>StandardErrorPath</key>
+    <string>{log}</string>
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
+"#,
+        label = super::watchdog_label(),
+        program = xml_escape(&program.to_string_lossy()),
+        interval = super::WATCHDOG_INTERVAL,
+        log = xml_escape(&log.to_string_lossy()),
+    )
+}
+
 pub fn render_plist(spec: &ServiceSpec) -> String {
     let mut args = String::new();
     args.push_str(&format!(

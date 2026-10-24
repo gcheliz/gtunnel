@@ -62,6 +62,21 @@ fn daemon_env(gcloud: &std::path::Path) -> Vec<(String, String)> {
 /// `kern.maxfilesperproc` of 61440, so it is a raise that cannot be refused.
 /// Only the soft limit is set: the hard limit is root's to raise, and a
 /// plist asking for it fails to load rather than being ignored.
+/// How often the watchdog wakes to look at every tunnel. Short enough that a
+/// wedged tunnel is noticed before a person reaches for the terminal, long
+/// enough that the probe it runs costs nothing worth measuring.
+pub const WATCHDOG_INTERVAL: u64 = 30;
+
+/// The watchdog is one job for the whole machine, not one per tunnel, so its
+/// label carries no account or tunnel segment.
+pub fn watchdog_label() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "com.gtunnel.watchdog"
+    } else {
+        "gtunnel-watchdog"
+    }
+}
+
 pub const TUNNEL_MAX_FILES: u64 = 4096;
 
 // Both bounds hold at build time: above launchd's 256 default so the limit is
@@ -114,11 +129,17 @@ pub fn platform_label(account: &str, name: &str) -> String {
 // The platform backend every command calls; consumers land in Task 10
 #[allow(unused_imports)]
 #[cfg(target_os = "macos")]
-pub use launchd::{install, runtime_info, set_auto_start, start, status, stop, uninstall};
+pub use launchd::{
+    install, install_watchdog, runtime_info, set_auto_start, start, status, stop, uninstall,
+    uninstall_watchdog, watchdog_installed, watchdog_log,
+};
 
 #[allow(unused_imports)]
 #[cfg(not(target_os = "macos"))]
-pub use systemd::{install, runtime_info, set_auto_start, start, status, stop, uninstall};
+pub use systemd::{
+    install, install_watchdog, runtime_info, set_auto_start, start, status, stop, uninstall,
+    uninstall_watchdog, watchdog_installed, watchdog_log,
+};
 
 // A tunnel that starts gets a clean log. Truncated in place rather than removed
 // and rewritten, so a process still holding the file open in append mode keeps
@@ -387,6 +408,64 @@ mod tests {
             unit.contains(&format!("LimitNOFILE={TUNNEL_MAX_FILES}")),
             "{unit}"
         );
+    }
+
+    // The watchdog is not a tunnel. It wakes, looks at every tunnel, and
+    // exits; the interval is what makes it a watchdog at all
+    #[test]
+    fn the_watchdog_runs_every_thirty_seconds_and_at_load() {
+        let plist = launchd::render_watchdog_plist(
+            std::path::Path::new("/usr/local/bin/gtunnel"),
+            std::path::Path::new("/tmp/watchdog.log"),
+        );
+        assert!(
+            plist.contains(&format!(
+                "<key>StartInterval</key>\n    <integer>{WATCHDOG_INTERVAL}</integer>"
+            )),
+            "{plist}"
+        );
+        assert!(plist.contains("<key>RunAtLoad</key>"), "{plist}");
+    }
+
+    #[test]
+    fn the_watchdog_runs_the_gtunnel_binary_with_watch_once() {
+        let plist = launchd::render_watchdog_plist(
+            std::path::Path::new("/usr/local/bin/gtunnel"),
+            std::path::Path::new("/tmp/watchdog.log"),
+        );
+        assert!(
+            plist.contains("<string>/usr/local/bin/gtunnel</string>"),
+            "{plist}"
+        );
+        assert!(plist.contains("<string>watch</string>"), "{plist}");
+        assert!(plist.contains("<string>--once</string>"), "{plist}");
+        assert!(plist.contains("com.gtunnel.watchdog"), "{plist}");
+    }
+
+    // A KeepAlive job that exits immediately is a job launchd runs in a
+    // tight loop. The watchdog exits every time, on purpose
+    #[test]
+    fn the_watchdog_is_an_interval_job_rather_than_a_keepalive_one() {
+        let plist = launchd::render_watchdog_plist(
+            std::path::Path::new("/usr/local/bin/gtunnel"),
+            std::path::Path::new("/tmp/watchdog.log"),
+        );
+        assert!(!plist.contains("KeepAlive"), "{plist}");
+    }
+
+    #[test]
+    fn the_watchdog_timer_fires_on_the_same_interval() {
+        let (service, timer) = systemd::render_watchdog_units(
+            std::path::Path::new("/usr/local/bin/gtunnel"),
+            std::path::Path::new("/tmp/watchdog.log"),
+        );
+        assert!(service.contains("Type=oneshot"), "{service}");
+        assert!(service.contains("watch --once"), "{service}");
+        assert!(
+            timer.contains(&format!("OnUnitActiveSec={WATCHDOG_INTERVAL}s")),
+            "{timer}"
+        );
+        assert!(timer.contains("[Timer]"), "{timer}");
     }
 
     // Review Focus 1: a daemon that cannot find gcloud must fail loudly, not
