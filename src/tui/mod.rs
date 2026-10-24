@@ -3426,6 +3426,63 @@ mod tests {
         assert_eq!(app.input_mode, InputMode::Normal);
     }
 
+    fn failed(message: &str) -> OpResult {
+        OpResult {
+            message: message.to_string(),
+            ok: false,
+            reload: false,
+        }
+    }
+
+    fn submitted_access_draft() -> App {
+        let mut app = app_with_two();
+        app.instances = vec![InstanceChoice {
+            name: "my-vm".to_string(),
+            zone: "europe-west1-b".to_string(),
+        }];
+        keys(&mut app, "a1cache\n\n\n5432\n\n");
+        assert_eq!(app.input_mode, InputMode::Normal);
+        app
+    }
+
+    #[test]
+    fn a_create_that_failed_brings_the_draft_back() {
+        let mut app = submitted_access_draft();
+        app.apply(failed("instance not found"));
+
+        assert_eq!(app.input_mode, InputMode::AddLocalPort);
+        assert_eq!(app.draft.name, "cache");
+        assert_eq!(app.draft.instance, "my-vm");
+        assert_eq!(app.draft.remote_port, 5432);
+        assert_eq!(app.draft.local_port, 15000);
+        assert_eq!(app.input, "15000");
+        assert_eq!(app.draft_error.as_deref(), Some("instance not found"));
+    }
+
+    #[test]
+    fn a_create_that_succeeded_leaves_no_dialog_behind() {
+        let mut app = submitted_access_draft();
+        app.apply(OpResult {
+            message: "cache created".to_string(),
+            ok: true,
+            reload: true,
+        });
+        assert_eq!(app.input_mode, InputMode::Normal);
+        app.apply(failed("some later failure"));
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn escape_on_a_reopened_dialog_discards_the_draft_for_good() {
+        let mut app = submitted_access_draft();
+        app.apply(failed("instance not found"));
+        app.handle_key(key(KeyCode::Esc));
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.draft_error.is_none());
+        app.apply(failed("again"));
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
     #[test]
     fn publishing_a_url_without_a_relay_says_to_run_relay_up() {
         let mut app = app_with_two();

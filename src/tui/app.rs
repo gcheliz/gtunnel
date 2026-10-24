@@ -457,6 +457,10 @@ pub struct App {
     // has to be read where the text is being corrected.
     pub draft_error: Option<String>,
     pub draft: NewTunnel,
+    // The draft a create was submitted with, and the step it had reached.
+    // Submitting empties `draft`, so a failed create would otherwise leave the
+    // person retyping every prompt. Esc never reads it: that is a discard.
+    pub last_draft: Option<(NewTunnel, InputMode)>,
     pub instances: Vec<InstanceChoice>,
     pub instance_selected: usize,
     pub domains: Vec<String>,
@@ -515,6 +519,7 @@ impl App {
             input: String::new(),
             draft_error: None,
             draft: NewTunnel::default(),
+            last_draft: None,
             instances: Vec::new(),
             instance_selected: 0,
             domains: Vec::new(),
@@ -1264,6 +1269,7 @@ impl App {
                 let draft = std::mem::take(&mut self.draft);
                 self.cancel_dialog();
                 self.spinner.start(&format!("create {}", draft.name));
+                self.last_draft = Some((draft.clone(), InputMode::AddLocalPort));
                 Some(Op::Create(draft))
             }
             InputMode::AddLocalTarget => {
@@ -1351,6 +1357,7 @@ impl App {
                 let draft = std::mem::take(&mut self.draft);
                 self.cancel_dialog();
                 self.spinner.start(&format!("create {}", draft.name));
+                self.last_draft = Some((draft.clone(), InputMode::AddDomain));
                 return Some(Op::Create(draft));
             }
             _ => {}
@@ -1358,10 +1365,28 @@ impl App {
         None
     }
 
+    // The port prompt is pre-filled with what was typed, since its field is
+    // the only one that holds text; the pickers keep their selection indexes.
+    fn reopen(&mut self, draft: NewTunnel, step: InputMode, message: &str) {
+        self.input = match step {
+            InputMode::AddLocalPort => draft.local_port.to_string(),
+            _ => String::new(),
+        };
+        self.draft = draft;
+        self.input_mode = step;
+        self.draft_error = Some(message.to_string());
+    }
+
     pub fn apply(&mut self, result: OpResult) {
         self.spinner.stop();
-        self.set_status(result.message);
+        self.set_status(result.message.clone());
         self.status_error = !result.ok;
+        // Whatever result arrives first settles the create in flight: only one
+        // op runs at a time, so a later failure is never the draft's.
+        match self.last_draft.take() {
+            Some((draft, step)) if !result.ok => self.reopen(draft, step, &result.message),
+            _ => {}
+        }
         if result.reload {
             self.force_refresh = true;
         }
