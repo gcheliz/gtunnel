@@ -93,9 +93,21 @@ tied to this repository's Release workflow and recorded in a public transparency
 gh attestation verify gtunnel-macos-arm64.tar.gz -o gcheliz
 ```
 
-It prints the policy it enforced — the predicate type and the source repository owner —
-and exits non-zero if the file was not produced by this repository's workflow, whatever
-its checksum says. Attestations begin with v0.1.1; v0.1.0 predates them.
+It says nothing and exits 0 when the file checks out, and fails loudly when it does not —
+an unattested file gets `HTTP 404: Not Found` and exit 1, whatever its checksum says.
+
+To see what the attestation actually claims, ask for the certificate:
+
+```
+$ gh attestation verify gtunnel-macos-arm64.tar.gz -o gcheliz --format json \
+  | python3 -c 'import json,sys; c=json.load(sys.stdin)[0]["verificationResult"]["signature"]["certificate"]; print(c["buildSignerURI"]); print(c["sourceRepositoryDigest"]); print(c["runnerEnvironment"])'
+https://github.com/gcheliz/gtunnel/.github/workflows/release.yml@refs/tags/v0.1.1
+78b5da3d7925cacd78832dc60b5ee160d98f6428
+github-hosted
+```
+
+The workflow, the tag and the commit that produced the binary, on a GitHub-hosted runner.
+Attestations begin with v0.1.1; v0.1.0 predates them.
 
 ### 5. Create the account
 
