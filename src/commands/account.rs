@@ -108,12 +108,19 @@ pub fn cmd_account_select(name: &str) -> Result<()> {
     Ok(())
 }
 
+// A tunnel record names its account, so removing the account first would leave
+// records that no command can reach. `--yes` answers the confirmation below and
+// nothing else: it cannot answer what becomes of the tunnels, which is the one
+// question a script cannot have settled by passing a flag.
 pub fn cmd_account_remove(name: &str, assume_yes: bool) -> Result<()> {
     let mut config = load_config()?;
     let state = crate::state::TunnelState::load()?;
-    let live = state.tunnels_for_account(name).len();
-    if live > 0 {
-        println!("Account '{name}' still has {live} tunnel(s); they stay in tunnels.toml");
+    let held = state.tunnels_for_account(name).len();
+    if held > 0 {
+        bail!(
+            "Account '{name}' still has {held} tunnel(s). Delete them with `gtunnel delete`, \
+             or move them to another account with `gtunnel move`, then remove the account"
+        );
     }
     if !confirm(&format!("Remove account '{name}'?"), assume_yes)? {
         println!("Cancelled");
@@ -123,4 +130,204 @@ pub fn cmd_account_remove(name: &str, assume_yes: bool) -> Result<()> {
     save_config(&config)?;
     println!("Removed account '{name}'");
     Ok(())
+}
+
+// Build an account from a configuration gcloud already knows, taking project and
+// zone from it. Separate from the gcloud call so the choices are testable.
+fn account_from_configuration(
+    configurations: &[gcloud::GcloudConfiguration],
+    configuration: &str,
+    name: &str,
+) -> Result<Account> {
+    let found = configurations
+        .iter()
+        .find(|c| c.name == configuration)
+        .with_context(|| format!("No gcloud configuration named '{configuration}'"))?;
+    let project = found
+        .project
+        .clone()
+        .filter(|p| !p.is_empty())
+        .with_context(|| {
+            format!("gcloud configuration '{configuration}' has no project; set one with `gtunnel account edit`")
+        })?;
+    Ok(Account {
+        name: name.to_string(),
+        gcloud_configuration: found.name.clone(),
+        project,
+        default_zone: found.zone.clone().unwrap_or_default(),
+        impersonate_service_account: None,
+        expose: None,
+    })
+}
+
+// The non-interactive counterpart of `init`, for callers that already know which
+// configuration they mean. It is async because listing configurations shells out
+// to gcloud.
+pub async fn cmd_account_add(configuration: &str, name: &str) -> Result<()> {
+    gcloud::require_gcloud()?;
+    let configurations = gcloud::list_configurations().await?;
+    let account = account_from_configuration(&configurations, configuration, name)?;
+    let mut config = load_config().unwrap_or_default();
+    config.add_account(account)?;
+    save_config(&config)?;
+    println!("Account '{name}' saved to {}", config_dir()?.display());
+    Ok(())
+}
+
+// Only the fields given change; an empty value is refused so an edit cannot
+// leave an account without the project or zone every command needs.
+pub fn cmd_account_edit(name: &str, project: Option<&str>, zone: Option<&str>) -> Result<()> {
+    if project.is_none() && zone.is_none() {
+        bail!("Nothing to change: pass --project, --zone, or both");
+    }
+    if project == Some("") || zone == Some("") {
+        bail!("A project or zone cannot be empty");
+    }
+    let mut config = load_config()?;
+    let account = config.get_account_mut(Some(name))?;
+    if let Some(project) = project {
+        account.project = project.to_string();
+    }
+    if let Some(zone) = zone {
+        account.default_zone = zone.to_string();
+    }
+    save_config(&config)?;
+    println!("Account '{name}' updated");
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::testing::TempConfigDir;
+    use crate::config::Config;
+    use crate::state::{AccessTarget, PersistentTunnel, TunnelSpec, TunnelState};
+
+    fn account(name: &str) -> Account {
+        Account {
+            name: name.to_string(),
+            gcloud_configuration: "default".to_string(),
+            project: "example-dev-1a2b".to_string(),
+            default_zone: "europe-west1-b".to_string(),
+            impersonate_service_account: None,
+            expose: None,
+        }
+    }
+
+    fn tunnel(name: &str, account: &str) -> PersistentTunnel {
+        PersistentTunnel {
+            name: name.to_string(),
+            account_name: account.to_string(),
+            auto_start: false,
+            spec: TunnelSpec::Access {
+                target: AccessTarget::Instance {
+                    instance: "my-vm".to_string(),
+                    zone: "europe-west1-b".to_string(),
+                },
+                remote_port: 5432,
+                local_port: 15432,
+            },
+        }
+    }
+
+    fn save_accounts(names: &[&str]) {
+        let mut config = Config::default();
+        for n in names {
+            config.add_account(account(n)).expect("fixture adds");
+        }
+        save_config(&config).expect("fixture saves");
+    }
+
+    #[test]
+    fn removing_an_account_that_still_has_tunnels_is_refused() {
+        let _dir = TempConfigDir::new();
+        save_accounts(&["dev", "prod"]);
+        let mut state = TunnelState::default();
+        state.add(tunnel("db", "dev")).expect("fixture adds");
+        state.add(tunnel("cache", "dev")).expect("fixture adds");
+        state.save().expect("fixture saves");
+
+        // --yes skips the question, not the refusal: a script that passes it
+        // has still not said what becomes of the tunnels
+        let err = cmd_account_remove("dev", true).unwrap_err().to_string();
+        assert!(err.contains("2 tunnel(s)"), "{err}");
+        assert!(err.contains("gtunnel move"), "{err}");
+        assert!(err.contains("delete"), "{err}");
+        let config = load_config().expect("loads");
+        assert!(config.get_account(Some("dev")).is_ok(), "the account stays");
+    }
+
+    #[test]
+    fn removing_an_account_with_no_tunnels_succeeds() {
+        let _dir = TempConfigDir::new();
+        save_accounts(&["dev", "prod"]);
+        cmd_account_remove("prod", true).expect("removes");
+        assert!(load_config().unwrap().get_account(Some("prod")).is_err());
+    }
+
+    // Characterization: `Config::remove_account` already does this, so the
+    // test pins existing behaviour and never went RED
+    #[test]
+    fn removing_the_selected_account_moves_the_selection() {
+        let _dir = TempConfigDir::new();
+        save_accounts(&["dev", "prod"]);
+        cmd_account_remove("dev", true).expect("removes");
+        assert_eq!(load_config().unwrap().selected_account, "prod");
+    }
+
+    #[test]
+    fn editing_an_account_changes_only_the_fields_given() {
+        let _dir = TempConfigDir::new();
+        save_accounts(&["dev"]);
+        cmd_account_edit("dev", None, Some("europe-west4-a")).expect("edits");
+        let config = load_config().unwrap();
+        let a = config.get_account(Some("dev")).unwrap();
+        assert_eq!(a.default_zone, "europe-west4-a");
+        assert_eq!(a.project, "example-dev-1a2b");
+        cmd_account_edit("dev", Some("example-dev-9z9z"), None).expect("edits");
+        let config = load_config().unwrap();
+        let a = config.get_account(Some("dev")).unwrap();
+        assert_eq!(a.project, "example-dev-9z9z");
+        assert_eq!(a.default_zone, "europe-west4-a");
+    }
+
+    #[test]
+    fn editing_with_nothing_to_change_or_an_empty_value_is_refused() {
+        let _dir = TempConfigDir::new();
+        save_accounts(&["dev"]);
+        assert!(cmd_account_edit("dev", None, None).is_err());
+        assert!(cmd_account_edit("dev", Some(""), None).is_err());
+        assert!(cmd_account_edit("nope", Some("x"), None).is_err());
+    }
+
+    fn configuration(name: &str) -> gcloud::GcloudConfiguration {
+        gcloud::GcloudConfiguration {
+            name: name.to_string(),
+            is_active: false,
+            project: Some("example-dev-1a2b".to_string()),
+            zone: Some("europe-west1-b".to_string()),
+            account: Some("you@example.com".to_string()),
+        }
+    }
+
+    #[test]
+    fn an_account_is_built_from_the_configuration_it_names() {
+        let configs = [configuration("work"), configuration("other")];
+        let built = account_from_configuration(&configs, "work", "dev").expect("builds");
+        assert_eq!(built.name, "dev");
+        assert_eq!(built.gcloud_configuration, "work");
+        assert_eq!(built.project, "example-dev-1a2b");
+        assert_eq!(built.default_zone, "europe-west1-b");
+    }
+
+    #[test]
+    fn a_missing_configuration_or_one_without_a_project_is_refused() {
+        let mut bare = configuration("bare");
+        bare.project = None;
+        let configs = [bare];
+        let err = account_from_configuration(&configs, "nope", "dev").unwrap_err();
+        assert!(err.to_string().contains("nope"), "{err}");
+        let err = account_from_configuration(&configs, "bare", "dev").unwrap_err();
+        assert!(err.to_string().contains("project"), "{err}");
+    }
 }

@@ -425,8 +425,36 @@ pub enum AccountCommands {
         name: String,
     },
 
+    // Add an account from an existing gcloud configuration
+    #[command(about = "Add an account from an existing gcloud configuration")]
+    Add {
+        // Account name
+        #[arg(help = "Account name")]
+        name: String,
+
+        // gcloud configuration to take project and zone from
+        #[arg(long, help = "gcloud configuration to take project and zone from")]
+        configuration: String,
+    },
+
+    // Change an account's project or default zone
+    #[command(about = "Change an account's project or default zone")]
+    Edit {
+        // Account name
+        #[arg(help = "Account name")]
+        name: String,
+
+        // New project
+        #[arg(long, help = "New project")]
+        project: Option<String>,
+
+        // New default zone
+        #[arg(long, help = "New default zone")]
+        zone: Option<String>,
+    },
+
     // Remove an account
-    #[command(about = "Remove an account")]
+    #[command(about = "Remove an account that holds no tunnels")]
     Remove {
         // Account name
         #[arg(help = "Account name")]

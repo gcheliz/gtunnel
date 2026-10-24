@@ -155,6 +155,15 @@ async fn main() -> Result<()> {
             Some(AccountCommands::Select { name }) | Some(AccountCommands::Default { name }) => {
                 commands::account::cmd_account_select(&name)
             }
+            Some(AccountCommands::Add {
+                name,
+                configuration,
+            }) => commands::account::cmd_account_add(&configuration, &name).await,
+            Some(AccountCommands::Edit {
+                name,
+                project,
+                zone,
+            }) => commands::account::cmd_account_edit(&name, project.as_deref(), zone.as_deref()),
             Some(AccountCommands::Remove { name, yes }) => {
                 commands::account::cmd_account_remove(&name, yes)
             }
