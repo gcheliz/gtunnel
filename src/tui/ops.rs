@@ -2,10 +2,10 @@ use anyhow::{bail, Context, Result};
 use std::collections::HashSet;
 
 use super::app::{
-    AccountEdit, EditTunnel, NewAccount, NewTunnel, Op, OpResult, TunnelEntry, TunnelKind,
-    TunnelMode,
+    AccountEdit, EditTunnel, MoveTunnel, NewAccount, NewTunnel, Op, OpResult, RenameTunnel,
+    TunnelEntry, TunnelKind, TunnelMode,
 };
-use crate::commands::account;
+use crate::commands::{account, relocate};
 use crate::commands::{find_tunnel, resolve};
 use crate::config::load_config;
 use crate::daemon;
@@ -267,11 +267,36 @@ async fn run(account: &str, op: &Op) -> Result<String> {
         Op::ClearLog(name) => clear_log(account, name),
         Op::Create(new) => create(new).await,
         Op::Edit(edit) => edit_tunnel(edit).await,
+        Op::Rename(rename) => rename_tunnel(rename).await,
+        Op::Move(moving) => move_tunnel(moving).await,
         Op::AccountAdd(new) => add_account(new).await,
         Op::AccountEdit(edit) => edit_account(edit),
         Op::AccountRemove(name) => remove_account(name),
         Op::AccountSelect(name) => select_account(name),
     }
+}
+
+// Both of these are the CLI's own commands, for the reason `create` calls
+// `cmd_add`: which names are free, what moves with a label and which tunnels
+// may not leave their account at all are answered in one place, and the
+// dialog is a second way to ask rather than a second set of rules.
+async fn rename_tunnel(rename: &RenameTunnel) -> Result<String> {
+    relocate::cmd_rename(Some(&rename.account), &rename.name, &rename.new_name).await?;
+    Ok(format!("renamed {} to {}", rename.name, rename.new_name))
+}
+
+async fn move_tunnel(moving: &MoveTunnel) -> Result<String> {
+    relocate::cmd_move(
+        &moving.name,
+        Some(&moving.from),
+        &moving.to,
+        moving.rename_to.as_deref(),
+    )
+    .await?;
+    Ok(match &moving.rename_to {
+        Some(new) => format!("moved {} to {} as {new}", moving.name, moving.to),
+        None => format!("moved {} to {}", moving.name, moving.to),
+    })
 }
 
 // The four below are the CLI's own commands, for the reason `create` calls

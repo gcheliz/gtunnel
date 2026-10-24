@@ -798,8 +798,10 @@ pub fn render(f: &mut Frame, app: &App) {
                 render_confirm(f, message);
             }
         }
+        InputMode::ChooseEdit => render_choose_edit(f),
         InputMode::AddInstance => render_instance_picker(f, app),
         InputMode::AddDomain => render_domain_picker(f, app),
+        InputMode::MoveTo => render_account_picker(f, app),
         mode => render_prompt(f, app, mode),
     }
 }
@@ -2340,41 +2342,58 @@ fn input_row(input: &str, width: usize) -> Line<'static> {
     ])
 }
 
-fn render_choose_mode(f: &mut Frame) {
-    const OPTIONS: [(&str, &str); 2] = [
-        ("1", "Access - forward a remote port to localhost over IAP"),
-        ("2", "Public - publish a local service at an HTTPS URL"),
-    ];
+/// A numbered chooser: one key per option and Esc to leave. Both of the
+/// dialogs that open on a key rather than a field are drawn here, so an
+/// option added to either reads the same way as the ones beside it.
+fn render_chooser(f: &mut Frame, title: &str, choices: &[(&str, &str)]) {
     const LEAD: usize = 5;
-    let widest = OPTIONS.iter().map(|o| LEAD + cells(o.1)).max().unwrap_or(0);
-    render_dialog(
+    let widest = choices.iter().map(|o| LEAD + cells(o.1)).max().unwrap_or(0);
+    render_dialog(f, title, dialog_width(widest, title), |width, rows| {
+        let mut options = Vec::new();
+        for (key, text) in choices {
+            for (i, row) in wrap_words(text, width.saturating_sub(LEAD))
+                .into_iter()
+                .enumerate()
+            {
+                let lead = if i == 0 {
+                    Span::styled(format!("  {key}  "), Style::default().fg(theme::ACCENT))
+                } else {
+                    Span::raw(" ".repeat(LEAD))
+                };
+                options.push(Line::from(vec![lead, Span::raw(row)]));
+            }
+        }
+        let hint = vec![Line::styled(
+            "  Esc to cancel",
+            Style::default().fg(theme::MUTED),
+        )];
+        stacked(&[options.clone(), hint], rows).unwrap_or_else(|| {
+            options.truncate(rows);
+            options
+        })
+    });
+}
+
+fn render_choose_mode(f: &mut Frame) {
+    render_chooser(
         f,
         "New tunnel",
-        dialog_width(widest, "New tunnel"),
-        |width, rows| {
-            let mut options = Vec::new();
-            for (key, text) in OPTIONS {
-                for (i, row) in wrap_words(text, width.saturating_sub(LEAD))
-                    .into_iter()
-                    .enumerate()
-                {
-                    let lead = if i == 0 {
-                        Span::styled(format!("  {key}  "), Style::default().fg(theme::ACCENT))
-                    } else {
-                        Span::raw(" ".repeat(LEAD))
-                    };
-                    options.push(Line::from(vec![lead, Span::raw(row)]));
-                }
-            }
-            let hint = vec![Line::styled(
-                "  Esc to cancel",
-                Style::default().fg(theme::MUTED),
-            )];
-            stacked(&[options.clone(), hint], rows).unwrap_or_else(|| {
-                options.truncate(rows);
-                options
-            })
-        },
+        &[
+            ("1", "Access - forward a remote port to localhost over IAP"),
+            ("2", "Public - publish a local service at an HTTPS URL"),
+        ],
+    );
+}
+
+fn render_choose_edit(f: &mut Frame) {
+    render_chooser(
+        f,
+        "Edit",
+        &[
+            ("1", "Target and ports - what it forwards, and where to"),
+            ("2", "Rename - the same account, another name"),
+            ("3", "Move - hand it to another account"),
+        ],
     );
 }
 
@@ -2537,6 +2556,8 @@ fn render_prompt(f: &mut Frame, app: &App, mode: InputMode) {
     };
     let title = match mode {
         InputMode::EditTarget => "Edit",
+        InputMode::RenameTo => "Rename",
+        InputMode::MoveRename => "Move",
         InputMode::AccountConfiguration | InputMode::AccountName => "New account",
         InputMode::AccountProject | InputMode::AccountZone => "Edit account",
         _ => title,
@@ -2677,6 +2698,23 @@ fn render_instance_picker(f: &mut Frame, app: &App) {
             filter: &app.input,
             rows,
             selected: app.instance_selected,
+            error: app.draft_error.as_deref(),
+        },
+    );
+}
+
+/// Where a move may send the selected tunnel. A picker and not a field: the
+/// accounts are a short list this process already holds, so an account that
+/// does not exist cannot be asked for.
+fn render_account_picker(f: &mut Frame, app: &App) {
+    render_picker(
+        f,
+        Picker {
+            title: "Move",
+            prompt: InputMode::MoveTo.prompt(),
+            filter: "",
+            rows: app.other_accounts(),
+            selected: app.move_selected,
             error: app.draft_error.as_deref(),
         },
     );

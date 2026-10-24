@@ -3894,6 +3894,150 @@ mod tests {
         );
     }
 
+    // Two accounts on the machine and a `db` already on the other one, so a
+    // move from `dev` has somewhere to go and something to collide with
+    fn with_a_second_account() -> App {
+        let mut app = app_with_two();
+        app.accounts = vec!["dev".to_string(), "prod".to_string()];
+        app
+    }
+
+    fn tunnels_on_disk(names: &[(&str, &str)]) -> crate::config::testing::TempConfigDir {
+        let dir = crate::config::testing::TempConfigDir::new();
+        let tunnels = names
+            .iter()
+            .enumerate()
+            .map(|(i, (name, account))| PersistentTunnel {
+                account_name: account.to_string(),
+                ..access(name, 15500 + i as u16)
+            })
+            .collect();
+        crate::state::TunnelState { tunnels }.save().expect("saved");
+        dir
+    }
+
+    // `e` used to open the target prompt and nothing else, so renaming a
+    // tunnel or moving it between accounts was a CLI-only act. The three are
+    // one chooser rather than three top-level keys, as `a` already is.
+    #[test]
+    fn e_offers_target_rename_and_move() {
+        let mut app = with_a_second_account();
+        keys(&mut app, "e");
+        assert_eq!(app.input_mode, InputMode::ChooseEdit);
+        let text = dialog_text(&screen(&app, 80, 24));
+        for phrase in ["Target and ports", "Rename", "Move"] {
+            assert!(text.contains(phrase), "{phrase:?} is not offered: {text}");
+        }
+
+        keys(&mut app, "1");
+        assert_eq!(app.input_mode, InputMode::EditTarget);
+        assert_eq!(app.input, "5432:15432", "the ports are pre-filled");
+
+        let mut app = with_a_second_account();
+        keys(&mut app, "e2");
+        assert_eq!(app.input_mode, InputMode::RenameTo);
+        assert_eq!(app.input, "db", "the name is pre-filled to be edited");
+
+        let mut app = with_a_second_account();
+        keys(&mut app, "e3");
+        assert_eq!(app.input_mode, InputMode::MoveTo);
+    }
+
+    // The name is unique per account, so the clash is knowable before the
+    // dialog closes; letting it reach `rename` makes it a failure afterwards
+    #[test]
+    fn renaming_from_the_tui_refuses_a_taken_name_in_the_dialog() {
+        let mut app = with_a_second_account();
+        keys(&mut app, "e2");
+        for _ in 0.."db".len() {
+            app.handle_key(key(KeyCode::Backspace));
+        }
+        assert_eq!(keys(&mut app, "api\n"), None, "api is taken");
+        assert_eq!(app.input_mode, InputMode::RenameTo, "the dialog stays");
+        assert_eq!(app.input, "api", "the typed text was discarded");
+        let said = app.draft_error.clone().expect("a reason beside the field");
+        assert!(said.contains("'api'"), "{said}");
+
+        for _ in 0.."api".len() {
+            app.handle_key(key(KeyCode::Backspace));
+        }
+        assert_eq!(
+            keys(&mut app, "postgres\n"),
+            Some(Op::Rename(RenameTunnel {
+                account: "dev".to_string(),
+                name: "db".to_string(),
+                new_name: "postgres".to_string(),
+            }))
+        );
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    // Decision 2: the destination already holding the name is a question, not
+    // a refusal, so the dialog asks it rather than throwing the move away
+    #[test]
+    fn moving_onto_a_taken_name_offers_a_rename_rather_than_cancelling() {
+        let _dir = tunnels_on_disk(&[("db", "dev"), ("db", "prod")]);
+        let mut app = with_a_second_account();
+        keys(&mut app, "e3");
+        assert_eq!(app.input_mode, InputMode::MoveTo);
+        assert_eq!(keys(&mut app, "\n"), None, "prod already holds a db");
+        assert_eq!(app.input_mode, InputMode::MoveRename, "the move goes on");
+        let said = app.draft_error.clone().expect("the reason is on screen");
+        assert!(said.contains("prod"), "{said}");
+        let text = dialog_text(&screen(&app, 80, 24));
+        assert!(text.contains("prod"), "{text}");
+
+        for _ in 0..app.input.chars().count() {
+            app.handle_key(key(KeyCode::Backspace));
+        }
+        assert_eq!(
+            keys(&mut app, "postgres\n"),
+            Some(Op::Move(MoveTunnel {
+                name: "db".to_string(),
+                from: "dev".to_string(),
+                to: "prod".to_string(),
+                rename_to: Some("postgres".to_string()),
+            }))
+        );
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    // A rename rewrites a record in `tunnels.toml` and a move hands one to
+    // another account. A stranger's process has no record, and a run's lives
+    // elsewhere until `m` imports it, so neither has anything to rewrite.
+    #[test]
+    fn moving_an_unmanaged_or_ephemeral_row_is_refused() {
+        let mut app = with_a_second_account();
+        app.entries.push(TunnelEntry::new(
+            access("cache:6379", 16379),
+            TunnelStatus::Running,
+            TunnelKind::External,
+        ));
+        app.selected = app.entries.len() - 1;
+        assert_eq!(keys(&mut app, "e"), None);
+        assert_eq!(app.input_mode, InputMode::Normal, "no dialog opened");
+        let status = app.status.clone().expect("a refusal is said out loud");
+        assert!(status.contains("not managed by gtunnel"), "{status}");
+        assert!(app.status_error);
+
+        let mut app = with_a_second_account();
+        app.entries.push(TunnelEntry::new(
+            access("run", 16380),
+            TunnelStatus::Running,
+            TunnelKind::Ephemeral,
+        ));
+        app.selected = app.entries.len() - 1;
+        assert_eq!(keys(&mut app, "e3"), None);
+        assert_eq!(app.input_mode, InputMode::Normal, "the dialog is gone");
+        let status = app.status.clone().expect("a refusal is said out loud");
+        assert!(status.contains("run"), "{status}");
+        assert!(
+            status.contains('m'),
+            "it says what makes it movable: {status}"
+        );
+        assert!(app.status_error);
+    }
+
     #[test]
     fn the_demo_peak_reads_in_the_same_unit_as_its_latency() {
         let app = App::new_demo();
@@ -4031,6 +4175,43 @@ mod tests {
                 InputMode::EditTarget,
                 "10.0.0.10:443",
                 vec!["New value:", "10.0.0.10:443_", hint],
+            ),
+        );
+        let mut app = base();
+        app.input_mode = InputMode::ChooseEdit;
+        add(
+            "edit choice",
+            (
+                app,
+                vec![
+                    "Target and ports - what it forwards, and where to",
+                    "Rename - the same account, another name",
+                    "Move - hand it to another account",
+                    "Esc to cancel",
+                ],
+            ),
+        );
+        add(
+            "rename",
+            prompt(
+                InputMode::RenameTo,
+                "postgres",
+                vec!["New name:", "postgres_", hint],
+            ),
+        );
+        let mut app = base();
+        app.accounts = vec!["dev".to_string(), "prod".to_string()];
+        app.input_mode = InputMode::MoveTo;
+        add(
+            "move account",
+            (app, vec!["Move it to which account:", "prod"]),
+        );
+        add(
+            "move rename",
+            prompt(
+                InputMode::MoveRename,
+                "postgres",
+                vec!["New name on the destination account:", "postgres_", hint],
             ),
         );
         let mut app = base();
