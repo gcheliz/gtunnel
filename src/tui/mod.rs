@@ -21,6 +21,7 @@ const TICK: Duration = Duration::from_millis(120);
 enum Msg {
     Key(crossterm::event::KeyEvent),
     Instances(Vec<app::InstanceChoice>),
+    InstancesFailed(String),
     Tick,
     Entries(Vec<TunnelEntry>),
     EntriesFailed(String),
@@ -36,6 +37,12 @@ pub async fn run_tui(initial_account: Option<&str>) -> Result<()> {
 
     let mut app = App::new(&account);
     app.reload_config(&config);
+    app.default_zone = config
+        .accounts
+        .iter()
+        .find(|a| a.name == account)
+        .map(|a| a.default_zone.clone())
+        .unwrap_or_default();
 
     let (tx, mut rx) = mpsc::unbounded_channel::<Msg>();
     spawn_input(tx.clone(), app.input_gate.clone());
@@ -209,9 +216,11 @@ async fn event_loop(
                     let account = app.account.clone();
                     let tx = tx.clone();
                     tokio::spawn(async move {
-                        if let Ok(instances) = ops::load_instances(&account).await {
-                            let _ = tx.send(Msg::Instances(instances));
-                        }
+                        let msg = match ops::load_instances(&account).await {
+                            Ok(instances) => Msg::Instances(instances),
+                            Err(e) => Msg::InstancesFailed(format!("{e:#}")),
+                        };
+                        let _ = tx.send(msg);
                     });
                 }
                 schedule(app, &mut timers, tx);
@@ -271,6 +280,7 @@ async fn event_loop(
                 app.instances = instances;
                 app.instance_selected = 0;
             }
+            Msg::InstancesFailed(reason) => app.instances_failed(&reason),
             Msg::OpDone(result) => {
                 if let Some(name) = forget_after.take() {
                     app.forget_metrics(&name);
@@ -3373,6 +3383,44 @@ mod tests {
         assert_eq!(app.input, "Db!");
         let error = app.draft_error.as_deref().expect("no message");
         assert!(error.contains("lowercase"), "reports no rule: {error}");
+    }
+
+    #[test]
+    fn an_instance_list_that_could_not_be_read_says_so() {
+        let mut app = at_the_name_prompt();
+        keys(&mut app, "cache\n");
+        assert_eq!(app.input_mode, InputMode::AddInstance);
+        app.instances_failed("gcloud exited 1");
+        assert!(app.status_error);
+        let status = app.status.as_deref().expect("no status");
+        assert!(status.contains("gcloud exited 1"), "no reason: {status}");
+        let error = app
+            .draft_error
+            .as_deref()
+            .expect("nothing inside the dialog");
+        assert!(error.contains("gcloud exited 1"), "no reason: {error}");
+    }
+
+    #[test]
+    fn an_instance_the_picker_never_offered_can_still_be_typed() {
+        let mut app = at_the_name_prompt();
+        app.default_zone = "europe-west1-b".to_string();
+        keys(&mut app, "cache\n");
+        app.instances_failed("gcloud exited 1");
+        assert!(app.instances.is_empty());
+        keys(&mut app, "bastion\n");
+        assert_eq!(app.input_mode, InputMode::AddJumpHost);
+        assert_eq!(app.draft.instance, "bastion");
+        assert_eq!(app.draft.zone, "europe-west1-b");
+        assert!(app.draft_error.is_none(), "an accepted name kept the error");
+    }
+
+    #[test]
+    fn enter_on_an_empty_instance_step_asks_for_a_name_inside_the_dialog() {
+        let mut app = at_the_name_prompt();
+        keys(&mut app, "cache\n\n");
+        assert_eq!(app.input_mode, InputMode::AddInstance);
+        assert!(app.draft_error.is_some());
     }
 
     #[test]

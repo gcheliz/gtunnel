@@ -419,6 +419,9 @@ pub struct App {
     // Keyed like `projects` for the same reason, so `has_relay` and `domains`
     // are derived from the account on screen and never outlive a switch
     pub relays: HashMap<String, Vec<String>>,
+    // Zone for an instance the person typed, which the picker never saw and so
+    // never learned a zone for; an account whose list cannot be read still needs one
+    pub default_zone: String,
     pub entries: Vec<TunnelEntry>,
     // False until a load has answered for this account. An empty list means
     // nothing before that, so the pane must not claim the account is empty
@@ -503,6 +506,7 @@ impl App {
             accounts: vec![initial_account.to_string()],
             projects: HashMap::new(),
             relays: HashMap::new(),
+            default_zone: String::new(),
             entries: Vec::new(),
             loaded: false,
             load_failed: false,
@@ -566,6 +570,18 @@ impl App {
         self.selected_entry()
             .map(|e| e.history.samples())
             .unwrap_or_default()
+    }
+
+    // The picker covers the status line, so while it is open the reason goes
+    // inside the dialog; the status line carries it for after the dialog closes.
+    // It is an error about the account's list, not about what was typed.
+    pub fn instances_failed(&mut self, reason: &str) {
+        let message = format!("Could not list instances: {reason}");
+        if self.input_mode == InputMode::AddInstance {
+            self.draft_error = Some(format!("{message}. Type the instance name instead"));
+        }
+        self.set_status(message);
+        self.status_error = true;
     }
 
     pub fn set_status(&mut self, message: impl Into<String>) {
@@ -1346,12 +1362,21 @@ impl App {
                     .filtered_instances()
                     .get(self.instance_selected)
                     .map(|i| (*i).clone());
-                let Some(chosen) = chosen else {
-                    self.set_status("No instance matches that filter");
-                    return None;
+                let (instance, zone) = match chosen {
+                    Some(c) => (c.name, c.zone),
+                    // A filter that matches nothing is the person naming an
+                    // instance the list lacks, or could not fetch: take it
+                    None if !self.input.trim().is_empty() => {
+                        (self.input.trim().to_string(), self.default_zone.clone())
+                    }
+                    None => {
+                        self.draft_error = Some("Type an instance name".to_string());
+                        return None;
+                    }
                 };
-                self.draft.instance = chosen.name;
-                self.draft.zone = chosen.zone;
+                self.draft.instance = instance;
+                self.draft.zone = zone;
+                self.draft_error = None;
                 self.input.clear();
                 self.input_mode = InputMode::AddJumpHost;
             }
