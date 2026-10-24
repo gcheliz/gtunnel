@@ -129,7 +129,7 @@ to both rather than making you set two:
 
 | gtunnel level | gcloud `--verbosity` | ssh `-o LogLevel` | What you get |
 |---|---|---|---|
-| `quiet` | `warning` | `ERROR` | Failures only. A working tunnel says nothing |
+| `quiet` | `warning` | `ERROR` | Failures only, plus gcloud's own `Listening on port` line |
 | `info` (default) | `info` | `DEBUG` | The listener or forward coming up, and one line per client connecting |
 | `debug` | `debug` | `DEBUG3` | The above plus gcloud's and ssh's own internals, for a tunnel that will not carry traffic |
 
@@ -141,9 +141,15 @@ whole session and nothing per connection.
 `quiet` maps to ssh `ERROR` rather than `QUIET`, because `QUIET` suppresses the failure
 messages that are the only reason to open a quiet tunnel's log at all.
 
+`quiet` is not silence. An Access tunnel still writes gcloud's `Listening on port [N].`
+and `Testing if tunnel connection works.` at every start, because those are user output
+rather than log records and `--verbosity` does not govern them. What `quiet` removes is
+the per-connection line, which is a log record.
+
 Set it with `--log-level`, `GTUNNEL_LOG_LEVEL` or `log_level` in `config.toml`, in that
 order of precedence — see [usage.md](usage.md#the-log-level). A running tunnel keeps the
-level it started under until `gtunnel restart <name>`.
+level it started under until its service is reinstalled, which `start`, `restart`,
+`autostart` and an edit in the TUI all do.
 
 ### Who writes what
 
@@ -208,6 +214,8 @@ or two per client connection after that. The level is the lever on that figure.
 
 The bound is the same at all three: a log is emptied when its tunnel starts, and past
 8 MiB gtunnel keeps the last 2 MiB and replaces the rest with a first line saying it did.
+The rate of reaching it is not: at `debug` a busy tunnel covers 8 MiB in minutes rather
+than weeks, and the paragraph below is why that matters for a tunnel left unattended.
 
 That trim runs when a gtunnel process writes to the log, which is while the TUI is open
 or a command is running. A tunnel nobody has looked at for a month is bounded the next

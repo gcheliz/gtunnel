@@ -857,7 +857,11 @@ environment it also works when a shell profile holds the typo you are trying to 
 The level is global rather than per account or per tunnel: it answers how much you want
 to see right now, which is a property of the moment. A running tunnel keeps the level it
 started under, because the level is written into the service's command line when the
-service is installed — `gtunnel restart <name>` is what moves it to the current one.
+service is installed — so anything that reinstalls the service moves it: `start`,
+`restart`, `autostart on|off`, `doctor --fix` on an auto-start finding, and editing the
+tunnel or toggling its auto-start in the TUI. Worth knowing if you exported
+`GTUNNEL_LOG_LEVEL` to diagnose something and left it set: the next `autostart` puts
+that level on the tunnel for good.
 
 ### Environment
 
