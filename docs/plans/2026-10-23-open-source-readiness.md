@@ -395,7 +395,7 @@ From the findings, deliberately not in this plan:
 | Item | Why deferred | What would pull it forward |
 |---|---|---|
 | Coverage gate (`cargo-llvm-cov`, 80 percent) | Coverage has never been measured; a blind threshold either breaks CI on day one or sits below reality. Must be measured, gated at the floor, then ratcheted. | Phase 1 landing, which changes the hardest-to-cover file in the repo |
-| `cargo-deny` and `deny.toml` | `cargo audit` already gates advisories; deny adds licence, source and duplicate policy, which matters at first outside contribution | A dependency whose licence is not obviously compatible |
+| `cargo-deny` and `deny.toml` | `cargo audit` already gates advisories; deny adds licence, source and duplicate policy, which matters at first outside contribution. Still deferred after the lint and security plan (`2026-10-24-rust-lint-and-security.md`), which added only the lint policy and a `zizmor` job | A dependency whose licence is not obviously compatible |
 | SECURITY.md | Needs the self-updater's real threat model written down: `src/update.rs` verifies a sha256 served by the same host as the tarball, which is integrity against corruption, not against a compromised release host | Making the repository public |
 | CONTRIBUTING.md, CODE_OF_CONDUCT.md | No outside contributors yet | The first external PR |
 | MIT or Apache-2.0 dual licence | Cheapest now, while `gcheliz` is sole copyright holder; needs every contributor's consent afterwards | Any outside contribution -- this is the one item that gets harder with time |

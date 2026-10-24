@@ -434,6 +434,10 @@ async fn import(account: &str, name: &str) -> Result<String> {
     // The run holds the local port and, for a public tunnel, the relay port;
     // the managed service cannot take over until it lets go
     #[cfg(unix)]
+    // SAFETY: kill(2) takes two integers and no pointer, so it cannot touch our
+    // memory. The pid is the one in the run's own record, which this function
+    // loaded a moment ago; if the run already exited the call fails with ESRCH,
+    // which the wait below treats the same as a clean exit.
     unsafe {
         libc::kill(record.pid as libc::pid_t, libc::SIGTERM);
     }

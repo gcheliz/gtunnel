@@ -69,6 +69,9 @@ pub async fn wait_for_pid_exit(pid: u32, budget: std::time::Duration) -> bool {
 }
 
 pub fn pid_is_alive(pid: u32) -> bool {
+    // SAFETY: kill(2) with signal 0 takes two integers and no pointer, and sends
+    // nothing: it only reports whether the pid exists and may be signalled, so
+    // there is no memory or process state to corrupt.
     unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
 }
 
@@ -460,6 +463,9 @@ mod tests {
             "a live pid must not be reported as exited"
         );
 
+        // SAFETY: kill(2) takes two integers and no pointer. The pid is the child
+        // this test spawned a few lines up and still holds, so it is not a
+        // recycled pid belonging to another process.
         unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
         assert!(
             wait_for_pid_exit(pid, Duration::from_secs(5)).await,

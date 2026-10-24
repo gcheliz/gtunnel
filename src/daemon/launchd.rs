@@ -146,7 +146,9 @@ async fn launchctl(args: &[&str]) -> Result<std::process::Output> {
 }
 
 fn domain_target() -> String {
-    format!("gui/{}", unsafe { libc::getuid() })
+    // SAFETY: getuid(2) takes no arguments, reads no caller memory and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    format!("gui/{uid}")
 }
 
 fn write_plist(path: &std::path::Path, spec: &ServiceSpec) -> Result<()> {

@@ -3,6 +3,18 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## Unreleased
+
+### Build
+
+- **A lint policy in `Cargo.toml`** - `unsafe_op_in_unsafe_fn`,
+  `clippy::undocumented_unsafe_blocks`, `dbg_macro`, `todo` and `unimplemented` are
+  declared once under `[lints]`, so CI and editors agree. Every `unsafe` block now carries
+  the invariant that makes it sound.
+- **Workflow linting in CI** - a `zizmor` job checks the workflows for template injection,
+  broad permissions, unpinned actions and persisted credentials. Checkouts no longer keep
+  the token, CI jobs are read-only, and the release build no longer restores a build cache.
+
 ## v0.1.0 - unreleased
 
 First release. gtunnel is a port of [ytunnel](https://yetidevworks.com/ytunnel) to GCP

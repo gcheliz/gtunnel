@@ -32,7 +32,19 @@ humantime = "2"
 wiremock = "0.6"
 tempfile = "3"
 
+[lints.rust]
+# Edition 2024 makes this warn by default; stating it keeps the policy
+# readable in one place and holds if the edition ever changes.
+unsafe_op_in_unsafe_fn = "warn"
+
 [lints.clippy]
+# Each of these is an error in CI through `-D warnings`. An unsafe block must
+# carry the invariant that makes it sound, and a stray debug or placeholder
+# macro must not reach a release binary.
+undocumented_unsafe_blocks = "warn"
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
 # TODO: collapse these into let chains (stable in edition 2024) once the files they
 # sit in are no longer under edit; rewriting them with the migration would reflow
 # code unrelated to it.

@@ -546,11 +546,10 @@ mod live {
             )
             .unwrap_or_else(|e| format!("READ ERROR {e}"))
         );
+        // SAFETY: getuid(2) takes no arguments, reads no caller memory and cannot fail.
+        let uid = unsafe { libc::getuid() };
         let raw = tokio::process::Command::new("launchctl")
-            .args([
-                "print",
-                &format!("gui/{}/com.gtunnel.test.sleep", unsafe { libc::getuid() }),
-            ])
+            .args(["print", &format!("gui/{uid}/com.gtunnel.test.sleep")])
             .output()
             .await
             .unwrap();
