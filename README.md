@@ -165,8 +165,9 @@ Each one, its output, and which of them write to GCP:
 ## Configuration
 
 `~/Library/Application Support/gtunnel` on macOS, `~/.config/gtunnel` on Linux;
-`GTUNNEL_CONFIG_DIR` overrides it. It holds `config.toml` (accounts, relay, domains and the log level),
-`tunnels.toml`, the service definitions and one log per tunnel — the full table is in
+`GTUNNEL_CONFIG_DIR` overrides it. It holds `config.toml` (accounts, relay, domains and the
+log level), `tunnels.toml`, `breakers.toml` (what the watchdog has seen of each tunnel), the
+service definitions and one log per tunnel — the full table is in
 [docs/architecture.md](docs/architecture.md#files). Local ports come from 15000-15999 and
 are derived from the tunnel name, so the same name gets the same port on every machine
 unless it is taken; relay ports come from 30000-30998.

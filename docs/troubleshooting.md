@@ -119,6 +119,7 @@ emptied when its tunnel starts, so a line in it was written by the process runni
 | `Reauthentication required` | gcloud credentials expired | `gcloud auth login` |
 | `Address already in use` | Another process holds the local port | `gtunnel doctor`, or set `--local-port` |
 | `remote port forwarding failed` | The relay port is busy on the relay VM | `gtunnel restart <name>`, then `gtunnel doctor` |
+| `Too many open files` | The tunnel ran out of file descriptors | `gtunnel doctor` names the process holding them, see below |
 | `numpy` | gcloud's Python has no NumPy | See NumPy below |
 
 ### One level, two scales
@@ -221,6 +222,54 @@ That trim runs when a gtunnel process writes to the log, which is while the TUI 
 or a command is running. A tunnel nobody has looked at for a month is bounded the next
 time somebody does, not before, so `du -sh` over the logs directory is still worth a
 look; `gtunnel restart <name>` empties one outright.
+
+### A tunnel that stops accepting connections
+
+The worst shape a tunnel takes: the service is `Running`, the process is alive, and every
+new client is refused. Nothing exits, so nothing restarts it, and `gtunnel list` says it is
+up because by its own lights it is.
+
+The usual cause is file descriptors. Each client of a forwarding tunnel costs one, and a
+service that has run out writes `Too many open files` and then refuses everything while
+staying up.
+
+| | |
+|---|---|
+| The ceiling a tunnel gets now | 4096, written into the unit by gtunnel |
+| What it was before | 256 on macOS, which a launchd job inherits and nothing chose |
+| Where it comes from | `SoftResourceLimits`/`NumberOfFiles` in the plist, `LimitNOFILE` in the systemd unit |
+| Applied when | The service is installed. A tunnel installed by an older gtunnel keeps the old ceiling until `gtunnel restart <name>` rewrites its unit |
+
+Four thousand descriptors is more than a tunnel needs, so hitting the new ceiling means
+something is holding connections open rather than closing them. `gtunnel doctor` reads the
+tunnel's log, and when it finds that line it names the process holding the connections:
+
+```
+$ gtunnel doctor
+account dev:
+  ! Tunnel 'k8s' ran out of file descriptors: my-client (pid 4471) holds 3804 of its connections. Deal with that, then `gtunnel restart k8s`
+```
+
+The numbers above are an example; the shape is what the line looks like.
+
+It names the client, not the listener: the tunnel's own process holds the other end of
+every one of those connections, so reporting it would only ever point at the victim. The
+check runs before the credentials check, because a wedged tunnel and an expired login tend
+to arrive together and the one must not hide the other.
+
+By hand, the same question is `lsof` on the tunnel's local port. Ask for the whole command
+name — without `+c 0` lsof cuts it to nine characters, which is enough to mislead and not
+enough to grep for:
+
+```
+$ lsof -nP +c 0 -iTCP:8443 -sTCP:ESTABLISHED | awk '{print $1, $2}' | sort | uniq -c | sort -rn
+3804 my-client 4471
+   8 gcloud 1546
+```
+
+A tunnel in this state is what the watchdog exists for: it restarts one that is running but
+refusing connections, and stops one that will not come back. See `watch` in
+[usage.md](usage.md#watch).
 
 ## gtunnel needs a logged-in Google account
 

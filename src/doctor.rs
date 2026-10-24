@@ -9,6 +9,7 @@ use crate::expose::routes;
 use crate::gcp::compute::{BackendService, NamedPort, UrlMap};
 use crate::gcp::dns::RecordSet;
 use crate::gcp::{certmanager, compute, dns, gcloud, iap, GcpClient};
+use crate::probe::Holder;
 use crate::state::{local_port_is_free, AccessTarget, PersistentTunnel, TunnelSpec, TunnelState};
 
 pub const TUNNEL_ROLE: &str = "roles/iap.tunnelResourceAccessor";
@@ -74,6 +75,12 @@ pub enum Finding {
     },
     // One job for the whole machine, so it carries no account or tunnel
     WatchdogMissing,
+    // The tunnel's own log says it ran out of descriptors, with whoever is
+    // holding its connections now. None when lsof is not there to ask
+    DescriptorsExhausted {
+        tunnel: String,
+        holder: Option<Holder>,
+    },
 }
 
 impl Finding {
@@ -166,6 +173,21 @@ impl Finding {
             Finding::OrphanNamedPort { name } => {
                 format!("Named port {name} on the relay has no tunnel")
             }
+            Finding::DescriptorsExhausted { tunnel, holder } => {
+                let who = match holder {
+                    Some(h) => format!(
+                        "{} (pid {}) holds {} of its connections",
+                        h.command, h.pid, h.count
+                    ),
+                    None => "the process holding its connections could not be identified, \
+                             which is what `lsof` being absent looks like"
+                        .to_string(),
+                };
+                format!(
+                    "Tunnel '{tunnel}' ran out of file descriptors: {who}. Deal with that, \
+                     then `gtunnel restart {tunnel}`"
+                )
+            }
             Finding::WatchdogMissing => format!(
                 "No watchdog is installed, so a tunnel that wedges stays wedged until someone \
                  notices. Run `gtunnel watch install` to check every {}s",
@@ -173,6 +195,20 @@ impl Finding {
             ),
         }
     }
+}
+
+// The answer `Too many open files` sends a person here for. The log is the
+// trigger rather than the connection count, because the count a tunnel wedges
+// at is whatever ceiling its unit was installed with, and an old unit's is 256.
+pub fn out_of_descriptors(log: &str) -> bool {
+    log.contains("Too many open files")
+}
+
+pub fn descriptors_exhausted(tunnel: &str, log: &str, holders: &[Holder]) -> Option<Finding> {
+    out_of_descriptors(log).then(|| Finding::DescriptorsExhausted {
+        tunnel: tunnel.to_string(),
+        holder: holders.first().cloned(),
+    })
 }
 
 // The watchdog is machine-wide, so doctor reports it once rather than once per
@@ -441,6 +477,28 @@ pub async fn run_doctor(
 async fn account_findings(_cfg: &Config, state: &TunnelState, acct: &Account) -> Vec<Finding> {
     let mut findings = Vec::new();
     let client = GcpClient::for_account(acct);
+
+    // Before the token, because a tunnel out of descriptors is a local fact
+    // and the expired credentials that often accompany it must not hide it
+    for tunnel in state.tunnels_for_account(&acct.name) {
+        let Ok(log_path) = tunnel.log_path() else {
+            continue;
+        };
+        let log = crate::daemon::read_tail(&log_path, crate::daemon::TAIL_WINDOW);
+        // The lsof listing is only asked for once the log has earned it
+        if !out_of_descriptors(&log) {
+            continue;
+        }
+        let port = match &tunnel.spec {
+            TunnelSpec::Access { local_port, .. } => *local_port,
+            TunnelSpec::Expose { .. } => 0,
+        };
+        findings.extend(descriptors_exhausted(
+            &tunnel.name,
+            &log,
+            &crate::probe::holders_for_port(port),
+        ));
+    }
 
     if gcloud::print_access_token(acct).await.is_err() {
         findings.push(Finding::GcloudAuth {
@@ -1262,6 +1320,37 @@ mod tests {
             assert!(!finding.describe().is_empty());
         }
     }
+    // The hint `Too many open files` leaves in the log sends the person to
+    // `gtunnel doctor`, so doctor has to be able to answer. Who is holding the
+    // connections is a local fact: no account, no token, no GCP
+    #[test]
+    fn doctor_names_whoever_is_holding_a_wedged_tunnels_connections() {
+        let holders = [Holder {
+            pid: 4471,
+            command: "my-client".to_string(),
+            count: 3804,
+        }];
+        assert_eq!(
+            descriptors_exhausted("k8s", "debug1: nothing wrong here", &holders),
+            None
+        );
+
+        let text = descriptors_exhausted("k8s", "accept: Too many open files", &holders)
+            .expect("a finding")
+            .describe();
+        assert!(text.contains("my-client"), "{text}");
+        assert!(text.contains("4471"), "{text}");
+        assert!(text.contains("3804"), "{text}");
+
+        // Without lsof there is no holder to name, and naming nobody beats
+        // naming the wrong process
+        let unknown = descriptors_exhausted("k8s", "accept: Too many open files", &[])
+            .expect("a finding")
+            .describe();
+        assert!(unknown.contains("k8s"), "{unknown}");
+        assert!(!unknown.contains("my-client"), "{unknown}");
+    }
+
     // The watchdog is what turns the breaker into something that acts while
     // nobody is watching, so doctor has to say when it is absent. It is a
     // decision about two facts, and taking them as arguments is what makes it

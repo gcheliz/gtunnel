@@ -243,7 +243,7 @@ fn diagnose_log_line_explains_a_tunnel_out_of_descriptors() {
 Pure: no clock of its own, no process, no file. `now` is a parameter, which is what makes
 every row of the table above a test that runs in microseconds.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```rust
 #[test] fn one_failed_probe_is_not_a_wedged_tunnel() {}
@@ -261,10 +261,10 @@ every row of the table above a test that runs in microseconds.
 }
 ```
 
-- [ ] **Step 2: Run them** — Expected: FAIL, `Breaker` not defined.
-- [ ] **Step 3: Implement the table above** and nothing beyond it.
-- [ ] **Step 4: Run them** — Expected: PASS.
-- [ ] **Step 5: Commit** — `feat: a breaker that decides when a wedged tunnel is worth restarting`
+- [x] **Step 2: Run them** — Expected: FAIL, `Breaker` not defined.
+- [x] **Step 3: Implement the table above** and nothing beyond it.
+- [x] **Step 4: Run them** — Expected: PASS.
+- [x] **Step 5: Commit** — `feat: a breaker that decides when a wedged tunnel is worth restarting`
 
 ---
 
@@ -281,7 +281,7 @@ every row of the table above a test that runs in microseconds.
 A 30-second agent is a fresh process every time, so the state machine's memory has to be on
 disk or it has none.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```rust
 #[test] fn a_breaker_survives_the_process_that_wrote_it() {}
@@ -296,10 +296,10 @@ disk or it has none.
 }
 ```
 
-- [ ] **Step 2: Run them** — Expected: FAIL.
-- [ ] **Step 3: Implement**, with the same owner-only permissions `save_config` sets.
-- [ ] **Step 4: Run them** — Expected: PASS.
-- [ ] **Step 5: Commit** — `feat: breaker state outlives the process that observed it`
+- [x] **Step 2: Run them** — Expected: FAIL.
+- [x] **Step 3: Implement**, with the same owner-only permissions `save_config` sets.
+- [x] **Step 4: Run them** — Expected: PASS.
+- [x] **Step 5: Commit** — `feat: breaker state outlives the process that observed it`
 
 ---
 
@@ -321,7 +321,7 @@ is where a person looks afterwards. `--once` runs a single pass and exits, which
 agent invokes; without it, `watch` loops in the foreground, which is what a person debugging
 it runs.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```rust
 #[tokio::test] async fn a_pass_over_a_healthy_tunnel_changes_nothing_and_writes_nothing() {}
@@ -332,11 +332,11 @@ it runs.
 #[tokio::test] async fn a_machine_without_lsof_still_stops_the_tunnel_and_says_so_without_a_name() {}
 ```
 
-- [ ] **Step 2: Run them** — Expected: FAIL.
-- [ ] **Step 3: Implement.** Keep the pure decision in `Breaker`; this file does I/O and nothing else.
-- [ ] **Step 4: Run them** — Expected: PASS.
-- [ ] **Step 5: Verify live.** Against the real wedged tunnel if one can be reproduced, or by holding the local port's descriptors artificially. Show the log lines it wrote.
-- [ ] **Step 6: Commit** — `feat: one pass of the watchdog over every tunnel`
+- [x] **Step 2: Run them** — Expected: FAIL.
+- [x] **Step 3: Implement.** Keep the pure decision in `Breaker`; this file does I/O and nothing else.
+- [x] **Step 4: Run them** — Expected: PASS.
+- [x] **Step 5: Verify live.** Against the real wedged tunnel if one can be reproduced, or by holding the local port's descriptors artificially. Show the log lines it wrote.
+- [x] **Step 6: Commit** — `feat: one pass of the watchdog over every tunnel`
 
 ---
 
@@ -352,7 +352,7 @@ it runs.
 The agent runs the gtunnel binary, not gcloud, so it needs the same `PATH` treatment
 `daemon_env` already gives a tunnel. It must never ask for a terminal.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```rust
 #[test] fn the_watchdog_runs_every_thirty_seconds_and_at_load() {}
@@ -362,11 +362,11 @@ The agent runs the gtunnel binary, not gcloud, so it needs the same `PATH` treat
 #[test] fn doctor_reports_the_watchdog_as_not_installed_when_it_is_not() {}
 ```
 
-- [ ] **Step 2: Run them** — Expected: FAIL.
-- [ ] **Step 3: Implement**, including the `doctor` check and its `--fix`, which installs it.
-- [ ] **Step 4: Run them** — Expected: PASS.
-- [ ] **Step 5: Verify live.** Install it, wait one interval, and show `launchctl print gui/$UID/com.gtunnel.watchdog` reporting a completed run and the log line it wrote. Then uninstall it and show it gone.
-- [ ] **Step 6: Commit** — `feat: a watchdog agent that notices a wedged tunnel within thirty seconds`
+- [x] **Step 2: Run them** — Expected: FAIL.
+- [x] **Step 3: Implement**, including the `doctor` check and its `--fix`, which installs it.
+- [x] **Step 4: Run them** — Expected: PASS.
+- [x] **Step 5: Verify live.** Install it, wait one interval, and show `launchctl print gui/$UID/com.gtunnel.watchdog` reporting a completed run and the log line it wrote. Then uninstall it and show it gone.
+- [x] **Step 6: Commit** — `feat: a watchdog agent that notices a wedged tunnel within thirty seconds`
 
 ---
 
@@ -375,12 +375,23 @@ The agent runs the gtunnel binary, not gcloud, so it needs the same `PATH` treat
 **Files:**
 - Modify: `docs/troubleshooting.md`, `docs/usage.md`, `docs/architecture.md`, `README.md`
 
-- [ ] **Step 1: A `### A tunnel that stops accepting connections` section in `docs/troubleshooting.md`**, carrying the `Too many open files` row in the log table, what the descriptor ceiling is and was, and how to find the process holding the connections by hand. This is the one place that story lives.
-- [ ] **Step 2: Document `watch` in `docs/usage.md`** — the three subcommands, the 30-second interval, the backoff schedule as a table, and what `Stopped` means and how to leave it.
-- [ ] **Step 3: Add the watchdog to `docs/architecture.md`'s process model**, which today describes only per-tunnel services, and to its files table for `breakers.toml`.
-- [ ] **Step 4: One line in `README.md`** under Configuration naming `breakers.toml`.
-- [ ] **Step 5: Run the sweep** — `git ls-files | grep -v '^docs/plans/' | xargs grep -nIE 'holded|gonzalo|private-cluster|10\.3\.0\.13|a612|5749' 2>/dev/null` — Expected: no output. The incident that motivated this plan is described with placeholders.
-- [ ] **Step 6: Commit** — `docs: what a wedged tunnel looks like and what the watchdog does about it`
+- [x] **Step 1: A `### A tunnel that stops accepting connections` section in `docs/troubleshooting.md`**, carrying the `Too many open files` row in the log table, what the descriptor ceiling is and was, and how to find the process holding the connections by hand. This is the one place that story lives.
+- [x] **Step 2: Document `watch` in `docs/usage.md`** — the three subcommands, the 30-second interval, the backoff schedule as a table, and what `Stopped` means and how to leave it.
+- [x] **Step 3: Add the watchdog to `docs/architecture.md`'s process model**, which today describes only per-tunnel services, and to its files table for `breakers.toml`.
+- [x] **Step 4: One line in `README.md`** under Configuration naming `breakers.toml`.
+- [x] **Step 5: Run the sweep** — `git ls-files | grep -v '^docs/plans/' | xargs grep -nIE 'holded|gonzalo|private-cluster|10\.3\.0\.13|a612|5749' 2>/dev/null` — Expected: no output. The incident that motivated this plan is described with placeholders.
+- [x] **Step 6: Commit** — `docs: what a wedged tunnel looks like and what the watchdog does about it`
+
+
+## Rulings made while executing Part 2
+
+| Ruling | Why | Cost if wrong |
+|---|---|---|
+| `Action::Restart` stops the service before starting it | `launchctl kickstart` without `-k` and `systemctl start` are both no-ops on a service that is already running, and a running service is the only kind the breaker ever trips on. Verified by pid: without the stop it does not change | without it the restart ladder does nothing four times and then stops a tunnel it never actually restarted |
+| The persisted row carries `log_len` beside the breaker | the plan's trip rule needs "the log gained a line since the last check", which needs the length the last check saw. The alternative was dropping half the rule | a tunnel's first pass after an upgrade re-reads its whole log tail once |
+| `doctor` names the holder from the tunnel's **log**, not from a connection count | the count a tunnel wedges at is whatever ceiling its unit carries, and an old unit's is 256, so a threshold tuned to the new 4096 would miss the very incident that motivated the plan | a tunnel whose log was emptied by a restart before `doctor` ran is not named |
+| The descriptor check runs before `doctor`'s access-token probe | expired credentials and a wedged tunnel arrive together, and the early return on a bad token would have hidden the finding entirely | one `lsof` listing on an account that cannot reach GCP |
+| `watch`'s subcommand is optional rather than a separate `watchdog` command | the bare word keeps meaning the loop, so nothing that already worked changed | `gtunnel watch` with a typo'd subcommand runs the loop instead of erroring |
 
 ## Self-review
 
