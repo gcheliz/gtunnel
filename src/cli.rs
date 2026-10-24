@@ -199,6 +199,18 @@ pub enum Commands {
         name: String,
     },
 
+    // Rename a tunnel
+    #[command(about = "Rename a tunnel and move its service and log with it")]
+    Rename {
+        // Current tunnel name
+        #[arg(help = "Current tunnel name")]
+        old: String,
+
+        // New tunnel name
+        #[arg(help = "New tunnel name")]
+        new: String,
+    },
+
     // Manage compute zones
     #[command(about = "Manage compute zones")]
     Zones {
@@ -298,6 +310,7 @@ impl Commands {
             | Commands::Logs { .. }
             | Commands::List
             | Commands::Delete { .. }
+            | Commands::Rename { .. }
             | Commands::Zones { .. }
             | Commands::Domains { .. }
             | Commands::Relay { .. } => true,
@@ -414,6 +427,16 @@ mod tests {
 
     fn parse(args: &[&str]) -> Cli {
         Cli::try_parse_from(args).expect("should parse")
+    }
+
+    #[test]
+    fn rename_takes_the_old_and_the_new_name_and_an_account() {
+        let cli = parse(&["gtunnel", "rename", "db", "pg", "--account", "dev"]);
+        assert_eq!(cli.account.as_deref(), Some("dev"));
+        match cli.command.expect("command") {
+            Commands::Rename { old, new } => assert_eq!((old.as_str(), new.as_str()), ("db", "pg")),
+            other => panic!("parsed as {other:?}"),
+        }
     }
 
     #[test]

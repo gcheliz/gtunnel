@@ -108,6 +108,9 @@ async fn main() -> Result<()> {
         }) => commands::access::cmd_logs(account, &name, follow, lines).await,
         Some(Commands::List) => commands::access::cmd_list(account).await,
         Some(Commands::Delete { name }) => commands::access::cmd_delete(account, &name).await,
+        Some(Commands::Rename { old, new }) => {
+            commands::relocate::cmd_rename(account, &old, &new).await
+        }
         Some(Commands::Zones { command }) => match command {
             None => commands::access::cmd_zones(account, None).await,
             Some(ZonesCommands::Default { zone }) => {
