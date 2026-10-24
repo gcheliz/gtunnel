@@ -229,10 +229,12 @@ where
 mod tests {
     use super::*;
 
+    // A nonexistent configuration ensures print_access_token cannot succeed
+    // against a live developer config during unit tests
     fn account(impersonate: Option<&str>) -> Account {
         Account {
             name: "prod".to_string(),
-            gcloud_configuration: "work".to_string(),
+            gcloud_configuration: "__gtunnel_test_nonexistent__".to_string(),
             project: "my-project".to_string(),
             default_zone: "europe-west1-b".to_string(),
             impersonate_service_account: impersonate.map(str::to_string),
@@ -244,7 +246,11 @@ mod tests {
     fn login_names_the_configuration_and_nothing_else() {
         assert_eq!(
             login_argv(&account(None)),
-            vec!["auth", "login", "--configuration=work"]
+            vec![
+                "auth",
+                "login",
+                "--configuration=__gtunnel_test_nonexistent__"
+            ]
         );
     }
 
