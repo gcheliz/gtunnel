@@ -10,8 +10,21 @@ on:
 permissions:
   contents: read
 
+# Pushing twice to a branch used to leave five jobs running against a commit
+# nobody will merge. The newer push supersedes them. `main` is excluded by the
+# ref in the group key, so a merge queue of real commits never cancels itself.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 env:
   CARGO_TERM_COLOR: always
+  # Incremental artifacts are worthless to a runner that is destroyed at the end
+  # of the job, and they roughly double what the cache has to carry.
+  CARGO_INCREMENTAL: 0
+  # The default is 3 attempts with no delay, which turns a blip in the crates.io
+  # CDN into a red build.
+  CARGO_NET_RETRY: 10
 
 jobs:
   test:
@@ -27,7 +40,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           components: rustfmt, clippy
+      # Only `main` writes a cache. A pull request restores one and discards what
+      # it built: without this every PR run saved its own entry, and the 10 GB
+      # repository limit evicts by age, so a busy day of PRs used to push out the
+      # one entry every future run starts from.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Format
         run: cargo fmt --check
       - name: Clippy
@@ -49,6 +68,12 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: audit
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # `cargo audit` reads Cargo.lock against the advisory database and
+          # compiles nothing of ours, so a target directory here would be an
+          # empty one saved and restored on every run. The cargo-audit binary
+          # itself lives in CARGO_HOME/bin, which `cache-bin` still covers.
+          cache-targets: false
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked --version 0.22.2
       - name: Audit dependencies
@@ -68,6 +93,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: msrv
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Check on the declared MSRV
         run: cargo check --locked --all-targets
 
@@ -87,6 +113,9 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: zizmor
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # zizmor reads the workflow files as text; it never touches the crate.
+          cache-targets: false
       - name: Install zizmor
         run: cargo install zizmor --locked --version 1.31.1
       - name: Lint the workflows
