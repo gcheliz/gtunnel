@@ -5,6 +5,15 @@ what is on `main` and not yet tagged.
 
 ## Unreleased
 
+### TUI
+
+- **A config page** - `C` shows `config.toml` and `tunnels.toml` with their paths, and `e`
+  edits the one on screen in `$VISUAL`, then `$EDITOR`, then `vi`. The editor works on a
+  private copy, which replaces the real file only after it parses and passes the rules
+  `gtunnel add` enforces; a refused edit keeps its copy for `e` to reopen and `Esc` to
+  discard. A saved edit reloads accounts, projects, the relay and the list without
+  restarting, and says what changed. Running tunnels keep their old settings until `R`.
+
 ### Build
 
 - **A lint policy in `Cargo.toml`** - `unsafe_op_in_unsafe_fn`,

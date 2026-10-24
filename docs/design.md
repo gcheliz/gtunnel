@@ -41,9 +41,9 @@ One colour, one question. A setting is not a verdict. `src/tui/theme.rs` states 
 | `ACCENT` | what did gtunnel measure or derive | the mode column, the footer's keys, modal borders, the compact header's name |
 | `MUTED` | what is only furniture | rules, headers, captions, empty-list rows |
 | `LABEL` | what names the value beside it | field labels, footer words |
-| `OK` | is it running, healthy, done | a running status symbol |
+| `OK` | is it running, healthy, done | a running status symbol, the config page's report of a saved edit |
 | `WARN` | is it worth a look while nothing is broken | the health flag, a log hint, a prompt's question, the footer's lead action key |
-| `BAD` | is it broken | a failed status symbol, a status-line error |
+| `BAD` | is it broken | a failed status symbol, a status-line error, the config page's refusal of an edit |
 | `FLAG` | is a setting on, which is a choice and not a verdict | the auto-start flag |
 | `SELECTED_BG` | which row has the cursor | the selected list row |
 | `FIELD_BG` | what is the account field | the header's account plate |
@@ -63,6 +63,7 @@ What a pane sheds as the terminal narrows is decided and tested, never emergent.
 | Right column | Logs keeps `LOGS_MIN` first, because a failing tunnel is diagnosed there; Details is cut next and only for that minimum; Metrics gets the remainder and is dropped whole below `METRICS_MIN` rather than drawn too short to show a figure | `src/tui/ui.rs` (`right_heights`) |
 | Footer | whole actions from the end of the contextual group, then `; account`; `?` and `q` are never shed | `src/tui/ui.rs` (`footer_line`) |
 | Help page | one column below `HELP_TWO_COLUMNS`. A page that does not fit scrolls instead of dropping rows, because a keymap that cannot be read in full fails its one job; the count line and `Esc back` stay pinned so the way out never scrolls off. Only the cadence lines are dropped | `src/tui/ui.rs` (`help_page`, `HelpPage`) |
+| Config page | the page is the keymap page's shape: the file scrolls, and one pinned row carries the count and the keys. Under the file, in the order they give way: the restart note (kept only while the file keeps three rows, and replaced by any message), the blank row above the message, then the file. The message about the last edit is never dropped, only cut to half the rows left, at most four. The keys shed `Tab`, then `e`, never `Esc`, and the count and keys fall to two rows before either is cut. The title is cut from the front so the file name survives. A finished edit is reported on the page itself, because the log title says nothing of a finished operation and the page covers it | `src/tui/ui.rs` (`config_page`, `config_keys`, `tail_fit`) |
 | Dialogs | sized to their text, then to the terminal less a margin, centred, with a floor so there is always a row to draw in. Never a percentage of the screen, which is the wrong unit for text | `src/tui/ui.rs` (`dialog_rect`, `dialog_width`) |
 
 ## Artwork

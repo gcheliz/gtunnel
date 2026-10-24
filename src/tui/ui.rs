@@ -6,7 +6,9 @@ use ratatui::widgets::{
 };
 use ratatui::Frame;
 
-use super::app::{App, HelpExtent, InputMode, TunnelEntry, TunnelKind, TunnelMode};
+use super::app::{
+    App, ConfigFile, ConfigView, HelpExtent, InputMode, TunnelEntry, TunnelKind, TunnelMode,
+};
 use super::theme;
 use crate::probe::{HealthStatus, LB_WINDOW_MINUTES};
 use crate::state::{TunnelSpec, TunnelStatus};
@@ -460,6 +462,12 @@ pub const KEYMAP: &[KeyDoc] = &[
         "jump to the top or end of this page",
         Group::Program,
     ),
+    // The config page's own keys. `e` is a second row on purpose: the first one
+    // edits the selected tunnel, and the footer finds its action by the first
+    // row with the key, so that one must stay ahead of this
+    doc("C", None, "open the config page", Group::Program),
+    doc("Tab", None, "switch file, on that page", Group::Program),
+    doc("e", None, "edit the file, on that page", Group::Program),
     doc("Ctrl+Z", None, "suspend to the shell", Group::Program),
     // The one key that quits from inside a prompt, where `q` is just a letter
     doc("Ctrl+C", None, "quit from anywhere", Group::Program),
@@ -697,6 +705,7 @@ pub fn render(f: &mut Frame, app: &App) {
     match app.input_mode {
         InputMode::Normal => {}
         InputMode::Help => render_help_modal(f, app),
+        InputMode::Config => render_config_modal(f, app),
         InputMode::ChooseMode => render_choose_mode(f),
         InputMode::Confirm => {
             if let Some(message) = &app.confirm_message {
@@ -1858,6 +1867,265 @@ fn render_help_modal(f: &mut Frame, app: &App) {
         return;
     }
     f.render_widget(Paragraph::new(lines), inner);
+}
+
+/// The config page as drawn at one size and scroll position.
+pub struct ConfigPage {
+    pub lines: Vec<Line<'static>>,
+    /// The furthest the file scrolls; zero when it fits.
+    pub max_scroll: usize,
+    /// How many rows of the file the window shows.
+    pub view: usize,
+}
+
+const CONFIG_NOTE: &str =
+    "A saved edit reloads this list. Running tunnels keep their old settings until R restarts them.";
+/// Fewest rows of the file worth sharing the page with the note.
+const CONFIG_BODY_MIN: usize = 3;
+
+fn config_missing(file: ConfigFile) -> &'static str {
+    match file {
+        ConfigFile::Config => "no config file yet: `gtunnel init` creates it",
+        ConfigFile::Tunnels => {
+            "no tunnels file yet: `gtunnel add` creates it, or press e to write one"
+        }
+    }
+}
+
+/// The keys the page answers to, shed from the left so `Esc` is last to go. A
+/// failed edit has no `Tab`: moving to the other file would leave the edit
+/// that was refused with nowhere to be reopened.
+fn config_keys(width: usize, failed: bool) -> Vec<Span<'static>> {
+    let mut keys: Vec<(&'static str, &'static str)> = vec![
+        ("e", if failed { "edit again" } else { "edit" }),
+        ("Tab", "files"),
+        ("Esc", if failed { "discard" } else { "back" }),
+    ];
+    if failed {
+        keys.remove(1);
+    }
+    let cells = |keys: &[(&str, &str)]| {
+        keys.iter()
+            .map(|(k, l)| k.chars().count() + 1 + l.chars().count())
+            .sum::<usize>()
+            + 2 * keys.len().saturating_sub(1)
+    };
+    // `Esc` is the last entry and never leaves; the others go from the front
+    while keys.len() > 1 && cells(&keys) > width {
+        // Tab goes before e: choosing a file matters less than the edit
+        let at = keys.iter().position(|(k, _)| *k == "Tab").unwrap_or(0);
+        keys.remove(at);
+    }
+    let mut out = Vec::new();
+    for (i, (key, label)) in keys.into_iter().enumerate() {
+        if i > 0 {
+            out.push(Span::raw("  "));
+        }
+        out.push(Span::styled(
+            key,
+            Style::default()
+                .fg(theme::ACCENT)
+                .add_modifier(Modifier::BOLD),
+        ));
+        out.push(Span::raw(" "));
+        out.push(Span::styled(label, Style::default().fg(theme::LABEL)));
+    }
+    out
+}
+
+/// The config file as a page, laid out in `height` rows.
+///
+/// What stays and what scrolls follows the help page: the file scrolls, and
+/// the row of count and keys under it is pinned, so `Esc` is on screen at any
+/// size that has a row for it. Under that, in the order they are given up when
+/// the terminal is short: the reason an edit was refused, which is the one
+/// thing the reader has to act on; then the restart note, which is dropped
+/// whenever it would leave the file fewer than `CONFIG_BODY_MIN` rows and
+/// whenever there is a message to read instead. The count sits in the pinned
+/// row and not in the file's window, so where the reader is in a long file
+/// costs no row of the file.
+pub fn config_page(width: usize, height: usize, view: &ConfigView) -> ConfigPage {
+    let width = width.max(1);
+    let missing = view.text.is_none();
+    let body: Vec<Line<'static>> = match view.text.as_deref() {
+        None => wrap_words(config_missing(view.file), width)
+            .into_iter()
+            .map(|r| Line::styled(r, Style::default().fg(theme::MUTED)))
+            .collect(),
+        Some(text) => text
+            .lines()
+            .map(|l| Line::raw(fit(&l.replace('\t', "    "), width)))
+            .collect(),
+    };
+    let total = view.text.as_deref().map_or(0, |t| t.lines().count());
+    let failed = view.error.is_some();
+
+    // One row if the widest count and the keys fit side by side, else two
+    let keys = config_keys(width, failed);
+    let keys_cells = row_cells(&keys);
+    let widest = format!("{total}-{total} of {total} lines  j/k scroll");
+    let two_rows = widest.chars().count() + 2 + keys_cells > width;
+    let mut footer_rows = if two_rows { 2 } else { 1 };
+    // The way out outranks the count when there is only room for one row
+    footer_rows = footer_rows.min(height);
+    let rest = height - footer_rows;
+
+    // What the last edit came to: a refusal outranks a notice, and either
+    // replaces the standing note, which would only repeat the restart warning
+    // that a finished edit already carries
+    let message: Option<(String, Color)> = match (view.error.as_deref(), view.notice.as_ref()) {
+        (Some(error), _) => Some((format!("not saved: {error}"), theme::BAD)),
+        (None, Some(n)) => Some((n.text.clone(), if n.ok { theme::OK } else { theme::BAD })),
+        (None, None) => None,
+    };
+    let message_rows: Vec<Line<'static>> = match message.as_ref() {
+        Some((text, colour)) if rest > 0 => {
+            let cap = (rest / 2).clamp(1, 4);
+            let mut rows = wrap_words(text, width);
+            if rows.len() > cap {
+                rows.truncate(cap);
+                let last = rows.pop().unwrap_or_default();
+                rows.push(fit(&format!("{last}\u{2026}"), width));
+            }
+            rows.into_iter()
+                .map(|r| Line::styled(r, Style::default().fg(*colour)))
+                .collect()
+        }
+        _ => Vec::new(),
+    };
+    let rest = rest - message_rows.len();
+    let note_rows: Vec<Line<'static>> = if message.is_some() {
+        Vec::new()
+    } else {
+        let rows = wrap_words(CONFIG_NOTE, width);
+        if rest >= rows.len() + CONFIG_BODY_MIN.min(body.len()) {
+            rows.into_iter()
+                .map(|r| Line::styled(r, Style::default().fg(theme::MUTED)))
+                .collect()
+        } else {
+            Vec::new()
+        }
+    };
+    let mut window = rest - note_rows.len();
+    // A blank row says where the file ends, and is the first thing given up
+    // when the page is short: the file and the way out come before it
+    let spacer = (!message_rows.is_empty() || !note_rows.is_empty())
+        && window > CONFIG_BODY_MIN.min(body.len());
+    if spacer {
+        window -= 1;
+    }
+
+    // A file that fits is shown whole; one that does not scrolls in a window
+    let max_scroll = body.len().saturating_sub(window);
+    let top = view.scroll.min(max_scroll);
+    let shown: Vec<Line<'static>> = body.into_iter().skip(top).take(window).collect();
+    let view_rows = shown.len();
+
+    let place = if missing {
+        "not created yet".to_string()
+    } else if max_scroll == 0 {
+        format!("{total} lines")
+    } else {
+        format!("{}-{} of {total} lines", top + 1, top + view_rows)
+    };
+    let hinted = format!("{place}  j/k scroll");
+    let count = if !two_rows && hinted.chars().count() + 2 + keys_cells <= width && max_scroll > 0 {
+        hinted
+    } else {
+        place
+    };
+    let count_line = Line::styled(fit(&count, width), Style::default().fg(theme::MUTED));
+    let footer: Vec<Line<'static>> = if footer_rows == 2 {
+        vec![count_line, Line::from(keys)]
+    } else if height >= 1 && !two_rows {
+        let pad = width.saturating_sub(count.chars().count() + keys_cells);
+        let mut row = vec![
+            Span::styled(count, Style::default().fg(theme::MUTED)),
+            Span::raw(" ".repeat(pad)),
+        ];
+        row.extend(keys);
+        vec![Line::from(row)]
+    } else {
+        // Two rows were wanted and one is all there is: the keys win
+        vec![Line::from(keys)]
+    };
+
+    let mut lines = shown;
+    if spacer {
+        lines.push(Line::raw(""));
+    }
+    lines.extend(message_rows);
+    lines.extend(note_rows);
+    lines.extend(footer);
+    if height == 0 {
+        lines.clear();
+    }
+    ConfigPage {
+        lines,
+        max_scroll,
+        view: view_rows,
+    }
+}
+
+/// The path for a title, cut from the front: the end is the file's name, and
+/// which of the two files this is matters more than which directory it is in.
+fn tail_fit(text: &str, width: usize) -> String {
+    let count = text.chars().count();
+    if count <= width {
+        return text.to_string();
+    }
+    match width {
+        0 => String::new(),
+        n => {
+            let tail: String = text.chars().skip(count - (n - 1)).collect();
+            format!("\u{2026}{tail}")
+        }
+    }
+}
+
+fn render_config_modal(f: &mut Frame, app: &App) {
+    let screen = f.area();
+    let width = help_modal_width(screen.width);
+    let height = screen.height.saturating_sub(2);
+    let inner_width = help_inner_width(screen.width);
+    let page = config_page(
+        inner_width,
+        height.saturating_sub(2) as usize,
+        &app.config_view,
+    );
+    app.help_extent.set(HelpExtent {
+        max_scroll: page.max_scroll,
+        view: page.view,
+    });
+    // The frame hugs the page, as the keymap's does: rows under it would be an
+    // empty box
+    let height = (page.lines.len() as u16 + 2).min(height);
+    let area = Rect {
+        x: screen.x + (screen.width - width) / 2,
+        y: screen.y + (screen.height - height) / 2,
+        width,
+        height,
+    };
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(format!(
+            " {} ",
+            tail_fit(&app.config_view.path, (width as usize).saturating_sub(4))
+        ))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme::ACCENT));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let inner = Rect {
+        x: inner.x.saturating_add(1),
+        width: inner.width.saturating_sub(2),
+        ..inner
+    };
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    f.render_widget(Paragraph::new(page.lines), inner);
 }
 
 /// The frame a dialog gets on a screen: as big as it asked for and no bigger

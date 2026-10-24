@@ -1,6 +1,9 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::discovery::ExternalTunnel;
@@ -187,6 +190,7 @@ pub enum InputMode {
     EditTarget,
     Confirm,
     Help,
+    Config,
 }
 
 impl InputMode {
@@ -214,6 +218,71 @@ impl InputMode {
             InputMode::AddDomain => "Domain:",
             InputMode::EditTarget => "New value:",
             _ => "",
+        }
+    }
+}
+
+/// The two files the config page can show, in the order `Tab` cycles them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigFile {
+    Config,
+    Tunnels,
+}
+
+impl ConfigFile {
+    pub fn file_name(self) -> &'static str {
+        match self {
+            ConfigFile::Config => "config.toml",
+            ConfigFile::Tunnels => "tunnels.toml",
+        }
+    }
+
+    pub fn other(self) -> Self {
+        match self {
+            ConfigFile::Config => ConfigFile::Tunnels,
+            ConfigFile::Tunnels => ConfigFile::Config,
+        }
+    }
+}
+
+/// How the last edit ended, said on the page. The log title is where a
+/// failed operation shows, and says nothing of a finished one, and the page
+/// covers it in any case, so a page that changes the world has to report on
+/// itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Notice {
+    pub text: String,
+    pub ok: bool,
+}
+
+/// What the config page is showing. `text` is `None` when the file does not
+/// exist, which the page says in words: an empty file and an absent one are
+/// different facts, and `tunnels.toml` is absent until the first `add`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigView {
+    pub file: ConfigFile,
+    pub scroll: usize,
+    pub text: Option<String>,
+    // Why the last edit was not saved, with its line when the file gave one
+    pub error: Option<String>,
+    // The absolute path the title shows
+    pub path: String,
+    // The private copy the editor works on, kept after a refused edit so `e`
+    // reopens the user's work and `Esc` is what throws it away
+    pub staged: Option<std::path::PathBuf>,
+    pub notice: Option<Notice>,
+}
+
+impl Default for ConfigView {
+    fn default() -> Self {
+        Self {
+            file: ConfigFile::Config,
+            scroll: 0,
+            text: None,
+            error: None,
+            path: String::new(),
+            staged: None,
+            notice: None,
         }
     }
 }
@@ -276,6 +345,68 @@ impl Spinner {
     }
 }
 
+/// Lets the editor own the keyboard.
+///
+/// The input thread polls stdin on its own, so while an editor runs it would
+/// read keystrokes meant for the editor and send them to a list that is not on
+/// screen. The thread checks this gate before every poll; `pause` raises it and
+/// then waits for the thread to say it is parked, because a poll already in
+/// flight would otherwise still swallow the first key the user types. The wait
+/// is bounded, so a thread that has died cannot hang the editor.
+#[derive(Default)]
+pub struct InputGate {
+    paused: AtomicBool,
+    parked: AtomicBool,
+    // No thread, no one to wait for: the demo and every test run without one
+    live: AtomicBool,
+}
+
+/// How long `pause` waits for the input thread to park: a poll lasts 200ms.
+const PARK_WAIT: Duration = Duration::from_millis(1000);
+
+impl InputGate {
+    pub fn mark_live(&self) {
+        self.live.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.paused.load(Ordering::SeqCst)
+    }
+
+    /// The input thread's side: asked at the top of every turn, true means
+    /// skip the poll. Records that the thread is parked, or that it is not.
+    pub fn hold(&self) -> bool {
+        let paused = self.is_paused();
+        self.parked.store(paused, Ordering::SeqCst);
+        paused
+    }
+
+    /// Raises the gate until the returned guard is dropped, so every exit path
+    /// from the editor, including a failed spawn and a panic, resumes input.
+    pub fn pause(self: &Arc<Self>) -> Pause {
+        self.paused.store(true, Ordering::SeqCst);
+        if self.live.load(Ordering::SeqCst) {
+            let deadline = std::time::Instant::now() + PARK_WAIT;
+            while !self.parked.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+        Pause(self.clone())
+    }
+}
+
+/// Resumes input when dropped.
+pub struct Pause(Arc<InputGate>);
+
+impl Drop for Pause {
+    fn drop(&mut self) {
+        // Parked first: a pause that follows at once must not read this
+        // one's flag as the thread having stopped
+        self.0.parked.store(false, Ordering::SeqCst);
+        self.0.paused.store(false, Ordering::SeqCst);
+    }
+}
+
 pub struct App {
     pub account: String,
     pub accounts: Vec<String>,
@@ -309,6 +440,10 @@ pub struct App {
     // `draw` takes `&App`, so the measure comes back through a `Cell` rather
     // than a second pass that would have to guess the geometry.
     pub help_extent: Cell<HelpExtent>,
+    // The config page scrolls on the same measure as the keymap page: only one
+    // of them is ever open, so one `Cell` is enough and neither can read the
+    // other's stale figure
+    pub config_view: ConfigView,
     pub spinner: Spinner,
     pub should_quit: bool,
     pub suspend: bool,
@@ -337,6 +472,14 @@ pub struct App {
     // running the suite.
     pub clipboard: fn(&str) -> anyhow::Result<()>,
     pub opener: fn(&str) -> anyhow::Result<()>,
+    // What `e` on the config page runs on a file. The real one hands the
+    // terminal to the user's editor; under test it refuses, for the reason the
+    // two above do: a key press must never start a real editor.
+    pub editor: fn(&Path) -> anyhow::Result<()>,
+    pub input_gate: Arc<InputGate>,
+    // An editor drew over the alternate screen, so the terminal's idea of what
+    // is on it is wrong: the loop clears it and redraws in full, then lowers this
+    pub clear_screen: bool,
 }
 
 impl App {
@@ -356,6 +499,7 @@ impl App {
             input_mode: InputMode::Normal,
             help_scroll: 0,
             help_extent: Cell::new(HelpExtent::default()),
+            config_view: ConfigView::default(),
             spinner: Spinner::new(),
             should_quit: false,
             suspend: false,
@@ -379,6 +523,12 @@ impl App {
             opener: open_url,
             #[cfg(test)]
             opener: refuse_opener,
+            #[cfg(not(test))]
+            editor: edit_in_terminal,
+            #[cfg(test)]
+            editor: refuse_editor,
+            input_gate: Arc::new(InputGate::default()),
+            clear_screen: false,
         }
     }
 
@@ -511,6 +661,10 @@ impl App {
                 self.help_key(key.code);
                 return None;
             }
+            InputMode::Config => {
+                self.config_key(key.code);
+                return None;
+            }
             InputMode::ChooseMode => return self.choose_mode(key.code),
             InputMode::Confirm => return self.confirm(key.code),
             InputMode::AddInstance => return self.pick_instance(key.code),
@@ -541,6 +695,7 @@ impl App {
             KeyCode::Char('a') => self.open_add(),
             KeyCode::Char('e') => self.open_edit(),
             KeyCode::Char('L') => return self.clear_log_op(),
+            KeyCode::Char('C') => self.open_config(),
             _ => {}
         }
         None
@@ -550,16 +705,12 @@ impl App {
     // only here: `PgUp`, `g` and `G` are not bound anywhere else. The position
     // is clamped to the last draw's measure before the move and after it, so a
     // press at either end is a no-op and the first press back always moves.
-    fn help_key(&mut self, code: KeyCode) {
+    fn scrolled(&self, from: usize, code: KeyCode) -> usize {
         let HelpExtent { max_scroll, view } = self.help_extent.get();
-        let at = self.help_scroll.min(max_scroll);
+        let at = from.min(max_scroll);
         // A page keeps one row of the last screen, so the eye has a place to land
         let page = view.saturating_sub(1).max(1);
-        self.help_scroll = match code {
-            KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => {
-                self.input_mode = InputMode::Normal;
-                0
-            }
+        match code {
             KeyCode::Down | KeyCode::Char('j') => at + 1,
             KeyCode::Up | KeyCode::Char('k') => at.saturating_sub(1),
             KeyCode::PageDown => at + page,
@@ -568,7 +719,249 @@ impl App {
             KeyCode::Char('G') => max_scroll,
             _ => at,
         }
-        .min(max_scroll);
+        .min(max_scroll)
+    }
+
+    fn help_key(&mut self, code: KeyCode) {
+        self.help_scroll = match code {
+            KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => {
+                self.input_mode = InputMode::Normal;
+                0
+            }
+            _ => self.scrolled(self.help_scroll, code),
+        };
+    }
+
+    // The files are read when the page opens and when `Tab` moves to the other
+    // one, never on a timer: an edit made elsewhere while the page is open is
+    // not something this page promises to notice
+    fn open_config(&mut self) {
+        if self.demo {
+            self.set_status("the demo has no config files");
+            return;
+        }
+        match self.load_config_file(ConfigFile::Config) {
+            Ok(()) => {
+                self.help_extent.set(HelpExtent::default());
+                self.input_mode = InputMode::Config;
+            }
+            Err(e) => {
+                self.set_status(format!("could not open the config: {e}"));
+                self.status_error = true;
+            }
+        }
+    }
+
+    fn load_config_file(&mut self, file: ConfigFile) -> anyhow::Result<()> {
+        let path = page_dir()?.join(file.file_name());
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => Some(text),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => anyhow::bail!("could not read {}: {e}", path.display()),
+        };
+        self.config_view = ConfigView {
+            file,
+            scroll: 0,
+            text,
+            error: None,
+            path: std::path::absolute(&path)
+                .unwrap_or(path)
+                .display()
+                .to_string(),
+            staged: None,
+            notice: None,
+        };
+        Ok(())
+    }
+
+    /// stage, edit, validate, commit, reload, in that order and no other.
+    ///
+    /// The real file changes in exactly one place, `commit`, and only after
+    /// the text has passed the rules for that file. Anything earlier leaves it
+    /// as it was, so an editor that crashes, a mistake in the TOML and a
+    /// closed terminal are all the same harmless thing. A refused edit keeps
+    /// its copy, and `e` reopens it: the user's work is never thrown away
+    /// except by `Esc`, which says so.
+    fn edit_config(&mut self) {
+        use super::config_edit as edit;
+
+        let file = self.config_view.file;
+        self.config_view.notice = None;
+        let real = match page_dir() {
+            Ok(dir) => dir.join(file.file_name()),
+            Err(e) => return self.fail(format!("could not edit {}: {e:#}", file.file_name())),
+        };
+        let fresh = self.config_view.staged.is_none();
+        let staged = match self.config_view.staged.clone() {
+            Some(staged) => staged,
+            None => match edit::stage(&real) {
+                Ok(staged) => staged,
+                Err(e) => return self.fail(format!("could not prepare the edit: {e:#}")),
+            },
+        };
+
+        let edited = self.run_editor(&staged);
+        // Whatever happened, the editor drew over the screen
+        self.clear_screen = true;
+        let text = match edited {
+            Ok(text) => text,
+            Err(e) => {
+                // A copy this press made is the edit that was cancelled. One
+                // left from a refused edit holds work the user has not given up
+                if fresh {
+                    let _ = edit::discard(&staged);
+                } else {
+                    self.config_view.staged = Some(staged);
+                }
+                return self.fail(format!("{e:#}"));
+            }
+        };
+
+        let current = std::fs::read_to_string(&real).unwrap_or_default();
+        if text == current {
+            let _ = edit::discard(&staged);
+            self.config_view.staged = None;
+            self.config_view.error = None;
+            let _ = self.load_config_file(file);
+            self.finish(format!("no changes to {}", file.file_name()));
+            return;
+        }
+
+        enum Checked {
+            Config(Box<crate::config::Config>),
+            Tunnels(crate::state::TunnelState),
+        }
+        let checked = match file {
+            ConfigFile::Config => {
+                edit::validate_config(&text).map(|c| Checked::Config(Box::new(c)))
+            }
+            // Judged against the config on disk, which is the one the daemon
+            // and the CLI will read, not whatever this process loaded at start
+            ConfigFile::Tunnels => crate::config::load_config()
+                .and_then(|config| edit::validate_tunnels(&text, &config))
+                .map(Checked::Tunnels),
+        };
+        let checked = match checked {
+            Ok(checked) => checked,
+            Err(e) => return self.refuse(staged, text, format!("{e:#}")),
+        };
+
+        let before = crate::state::TunnelState::load().unwrap_or_default();
+        if let Err(e) = edit::commit(&staged, &real) {
+            return self.refuse(staged, text, format!("{e:#}"));
+        }
+        self.config_view.staged = None;
+        // The page shows the file as it is now, not the copy it was edited in
+        let _ = self.load_config_file(file);
+        let message = match checked {
+            Checked::Config(config) => {
+                self.reload_config(&config);
+                format!(
+                    "reloaded: {}; running tunnels keep their old settings until R",
+                    file.file_name()
+                )
+            }
+            Checked::Tunnels(after) => {
+                self.force_refresh = true;
+                edit::summarise(&before, &after).line()
+            }
+        };
+        self.finish(message);
+    }
+
+    // The edit ended without a refusal: say so on the page and on the status
+    fn finish(&mut self, message: String) {
+        self.set_status(message.clone());
+        self.config_view.notice = Some(Notice {
+            text: message,
+            ok: true,
+        });
+    }
+
+    // The edit stays on the page, with its copy, and says why it was not saved
+    fn refuse(&mut self, staged: std::path::PathBuf, text: String, error: String) {
+        self.config_view.staged = Some(staged);
+        self.config_view.text = Some(text);
+        self.config_view.error = Some(error.clone());
+        // The page carries the error itself, with its keys
+        self.set_status(format!("not saved: {error}"));
+        self.status_error = true;
+    }
+
+    fn fail(&mut self, message: String) {
+        self.set_status(message.clone());
+        self.status_error = true;
+        self.config_view.notice = Some(Notice {
+            text: message,
+            ok: false,
+        });
+    }
+
+    /// Takes in a config that changed under a running TUI: accounts, projects,
+    /// the relay for the account on screen, and a fresh request for the list.
+    ///
+    /// The account on screen survives when the new config still has it. When
+    /// it does not, its rows must not linger under another account's name, so
+    /// the list is emptied and the first remaining account takes over, as
+    /// `Config::remove_account` does for the stored selection.
+    pub fn reload_config(&mut self, config: &crate::config::Config) {
+        self.accounts = config.accounts.iter().map(|a| a.name.clone()).collect();
+        self.projects = config
+            .accounts
+            .iter()
+            .map(|a| (a.name.clone(), a.project.clone()))
+            .collect();
+        if !self.accounts.contains(&self.account) {
+            if let Some(first) = self.accounts.first() {
+                self.account = first.clone();
+                self.selected = 0;
+                self.entries.clear();
+                self.loaded = false;
+                self.load_failed = false;
+                self.list_offset.set(0);
+                self.logs.clear();
+            }
+        }
+        // The Public flow and the domain picker only make sense with a relay
+        let expose = config
+            .accounts
+            .iter()
+            .find(|a| a.name == self.account)
+            .and_then(|a| a.expose.as_ref());
+        self.has_relay = expose.is_some();
+        self.domains = expose
+            .map(|e| e.domains.iter().map(|d| d.domain.clone()).collect())
+            .unwrap_or_default();
+        self.force_refresh = true;
+    }
+
+    fn config_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                if let Some(staged) = self.config_view.staged.take() {
+                    let _ = super::config_edit::discard(&staged);
+                    self.set_status(format!(
+                        "discarded the edit to {}",
+                        self.config_view.file.file_name()
+                    ));
+                }
+                self.input_mode = InputMode::Normal;
+                self.config_view = ConfigView::default();
+            }
+            // A refused edit is waiting here for `e` or `Esc`; moving to the
+            // other file would strand its copy
+            KeyCode::Tab if self.config_view.staged.is_some() => {}
+            KeyCode::Tab => {
+                let other = self.config_view.file.other();
+                if let Err(e) = self.load_config_file(other) {
+                    self.set_status(format!("{e}"));
+                    self.status_error = true;
+                }
+                self.help_extent.set(HelpExtent::default());
+            }
+            KeyCode::Char('e') => self.edit_config(),
+            _ => self.config_view.scroll = self.scrolled(self.config_view.scroll, code),
+        }
     }
 
     // Only an ephemeral run has a name and a spec already; an external tunnel
@@ -649,6 +1042,16 @@ impl App {
             Ok(()) => self.set_status(format!("opened {url}")),
             Err(e) => self.set_status(format!("could not open {url}: {e}")),
         }
+    }
+
+    /// Runs the editor on `path` with input paused, and returns what the file
+    /// holds afterwards. The pause is a guard, so it lifts on an editor that
+    /// failed as surely as on one that did not.
+    pub fn run_editor(&mut self, path: &Path) -> anyhow::Result<String> {
+        let _paused = self.input_gate.pause();
+        (self.editor)(path)?;
+        std::fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("could not read {} back: {e}", path.display()))
     }
 
     // --- dialogs ---
@@ -977,6 +1380,22 @@ fn refuse_clipboard(_: &str) -> anyhow::Result<()> {
     anyhow::bail!("the clipboard is off under test")
 }
 
+/// The directory the config page reads. Under test it demands the override
+/// that `TempConfigDir` sets, so a test that forgot its directory fails here
+/// instead of reading the real configuration of whoever runs the suite.
+fn page_dir() -> anyhow::Result<std::path::PathBuf> {
+    #[cfg(test)]
+    if std::env::var_os("GTUNNEL_CONFIG_DIR").is_none() {
+        anyhow::bail!("the real config directory is off under test");
+    }
+    crate::config::config_dir()
+}
+
+#[cfg(test)]
+fn refuse_editor(_: &Path) -> anyhow::Result<()> {
+    anyhow::bail!("the editor is off under test")
+}
+
 #[cfg(test)]
 fn refuse_opener(_: &str) -> anyhow::Result<()> {
     anyhow::bail!("the browser is off under test")
@@ -1009,6 +1428,48 @@ pub fn open_url(url: &str) -> anyhow::Result<()> {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()?;
+    Ok(())
+}
+
+/// Hands the terminal to the user's editor and takes it back.
+///
+/// The screen is left before the editor starts and entered again by a guard, so
+/// a failed spawn, a non-zero exit and a panic all land back in the TUI instead
+/// of leaving the shell in raw mode. The event loop clears the screen
+/// afterwards: the editor drew over the alternate screen, and the diff the
+/// terminal draws from would otherwise paint only what it thinks changed.
+#[cfg_attr(test, allow(dead_code))]
+pub fn edit_in_terminal(path: &Path) -> anyhow::Result<()> {
+    use anyhow::Context;
+
+    struct Handoff;
+    impl Handoff {
+        fn leave() -> Self {
+            ratatui::restore();
+            Handoff
+        }
+    }
+    impl Drop for Handoff {
+        fn drop(&mut self) {
+            use crossterm::{execute, terminal};
+            let _ = terminal::enable_raw_mode();
+            let _ = execute!(std::io::stdout(), terminal::EnterAlternateScreen);
+        }
+    }
+
+    let (program, args) = super::config_edit::resolve_editor(
+        std::env::var("VISUAL").ok().as_deref(),
+        std::env::var("EDITOR").ok().as_deref(),
+    );
+    let _handoff = Handoff::leave();
+    let status = std::process::Command::new(&program)
+        .args(&args)
+        .arg(path)
+        .status()
+        .with_context(|| format!("could not run {program}"))?;
+    if !status.success() {
+        anyhow::bail!("{program} exited with {status}");
+    }
     Ok(())
 }
 
@@ -1094,5 +1555,125 @@ mod display_name_tests {
         let entry = TunnelEntry::new(tunnel, TunnelStatus::Stopped, TunnelKind::Managed);
         assert_eq!(entry.display_name(), "k8s");
         assert_eq!(entry.name(), "k8s-dev");
+    }
+}
+
+#[cfg(test)]
+mod editor_tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    fn writes_known_text(path: &Path) -> anyhow::Result<()> {
+        std::fs::write(path, "edited = true\n")?;
+        Ok(())
+    }
+
+    fn fails(_: &Path) -> anyhow::Result<()> {
+        anyhow::bail!("editor exited with status: 1")
+    }
+
+    thread_local! {
+        // What the stand-in saw of the gate while it ran: a function pointer
+        // carries no state, and a test owns its thread
+        static GATE: RefCell<Option<Arc<InputGate>>> = const { RefCell::new(None) };
+        static SAW_PAUSED: RefCell<Option<bool>> = const { RefCell::new(None) };
+    }
+
+    fn looks_at_the_gate(_: &Path) -> anyhow::Result<()> {
+        GATE.with(|g| {
+            let paused = g.borrow().as_ref().map(|g| g.is_paused());
+            SAW_PAUSED.with(|s| *s.borrow_mut() = paused);
+        });
+        Ok(())
+    }
+
+    fn scratch() -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("tunnels.toml");
+        std::fs::write(&file, "before = 1\n").unwrap();
+        (dir, file)
+    }
+
+    #[test]
+    fn run_editor_returns_what_the_editor_wrote_and_resumes_input() {
+        let (_dir, file) = scratch();
+        let mut app = App::new("dev");
+        app.editor = writes_known_text;
+        let text = app.run_editor(&file).expect("editor ran");
+        assert_eq!(text, "edited = true\n");
+        assert!(!app.input_gate.is_paused(), "input must resume");
+    }
+
+    #[test]
+    fn input_is_paused_for_the_whole_editor_run() {
+        let (_dir, file) = scratch();
+        let mut app = App::new("dev");
+        app.editor = looks_at_the_gate;
+        GATE.with(|g| *g.borrow_mut() = Some(app.input_gate.clone()));
+        app.run_editor(&file).unwrap();
+        assert_eq!(SAW_PAUSED.with(|s| *s.borrow()), Some(true));
+        assert!(!app.input_gate.is_paused());
+    }
+
+    #[test]
+    fn a_failing_editor_still_resumes_input_and_returns_its_error() {
+        let (_dir, file) = scratch();
+        let mut app = App::new("dev");
+        app.editor = fails;
+        let err = app.run_editor(&file).expect_err("the editor failed");
+        assert!(err.to_string().contains("status: 1"), "{err}");
+        assert!(!app.input_gate.is_paused(), "input must resume on failure");
+    }
+
+    #[test]
+    fn under_test_the_default_editor_refuses() {
+        let (_dir, file) = scratch();
+        let mut app = App::new("dev");
+        let err = app.run_editor(&file).expect_err("refused");
+        assert!(err.to_string().contains("off under test"), "{err}");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "before = 1\n");
+        assert!(!app.input_gate.is_paused());
+    }
+
+    // The thread this gate talks to checks `hold` before every poll. The
+    // guard must not return before that thread has parked, or a poll in
+    // flight would take the editor's first keystroke.
+    #[test]
+    fn pausing_waits_for_a_live_input_thread_to_park() {
+        let gate = Arc::new(InputGate::default());
+        gate.mark_live();
+        let worker = {
+            let gate = gate.clone();
+            std::thread::spawn(move || {
+                // A poll in flight: it notices the gate only after a while
+                std::thread::sleep(Duration::from_millis(80));
+                while !gate.hold() {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                // Parked: stays so until released
+                while gate.hold() {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            })
+        };
+        let started = std::time::Instant::now();
+        let guard = gate.pause();
+        assert!(gate.is_paused());
+        assert!(
+            gate.parked.load(Ordering::SeqCst),
+            "pause returned before the thread parked"
+        );
+        assert!(started.elapsed() >= Duration::from_millis(60));
+        drop(guard);
+        assert!(!gate.is_paused());
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn pausing_does_not_wait_when_no_thread_is_listening() {
+        let gate = Arc::new(InputGate::default());
+        let started = std::time::Instant::now();
+        let _guard = gate.pause();
+        assert!(started.elapsed() < Duration::from_millis(200));
     }
 }

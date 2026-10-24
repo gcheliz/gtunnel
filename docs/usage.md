@@ -75,7 +75,7 @@ data and never touches GCP or a config file.
 | Tunnel | `s` start, `S` stop, `R` restart, `A` toggle auto-start, `h` health check now |
 | The list | `a` add, `e` edit, `d` delete, `m` import an ephemeral run as managed, `j` `k` or the arrows move the selection |
 | This tunnel's URL and log | `c` copy the URL, `o` open it, `L` clear the log, `r` refresh the list, metrics and health |
-| The program | `;` cycle accounts, `?` the keymap, `q` quit, `Esc` close a page or cancel a prompt, `PgUp` `PgDn` and `g` `G` scroll the keymap page, `Ctrl+Z` suspend, `Ctrl+C` quit from anywhere |
+| The program | `;` cycle accounts, `?` the keymap, `C` the config page, `q` quit, `Esc` close a page or cancel a prompt, `PgUp` `PgDn` and `g` `G` scroll the keymap page, `Ctrl+Z` suspend, `Ctrl+C` quit from anywhere |
 
 Case matters in three pairs: `s`/`S` start and stop, `a`/`A` add and auto-start, `r`/`R`
 refresh and restart. The footer shows only what the selected tunnel can do, so it never has
@@ -122,6 +122,100 @@ window, so moving inside it moves the highlight and not the rows, and a
 Details value too long for its row (a URL, a target, how the tunnel was started) wraps under
 its label instead of being cut. When the terminal is short, Logs keeps at least 4 rows and
 Metrics shrinks, then disappears, before Logs does.
+
+### The config page
+
+`C` opens a page that shows the two files gtunnel reads, with the absolute path of the one on
+screen in its title. `Tab` switches between `config.toml` and `tunnels.toml`; `j` `k`, the
+arrows, `PgUp` `PgDn`, `g` and `G` scroll as they do on the keymap page, and the count in the
+bottom row (`1-16 of 29 lines`) says where the window is. A file that does not exist yet says
+so: `tunnels.toml` is absent until the first `add`. `Esc` or `q` closes the page. The demo has
+no config files, so `C` there says so and opens nothing.
+
+`e` edits the file on screen in `$VISUAL`, then `$EDITOR`, then `vi`. The value is split on
+whitespace, so `code -w` works, and a quoted path with a space stays one program. gtunnel
+leaves the screen while the editor runs and takes it back when the editor exits, whatever
+way it exits.
+
+The editor never opens the real file. It opens a private copy next to it
+(`tunnels.edit-<pid>.toml`, owner-only), and the real file is replaced in one rename, only
+after the text has passed the rules for that file:
+
+| File | What has to be true |
+|---|---|
+| `config.toml` | parses, has at least one account, and `selected_account` names one of them |
+| `tunnels.toml` | parses, every name is valid as for `gtunnel add`, no name repeats within an account, and every tunnel's account is in `config.toml` |
+
+A file that passes is committed (`config.toml` ends at mode 0600 whatever the editor did),
+the copy is removed, and the list is reloaded without restarting the TUI: accounts, projects,
+the relay and the tunnels. The account on screen is kept if it still exists; if it was
+removed, the first remaining account takes over. The page says what happened, in green:
+`reloaded: 1 changed, 1 added, 0 removed`, or `no changes to tunnels.toml` when the text came
+back as it went in. A removed or renamed tunnel adds a warning, because a launchd job is named
+for the tunnel and editing the file does not unload it.
+
+A file that fails is not saved. The page shows what the editor left, the reason in red with its
+line (`not saved: line 16: key with no value, expected `=``), and the keys become
+`e edit again` and `Esc discard`: `e` reopens the same copy, so the work is not lost, and `Esc`
+removes it. `Tab` does nothing while a refused edit waits. An editor that exits non-zero, as
+`:cq` does in vim, cancels the edit and leaves the file as it was.
+
+Running tunnels keep their old settings until `R` restarts them: a launchd job is rewritten
+only on a restart, so the page and the status line both say so.
+
+A transcript from a throwaway config, with `EDITOR` set to a script that appends one valid
+tunnel to the file it is given (`GTUNNEL_CONFIG_DIR=/tmp/cfgdemo`, 80x24):
+
+```
+┌ /tmp/cfgdemo/tunnels.toml ───────────────────────────────────────────────┐
+│ [[tunnels]]                                                              │
+│ name = "db"                                                              │
+│ account_name = "evidence"                                                │
+│ auto_start = false                                                       │
+│                                                                          │
+│ [tunnels.spec]                                                           │
+│ mode = "access"                                                          │
+│ remote_port = 5432                                                       │
+│ local_port = 15432                                                       │
+│                                                                          │
+│ [tunnels.spec.target]                                                    │
+│ kind = "instance"                                                        │
+│ instance = "bastion"                                                     │
+│ zone = "europe-west1-b"                                                  │
+│                                                                          │
+│ [[tunnels]]                                                              │
+│                                                                          │
+│ reloaded: 0 changed, 1 added, 0 removed; running tunnels keep their old  │
+│ settings until R                                                         │
+│ 1-16 of 29 lines  j/k scroll                 e edit  Tab files  Esc back │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+The same page after an editor that wrote text which is not TOML:
+
+```
+┌ /tmp/cfgdemo/tunnels.toml ───────────────────────────────────────────────┐
+│ [[tunnels]]                                                              │
+│ name = "db"                                                              │
+│ account_name = "evidence"                                                │
+│ auto_start = false                                                       │
+│                                                                          │
+│ [tunnels.spec]                                                           │
+│ mode = "access"                                                          │
+│ remote_port = 5432                                                       │
+│ local_port = 15432                                                       │
+│                                                                          │
+│ [tunnels.spec.target]                                                    │
+│ kind = "instance"                                                        │
+│ instance = "bastion"                                                     │
+│ zone = "europe-west1-b"                                                  │
+│                                                                          │
+│ this is = = not toml                                                     │
+│                                                                          │
+│ not saved: line 16: key with no value, expected `=`                      │
+│ 16 lines                                       e edit again  Esc discard │
+└──────────────────────────────────────────────────────────────────────────┘
+```
 
 ## init
 
