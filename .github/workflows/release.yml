@@ -22,14 +22,23 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # `slug` is what the asset is called. It is deliberately not the triple:
+        # `unknown` in the vendor slot and `x86_64` for amd64 are exact but tell
+        # a visitor nothing. `platform_slug()` in src/update.rs returns these
+        # same four strings, and the updater fetches by them, so the two lists
+        # must change together
         include:
           - target: aarch64-apple-darwin
+            slug: macos-arm64
             os: macos-latest
           - target: x86_64-apple-darwin
+            slug: macos-intel
             os: macos-latest
           - target: x86_64-unknown-linux-musl
+            slug: linux-amd64
             os: ubuntu-latest
           - target: aarch64-unknown-linux-musl
+            slug: linux-arm64
             os: ubuntu-latest
     runs-on: ${{ matrix.os }}
     steps:
@@ -50,12 +59,12 @@ jobs:
           echo "CARGO=cross" >> "$GITHUB_ENV"
       - name: Build
         run: ${CARGO:-cargo} build --release --locked --target ${{ matrix.target }}
-      # The self-updater downloads gtunnel-<target>.tar.gz and verifies it
-      # against gtunnel-<target>.tar.gz.sha256, so both names are fixed
+      # The self-updater downloads gtunnel-<slug>.tar.gz and verifies it
+      # against gtunnel-<slug>.tar.gz.sha256, so both names are fixed
       - name: Package
         run: |
           set -euo pipefail
-          asset="gtunnel-${{ matrix.target }}.tar.gz"
+          asset="gtunnel-${{ matrix.slug }}.tar.gz"
           tar -czf "$asset" -C "target/${{ matrix.target }}/release" gtunnel
           if command -v sha256sum >/dev/null; then
             sha256sum "$asset" > "$asset.sha256"
@@ -64,10 +73,10 @@ jobs:
           fi
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: gtunnel-${{ matrix.target }}
+          name: gtunnel-${{ matrix.slug }}
           path: |
-            gtunnel-${{ matrix.target }}.tar.gz
-            gtunnel-${{ matrix.target }}.tar.gz.sha256
+            gtunnel-${{ matrix.slug }}.tar.gz
+            gtunnel-${{ matrix.slug }}.tar.gz.sha256
           if-no-files-found: error
 
   release:

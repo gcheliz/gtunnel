@@ -85,16 +85,19 @@ fn parse_latest_tag(status: u16, body: &serde_json::Value) -> Result<String> {
     Ok(tag.strip_prefix('v').unwrap_or(tag).to_string())
 }
 
-// The Rust target triple, which is also what the release assets are named after
-pub fn platform_target() -> Option<&'static str> {
+// What the release asset for this host is called. Not the Rust target triple:
+// a triple puts `unknown` in the vendor slot and spells amd64 `x86_64`, which
+// is exact but tells a visitor on the releases page nothing about which file
+// is theirs. release.yml maps each triple it builds to one of these
+pub fn platform_slug() -> Option<&'static str> {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    return Some("aarch64-apple-darwin");
+    return Some("macos-arm64");
     #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-    return Some("x86_64-apple-darwin");
+    return Some("macos-intel");
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    return Some("x86_64-unknown-linux-musl");
+    return Some("linux-amd64");
     #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-    return Some("aarch64-unknown-linux-musl");
+    return Some("linux-arm64");
     #[allow(unreachable_code)]
     None
 }
@@ -254,8 +257,8 @@ async fn get(url: &str) -> Result<Vec<u8>> {
 }
 
 async fn perform_update(exe_path: &Path, version: &str) -> Result<()> {
-    let target = platform_target().context("This platform has no self-update build")?;
-    let asset = asset_name(target);
+    let slug = platform_slug().context("This platform has no self-update build")?;
+    let asset = asset_name(slug);
     let base = format!("https://github.com/{REPO}/releases/download/v{version}");
 
     eprintln!("Downloading {asset}...");
@@ -346,10 +349,30 @@ mod tests {
         assert!(!is_newer("2.0.0", "1.9.9"));
     }
 
+    // The asset names are what a visitor reads on the releases page, so they
+    // say the platform rather than the Rust triple. They are also what the
+    // updater fetches, so release.yml and this list have to agree exactly
     #[test]
     fn this_platform_has_a_release_asset() {
-        let target = platform_target().expect("a target for this host");
-        assert_eq!(asset_name(target), format!("gtunnel-{target}.tar.gz"));
+        let slug = platform_slug().expect("a slug for this host");
+        assert!(
+            ["macos-arm64", "macos-intel", "linux-amd64", "linux-arm64"].contains(&slug),
+            "slug not published by release.yml: {slug}"
+        );
+        assert_eq!(asset_name(slug), format!("gtunnel-{slug}.tar.gz"));
+    }
+
+    #[test]
+    fn the_slug_names_the_host_in_plain_words() {
+        let slug = platform_slug().expect("a slug for this host");
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        assert_eq!(slug, "macos-arm64");
+        #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+        assert_eq!(slug, "macos-intel");
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        assert_eq!(slug, "linux-amd64");
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        assert_eq!(slug, "linux-arm64");
     }
 
     // A project whose first release is not published yet answers 404, and the
@@ -414,7 +437,7 @@ mod tests {
     #[test]
     fn the_checksum_line_is_read_from_the_published_file() {
         assert_eq!(
-            parse_sha256_file("abc123  gtunnel-aarch64-apple-darwin.tar.gz\n"),
+            parse_sha256_file("abc123  gtunnel-macos-arm64.tar.gz\n"),
             Some("abc123".to_string())
         );
         assert_eq!(parse_sha256_file("   \n"), None);

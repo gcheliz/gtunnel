@@ -241,5 +241,6 @@ GCP relay in place of Cloudflare Tunnel.
   loaded.
 - **Linux** - systemd `--user` units. `loginctl enable-linger` is what makes a tunnel
   survive a logout.
-- **Release binaries** - `aarch64-apple-darwin`, `x86_64-apple-darwin`,
-  `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`.
+- **Release binaries** - `macos-arm64`, `macos-intel`, `linux-amd64`, `linux-arm64`. The
+  assets are named for the machine rather than the Rust target triple, so the file a
+  visitor wants is the one they can recognise. The Linux pair are static musl builds.
