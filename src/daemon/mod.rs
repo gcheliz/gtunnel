@@ -41,6 +41,11 @@ fn daemon_env(gcloud: &std::path::Path) -> Vec<(String, String)> {
     vec![
         ("CLOUDSDK_CORE_DISABLE_PROMPTS".to_string(), "1".to_string()),
         ("PATH".to_string(), path),
+        // gcloud is Python, and Python block-buffers a stdout that is not a
+        // terminal. The service redirects stdout into the tunnel's log, so
+        // without this a line is held until 4 KiB have accumulated or the
+        // process exits, and a working tunnel reads as a silent one.
+        ("PYTHONUNBUFFERED".to_string(), "1".to_string()),
     ]
 }
 
@@ -115,6 +120,98 @@ pub fn write_log_header(spec: &ServiceSpec) -> Result<()> {
     log_event(&spec.log_path, &spec.description)
 }
 
+// What a reader may take of a log to show its last lines. A line is rarely
+// over 200 bytes even at ssh's DEBUG, so this window holds far more lines
+// than any pane shows, and nothing above it could be on screen anyway.
+pub const TAIL_WINDOW: u64 = 256 * 1024;
+
+/// A file from `offset` to its end, whatever it opens on. Empty for a log
+/// that is not there yet, which is what a tunnel that never started has.
+/// Lossy on the decode: an offset can fall inside a multi-byte character,
+/// and a log is not worth failing over.
+pub fn read_from(path: &std::path::Path, offset: u64) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return String::new();
+    };
+    if offset > 0 && file.seek(SeekFrom::Start(offset)).is_err() {
+        return String::new();
+    }
+    let mut raw = Vec::new();
+    if file.read_to_end(&mut raw).is_err() {
+        return String::new();
+    }
+    String::from_utf8_lossy(&raw).into_owned()
+}
+
+/// The last `max_bytes` of a file, from a line boundary.
+pub fn read_tail(path: &std::path::Path, max_bytes: u64) -> String {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return String::new();
+    };
+    let from = meta.len().saturating_sub(max_bytes);
+    let text = read_from(path, from);
+    // Only a window that skipped something can open mid-line, and half a
+    // line is noise. A whole file would otherwise lose its first line.
+    match (from > 0).then(|| text.find('\n')).flatten() {
+        Some(nl) => text[nl + 1..].to_string(),
+        None => text,
+    }
+}
+
+/// What a log may reach before it is trimmed, and what survives the trim.
+pub const LOG_CAP: u64 = 8 * 1024 * 1024;
+pub const LOG_KEEP: u64 = 2 * 1024 * 1024;
+
+/// Past `cap`, rewrite the log keeping its last `keep` bytes from a line
+/// boundary, with a first line saying what went. The service's child holds
+/// this file open in append mode, so truncating in place is safe: its next
+/// write lands at the new end. A line it writes between the read and the
+/// truncation is lost, which is the price of bounding a file whose main
+/// writer is somebody else's process.
+///
+/// Only a gtunnel process calls this, so a tunnel nobody looks at is bounded
+/// the next time one does. `docs/troubleshooting.md` says so.
+pub fn trim_log(path: &std::path::Path, cap: u64, keep: u64) -> Result<()> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    let mut file = match std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+    {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e).with_context(|| format!("Failed to open {}", path.display())),
+    };
+    let size = file
+        .metadata()
+        .with_context(|| format!("Failed to stat {}", path.display()))?
+        .len();
+    if size <= cap {
+        return Ok(());
+    }
+    file.seek(SeekFrom::Start(size.saturating_sub(keep)))
+        .with_context(|| format!("Failed to seek {}", path.display()))?;
+    let mut raw = Vec::new();
+    file.read_to_end(&mut raw)
+        .with_context(|| format!("Failed to read {}", path.display()))?;
+    // Lossy on purpose: the window opens at a byte offset, so it can open
+    // inside a multi-byte character, and a log is not worth failing over
+    let mut tail = String::from_utf8_lossy(&raw).into_owned();
+    // That same offset almost always opens mid-line, and half a line is noise
+    if let Some(nl) = tail.find('\n') {
+        tail = tail[nl + 1..].to_string();
+    }
+    let kib = cap / 1024;
+    let body = format!("gtunnel: earlier lines dropped here, the log passed {kib} KiB\n{tail}");
+    file.set_len(0)
+        .with_context(|| format!("Failed to truncate {}", path.display()))?;
+    file.seek(SeekFrom::Start(0))
+        .with_context(|| format!("Failed to rewind {}", path.display()))?;
+    file.write_all(body.as_bytes())
+        .with_context(|| format!("Failed to write {}", path.display()))
+}
+
 /// Append one gtunnel line to a tunnel's log. The daemon's stdout is redirected
 /// into the same file, so both writers append and neither rewrites the other;
 /// one `write_all` of one whole line keeps a gtunnel line from landing inside a
@@ -122,6 +219,10 @@ pub fn write_log_header(spec: &ServiceSpec) -> Result<()> {
 /// these lines its log is indistinguishable from a tunnel that never ran.
 pub fn log_event(path: &std::path::Path, message: &str) -> Result<()> {
     use std::io::Write;
+    // A full disk is a worse failure than a short history, and a log this
+    // talkative gets there. A trim that fails changes nothing and is not
+    // worth refusing the line over.
+    let _ = trim_log(path, LOG_CAP, LOG_KEEP);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)
             .with_context(|| format!("Failed to create {}", dir.display()))?;
@@ -320,6 +421,19 @@ mod tests {
         assert!(unit.contains("WantedBy=default.target"), "{unit}");
     }
 
+    // The fixture above carries a hand-written env, so it can only test the
+    // renderer. What a tunnel actually runs with comes from `daemon_env`, and
+    // that is what this pins.
+    #[test]
+    fn the_child_does_not_block_buffer_its_output_into_the_log() {
+        let env = daemon_env(std::path::Path::new("/opt/homebrew/bin/gcloud"));
+        assert!(
+            env.iter().any(|(k, v)| k == "PYTHONUNBUFFERED" && v == "1"),
+            "gcloud is Python and its stdout block-buffers into a redirected \
+             file, so a tunnel's lines arrive 4 KiB at a time or at exit\n{env:?}"
+        );
+    }
+
     #[test]
     fn launchctl_print_reports_running_crashed_and_stopped() {
         let running = r#"
@@ -511,6 +625,95 @@ mod tests {
         log_event(&log, "starting dev-db\nforged: line").expect("event");
         let text = std::fs::read_to_string(&log).expect("read");
         assert_eq!(text.lines().count(), 1, "{text}");
+    }
+
+    // These logs are now talkative - gcloud at --verbosity=info and ssh at
+    // DEBUG - and nothing else bounds them. A tunnel left up for weeks, or
+    // one restarting in a loop, would otherwise write until the disk said no.
+    #[test]
+    fn a_log_past_its_cap_keeps_its_tail_and_says_what_it_dropped() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("dev-db.log");
+        let mut body = String::new();
+        for i in 0..2000 {
+            body.push_str(&format!("line {i} aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"));
+        }
+        std::fs::write(&path, &body).expect("write");
+
+        trim_log(&path, 4096, 1024).expect("trim");
+
+        let after = std::fs::read_to_string(&path).expect("read");
+        assert!(
+            after.len() <= 1024 + 128,
+            "the cap is the point; kept {} bytes",
+            after.len()
+        );
+        assert!(
+            after.ends_with("line 1999 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"),
+            "the tail is the half worth keeping\n{after}"
+        );
+        assert!(
+            after
+                .lines()
+                .next()
+                .expect("a first line")
+                .contains("earlier lines dropped"),
+            "a reader who greps for something old must learn it was dropped, \
+             not read silence\n{after}"
+        );
+        let first_kept = after.lines().nth(1).expect("a kept line");
+        assert!(
+            first_kept.starts_with("line "),
+            "a window opening mid-line must drop that line, not keep half of it: \
+             {first_kept:?}"
+        );
+    }
+
+    // Below the cap there is nothing to do, and rewriting the file would race
+    // the child's own appends for no reason
+    #[test]
+    fn a_log_under_its_cap_is_left_exactly_as_it_was() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("dev-db.log");
+        std::fs::write(&path, "one\ntwo\n").expect("write");
+        trim_log(&path, 4096, 1024).expect("trim");
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), "one\ntwo\n");
+    }
+
+    // The pane reloads every 5 seconds and keeps 200 lines of a file that is
+    // now allowed to reach 8 MiB. Reading the whole of it to show the end of
+    // it costs the whole of it, every time.
+    #[test]
+    fn the_log_pane_reads_the_end_of_the_file_rather_than_all_of_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("dev-db.log");
+        let mut body = String::new();
+        for i in 0..500 {
+            body.push_str(&format!("line {i} bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"));
+        }
+        std::fs::write(&path, &body).expect("write");
+
+        let tail = read_tail(&path, 512);
+
+        assert!(tail.len() <= 512, "read {} bytes", tail.len());
+        assert!(
+            tail.ends_with("line 499 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"),
+            "the end of the file is the part on screen\n{tail}"
+        );
+        assert!(
+            tail.lines().next().expect("a line").starts_with("line "),
+            "a window opening mid-line must drop that line, not show half of it"
+        );
+    }
+
+    // A file smaller than the window is the common case, and it must come
+    // back whole rather than with its first line eaten
+    #[test]
+    fn a_log_shorter_than_the_window_keeps_its_first_line() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("dev-db.log");
+        std::fs::write(&path, "one\ntwo\n").expect("write");
+        assert_eq!(read_tail(&path, 512), "one\ntwo\n");
     }
 }
 

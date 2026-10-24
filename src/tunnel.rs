@@ -9,6 +9,10 @@ pub fn gcloud_common(acct: &Account) -> Vec<String> {
     let mut args = vec![
         format!("--configuration={}", acct.gcloud_configuration),
         format!("--project={}", acct.project),
+        // The per-connection lines in gcloud's iap_tunnel are log.info, and
+        // the default verbosity is warning, so a tunnel carrying traffic
+        // logged nothing to say so
+        "--verbosity=info".to_string(),
     ];
     if let Some(sa) = &acct.impersonate_service_account {
         args.push(format!("--impersonate-service-account={sa}"));
@@ -59,6 +63,16 @@ pub fn access_argv(acct: &Account, t: &PersistentTunnel) -> Result<Vec<String>> 
                 "ServerAliveInterval=30",
                 "-o",
                 "ServerAliveCountMax=3",
+                // gcloud's --verbosity governs gcloud, not the ssh it execs,
+                // and at its default level ssh says nothing once connected.
+                // DEBUG, not VERBOSE: ssh's levels run QUIET < FATAL < ERROR
+                // < INFO < VERBOSE < DEBUG, and the lines worth having here -
+                // `Local forwarding listening on`, and one `Connection to
+                // port ... forwarding to ...` per client - are debug(). At
+                // VERBOSE ssh prints three lines for the whole session and
+                // nothing per connection, which is the silence this ends
+                "-o",
+                "LogLevel=DEBUG",
                 "-L",
             ]
             .into_iter()
@@ -133,6 +147,11 @@ pub fn expose_argv(acct: &Account, ex: &ExposeConfig, t: &PersistentTunnel) -> R
             "ServerAliveInterval=30",
             "-o",
             "ServerAliveCountMax=3",
+            // The same reason as the jump tunnel above: this is ssh, not
+            // gcloud, and below DEBUG it reports neither the forward nor
+            // the connections arriving on it
+            "-o",
+            "LogLevel=DEBUG",
             "-R",
         ]
         .into_iter()
@@ -323,9 +342,56 @@ mod tests {
                 "--zone=europe-west1-b",
                 "--configuration=work",
                 "--project=proj-1",
+                "--verbosity=info",
                 "--impersonate-service-account=sa@proj-1.iam.gserviceaccount.com",
             ]
         );
+    }
+
+    // Both tunnel kinds that run `gcloud compute ssh` need it. gcloud's
+    // --verbosity governs gcloud, not the ssh it execs.
+    //
+    // The level is DEBUG, not VERBOSE. ssh's levels run
+    // QUIET < FATAL < ERROR < INFO < VERBOSE < DEBUG, and every line worth
+    // having here - the forward being established, and one per client
+    // connection - is a debug() message. At VERBOSE ssh prints three lines
+    // for the whole session and nothing per connection, which is the silence
+    // this exists to end.
+    #[test]
+    fn an_ssh_tunnel_asks_for_the_level_that_reports_forwarding() {
+        for argv in [
+            access_argv(&account(), &jump_tunnel()).expect("jump"),
+            expose_argv(&account(), &expose_config(), &expose_tunnel("3000")).expect("expose"),
+        ] {
+            let sep = argv
+                .iter()
+                .position(|a| a == "--")
+                .expect("ssh options live after the -- separator");
+            let i = argv
+                .iter()
+                .position(|a| a == "LogLevel=DEBUG")
+                .unwrap_or_else(|| panic!("ssh says nothing per connection below DEBUG\n{argv:?}"));
+            assert_eq!(argv[i - 1], "-o", "{argv:?}");
+            assert!(
+                i > sep,
+                "before the separator gcloud takes the flag and rejects it\n{argv:?}"
+            );
+        }
+    }
+
+    // The lines that say a client connected are log.info in iap_tunnel.py,
+    // and gcloud's default verbosity is warning, so a tunnel carrying
+    // traffic printed nothing at all.
+    #[test]
+    fn every_gcloud_command_asks_for_its_connection_lines() {
+        let argvs = [
+            access_argv(&account(), &instance_tunnel()).expect("instance"),
+            access_argv(&account(), &jump_tunnel()).expect("jump"),
+            expose_argv(&account(), &expose_config(), &expose_tunnel("3000")).expect("expose"),
+        ];
+        for argv in argvs {
+            assert!(argv.contains(&"--verbosity=info".to_string()), "{argv:?}");
+        }
     }
 
     #[test]

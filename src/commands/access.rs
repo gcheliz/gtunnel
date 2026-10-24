@@ -302,7 +302,9 @@ pub async fn cmd_logs(account: Option<&str>, name: &str, follow: bool, lines: us
     let tunnel = find_tunnel(&state, name, &acct.name)?;
     let path = tunnel.log_path()?;
 
-    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    // The end of the file, not all of it: these logs are talkative and the
+    // lines asked for are at the end
+    let text = daemon::read_tail(&path, daemon::TAIL_WINDOW);
     let tail: Vec<&str> = text.lines().rev().take(lines).collect();
     for line in tail.into_iter().rev() {
         println!("{line}");
@@ -313,7 +315,7 @@ pub async fn cmd_logs(account: Option<&str>, name: &str, follow: bool, lines: us
 
     // Poll the file's length rather than holding a handle, so a daemon that
     // rewrites the log is still followed
-    let mut offset = text.len() as u64;
+    let mut offset = std::fs::metadata(&path).map_or(0, |m| m.len());
     loop {
         tokio::time::sleep(FOLLOW_INTERVAL).await;
         let Ok(meta) = std::fs::metadata(&path) else {
@@ -325,13 +327,13 @@ pub async fn cmd_logs(account: Option<&str>, name: &str, follow: bool, lines: us
         if meta.len() == offset {
             continue;
         }
-        let whole = std::fs::read_to_string(&path).unwrap_or_default();
-        if let Some(fresh) = whole.get(offset as usize..) {
-            print!("{fresh}");
-            use std::io::Write;
-            std::io::stdout().flush().ok();
-        }
-        offset = whole.len() as u64;
+        // Only what arrived since the last look, so following a large log
+        // does not re-read it on every tick
+        let fresh = daemon::read_from(&path, offset);
+        print!("{fresh}");
+        use std::io::Write;
+        std::io::stdout().flush().ok();
+        offset = meta.len();
     }
 }
 

@@ -163,6 +163,8 @@ async fn event_loop(
 ) -> Result<()> {
     let mut timers = Timers::due();
     let mut logs_for: Option<String> = None;
+    // The tunnel whose running op empties its log, held until the op is done
+    let mut forget_after: Option<String> = None;
 
     terminal.draw(|f| ui::render(f, app))?;
 
@@ -170,6 +172,9 @@ async fn event_loop(
         match msg {
             Msg::Key(key) => {
                 if let Some(op) = app.handle_key(key) {
+                    // Applied when the op finishes rather than here: a
+                    // metrics tick landing mid-op would put the count back
+                    forget_after = empties_the_log(&op).map(String::from);
                     let account = app.account.clone();
                     let tx = tx.clone();
                     tokio::spawn(async move {
@@ -228,6 +233,16 @@ async fn event_loop(
             Msg::Metrics(metrics) => {
                 for (name, m) in metrics {
                     if let Some(entry) = app.entries.iter_mut().find(|e| e.name() == name) {
+                        // A process gtunnel does not manage owns no log here,
+                        // so there is nothing of ours to append to
+                        if entry.kind != TunnelKind::External {
+                            let was = entry.metrics.as_ref().map(|p| p.active_connections);
+                            if let Some(line) = connection_change(was, m.active_connections)
+                                && let Ok(path) = entry.tunnel.log_path()
+                            {
+                                let _ = crate::daemon::log_event(&path, &line);
+                            }
+                        }
                         // Microseconds: a fast hop is a real measurement, and
                         // whole milliseconds would record it as nothing
                         entry
@@ -242,7 +257,7 @@ async fn event_loop(
                     let Some(entry) = app.entries.iter_mut().find(|e| e.name() == name) else {
                         continue;
                     };
-                    announce(entry.name(), entry.health, health);
+                    announce(entry, health);
                     entry.health = health;
                 }
             }
@@ -256,6 +271,9 @@ async fn event_loop(
                 app.instance_selected = 0;
             }
             Msg::OpDone(result) => {
+                if let Some(name) = forget_after.take() {
+                    app.forget_metrics(&name);
+                }
                 app.apply(result);
                 // The CLI commands this ran print to the same terminal
                 terminal.clear()?;
@@ -270,16 +288,57 @@ fn timers_logs_due(timers: &Timers) -> bool {
     timers.metrics.elapsed() < Duration::from_millis(200)
 }
 
-// A tunnel that just went bad, or just recovered, is worth interrupting for
-fn announce(name: &str, was: HealthStatus, now: HealthStatus) {
+// gtunnel measures the connection count every 5s and, until now, kept it to
+// the Metrics pane. The count itself belongs on screen; what belongs in the
+// log is a change, because a line per poll is 17,280 a day that say nothing.
+// The line carries no tunnel name: it lands in that tunnel's own log, like
+// every other line `log_event` writes.
+fn connection_change(was: Option<u64>, now: u64) -> Option<String> {
+    match was {
+        // First sight: there is no earlier count to point away from, so a
+        // tunnel already carrying traffic reports it without an arrow, and
+        // an idle one says nothing rather than a line on every TUI start
+        None if now == 0 => None,
+        None => Some(format!("connections: {now}")),
+        Some(before) if before == now => None,
+        Some(before) => Some(format!("connections: {before} -> {now}")),
+    }
+}
+
+// The ops that empty a tunnel's log: start and restart both reinstall the
+// service, which truncates, and clear-log is the user asking for it. The
+// count measured before one of these belongs to lines that are gone.
+fn empties_the_log(op: &Op) -> Option<&str> {
+    match op {
+        Op::Start(name) | Op::Restart(name) | Op::ClearLog(name) => Some(name),
+        _ => None,
+    }
+}
+
+// Which transitions are worth saying anything about. Health is polled every
+// 30s and mostly does not change, and the first poll of a session arrives
+// against Unknown, which is not a recovery.
+fn transition_line(was: HealthStatus, now: HealthStatus) -> Option<String> {
     match (was, now) {
-        (HealthStatus::Healthy, HealthStatus::Unhealthy) => {
-            crate::notify::notify("gtunnel", &format!("{name} is unhealthy"));
-        }
-        (HealthStatus::Unhealthy, HealthStatus::Healthy) => {
-            crate::notify::notify("gtunnel", &format!("{name} is healthy again"));
-        }
-        _ => {}
+        (HealthStatus::Healthy, HealthStatus::Unhealthy) => Some("unhealthy".to_string()),
+        (HealthStatus::Unhealthy, HealthStatus::Healthy) => Some("healthy again".to_string()),
+        _ => None,
+    }
+}
+
+// A tunnel that just went bad, or just recovered, is worth interrupting for.
+// It also goes in the log: a notification is gone once dismissed, and one
+// raised while the laptop slept was never seen, but the log is what the user
+// still has afterwards.
+fn announce(entry: &TunnelEntry, now: HealthStatus) {
+    let Some(what) = transition_line(entry.health, now) else {
+        return;
+    };
+    crate::notify::notify("gtunnel", &format!("{} is {what}", entry.name()));
+    if entry.kind != TunnelKind::External
+        && let Ok(path) = entry.tunnel.log_path()
+    {
+        let _ = crate::daemon::log_event(&path, &what);
     }
 }
 
@@ -414,6 +473,93 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    // The count itself is on screen every 5s; what the log wants is a change
+    #[test]
+    fn only_a_change_in_the_connection_count_is_worth_a_line() {
+        assert_eq!(
+            connection_change(Some(0), 2),
+            Some("connections: 0 -> 2".to_string())
+        );
+        assert_eq!(
+            connection_change(Some(2), 0),
+            Some("connections: 2 -> 0".to_string())
+        );
+        assert_eq!(
+            connection_change(Some(2), 2),
+            None,
+            "a line per poll is 17,280 a day that say nothing"
+        );
+    }
+
+    // A notification is gone when it is dismissed, and one raised while the
+    // laptop slept was never seen at all. The log is the durable copy.
+    #[test]
+    fn a_health_transition_is_written_where_it_can_be_read_later() {
+        assert_eq!(
+            transition_line(HealthStatus::Healthy, HealthStatus::Unhealthy),
+            Some("unhealthy".to_string())
+        );
+        assert_eq!(
+            transition_line(HealthStatus::Unhealthy, HealthStatus::Healthy),
+            Some("healthy again".to_string())
+        );
+        assert_eq!(
+            transition_line(HealthStatus::Healthy, HealthStatus::Healthy),
+            None,
+            "health is polled every 30s and mostly does not change"
+        );
+        assert_eq!(
+            transition_line(HealthStatus::Unknown, HealthStatus::Healthy),
+            None,
+            "the first poll of a session is not a recovery"
+        );
+    }
+
+    // The first metrics of a session have nothing to compare against
+    #[test]
+    fn the_first_count_seen_reports_traffic_but_never_silence() {
+        assert_eq!(
+            connection_change(None, 3),
+            Some("connections: 3".to_string()),
+            "a tunnel already carrying traffic before anyone looked"
+        );
+        assert_eq!(
+            connection_change(None, 0),
+            None,
+            "every idle tunnel would otherwise write a line on every TUI start"
+        );
+    }
+
+    // Starting a tunnel empties its log, but the count measured during the
+    // run before it survives in memory. Without this, a restart writes
+    // `connections: 2 -> 0` into a fresh log, which reads as two clients
+    // having been here on this run and left.
+    #[test]
+    fn the_ops_that_empty_a_log_also_drop_the_count_it_belonged_to() {
+        assert_eq!(empties_the_log(&Op::Start("db".to_string())), Some("db"));
+        assert_eq!(empties_the_log(&Op::Restart("db".to_string())), Some("db"));
+        assert_eq!(empties_the_log(&Op::ClearLog("db".to_string())), Some("db"));
+        assert_eq!(
+            empties_the_log(&Op::Stop("db".to_string())),
+            None,
+            "a stop leaves the log alone, and its clients really did go"
+        );
+    }
+
+    #[test]
+    fn a_forgotten_count_makes_the_next_one_a_first_sight() {
+        let mut app = app_with_two();
+        app.entries[0].metrics = Some(crate::probe::TunnelMetrics {
+            active_connections: 2,
+            ..Default::default()
+        });
+        app.forget_metrics("db");
+        assert!(
+            app.entries[0].metrics.is_none(),
+            "the count from the run before belongs to a log that is gone"
+        );
     }
 
     fn access(name: &str, local_port: u16) -> PersistentTunnel {

@@ -1339,6 +1339,16 @@ impl App {
         }
     }
 
+    /// Drop one tunnel's last measurement, so the next one is a first sight.
+    /// Used after an op that emptied the tunnel's log: that count belongs to
+    /// the run whose lines are gone, and comparing against it writes a drop
+    /// nobody on this run caused.
+    pub fn forget_metrics(&mut self, name: &str) {
+        if let Some(entry) = self.entries.iter_mut().find(|e| e.name() == name) {
+            entry.metrics = None;
+        }
+    }
+
     // Keeps the selection on the same tunnel across a reload
     pub fn replace_entries(&mut self, entries: Vec<TunnelEntry>) {
         self.loaded = true;

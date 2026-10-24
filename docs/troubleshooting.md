@@ -17,6 +17,69 @@ emptied when its tunnel starts, so a line in it was written by the process runni
 | `remote port forwarding failed` | The relay port is busy on the relay VM | `gtunnel restart <name>`, then `gtunnel doctor` |
 | `numpy` | gcloud's Python has no NumPy | See NumPy below |
 
+### Who writes what
+
+Two processes append to the same file. The service's child writes continuously, whether
+or not anyone is watching; gtunnel writes the few facts only it knows, and only while a
+gtunnel process is running.
+
+| Writer | Lines | When |
+|---|---|---|
+| The service's child | gcloud's own output at `--verbosity=info`, and, for the kinds that run ssh (`--via` and public), ssh's at `LogLevel=DEBUG` | Always, from start to exit |
+| gtunnel | `gtunnel: <message>`, always prefixed and timestamped | Only while the TUI or a gtunnel command is running |
+
+The shapes below are what each kind of line looks like, not a captured transcript:
+
+| Kind | Looks like | Written by |
+|---|---|---|
+| Access, listener up | `Listening on port [15432].` | gcloud |
+| Access, a client connects | `INFO: [0] Connecting with URL ['wss://tunnel.cloudproxy.app/v4/connect?project=...&port=5432&zone=...']` | gcloud |
+| Access, a client leaves | `INFO: Client closed connection from ...`, then `INFO: Terminating connection to ...` | gcloud |
+| Jump (`--via`), forward up | `debug1: Local forwarding listening on 127.0.0.1 port 8443.` | ssh |
+| Jump, a client connects | `debug1: Connection to port 8443 forwarding to 10.0.0.10 port 443 requested.` | ssh |
+| Public, forward up | `debug1: Remote connections from 0.0.0.0:30001 forwarded to local address 127.0.0.1:3000` | ssh |
+| Public, a visitor arrives | `debug1: client_request_forwarded_tcpip: listen 0.0.0.0 port 30001, originator ...` | ssh |
+| Access or jump, count changed | `gtunnel: connections: 0 -> 2` | gtunnel |
+| Any kind, health changed | `gtunnel: unhealthy`, `gtunnel: healthy again` | gtunnel |
+
+Only Access and jump tunnels get the `connections:` line. The count is the number of
+established connections on the tunnel's local port, and a public tunnel has no local
+port of its own: it dials out to the service you exposed, on a port other things may
+also be using. There is nothing there that could be counted as the tunnel's, so gtunnel
+counts nothing and writes nothing. The `debug1:` lines above are what a public tunnel
+has instead.
+
+A `--via` tunnel never prints `Listening on port`. It runs `gcloud compute ssh
+--tunnel-through-iap`, which is a different command from `start-iap-tunnel` rather than a
+flag on it, and there is no listener inside gcloud to announce one. Its equivalent is
+ssh's forwarding line.
+
+`DEBUG` rather than `VERBOSE` for ssh, because ssh's levels run `QUIET < FATAL < ERROR <
+INFO < VERBOSE < DEBUG` and every line in the table above is a debug one. At `VERBOSE`
+ssh prints three lines for a whole session and nothing at all per connection.
+
+### A gap in the connection counts is not an idle tunnel
+
+gtunnel counts the established connections on a tunnel's local port every 5 seconds and
+writes a line only when that count changes. It can only do so while a gtunnel process is
+running. A log showing `connections: 0 -> 2` at 14:03 and nothing afterwards means nobody
+was watching after 14:03, not that the tunnel went idle. The lines the service's child
+writes have no such gap.
+
+A tunnel gtunnel does not manage owns no log here, so it gets neither kind of line.
+
+### How large a log gets
+
+`--verbosity=info` and `LogLevel=DEBUG` make a tunnel talkative: around 90 lines per ssh
+handshake, and a line or two per client connection after that. A log is emptied when its
+tunnel starts, and past 8 MiB gtunnel keeps the last 2 MiB and replaces the rest with a
+first line saying it did.
+
+That trim runs when a gtunnel process writes to the log, which is while the TUI is open
+or a command is running. A tunnel nobody has looked at for a month is bounded the next
+time somebody does, not before, so `du -sh` over the logs directory is still worth a
+look; `gtunnel restart <name>` empties one outright.
+
 ## gtunnel needs a logged-in Google account
 
 ```
