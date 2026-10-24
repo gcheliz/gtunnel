@@ -123,7 +123,10 @@ pub async fn list_configurations() -> Result<Vec<GcloudConfiguration>> {
 // An OAuth access token for the account's gcloud configuration
 pub async fn print_access_token(acct: &Account) -> Result<String> {
     let mut args = vec!["auth".to_string(), "print-access-token".to_string()];
-    args.extend(crate::tunnel::gcloud_common(acct));
+    args.extend(crate::tunnel::gcloud_common(
+        acct,
+        crate::loglevel::current(),
+    ));
     let stdout = run_gcloud(&args)
         .await
         .context("Could not get a gcloud access token. Run `gcloud auth login` and try again.")?;

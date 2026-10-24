@@ -205,9 +205,10 @@ fn start_child(
     spec: TunnelSpec,
     name: &str,
 ) -> Result<(tokio::process::Child, EphemeralRecord)> {
+    let level = crate::loglevel::current();
     let argv = match expose_config {
-        Some(expose) => expose_argv(acct, expose, tunnel)?,
-        None => access_argv(acct, tunnel)?,
+        Some(expose) => expose_argv(acct, expose, tunnel, level)?,
+        None => access_argv(acct, tunnel, level)?,
     };
 
     let mut child = Command::new(gcloud_path)

@@ -7,6 +7,7 @@ mod doctor;
 mod ephemeral;
 mod expose;
 mod gcp;
+mod loglevel;
 mod notify;
 mod probe;
 mod state;
@@ -22,6 +23,24 @@ use cli::{AccountCommands, Cli, Commands, DomainsCommands, RelayCommands, ZonesC
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Cli::parse();
+
+    // Before anything builds an argv or calls gcloud, and before the config
+    // is needed for anything else: a bad GTUNNEL_LOG_LEVEL should fail here,
+    // naming the variable, rather than somewhere downstream. A config that
+    // does not load yet - `gtunnel init` has not run - is not an error at
+    // this point, so its contribution falls back to the default.
+    let from_file = config::load_config()
+        .map(|c| c.log_level)
+        .unwrap_or_default();
+    // The override is kept apart from the resolved level: it is the half of
+    // the answer that stays true for a session that outlives this moment,
+    // while `config.toml` may be edited under a running TUI.
+    let over = config::resolve_log_override(
+        args.log_level,
+        std::env::var("GTUNNEL_LOG_LEVEL").ok().as_deref(),
+    )?;
+    loglevel::set_current(loglevel::resolve_effective(over, from_file), over);
+
     let account = args.account.as_deref();
     // The hint reads a cache file; `update` does the real check itself
     let quiet = matches!(args.command, None | Some(Commands::Update { .. }));

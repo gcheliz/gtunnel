@@ -3,7 +3,9 @@
 Every command, with the output it prints. Outputs were captured from a real run unless the
 section says the opposite.
 
-`--account <name>` works on every command and overrides the default account. Paths in
+`--account <name>` and `--log-level <level>` work on every command, and override the
+default account and the configured log level respectively; see
+[The log level](#the-log-level). Paths in
 captured output are shown at their default location rather than the throwaway directory the
 run used, and the instance names of tunnels gtunnel only observed are replaced with generic
 ones.
@@ -756,6 +758,7 @@ in the configuration directory (see [Environment](#environment) below).
 | Key | Type | Required | What it is |
 |---|---|---|---|
 | `selected_account` | string | yes | The account used when no `--account` is given |
+| `log_level` | string | no | `quiet`, `info` or `debug`; `info` when absent. See [The log level](#the-log-level) |
 | `accounts` | array of tables | yes | One entry per account; may be empty |
 
 Each entry in `accounts`:
@@ -825,11 +828,47 @@ Every tunnel is an entry in a `[[tunnels]]` array:
 | `relay_port` | u16 | The port reserved on the relay VM, derived from the name |
 | `private` | bool | Whether IAP sign-in sits in front of the URL |
 
+### The log level
+
+How much every tunnel and every gcloud call says. One setting, `info` by default, mapped
+to each tool's own scale — the table is in
+[troubleshooting.md](troubleshooting.md#one-level-two-scales), which is where it lives.
+
+| Where | How | Beats |
+|---|---|---|
+| `--log-level <level>` | `gtunnel --log-level debug list`; works on every command | everything |
+| `GTUNNEL_LOG_LEVEL` | `GTUNNEL_LOG_LEVEL=quiet gtunnel …` | the file |
+| `log_level` in `config.toml` | `log_level = "debug"` | nothing |
+| nothing set | `info` | — |
+
+```
+$ gtunnel --log-level verbose list
+error: invalid value 'verbose' for '--log-level <LEVEL>': 'verbose' is not a log level: use quiet, info or debug
+
+For more information, try '--help'.
+$ GTUNNEL_LOG_LEVEL=verbose gtunnel list
+Error: GTUNNEL_LOG_LEVEL: 'verbose' is not a log level: use quiet, info or debug
+```
+
+Two things the precedence is for. `--log-level` answers "why is this tunnel silent"
+without editing a file and putting it back after, and because it is read before the
+environment it also works when a shell profile holds the typo you are trying to escape.
+
+The level is global rather than per account or per tunnel: it answers how much you want
+to see right now, which is a property of the moment. A running tunnel keeps the level it
+started under, because the level is written into the service's command line when the
+service is installed — so anything that reinstalls the service moves it: `start`,
+`restart`, `autostart on|off`, `doctor --fix` on an auto-start finding, and editing the
+tunnel or toggling its auto-start in the TUI. Worth knowing if you exported
+`GTUNNEL_LOG_LEVEL` to diagnose something and left it set: the next `autostart` puts
+that level on the tunnel for good.
+
 ### Environment
 
 | Variable | Read by | Effect |
 |---|---|---|
 | `GTUNNEL_CONFIG_DIR` | every command | Moves `config.toml`, `tunnels.toml`, `agents/` and `logs/` into that directory. The service label is still `com.gtunnel.<account>.<name>`, so give a throwaway configuration an account name of its own or `install` restarts the live job that shares the label |
+| `GTUNNEL_LOG_LEVEL` | every command | `quiet`, `info` or `debug`. Beaten by `--log-level`, beats `log_level` in `config.toml`. An empty value counts as unset; anything else that is not a level is an error naming the variable. See [The log level](#the-log-level) |
 | `VISUAL`, then `EDITOR` | the TUI's config page | Which editor `e` opens. `VISUAL` wins because it names the full-screen editor. An empty value counts as unset, since `EDITOR=` is how a shell clears one, and neither set falls back to the platform default |
 | `PATH` | startup | Where `gcloud` is found |
 

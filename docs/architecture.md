@@ -20,7 +20,10 @@ gcloud compute start-iap-tunnel <instance> <remote-port> \
 ```
 
 `--verbosity=info` is what makes a working tunnel say so: gcloud's per-connection lines are
-`log.info` and its default level is `warning`. The service also sets `PYTHONUNBUFFERED=1`,
+`log.info` and its default level is `warning`. It is shown here at the default level; both
+it and ssh's `LogLevel` below follow the configured one, which
+[troubleshooting.md](troubleshooting.md#one-level-two-scales) maps. The service also sets
+`PYTHONUNBUFFERED=1`,
 because gcloud is Python and Python block-buffers a stdout that is not a terminal, so without
 it a line waits for 4 KiB or for the process to exit.
 
@@ -44,11 +47,10 @@ gcloud compute ssh <instance> --zone=<zone> --tunnel-through-iap --quiet \
   -o LogLevel=DEBUG -L <local-port>:<host>:<remote-port>
 ```
 
-`--verbosity` governs gcloud, not the `ssh` it execs, so the forward needs its own level.
-`DEBUG` rather than `VERBOSE`: ssh's levels run `QUIET < FATAL < ERROR < INFO < VERBOSE <
-DEBUG`, and both lines worth having here — the forward coming up, and one per client
-connecting — are `debug()`. At `VERBOSE` ssh prints three lines for a whole session and
-nothing per connection.
+`--verbosity` governs gcloud, not the `ssh` it execs, so the forward needs its own level,
+and the two are spelled on different scales. One setting drives both: the mapping, and why
+the default reaches ssh as `DEBUG` rather than `VERBOSE`, is in
+[troubleshooting.md](troubleshooting.md#one-level-two-scales).
 
 Two consequences follow from the command being `ssh` rather than `start-iap-tunnel`:
 there is no local listener inside gcloud, so nothing prints `Listening on port`; and the

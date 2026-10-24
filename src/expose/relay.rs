@@ -768,6 +768,7 @@ mod tests {
         let mut config = Config {
             selected_account: "dev".to_string(),
             accounts: vec![account()],
+            ..Default::default()
         };
         config.accounts[0].expose.as_mut().expect("expose").domains = vec![];
         let mut state = TunnelState::default();

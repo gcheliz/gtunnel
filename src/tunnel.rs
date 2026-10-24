@@ -1,18 +1,20 @@
 use anyhow::{bail, Result};
 
 use crate::config::{Account, ExposeConfig};
+use crate::loglevel::LogLevel;
 use crate::state::{AccessTarget, PersistentTunnel, TunnelSpec};
 
 // Flags every gcloud invocation carries, so a tunnel never depends on which
 // gcloud configuration happens to be active in the shell
-pub fn gcloud_common(acct: &Account) -> Vec<String> {
+pub fn gcloud_common(acct: &Account, level: LogLevel) -> Vec<String> {
     let mut args = vec![
         format!("--configuration={}", acct.gcloud_configuration),
         format!("--project={}", acct.project),
         // The per-connection lines in gcloud's iap_tunnel are log.info, and
-        // the default verbosity is warning, so a tunnel carrying traffic
-        // logged nothing to say so
-        "--verbosity=info".to_string(),
+        // gcloud's own default is warning, so a tunnel carrying traffic
+        // logged nothing to say so. Which level that is now comes from
+        // `LogLevel`, which maps it for ssh in the same breath.
+        format!("--verbosity={}", level.gcloud_verbosity()),
     ];
     if let Some(sa) = &acct.impersonate_service_account {
         args.push(format!("--impersonate-service-account={sa}"));
@@ -21,7 +23,7 @@ pub fn gcloud_common(acct: &Account) -> Vec<String> {
 }
 
 // `gcloud compute start-iap-tunnel` argv for an Access tunnel
-pub fn access_argv(acct: &Account, t: &PersistentTunnel) -> Result<Vec<String>> {
+pub fn access_argv(acct: &Account, t: &PersistentTunnel, level: LogLevel) -> Result<Vec<String>> {
     let (target, remote_port, local_port) = match &t.spec {
         TunnelSpec::Access {
             target,
@@ -52,32 +54,9 @@ pub fn access_argv(acct: &Account, t: &PersistentTunnel) -> Result<Vec<String>> 
             "--tunnel-through-iap".to_string(),
             "--quiet".to_string(),
         ];
-        argv.extend(gcloud_common(acct));
+        argv.extend(gcloud_common(acct, level));
         argv.push("--".to_string());
-        argv.extend(
-            [
-                "-N",
-                "-o",
-                "ExitOnForwardFailure=yes",
-                "-o",
-                "ServerAliveInterval=30",
-                "-o",
-                "ServerAliveCountMax=3",
-                // gcloud's --verbosity governs gcloud, not the ssh it execs,
-                // and at its default level ssh says nothing once connected.
-                // DEBUG, not VERBOSE: ssh's levels run QUIET < FATAL < ERROR
-                // < INFO < VERBOSE < DEBUG, and the lines worth having here -
-                // `Local forwarding listening on`, and one `Connection to
-                // port ... forwarding to ...` per client - are debug(). At
-                // VERBOSE ssh prints three lines for the whole session and
-                // nothing per connection, which is the silence this ends
-                "-o",
-                "LogLevel=DEBUG",
-                "-L",
-            ]
-            .into_iter()
-            .map(String::from),
-        );
+        argv.extend(ssh_forward_options(level, "-L"));
         argv.push(format!("{local_port}:{host}:{remote_port}"));
         return Ok(argv);
     }
@@ -106,13 +85,43 @@ pub fn access_argv(acct: &Account, t: &PersistentTunnel) -> Result<Vec<String>> 
             argv.push(format!("--dest-group={group}"));
         }
     }
-    argv.extend(gcloud_common(acct));
+    argv.extend(gcloud_common(acct, level));
     Ok(argv)
+}
+
+// The ssh options both forwarding tunnels carry, ending with the forward flag
+// itself so the caller only has to append its spec.
+//
+// gcloud's --verbosity governs gcloud, not the ssh it execs, so ssh needs the
+// level spelled in its own scale. `LogLevel::ssh_log_level` is where that
+// translation lives and why `info` reaches ssh as DEBUG.
+fn ssh_forward_options(level: LogLevel, forward_flag: &str) -> Vec<String> {
+    let mut opts: Vec<String> = [
+        "-N",
+        "-o",
+        "ExitOnForwardFailure=yes",
+        "-o",
+        "ServerAliveInterval=30",
+        "-o",
+        "ServerAliveCountMax=3",
+        "-o",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
+    opts.push(format!("LogLevel={}", level.ssh_log_level()));
+    opts.push(forward_flag.to_string());
+    opts
 }
 
 // `gcloud compute ssh --tunnel-through-iap` argv that opens the reverse
 // forward from the relay VM back to the local service
-pub fn expose_argv(acct: &Account, ex: &ExposeConfig, t: &PersistentTunnel) -> Result<Vec<String>> {
+pub fn expose_argv(
+    acct: &Account,
+    ex: &ExposeConfig,
+    t: &PersistentTunnel,
+    level: LogLevel,
+) -> Result<Vec<String>> {
     let (local_target, relay_port) = match &t.spec {
         TunnelSpec::Expose {
             local_target,
@@ -136,27 +145,9 @@ pub fn expose_argv(acct: &Account, ex: &ExposeConfig, t: &PersistentTunnel) -> R
         "--tunnel-through-iap".to_string(),
         "--quiet".to_string(),
     ];
-    argv.extend(gcloud_common(acct));
+    argv.extend(gcloud_common(acct, level));
     argv.push("--".to_string());
-    argv.extend(
-        [
-            "-N",
-            "-o",
-            "ExitOnForwardFailure=yes",
-            "-o",
-            "ServerAliveInterval=30",
-            "-o",
-            "ServerAliveCountMax=3",
-            // The same reason as the jump tunnel above: this is ssh, not
-            // gcloud, and below DEBUG it reports neither the forward nor
-            // the connections arriving on it
-            "-o",
-            "LogLevel=DEBUG",
-            "-R",
-        ]
-        .into_iter()
-        .map(String::from),
-    );
+    argv.extend(ssh_forward_options(level, "-R"));
     argv.push(format!("0.0.0.0:{relay_port}:{normalized}"));
     Ok(argv)
 }
@@ -236,6 +227,7 @@ pub fn diagnose_log_line(line: &str) -> Option<&'static str> {
 mod tests {
     use super::*;
     use crate::config::{Account, ExposeConfig};
+    use crate::loglevel::LogLevel;
     use crate::state::{AccessTarget, PersistentTunnel, TunnelSpec};
 
     fn account() -> Account {
@@ -326,11 +318,163 @@ mod tests {
         }
     }
 
+    // gcloud's scale, asked for by the level rather than written at the
+    // call site, so the two tools cannot drift apart
+    #[test]
+    fn an_access_tunnel_carries_the_levels_verbosity() {
+        // Both shapes `access_argv` builds without a jump host. A dest group
+        // takes a different branch to the same `gcloud_common`, and a guard
+        // that covers only the instance shape would not notice if it stopped.
+        for tunnel in [instance_tunnel(), dest_group_tunnel()] {
+            for level in [LogLevel::Quiet, LogLevel::Info, LogLevel::Debug] {
+                let argv = access_argv(&account(), &tunnel, level).expect("argv");
+                let want = format!("--verbosity={}", level.gcloud_verbosity());
+                assert!(argv.contains(&want), "{level}: {argv:?}");
+                assert_eq!(
+                    argv.iter()
+                        .filter(|a| a.starts_with("--verbosity="))
+                        .count(),
+                    1,
+                    "one verbosity, not two: {argv:?}"
+                );
+            }
+        }
+    }
+
+    // Before the separator gcloud takes the flag and rejects it
+    #[test]
+    fn a_jump_tunnel_carries_the_levels_ssh_level_after_the_separator() {
+        for level in [LogLevel::Quiet, LogLevel::Info, LogLevel::Debug] {
+            let argv = access_argv(&account(), &jump_tunnel(), level).expect("argv");
+            assert_ssh_level(&argv, level);
+        }
+    }
+
+    #[test]
+    fn a_public_tunnel_carries_the_levels_ssh_level_after_the_separator() {
+        for level in [LogLevel::Quiet, LogLevel::Info, LogLevel::Debug] {
+            let argv = expose_argv(&account(), &expose_config(), &expose_tunnel("3000"), level)
+                .expect("argv");
+            assert_ssh_level(&argv, level);
+        }
+    }
+
+    fn assert_ssh_level(argv: &[String], level: LogLevel) {
+        let want = format!("LogLevel={}", level.ssh_log_level());
+        let sep = argv
+            .iter()
+            .position(|a| a == "--")
+            .expect("ssh options live after the -- separator");
+        let i = argv
+            .iter()
+            .position(|a| *a == want)
+            .unwrap_or_else(|| panic!("{level}: no {want} in {argv:?}"));
+        assert_eq!(argv[i - 1], "-o", "{argv:?}");
+        assert!(
+            i > sep,
+            "before the separator gcloud takes the flag and rejects it\n{argv:?}"
+        );
+    }
+
+    // The guard this whole change exists for: introducing the knob must not
+    // move a single byte of what the tunnels run today. Every argv below is
+    // what the builders produced before the level was a parameter.
+    #[test]
+    fn the_default_level_leaves_every_argv_byte_identical_to_today() {
+        let d = LogLevel::default();
+
+        assert_eq!(
+            access_argv(&account(), &instance_tunnel(), d).expect("instance"),
+            vec![
+                "compute",
+                "start-iap-tunnel",
+                "my-vm",
+                "5432",
+                "--local-host-port=localhost:15432",
+                "--zone=europe-west1-b",
+                "--configuration=work",
+                "--project=proj-1",
+                "--verbosity=info",
+            ]
+        );
+
+        assert_eq!(
+            access_argv(&account(), &dest_group_tunnel(), d).expect("dest group"),
+            vec![
+                "compute",
+                "start-iap-tunnel",
+                "10.0.0.5",
+                "5432",
+                "--local-host-port=localhost:15001",
+                "--region=europe-west1",
+                "--network=default",
+                "--dest-group=prod",
+                "--configuration=work",
+                "--project=proj-1",
+                "--verbosity=info",
+            ]
+        );
+
+        assert_eq!(
+            access_argv(&account(), &jump_tunnel(), d).expect("jump"),
+            vec![
+                "compute",
+                "ssh",
+                "bastion",
+                "--zone=europe-west1-b",
+                "--tunnel-through-iap",
+                "--quiet",
+                "--configuration=work",
+                "--project=proj-1",
+                "--verbosity=info",
+                "--",
+                "-N",
+                "-o",
+                "ExitOnForwardFailure=yes",
+                "-o",
+                "ServerAliveInterval=30",
+                "-o",
+                "ServerAliveCountMax=3",
+                "-o",
+                "LogLevel=DEBUG",
+                "-L",
+                "8443:10.0.0.10:443",
+            ]
+        );
+
+        assert_eq!(
+            expose_argv(&account(), &expose_config(), &expose_tunnel("3000"), d).expect("expose"),
+            vec![
+                "compute",
+                "ssh",
+                "gt-dev-relay",
+                "--zone=europe-west1-b",
+                "--tunnel-through-iap",
+                "--quiet",
+                "--configuration=work",
+                "--project=proj-1",
+                "--verbosity=info",
+                "--",
+                "-N",
+                "-o",
+                "ExitOnForwardFailure=yes",
+                "-o",
+                "ServerAliveInterval=30",
+                "-o",
+                "ServerAliveCountMax=3",
+                "-o",
+                "LogLevel=DEBUG",
+                "-R",
+                "0.0.0.0:30123:localhost:3000",
+            ]
+        );
+    }
+
     #[test]
     fn access_argv_for_an_instance_with_impersonation() {
         let mut acct = account();
         acct.impersonate_service_account = Some("sa@proj-1.iam.gserviceaccount.com".to_string());
-        let argv = access_argv(&acct, &instance_tunnel()).expect("argv");
+        let argv = access_argv(&acct, &instance_tunnel(), LogLevel::Info).expect("argv");
         assert_eq!(
             argv,
             vec![
@@ -360,8 +504,14 @@ mod tests {
     #[test]
     fn an_ssh_tunnel_asks_for_the_level_that_reports_forwarding() {
         for argv in [
-            access_argv(&account(), &jump_tunnel()).expect("jump"),
-            expose_argv(&account(), &expose_config(), &expose_tunnel("3000")).expect("expose"),
+            access_argv(&account(), &jump_tunnel(), LogLevel::Info).expect("jump"),
+            expose_argv(
+                &account(),
+                &expose_config(),
+                &expose_tunnel("3000"),
+                LogLevel::Info,
+            )
+            .expect("expose"),
         ] {
             let sep = argv
                 .iter()
@@ -385,9 +535,15 @@ mod tests {
     #[test]
     fn every_gcloud_command_asks_for_its_connection_lines() {
         let argvs = [
-            access_argv(&account(), &instance_tunnel()).expect("instance"),
-            access_argv(&account(), &jump_tunnel()).expect("jump"),
-            expose_argv(&account(), &expose_config(), &expose_tunnel("3000")).expect("expose"),
+            access_argv(&account(), &instance_tunnel(), LogLevel::Info).expect("instance"),
+            access_argv(&account(), &jump_tunnel(), LogLevel::Info).expect("jump"),
+            expose_argv(
+                &account(),
+                &expose_config(),
+                &expose_tunnel("3000"),
+                LogLevel::Info,
+            )
+            .expect("expose"),
         ];
         for argv in argvs {
             assert!(argv.contains(&"--verbosity=info".to_string()), "{argv:?}");
@@ -396,7 +552,7 @@ mod tests {
 
     #[test]
     fn access_argv_for_a_dest_group_has_no_zone() {
-        let argv = access_argv(&account(), &dest_group_tunnel()).expect("argv");
+        let argv = access_argv(&account(), &dest_group_tunnel(), LogLevel::Info).expect("argv");
         assert!(argv.contains(&"--dest-group=prod".to_string()), "{argv:?}");
         assert!(
             argv.contains(&"--region=europe-west1".to_string()),
@@ -411,13 +567,20 @@ mod tests {
 
     #[test]
     fn access_argv_rejects_an_expose_tunnel() {
-        let err = access_argv(&account(), &expose_tunnel("3000")).expect_err("should fail");
+        let err = access_argv(&account(), &expose_tunnel("3000"), LogLevel::Info)
+            .expect_err("should fail");
         assert!(err.to_string().contains("Expose"), "got: {err}");
     }
 
     #[test]
     fn expose_argv_normalizes_a_bare_port() {
-        let argv = expose_argv(&account(), &expose_config(), &expose_tunnel("3000")).expect("argv");
+        let argv = expose_argv(
+            &account(),
+            &expose_config(),
+            &expose_tunnel("3000"),
+            LogLevel::Info,
+        )
+        .expect("argv");
         assert_eq!(
             argv.last().expect("last"),
             "0.0.0.0:30123:localhost:3000",
@@ -432,6 +595,7 @@ mod tests {
             &account(),
             &expose_config(),
             &expose_tunnel("http://localhost:8080"),
+            LogLevel::Info,
         )
         .expect("argv");
         assert_eq!(argv.last().expect("last"), "0.0.0.0:30123:localhost:8080");
@@ -439,7 +603,13 @@ mod tests {
 
     #[test]
     fn expose_argv_runs_ssh_through_iap_with_keepalives() {
-        let argv = expose_argv(&account(), &expose_config(), &expose_tunnel("3000")).expect("argv");
+        let argv = expose_argv(
+            &account(),
+            &expose_config(),
+            &expose_tunnel("3000"),
+            LogLevel::Info,
+        )
+        .expect("argv");
         assert_eq!(argv[0], "compute");
         assert_eq!(argv[1], "ssh");
         assert_eq!(argv[2], "gt-dev-relay");
@@ -465,8 +635,13 @@ mod tests {
 
     #[test]
     fn expose_argv_rejects_an_access_tunnel() {
-        let err =
-            expose_argv(&account(), &expose_config(), &instance_tunnel()).expect_err("should fail");
+        let err = expose_argv(
+            &account(),
+            &expose_config(),
+            &instance_tunnel(),
+            LogLevel::Info,
+        )
+        .expect_err("should fail");
         assert!(err.to_string().contains("Access"), "got: {err}");
     }
 
@@ -499,6 +674,10 @@ mod tests {
             ("Reauthentication required, please rerun gcloud auth login", "gcloud auth login"),
             ("bind: Address already in use", "another process"),
             ("Warning: remote port forwarding failed for listen port 30123", "relay"),
+            // What gtunnel's own tunnels actually print: every one of them
+            // sets ExitOnForwardFailure=yes, and OpenSSH spells the same
+            // failure `Error:` and makes it fatal when that option is on
+            ("Error: remote port forwarding failed for listen port 30123", "relay"),
             ("WARNING: Python 3.12 lacks numpy, falling back to a slower implementation", "NumPy"),
         ];
         for (line, expected) in cases {
@@ -556,7 +735,7 @@ mod tests {
     // by ssh on the far side, with IAP carrying the ssh connection
     #[test]
     fn access_argv_for_a_jump_host_forwards_from_the_far_side() {
-        let argv = access_argv(&account(), &jump_tunnel()).expect("argv");
+        let argv = access_argv(&account(), &jump_tunnel(), LogLevel::Info).expect("argv");
         assert_eq!(argv[0], "compute", "{argv:?}");
         assert_eq!(argv[1], "ssh", "{argv:?}");
         assert_eq!(argv[2], "bastion", "{argv:?}");
