@@ -3,6 +3,14 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.3](https://github.com/gcheliz/gtunnel/compare/v0.1.2...v0.1.3) - 2026-10-24
+
+### Added
+
+- a watchdog that restarts a wedged tunnel, and gives up before it thrashes ([#20](https://github.com/gcheliz/gtunnel/pull/20))
+- tunnels get descriptor headroom and explain it when they run out ([#19](https://github.com/gcheliz/gtunnel/pull/19))
+- one log level for the tunnels and the gcloud calls ([#18](https://github.com/gcheliz/gtunnel/pull/18))
+
 ## [0.1.2](https://github.com/gcheliz/gtunnel/compare/v0.1.1...v0.1.2) - 2026-10-24
 
 ### Added
