@@ -218,6 +218,11 @@ pub fn diagnose_log_line(line: &str) -> Option<&'static str> {
             "Local port is already used by another process.",
         ),
         (
+            "Too many open files",
+            "The tunnel ran out of file descriptors: something is holding its connections \
+             open. Run: gtunnel doctor to name the process.",
+        ),
+        (
             "remote port forwarding failed",
             "Relay port is busy on the relay VM. Restart the tunnel or run gtunnel doctor.",
         ),
@@ -508,6 +513,18 @@ mod tests {
                 "line {line:?}\n  hint {hint:?}\n  expected to contain {expected:?}"
             );
         }
+    }
+
+    // The listener is the victim of this one, not the cause, so the hint has
+    // to send the reader somewhere that can name the cause
+    #[test]
+    fn diagnose_log_line_explains_a_tunnel_out_of_descriptors() {
+        let hint = diagnose_log_line("accept: Too many open files").expect("a hint");
+        assert!(
+            hint.contains("descriptor") || hint.contains("connections"),
+            "{hint}"
+        );
+        assert!(hint.contains("gtunnel doctor"), "{hint}");
     }
 
     #[test]
