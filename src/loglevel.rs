@@ -46,7 +46,14 @@ impl LogLevel {
     pub fn ssh_log_level(&self) -> &'static str {
         match self {
             // `ERROR`, not `QUIET`: `QUIET` suppresses the failure messages
-            // that are the only reason to open a quiet tunnel's log
+            // that are the only reason to open a quiet tunnel's log.
+            //
+            // `ERROR` is enough only because every tunnel gtunnel builds sets
+            // `ExitOnForwardFailure=yes`, which is what turns a failed remote
+            // forward from OpenSSH's `logit("Warning: ...")`, suppressed below
+            // `INFO`, into `fatal("Error: ...")`, which survives here. Drop
+            // that option and `quiet` starts hiding the one line that explains
+            // why a public tunnel will not come up.
             LogLevel::Quiet => "ERROR",
             LogLevel::Info => "DEBUG",
             LogLevel::Debug => "DEBUG3",

@@ -652,6 +652,10 @@ mod tests {
             ("Reauthentication required, please rerun gcloud auth login", "gcloud auth login"),
             ("bind: Address already in use", "another process"),
             ("Warning: remote port forwarding failed for listen port 30123", "relay"),
+            // What gtunnel's own tunnels actually print: every one of them
+            // sets ExitOnForwardFailure=yes, and OpenSSH spells the same
+            // failure `Error:` and makes it fatal when that option is on
+            ("Error: remote port forwarding failed for listen port 30123", "relay"),
             ("WARNING: Python 3.12 lacks numpy, falling back to a slower implementation", "NumPy"),
         ];
         for (line, expected) in cases {
