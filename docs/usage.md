@@ -118,9 +118,11 @@ account: [domains](#zones-and-domains), [relay](#relay), then [expose](#expose).
 | `logs` | Read a tunnel's log | no |
 | `list` | Every tunnel, managed or not | no |
 | `delete` | Remove a tunnel and its route | write for public tunnels |
+| `rename` | Rename a tunnel, its service and its log | no |
+| `move` | Hand an Access tunnel to another account | read, to verify the destination |
 | `zones` / `domains` | Defaults for new tunnels | read |
 | `relay up` / `down` / `status` | The shared relay for an account | write |
-| `account` | Accounts | no |
+| `account` | Accounts: `list`, `select`, `add`, `edit`, `remove` | read, for `add` |
 | `doctor` | Report, and optionally remove, leftovers | read, write with `--fix` |
 | `reset` | Remove all local configuration | no |
 | `demo` | TUI with synthetic data | no |
@@ -173,7 +175,25 @@ data and never touches GCP or a config file.
 | Tunnel | `s` start, `S` stop, `R` restart, `A` toggle auto-start, `h` health check now |
 | The list | `a` add, `e` edit, `d` delete, `m` import an ephemeral run as managed, `j` `k` or the arrows move the selection |
 | This tunnel's URL and log | `c` copy the URL, `o` open it, `L` clear the log, `r` refresh the list, metrics and health |
-| The program | `;` cycle accounts (the relay and its domains change with the account), `?` the keymap, `C` the config page, `q` quit, `Esc` close a page or cancel a prompt, `PgUp` `PgDn` and `g` `G` scroll the keymap page, `Ctrl+Z` suspend, `Ctrl+C` quit from anywhere |
+| The program | `;` cycle accounts (the relay and its domains change with the account), `:` the accounts page, `?` the keymap, `C` the config page, `q` quit, `Esc` close a page or cancel a prompt, `PgUp` `PgDn` and `g` `G` scroll the keymap page, `Ctrl+Z` suspend, `Ctrl+C` quit from anywhere |
+
+`:` is the shift of `;`, so the key that cycles accounts and the key that opens all of them
+are one key twice. The page lists every account, and adds, edits, selects and removes them;
+its removal obeys the same refusal the CLI does, so an account holding tunnels stays.
+
+`e` opens a chooser rather than a prompt, because there are now three things to edit:
+
+| Key | What it edits |
+|---|---|
+| `1` | Target and ports — the prompt `e` used to open directly |
+| `2` | Rename, within the same account |
+| `3` | Move to another account |
+
+`2` and `3` are the TUI's way to the `rename` and `move` commands, and they refuse what those
+refuse: an unmanaged row, and an ephemeral run that has not been imported with `m`. A move
+onto a name the destination already holds does not cancel — it asks for a new name with the
+reason on screen, which is the `--rename` flag arriving when it is needed rather than being
+remembered in advance.
 
 Case matters in three pairs: `s`/`S` start and stop, `a`/`A` add and auto-start, `r`/`R`
 refresh and restart. The footer shows only what the selected tunnel can do, so it never has
@@ -477,6 +497,52 @@ Starting a public tunnel re-creates its backend, host rule, named port and DNS r
 of them went missing, so `gtunnel restart <name>` is the fix for a tunnel that comes up
 serving a 503. Starting an Access tunnel makes no API call.
 
+## rename and move
+
+A tunnel's name is also the name of its service and of its log file, so neither command is an
+edit of `tunnels.toml`. Both stop the tunnel, rewrite the record, carry the log across and
+reinstall the service under the new label.
+
+```
+$ gtunnel rename kubernetes k8s
+Renamed kubernetes to k8s
+```
+
+`move` hands an Access tunnel to another account. The global `--account` names the source and
+`--to` the destination, so neither has to be inferred from the default.
+
+```
+gtunnel move <name> --to <account> [--rename <new>]
+```
+
+Both refuse before they write anything. A rename of a tunnel that is not there, and a move to
+the account the tunnel is already on:
+
+```
+$ gtunnel rename nope other
+Error: Tunnel 'nope' not found for account 'dev'
+
+$ gtunnel move kubernetes --to dev
+Error: Tunnel 'kubernetes' is already on account 'dev'; use `gtunnel rename` to change its name
+```
+
+A move verifies the destination before the first write, so a target that does not exist over
+there costs nothing:
+
+```
+$ gtunnel move k8s --to prod
+Error: Instance 'bastion' not found in zone 'europe-west1-b' of project 'example-prod-3c4d' (account 'prod'); nothing was changed. If it lives in another zone, `gtunnel delete` the tunnel and `gtunnel add` it on 'prod'
+```
+
+On success `move` prints `Moved <name> from <source> to <destination>`, and a second line
+naming the new name when `--rename` gave it one. `--rename` exists because names are scoped
+per account: the destination may already hold a tunnel called the same thing, and that is the
+one collision a move cannot resolve on its own.
+
+Only Access tunnels move. A public tunnel's URL, certificate and load-balancer rules belong to
+the account that created them, so moving one would mean tearing the route down and building it
+again, which is what `delete` and `expose` already do and say.
+
 ## zones and domains
 
 ```
@@ -514,8 +580,30 @@ $ gtunnel account list
 * evidence         project=demo-project             zone=europe-west1-b
 ```
 
-`account select <name>` sets the default, `account remove <name>` deletes it. The star marks
-the default.
+`account select <name>` sets the default. The star marks it.
+
+```
+gtunnel account add <gcloud-configuration> [<name>]
+gtunnel account edit <name> [--project P] [--zone Z]
+gtunnel account remove <name>
+```
+
+`add` takes an existing gcloud configuration and reads the project and default zone from it,
+so an account is never a second place to type what gcloud already knows; the name defaults to
+the configuration's. `edit` changes only what it is given:
+
+```
+$ gtunnel account edit dev --zone europe-west4-a
+Account 'dev' updated
+```
+
+`remove` refuses while the account still holds tunnels, and names both ways out rather than
+offering a flag that would strand the services:
+
+```
+$ gtunnel account remove dev
+Error: Account 'dev' still has 1 tunnel(s). Delete them with `gtunnel delete`, or move them to another account with `gtunnel move`, then remove the account
+```
 
 ## doctor
 

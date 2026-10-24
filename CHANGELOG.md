@@ -5,6 +5,37 @@ what is on `main` and not yet tagged.
 
 ## Unreleased
 
+### Accounts, renaming and moving
+
+- **`gtunnel rename` renames the tunnel, not just the record** - a name is also the
+  service label and the log filename, so editing `tunnels.toml` by hand left an orphaned
+  plist and a log nothing would ever write to again. The command stops the tunnel,
+  rewrites the record, carries the log across and reinstalls the service under the new
+  label. A rename that fails partway says where the tunnel actually is rather than
+  leaving the caller to guess.
+- **`gtunnel move` hands an Access tunnel to another account** - the global `--account`
+  names the source and `--to` the destination, so neither is inferred from the default.
+  It verifies the destination before the first write: an instance that does not exist
+  over there costs nothing and the error says `nothing was changed`. Public tunnels are
+  refused, because a URL, its certificate and its load-balancer rules belong to the
+  account that created them, and a half-moved URL serves a 503 to real visitors.
+- **A name collision asks instead of cancelling** - names are scoped per account, so a
+  move can land on one the destination already holds. The CLI takes `--rename` up front;
+  the TUI does not require it to be predicted, and advances to a rename prompt with the
+  reason on screen at the moment the clash is found.
+- **An account that still holds tunnels cannot be removed** - and the refusal names both
+  ways out, `gtunnel delete` and `gtunnel move`, rather than offering a force flag. The
+  flag would strand installed services whose account no longer exists, which is the one
+  state nothing in gtunnel can clean up afterwards. The TUI's accounts page answers to
+  the same rule: its own confirmation does not override it.
+- **Accounts are managed from the TUI** - `:`, the shift of `;`, opens a page that adds,
+  edits, selects and removes them. `account add` reads the project and default zone from
+  an existing gcloud configuration, so an account is never a second place to type what
+  gcloud already knows.
+- **`e` chooses what to edit** - target and ports, rename, or move, rather than spending
+  two more top-level keys on a keymap that already binds 31. Both new options refuse an
+  unmanaged row and an ephemeral run that has not been imported with `m`.
+
 ### Logs
 
 - **A running tunnel's log now shows that it is running** - four causes, all fixed.

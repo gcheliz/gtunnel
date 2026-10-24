@@ -1,6 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -8,7 +8,9 @@ use std::time::Duration;
 
 use crate::discovery::ExternalTunnel;
 use crate::probe::{HealthStatus, MetricsHistory, TunnelMetrics};
-use crate::state::{PersistentTunnel, TunnelSpec, TunnelStatus};
+use crate::state::{
+    allocate_port, PersistentTunnel, TunnelSpec, TunnelStatus, ACCESS_PORT_BASE, ACCESS_PORT_SPAN,
+};
 
 // Longer than any terminal is wide: the pane draws the tail it has room for, so
 // a buffer sized to one guess at the width left the rest of the chart blank
@@ -136,6 +138,12 @@ pub enum Op {
     ClearLog(String),
     Create(NewTunnel),
     Edit(EditTunnel),
+    Rename(RenameTunnel),
+    Move(MoveTunnel),
+    AccountAdd(NewAccount),
+    AccountEdit(AccountEdit),
+    AccountRemove(String),
+    AccountSelect(String),
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -169,6 +177,58 @@ pub struct EditTunnel {
     pub value: String,
 }
 
+/// What `gtunnel rename` is asked for. The account is named because a rename
+/// never leaves it: the name is unique per account, so the pair is what
+/// identifies the tunnel being renamed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RenameTunnel {
+    pub account: String,
+    pub name: String,
+    pub new_name: String,
+}
+
+/// What `gtunnel move` is asked for. `rename_to` is the name the tunnel lands
+/// under when the destination account already holds this one: the dialog asks
+/// for it rather than giving the move up, because the clash is the only thing
+/// wrong with it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MoveTunnel {
+    pub name: String,
+    pub from: String,
+    pub to: String,
+    pub rename_to: Option<String>,
+}
+
+/// What the accounts page sends to `gtunnel account add`: a gcloud
+/// configuration and a name. There is no project field, because the project
+/// and the zone are read from the configuration, which is the one place that
+/// already knows them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NewAccount {
+    pub configuration: String,
+    pub name: String,
+}
+
+/// An edit of one account. Each field is `None` when it is unchanged, and
+/// never `Some("")`: `cmd_account_edit` refuses both an empty value and a call
+/// with nothing to change, so the page must not send either.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AccountEdit {
+    pub name: String,
+    pub project: Option<String>,
+    pub zone: Option<String>,
+}
+
+/// What the page's two dialogs have gathered. One struct for both, because
+/// the fields they collect do not overlap: add asks for a configuration and a
+/// name, edit knows the name already and asks for a project and a zone.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AccountDraft {
+    pub configuration: String,
+    pub name: String,
+    pub project: String,
+}
+
 // What an Op produced, handed back to the UI thread
 #[derive(Debug, Clone)]
 pub struct OpResult {
@@ -176,6 +236,12 @@ pub struct OpResult {
     pub ok: bool,
     // The op changed tunnels.toml or a service, so the list is stale
     pub reload: bool,
+    // Ops overlap, so only a create's own result may settle a create's draft
+    pub from_create: bool,
+    // The op changed config.toml, so the accounts page and the header are
+    // stale as well, and the page is where the result has to be read: a
+    // refusal goes to a status line the page is covering
+    pub from_account: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -189,10 +255,26 @@ pub enum InputMode {
     AddLocalPort,
     AddLocalTarget,
     AddDomain,
+    // What `e` asks first: the target and ports, a rename, or a move. One
+    // chooser rather than three top-level keys, as `a` already is
+    ChooseEdit,
     EditTarget,
+    RenameTo,
+    MoveTo,
+    // The name a move lands under, asked only when the destination account
+    // already holds the one the tunnel has
+    MoveRename,
     Confirm,
     Help,
     Config,
+    Accounts,
+    AccountConfiguration,
+    AccountName,
+    AccountProject,
+    AccountZone,
+    // The accounts page's own confirmation. `Confirm` answers for the list,
+    // where `y` deletes the selected tunnel, and one mode cannot mean both
+    AccountConfirm,
 }
 
 impl InputMode {
@@ -206,11 +288,30 @@ impl InputMode {
                 | InputMode::AddLocalPort
                 | InputMode::AddLocalTarget
                 | InputMode::EditTarget
+                | InputMode::RenameTo
+                | InputMode::MoveRename
+        ) || self.is_account_text()
+    }
+
+    /// The text modes the accounts page opens. They are told apart from the
+    /// rest because `Esc` in one of them goes back to the page, not to the
+    /// list the page is covering.
+    pub fn is_account_text(&self) -> bool {
+        matches!(
+            self,
+            InputMode::AccountConfiguration
+                | InputMode::AccountName
+                | InputMode::AccountProject
+                | InputMode::AccountZone
         )
     }
 
     pub fn prompt(&self) -> &'static str {
         match self {
+            InputMode::AccountConfiguration => "gcloud configuration:",
+            InputMode::AccountName => "Account name:",
+            InputMode::AccountProject => "Project (Enter keeps it):",
+            InputMode::AccountZone => "Default zone (Enter keeps it):",
             InputMode::AddName => "Name:",
             InputMode::AddInstance => "Instance (type to filter):",
             InputMode::AddJumpHost => "Host it reaches (Enter for the instance itself):",
@@ -219,6 +320,9 @@ impl InputMode {
             InputMode::AddLocalTarget => "Local target (e.g. localhost:3000):",
             InputMode::AddDomain => "Domain:",
             InputMode::EditTarget => "New value:",
+            InputMode::RenameTo => "New name:",
+            InputMode::MoveTo => "Move it to which account:",
+            InputMode::MoveRename => "New name on the destination account:",
             _ => "",
         }
     }
@@ -409,6 +513,12 @@ impl Drop for Pause {
     }
 }
 
+const LIST_FAILURE: &str = "Could not list instances: ";
+
+fn is_list_failure(status: &str) -> bool {
+    status.starts_with(LIST_FAILURE)
+}
+
 pub struct App {
     pub account: String,
     pub accounts: Vec<String>,
@@ -419,6 +529,16 @@ pub struct App {
     // Keyed like `projects` for the same reason, so `has_relay` and `domains`
     // are derived from the account on screen and never outlive a switch
     pub relays: HashMap<String, Vec<String>>,
+    // Zone for an instance the person typed, which the picker never saw and so
+    // never learned a zone for; an account whose list cannot be read still needs one
+    pub default_zone: String,
+    // Every account's zone, so `;` can re-point `default_zone` in the same
+    // switch that changes the account and a typed instance never inherits the
+    // previous account's zone
+    pub zones: HashMap<String, String>,
+    // Local ports are a property of the laptop, so this is every account's, not
+    // the selected one's; `entries` alone would suggest a port another account holds
+    pub used_ports: HashSet<u16>,
     pub entries: Vec<TunnelEntry>,
     // False until a load has answered for this account. An empty list means
     // nothing before that, so the pane must not claim the account is empty
@@ -454,12 +574,35 @@ pub struct App {
     pub should_quit: bool,
     pub suspend: bool,
     pub input: String,
+    // Why the name just submitted was refused. It lives beside `input` and not
+    // in `status`, because the dialog covers the status line and the reason
+    // has to be read where the text is being corrected.
+    pub draft_error: Option<String>,
     pub draft: NewTunnel,
+    // The draft a create was submitted with, and the step it had reached.
+    // Submitting empties `draft`, so a failed create would otherwise leave the
+    // person retyping every prompt. Esc never reads it: that is a discard.
+    pub last_draft: Option<(NewTunnel, InputMode)>,
     pub instances: Vec<InstanceChoice>,
     pub instance_selected: usize,
     pub domains: Vec<String>,
     pub domain_selected: usize,
     pub confirm_message: Option<String>,
+    // Where the cursor is in the move dialog's list of accounts, which is
+    // `accounts` without the one on screen: a tunnel cannot move to where it
+    // already is
+    pub move_selected: usize,
+    // The account the move picked, held while the dialog asks for a name that
+    // account does not already hold
+    pub move_to: String,
+    // Where the cursor is on the accounts page, an index into `accounts`
+    pub account_selected: usize,
+    // What the add and edit dialogs have collected so far
+    pub account_draft: AccountDraft,
+    // How the last account operation ended, said on the page. The page covers
+    // the status line, and a refusal the user cannot read is a key that did
+    // nothing as far as they can tell.
+    pub account_notice: Option<Notice>,
     pub has_relay: bool,
     // Set when the instance picker opens, so the loop knows to fetch the list
     pub want_instances: bool,
@@ -500,6 +643,9 @@ impl App {
             accounts: vec![initial_account.to_string()],
             projects: HashMap::new(),
             relays: HashMap::new(),
+            default_zone: String::new(),
+            zones: HashMap::new(),
+            used_ports: HashSet::new(),
             entries: Vec::new(),
             loaded: false,
             load_failed: false,
@@ -516,12 +662,19 @@ impl App {
             should_quit: false,
             suspend: false,
             input: String::new(),
+            draft_error: None,
             draft: NewTunnel::default(),
+            last_draft: None,
             instances: Vec::new(),
             instance_selected: 0,
             domains: Vec::new(),
             domain_selected: 0,
             confirm_message: None,
+            move_selected: 0,
+            move_to: String::new(),
+            account_selected: 0,
+            account_draft: AccountDraft::default(),
+            account_notice: None,
             has_relay: false,
             want_instances: false,
             force_refresh: false,
@@ -577,6 +730,18 @@ impl App {
         self.selected_entry()
             .map(|e| e.history.samples())
             .unwrap_or_default()
+    }
+
+    // The picker covers the status line, so while it is open the reason goes
+    // inside the dialog; the status line carries it for after the dialog closes.
+    // It is an error about the account's list, not about what was typed.
+    pub fn instances_failed(&mut self, reason: &str) {
+        let message = format!("{LIST_FAILURE}{reason}");
+        if self.input_mode == InputMode::AddInstance {
+            self.draft_error = Some(format!("{message}. Type the instance name instead"));
+        }
+        self.set_status(message);
+        self.status_error = true;
     }
 
     pub fn set_status(&mut self, message: impl Into<String>) {
@@ -650,7 +815,16 @@ impl App {
         }
         let current = self.accounts.iter().position(|a| *a == self.account);
         let next = current.map(|i| (i + 1) % self.accounts.len()).unwrap_or(0);
-        self.account = self.accounts[next].clone();
+        let name = self.accounts[next].clone();
+        self.switch_to_account(&name);
+    }
+
+    /// Puts another account on screen. `;` and the accounts page both land
+    /// here, so the two cannot drift: everything the old account's rows,
+    /// logs and relay said is dropped, because none of it describes this one.
+    fn switch_to_account(&mut self, name: &str) {
+        self.account = name.to_string();
+        self.default_zone = self.zones.get(&self.account).cloned().unwrap_or_default();
         self.selected = 0;
         self.entries.clear();
         // The old account's answer says nothing about the new one's
@@ -667,6 +841,113 @@ impl App {
             self.force_refresh = true;
         }
         self.set_status(format!("account {}", self.account));
+    }
+
+    // --- the accounts page ---
+
+    /// Opens the page with the cursor on the account the rest of the screen
+    /// is showing, which is the row every other key on the page acts on.
+    fn open_accounts(&mut self) {
+        self.account_selected = self
+            .accounts
+            .iter()
+            .position(|a| *a == self.account)
+            .unwrap_or(0);
+        self.account_notice = None;
+        self.input_mode = InputMode::Accounts;
+    }
+
+    pub fn account_at_cursor(&self) -> Option<&String> {
+        self.accounts.get(self.account_selected)
+    }
+
+    fn accounts_key(&mut self, code: KeyCode) -> Option<Op> {
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char(':') => {
+                self.input_mode = InputMode::Normal;
+                self.account_notice = None;
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                let last = self.accounts.len().saturating_sub(1);
+                self.account_selected = (self.account_selected + 1).min(last);
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.account_selected = self.account_selected.saturating_sub(1)
+            }
+            KeyCode::Enter => return self.select_account(),
+            KeyCode::Char('a') => self.open_account_add(),
+            KeyCode::Char('e') => self.open_account_edit(),
+            KeyCode::Char('d') => self.ask_remove_account(),
+            _ => {}
+        }
+        None
+    }
+
+    /// The cursor's account takes the screen, and the choice is written to
+    /// `config.toml` so the next `gtunnel` command agrees with what is on it.
+    fn select_account(&mut self) -> Option<Op> {
+        let name = self.account_at_cursor()?.clone();
+        if name != self.account {
+            self.switch_to_account(&name);
+        }
+        self.input_mode = InputMode::Normal;
+        self.account_notice = None;
+        self.spinner.start(&format!("select {name}"));
+        Some(Op::AccountSelect(name))
+    }
+
+    // The configuration is typed rather than picked: listing them is a gcloud
+    // call, and `account add` already answers an unknown one by name
+    fn open_account_add(&mut self) {
+        self.account_draft = AccountDraft::default();
+        self.input.clear();
+        self.draft_error = None;
+        self.account_notice = None;
+        self.input_mode = InputMode::AccountConfiguration;
+    }
+
+    // The fields come pre-filled, because an edit of the zone must not make
+    // the person retype the project to keep it
+    fn open_account_edit(&mut self) {
+        let Some(name) = self.account_at_cursor().cloned() else {
+            return;
+        };
+        self.account_draft = AccountDraft {
+            name: name.clone(),
+            ..AccountDraft::default()
+        };
+        self.input = self.projects.get(&name).cloned().unwrap_or_default();
+        self.draft_error = None;
+        self.account_notice = None;
+        self.input_mode = InputMode::AccountProject;
+    }
+
+    fn ask_remove_account(&mut self) {
+        let Some(name) = self.account_at_cursor().cloned() else {
+            return;
+        };
+        self.account_draft = AccountDraft {
+            name: name.clone(),
+            ..AccountDraft::default()
+        };
+        self.account_notice = None;
+        self.confirm_message = Some(format!("Remove account '{name}'? (y/n)"));
+        self.input_mode = InputMode::AccountConfirm;
+    }
+
+    // Whether the account can go is `gtunnel account remove`'s to answer: it
+    // refuses one that still holds tunnels, and the page shows what it said
+    fn confirm_account(&mut self, code: KeyCode) -> Option<Op> {
+        let name = std::mem::take(&mut self.account_draft.name);
+        self.confirm_message = None;
+        self.input_mode = InputMode::Accounts;
+        match code {
+            KeyCode::Char('y') | KeyCode::Char('Y') if !name.is_empty() => {
+                self.spinner.start(&format!("remove {name}"));
+                Some(Op::AccountRemove(name))
+            }
+            _ => None,
+        }
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<Op> {
@@ -694,9 +975,13 @@ impl App {
                 self.config_key(key.code);
                 return None;
             }
+            InputMode::Accounts => return self.accounts_key(key.code),
+            InputMode::AccountConfirm => return self.confirm_account(key.code),
             InputMode::ChooseMode => return self.choose_mode(key.code),
+            InputMode::ChooseEdit => return self.choose_edit(key.code),
             InputMode::Confirm => return self.confirm(key.code),
             InputMode::AddInstance => return self.pick_instance(key.code),
+            InputMode::MoveTo => return self.pick_move_account(key.code),
             InputMode::AddDomain => return self.pick_domain(key.code),
             mode if mode.is_text() => return self.type_line(key.code),
             _ => return None,
@@ -708,6 +993,7 @@ impl App {
             KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
             KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
             KeyCode::Char(';') => self.next_account(),
+            KeyCode::Char(':') => self.open_accounts(),
             KeyCode::Char('r') => {
                 self.force_refresh = true;
                 self.set_status("refreshing");
@@ -940,6 +1226,18 @@ impl App {
             .iter()
             .map(|a| (a.name.clone(), a.project.clone()))
             .collect();
+        // A zone edited here would otherwise stay as it was loaded at start,
+        // and a typed instance would be looked for in the old one
+        self.zones = config
+            .accounts
+            .iter()
+            .map(|a| (a.name.clone(), a.default_zone.clone()))
+            .collect();
+        // The cursor is an index, so an account removed out from under it
+        // would point past the end of a shorter list
+        self.account_selected = self
+            .account_selected
+            .min(self.accounts.len().saturating_sub(1));
         if !self.accounts.contains(&self.account)
             && let Some(first) = self.accounts.first()
         {
@@ -960,6 +1258,7 @@ impl App {
                 Some((a.name.clone(), domains.collect()))
             })
             .collect();
+        self.default_zone = self.zones.get(&self.account).cloned().unwrap_or_default();
         self.show_relay_for_account();
         self.force_refresh = true;
     }
@@ -1096,7 +1395,33 @@ impl App {
     fn cancel_dialog(&mut self) {
         self.input_mode = InputMode::Normal;
         self.input.clear();
+        self.draft_error = None;
         self.confirm_message = None;
+        // The account a move picked belongs to that move: the next one asks
+        // again, and a stale answer here would send a tunnel somewhere
+        // nobody chose
+        self.move_to.clear();
+    }
+
+    // `entries` holds the active account only, so a scan is account-scoped.
+    // Unmanaged rows count: they are named for their target, and two rows
+    // with one name would be indistinguishable in the list.
+    fn name_is_taken(&self, name: &str) -> bool {
+        self.entries.iter().any(|e| e.name() == name)
+    }
+
+    // The name step is skipped when a failed create reopens the dialog, and
+    // `add` saves the record before it installs the job, so a retry would
+    // otherwise reach the daemon only to fail as "already exists".
+    fn refuse_taken_name(&mut self) -> bool {
+        if !self.name_is_taken(&self.draft.name) {
+            return false;
+        }
+        self.draft_error = Some(format!(
+            "'{}' is already used in this account",
+            self.draft.name
+        ));
+        true
     }
 
     fn open_add(&mut self) {
@@ -1105,6 +1430,7 @@ impl App {
             ..NewTunnel::default()
         };
         self.input.clear();
+        self.draft_error = None;
         self.input_mode = InputMode::ChooseMode;
     }
 
@@ -1156,6 +1482,13 @@ impl App {
         }
     }
 
+    /// `e` asks which edit this is before it asks for anything else.
+    ///
+    /// The three answers change different things — the ports, the name, the
+    /// account — and share one key rather than taking three of the few that
+    /// are left, as `a` already shares one between an Access tunnel and a
+    /// public URL. An unmanaged row is refused once, here, because none of
+    /// the three has a record to write.
     fn open_edit(&mut self) {
         let Some(entry) = self.selected_entry() else {
             return;
@@ -1164,6 +1497,26 @@ impl App {
             self.refuse_external("edit");
             return;
         }
+        self.input.clear();
+        self.draft_error = None;
+        self.input_mode = InputMode::ChooseEdit;
+    }
+
+    fn choose_edit(&mut self, code: KeyCode) -> Option<Op> {
+        match code {
+            KeyCode::Char('1') => self.open_edit_target(),
+            KeyCode::Char('2') => self.open_rename(),
+            KeyCode::Char('3') => self.open_move(),
+            KeyCode::Esc => self.cancel_dialog(),
+            _ => {}
+        }
+        None
+    }
+
+    fn open_edit_target(&mut self) {
+        let Some(entry) = self.selected_entry() else {
+            return;
+        };
         self.input = match &entry.tunnel.spec {
             TunnelSpec::Access {
                 remote_port,
@@ -1175,34 +1528,139 @@ impl App {
         self.input_mode = InputMode::EditTarget;
     }
 
-    // The next free port in gtunnel's own range, so the suggestion never
-    // collides with a tunnel already on screen
-    pub fn suggested_local_port(&self) -> u16 {
-        let taken: std::collections::HashSet<u16> = self
-            .entries
+    /// A run is recorded in the ephemeral list and not in `tunnels.toml`, so
+    /// a rename has no record to rewrite and a move has none to hand over.
+    /// `m` is what gives it one, and the refusal says so.
+    fn refuse_ephemeral(&mut self, action: &str) -> bool {
+        let Some(entry) = self.selected_entry() else {
+            return true;
+        };
+        if entry.kind != TunnelKind::Ephemeral {
+            return false;
+        }
+        let name = entry.name().to_string();
+        self.cancel_dialog();
+        self.set_status(format!(
+            "{name} is a run: import it with m before {action} it"
+        ));
+        self.status_error = true;
+        true
+    }
+
+    // The old name is in the field, because a rename is usually an edit of
+    // the name and not a word typed from nothing
+    fn open_rename(&mut self) {
+        if self.refuse_ephemeral("renaming") {
+            return;
+        }
+        let Some(entry) = self.selected_entry() else {
+            return;
+        };
+        self.input = entry.name().to_string();
+        self.draft_error = None;
+        self.input_mode = InputMode::RenameTo;
+    }
+
+    fn open_move(&mut self) {
+        if self.refuse_ephemeral("moving") {
+            return;
+        }
+        if self.other_accounts().is_empty() {
+            self.cancel_dialog();
+            self.set_status(
+                "This is the only account. Add another with `gtunnel account add` to move a tunnel",
+            );
+            self.status_error = true;
+            return;
+        }
+        self.move_selected = 0;
+        self.input.clear();
+        self.draft_error = None;
+        self.input_mode = InputMode::MoveTo;
+    }
+
+    /// Where a move may land: every account but the one on screen, because
+    /// `move` refuses a tunnel that is already on the account it is sent to.
+    pub fn other_accounts(&self) -> Vec<String> {
+        self.accounts
             .iter()
-            .filter_map(|e| match e.tunnel.spec {
-                TunnelSpec::Access { local_port, .. } => Some(local_port),
-                _ => None,
-            })
-            .collect();
-        (15_000..16_000)
-            .find(|port| !taken.contains(port))
-            .unwrap_or(15_000)
+            .filter(|a| **a != self.account)
+            .cloned()
+            .collect()
+    }
+
+    fn pick_move_account(&mut self, code: KeyCode) -> Option<Op> {
+        let accounts = self.other_accounts();
+        match code {
+            KeyCode::Esc => self.cancel_dialog(),
+            KeyCode::Down => {
+                let last = accounts.len().saturating_sub(1);
+                self.move_selected = (self.move_selected + 1).min(last);
+            }
+            KeyCode::Up => self.move_selected = self.move_selected.saturating_sub(1),
+            KeyCode::Enter => {
+                let to = accounts.get(self.move_selected)?.clone();
+                let name = self.selected_entry()?.name().to_string();
+                // Decision 2: the destination holding the name is a question,
+                // not a refusal, so the dialog asks it with the reason on
+                // screen instead of throwing the move away
+                if names_in_account(&to).contains(&name) {
+                    self.move_to = to.clone();
+                    self.input = name.clone();
+                    self.draft_error = Some(format!("'{name}' is already used in {to}"));
+                    self.input_mode = InputMode::MoveRename;
+                    return None;
+                }
+                let from = self.account.clone();
+                self.cancel_dialog();
+                self.spinner.start(&format!("move {name}"));
+                return Some(Op::Move(MoveTunnel {
+                    name,
+                    from,
+                    to,
+                    rename_to: None,
+                }));
+            }
+            _ => {}
+        }
+        None
+    }
+
+    // The port `gtunnel add` would allocate for this name, so the dialog and the
+    // CLI agree. The probe is `|_| true` on purpose: a real one binds a socket per
+    // candidate and this runs on the thread that draws. The suggestion is advisory
+    // and the CLI re-probes the host when the tunnel is actually added.
+    pub fn suggested_local_port(&self, name: &str) -> u16 {
+        allocate_port(
+            name,
+            ACCESS_PORT_BASE,
+            ACCESS_PORT_SPAN,
+            &self.used_ports,
+            |_| true,
+        )
+        .unwrap_or(ACCESS_PORT_BASE)
     }
 
     fn type_line(&mut self, code: KeyCode) -> Option<Op> {
         match code {
             KeyCode::Esc => {
+                // A dialog the page opened goes back to the page: the list
+                // underneath is not where this person was
+                let from_page = self.input_mode.is_account_text();
                 self.cancel_dialog();
+                if from_page {
+                    self.input_mode = InputMode::Accounts;
+                }
                 None
             }
             KeyCode::Backspace => {
                 self.input.pop();
+                self.draft_error = None;
                 None
             }
             KeyCode::Char(c) => {
                 self.input.push(c);
+                self.draft_error = None;
                 None
             }
             KeyCode::Enter => self.advance(),
@@ -1210,15 +1668,103 @@ impl App {
         }
     }
 
+    // A dialog the page opened is done with: the page is what it returns to
+    fn back_to_page(&mut self) {
+        self.input.clear();
+        self.draft_error = None;
+        self.confirm_message = None;
+        self.input_mode = InputMode::Accounts;
+    }
+
+    /// A field's new value, or `None` when it is to be left alone. Blank
+    /// means unchanged rather than empty, because the field arrives
+    /// pre-filled and `cmd_account_edit` refuses an empty value outright.
+    fn changed(now: &str, before: Option<&String>) -> Option<String> {
+        let now = now.trim();
+        (!now.is_empty() && Some(now) != before.map(String::as_str)).then(|| now.to_string())
+    }
+
     fn advance(&mut self) -> Option<Op> {
         let value = std::mem::take(&mut self.input);
         match self.input_mode {
+            InputMode::AccountConfiguration => {
+                if value.trim().is_empty() {
+                    self.draft_error =
+                        Some("Name the gcloud configuration this account uses".to_string());
+                    return None;
+                }
+                self.account_draft.configuration = value.trim().to_string();
+                self.draft_error = None;
+                self.input_mode = InputMode::AccountName;
+                None
+            }
+            InputMode::AccountName => {
+                let name = value.trim().to_string();
+                if let Err(e) = crate::config::validate_account_name(&name) {
+                    self.draft_error = Some(e.to_string());
+                    self.input = value;
+                    return None;
+                }
+                if self.accounts.contains(&name) {
+                    self.draft_error = Some(format!("'{name}' is already an account"));
+                    self.input = value;
+                    return None;
+                }
+                let new = NewAccount {
+                    configuration: self.account_draft.configuration.clone(),
+                    name: name.clone(),
+                };
+                self.back_to_page();
+                self.spinner.start(&format!("add {name}"));
+                Some(Op::AccountAdd(new))
+            }
+            InputMode::AccountProject => {
+                self.account_draft.project = value.trim().to_string();
+                self.input = self
+                    .zones
+                    .get(&self.account_draft.name)
+                    .cloned()
+                    .unwrap_or_default();
+                self.input_mode = InputMode::AccountZone;
+                None
+            }
+            InputMode::AccountZone => {
+                let name = self.account_draft.name.clone();
+                let project = Self::changed(&self.account_draft.project, self.projects.get(&name));
+                let zone = Self::changed(&value, self.zones.get(&name));
+                self.back_to_page();
+                if project.is_none() && zone.is_none() {
+                    self.account_notice = Some(Notice {
+                        text: format!("{name} is unchanged"),
+                        ok: true,
+                    });
+                    return None;
+                }
+                self.spinner.start(&format!("edit {name}"));
+                Some(Op::AccountEdit(AccountEdit {
+                    name,
+                    project,
+                    zone,
+                }))
+            }
             InputMode::AddName => {
                 if value.trim().is_empty() {
                     self.input = value;
                     return None;
                 }
-                self.draft.name = value.trim().to_string();
+                let name = value.trim().to_string();
+                if let Err(e) = crate::state::validate_tunnel_name(&name) {
+                    self.draft_error = Some(e.to_string());
+                    self.input = value;
+                    return None;
+                }
+                if self.name_is_taken(&name) {
+                    self.draft_error = Some(format!("'{name}' is already used in this account"));
+                    self.input = value;
+                    return None;
+                }
+                self.draft_error = None;
+                self.draft.name = name;
                 self.input_mode = match self.draft.mode {
                     TunnelMode::Access => {
                         self.want_instances = true;
@@ -1237,7 +1783,7 @@ impl App {
             InputMode::AddRemotePort => match value.trim().parse::<u16>() {
                 Ok(port) => {
                     self.draft.remote_port = port;
-                    self.draft.local_port = self.suggested_local_port();
+                    self.draft.local_port = self.suggested_local_port(&self.draft.name);
                     self.input_mode = InputMode::AddLocalPort;
                     None
                 }
@@ -1256,9 +1802,14 @@ impl App {
                         }
                     }
                 }
+                if self.refuse_taken_name() {
+                    self.input = value;
+                    return None;
+                }
                 let draft = std::mem::take(&mut self.draft);
                 self.cancel_dialog();
                 self.spinner.start(&format!("create {}", draft.name));
+                self.last_draft = Some((draft.clone(), InputMode::AddLocalPort));
                 Some(Op::Create(draft))
             }
             InputMode::AddLocalTarget => {
@@ -1281,8 +1832,65 @@ impl App {
                 self.spinner.start(&format!("edit {name}"));
                 Some(Op::Edit(edit))
             }
+            InputMode::RenameTo => {
+                let account = self.account.clone();
+                let taken: Vec<String> =
+                    self.entries.iter().map(|e| e.name().to_string()).collect();
+                let new_name = self.checked_name(&value, &account, &taken)?;
+                let name = self.selected_entry()?.name().to_string();
+                self.cancel_dialog();
+                self.spinner.start(&format!("rename {name}"));
+                Some(Op::Rename(RenameTunnel {
+                    account,
+                    name,
+                    new_name,
+                }))
+            }
+            InputMode::MoveRename => {
+                // Cloned and not taken: a refused name reopens the same
+                // question, and the destination is half of it
+                let to = self.move_to.clone();
+                let new_name = self.checked_name(&value, &to, &names_in_account(&to))?;
+                let name = self.selected_entry()?.name().to_string();
+                let from = self.account.clone();
+                self.cancel_dialog();
+                self.spinner.start(&format!("move {name}"));
+                Some(Op::Move(MoveTunnel {
+                    name,
+                    from,
+                    to,
+                    rename_to: Some(new_name),
+                }))
+            }
             _ => None,
         }
+    }
+
+    /// A name the dialog accepts, or `None` with the reason beside the field
+    /// and the text still there to be corrected.
+    ///
+    /// `taken` is what the account the tunnel is landing on already calls its
+    /// tunnels, which is the account on screen for a rename and another one
+    /// for a move; `account` names it, because "already used" is only an
+    /// answer when the reader knows where.
+    fn checked_name(&mut self, value: &str, account: &str, taken: &[String]) -> Option<String> {
+        let name = value.trim().to_string();
+        let refuse = |app: &mut Self, reason: Option<String>| {
+            app.draft_error = reason;
+            app.input = value.to_string();
+            None
+        };
+        if name.is_empty() {
+            return refuse(self, None);
+        }
+        if let Err(e) = crate::state::validate_tunnel_name(&name) {
+            return refuse(self, Some(e.to_string()));
+        }
+        if taken.iter().any(|t| t == &name) {
+            return refuse(self, Some(format!("'{name}' is already used in {account}")));
+        }
+        self.draft_error = None;
+        Some(name)
     }
 
     // The picker filters as you type, so a long instance list stays usable
@@ -1315,12 +1923,28 @@ impl App {
                     .filtered_instances()
                     .get(self.instance_selected)
                     .map(|i| (*i).clone());
-                let Some(chosen) = chosen else {
-                    self.set_status("No instance matches that filter");
-                    return None;
+                let (instance, zone) = match chosen {
+                    Some(c) => (c.name, c.zone),
+                    // A filter that matches nothing is the person naming an
+                    // instance the list lacks, or could not fetch: take it
+                    None if !self.input.trim().is_empty() => {
+                        (self.input.trim().to_string(), self.default_zone.clone())
+                    }
+                    None => {
+                        self.draft_error = Some("Type an instance name".to_string());
+                        return None;
+                    }
                 };
-                self.draft.instance = chosen.name;
-                self.draft.zone = chosen.zone;
+                self.draft.instance = instance;
+                self.draft.zone = zone;
+                self.draft_error = None;
+                // Typing a name worked around a failed list, so the list's
+                // error no longer describes anything the person must act on
+                // other errors on the line are not the list's to clear
+                if self.status_error && self.status.as_deref().is_some_and(is_list_failure) {
+                    self.status = None;
+                    self.status_error = false;
+                }
                 self.input.clear();
                 self.input_mode = InputMode::AddJumpHost;
             }
@@ -1342,10 +1966,14 @@ impl App {
                     self.set_status("This account has no domain. Run `gtunnel domains add`");
                     return None;
                 };
+                if self.refuse_taken_name() {
+                    return None;
+                }
                 self.draft.domain = domain;
                 let draft = std::mem::take(&mut self.draft);
                 self.cancel_dialog();
                 self.spinner.start(&format!("create {}", draft.name));
+                self.last_draft = Some((draft.clone(), InputMode::AddDomain));
                 return Some(Op::Create(draft));
             }
             _ => {}
@@ -1353,10 +1981,40 @@ impl App {
         None
     }
 
+    // The port prompt is pre-filled with what was typed, since its field is
+    // the only one that holds text; the pickers keep their selection indexes.
+    fn reopen(&mut self, draft: NewTunnel, step: InputMode, message: &str) {
+        self.input = match step {
+            InputMode::AddLocalPort => draft.local_port.to_string(),
+            _ => String::new(),
+        };
+        self.draft = draft;
+        self.input_mode = step;
+        self.draft_error = Some(message.to_string());
+    }
+
     pub fn apply(&mut self, result: OpResult) {
         self.spinner.stop();
-        self.set_status(result.message);
+        self.set_status(result.message.clone());
         self.status_error = !result.ok;
+        // The page covers the status line, and a refusal there is one nobody
+        // reads: it is the page that asked, so the page is told
+        if result.from_account {
+            self.account_notice = Some(Notice {
+                text: result.message.clone(),
+                ok: result.ok,
+            });
+        }
+        // Ops run concurrently, so only a create's own result settles its
+        // draft. A dialog already open is someone's work in progress and is
+        // not overwritten; the failure still reaches the status line.
+        if result.from_create
+            && let Some((draft, step)) = self.last_draft.take()
+            && !result.ok
+            && self.input_mode == InputMode::Normal
+        {
+            self.reopen(draft, step, &result.message);
+        }
         if result.reload {
             self.force_refresh = true;
         }
@@ -1373,7 +2031,8 @@ impl App {
     }
 
     // Keeps the selection on the same tunnel across a reload
-    pub fn replace_entries(&mut self, entries: Vec<TunnelEntry>) {
+    pub fn replace_entries(&mut self, entries: Vec<TunnelEntry>, used_ports: HashSet<u16>) {
+        self.used_ports = used_ports;
         self.loaded = true;
         self.load_failed = false;
         let selected_name = self.selected_entry().map(|e| e.name().to_string());
@@ -1436,6 +2095,32 @@ fn page_dir() -> anyhow::Result<std::path::PathBuf> {
         anyhow::bail!("the real config directory is off under test");
     }
     crate::config::config_dir()
+}
+
+/// The tunnels on disk, behind the guard the config page reads through.
+fn stored_state() -> anyhow::Result<crate::state::TunnelState> {
+    // The path is thrown away: calling it is the guard, which under test
+    // refuses a suite that never set a directory of its own
+    page_dir()?;
+    crate::state::TunnelState::load()
+}
+
+/// What an account already calls its tunnels.
+///
+/// Read from `tunnels.toml` rather than from `entries`, which holds the
+/// account on screen alone and so knows nothing about the one a move is
+/// sending to. `cmd_move` checks this same rule and is the one that refuses;
+/// the dialog asks only so that it can offer another name while it is still
+/// open, which is why a file it cannot read costs the offer and not the check.
+fn names_in_account(account: &str) -> Vec<String> {
+    let Ok(state) = stored_state() else {
+        return Vec::new();
+    };
+    state
+        .tunnels_for_account(account)
+        .iter()
+        .map(|t| t.name.clone())
+        .collect()
 }
 
 #[cfg(test)]

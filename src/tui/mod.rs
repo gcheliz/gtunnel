@@ -6,6 +6,7 @@ pub mod theme;
 pub mod ui;
 
 use anyhow::Result;
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
@@ -21,8 +22,9 @@ const TICK: Duration = Duration::from_millis(120);
 enum Msg {
     Key(crossterm::event::KeyEvent),
     Instances(Vec<app::InstanceChoice>),
+    InstancesFailed(String),
     Tick,
-    Entries(Vec<TunnelEntry>),
+    Entries(Vec<TunnelEntry>, HashSet<u16>),
     EntriesFailed(String),
     Metrics(Vec<(String, crate::probe::TunnelMetrics)>),
     // One reading of every local port's established connections, far more
@@ -33,12 +35,27 @@ enum Msg {
     OpDone(OpResult),
 }
 
+// A seam of its own so the failure path is testable: an `if let Ok` here once
+// dropped the error and left an unreadable account looking merely empty
+fn instances_msg(result: Result<Vec<app::InstanceChoice>>) -> Msg {
+    match result {
+        Ok(instances) => Msg::Instances(instances),
+        Err(e) => Msg::InstancesFailed(format!("{e:#}")),
+    }
+}
+
 pub async fn run_tui(initial_account: Option<&str>) -> Result<()> {
     let config = load_config()?;
     let account = config.get_account(initial_account)?.name.clone();
 
     let mut app = App::new(&account);
     app.reload_config(&config);
+    app.zones = config
+        .accounts
+        .iter()
+        .map(|a| (a.name.clone(), a.default_zone.clone()))
+        .collect();
+    app.default_zone = app.zones.get(&account).cloned().unwrap_or_default();
 
     let (tx, mut rx) = mpsc::unbounded_channel::<Msg>();
     spawn_input(tx.clone(), app.input_gate.clone());
@@ -77,6 +94,8 @@ async fn demo_loop(
                         message: format!("demo: {op:?} does nothing here"),
                         ok: true,
                         reload: false,
+                        from_create: matches!(op, Op::Create(_)),
+                        from_account: false,
                     });
                 }
                 if app.should_quit {
@@ -213,9 +232,7 @@ async fn event_loop(
                     let account = app.account.clone();
                     let tx = tx.clone();
                     tokio::spawn(async move {
-                        if let Ok(instances) = ops::load_instances(&account).await {
-                            let _ = tx.send(Msg::Instances(instances));
-                        }
+                        let _ = tx.send(instances_msg(ops::load_instances(&account).await));
                     });
                 }
                 schedule(app, &mut timers, tx);
@@ -233,7 +250,7 @@ async fn event_loop(
                     });
                 }
             }
-            Msg::Entries(entries) => app.replace_entries(entries),
+            Msg::Entries(entries, used_ports) => app.replace_entries(entries, used_ports),
             Msg::EntriesFailed(error) => app.load_failed(&error),
             Msg::Metrics(metrics) => {
                 for (name, m) in metrics {
@@ -276,9 +293,19 @@ async fn event_loop(
                 app.instances = instances;
                 app.instance_selected = 0;
             }
+            Msg::InstancesFailed(reason) => app.instances_failed(&reason),
             Msg::OpDone(result) => {
                 if let Some(name) = forget_after.take() {
                     app.forget_metrics(&name);
+                }
+                // An account op wrote config.toml, so what the header, the
+                // accounts page and the Add dialog hold is a copy of a file
+                // that has moved on. Read before `apply`, which is what puts
+                // the result on the page the reload may have reshaped.
+                if result.from_account
+                    && let Ok(config) = load_config()
+                {
+                    app.reload_config(&config);
                 }
                 app.apply(result);
                 // The CLI commands this ran print to the same terminal
@@ -357,7 +384,7 @@ fn schedule(app: &mut App, timers: &mut Timers, tx: &mpsc::UnboundedSender<Msg>)
         let account = account.clone();
         tokio::spawn(async move {
             let _ = tx.send(match ops::load_entries(&account).await {
-                Ok(entries) => Msg::Entries(entries),
+                Ok((entries, used_ports)) => Msg::Entries(entries, used_ports),
                 Err(e) => Msg::EntriesFailed(format!("{e:#}")),
             });
         });
@@ -752,11 +779,14 @@ mod tests {
             "a spent slot does not come back on its own"
         );
 
-        app.replace_entries(vec![TunnelEntry::new(
-            access("other", 15999),
-            TunnelStatus::Running,
-            TunnelKind::Managed,
-        )]);
+        app.replace_entries(
+            vec![TunnelEntry::new(
+                access("other", 15999),
+                TunnelStatus::Running,
+                TunnelKind::Managed,
+            )],
+            HashSet::new(),
+        );
         assert_eq!(
             health_round(&mut app, &mut timers).len(),
             1,
@@ -861,12 +891,13 @@ mod tests {
 
     // Every action in the running set refuses on someone else's process, so a
     // footer built from the status alone offered five keys that all did
-    // nothing. What is left is the one key that still works on the list.
+    // nothing. The unmanaged set is empty now; `a add` is in the program
+    // group, which every row's kind shares.
     #[test]
     fn an_unmanaged_row_offers_no_action_that_would_refuse() {
         let (ctx, _) = ui::footer_groups(Some((TunnelStatus::Running, TunnelKind::External)), true);
         let keys: Vec<&str> = ctx.iter().map(|a| a.key).collect();
-        assert_eq!(keys, vec!["a"], "{keys:?}");
+        assert!(keys.is_empty(), "{keys:?}");
     }
 
     // The pane read `started by gtunnel (auto-start off)` over a process
@@ -898,6 +929,8 @@ mod tests {
             message: "permission denied".to_string(),
             ok: false,
             reload: false,
+            from_create: false,
+            from_account: false,
         });
         assert_eq!(app.status.as_deref(), Some("permission denied"));
         assert!(app.status_error, "a failure must be marked");
@@ -906,6 +939,8 @@ mod tests {
             message: "db starting".to_string(),
             ok: true,
             reload: true,
+            from_create: false,
+            from_account: false,
         });
         assert!(!app.status_error, "success must clear the mark");
     }
@@ -1485,6 +1520,16 @@ mod tests {
         let keys: Vec<_> = ctx.iter().map(|a| a.key).collect();
         assert_eq!(keys, ["s", "e", "d", "A"]);
         assert!(!keys.contains(&"S"), "s and S are never on screen together");
+        // a/A is the one pair that can share the screen, in two groups.
+        let text = line_text(&ui::footer_line(
+            120,
+            Some((TunnelStatus::Stopped, TunnelKind::Managed)),
+            true,
+        ));
+        assert!(
+            text.contains("A auto") && text.contains("a add"),
+            "{text:?}"
+        );
     }
 
     // Review Focus 4: no tunnels at all, so there is no selection to derive a
@@ -1492,7 +1537,32 @@ mod tests {
     #[test]
     fn an_empty_account_offers_a_way_to_fill_it() {
         let (ctx, _) = ui::footer_groups(None, false);
-        assert_eq!(ctx.iter().map(|a| a.key).collect::<Vec<_>>(), ["a", "m"]);
+        assert_eq!(ctx.iter().map(|a| a.key).collect::<Vec<_>>(), ["m"]);
+    }
+
+    // `a` sat in the two sets that least needed it: an empty account and a
+    // stranger's row. On every managed row the key that adds a tunnel was not
+    // advertised at all, so the footer taught it only where nothing else was
+    // on offer. It belongs to the program, which is on screen whatever is
+    // selected.
+    #[test]
+    fn adding_a_tunnel_is_on_the_footer_in_every_state() {
+        let states = [
+            (Some((TunnelStatus::Running, TunnelKind::Managed)), true),
+            (Some((TunnelStatus::Stopped, TunnelKind::Managed)), true),
+            (Some((TunnelStatus::Error, TunnelKind::Managed)), true),
+            (Some((TunnelStatus::Running, TunnelKind::External)), true),
+            (Some((TunnelStatus::Stopped, TunnelKind::External)), true),
+            (None, true),
+            (None, false),
+        ];
+        for (selected, any) in states {
+            let (contextual, program) = ui::footer_groups(selected, any);
+            let listed = contextual.iter().chain(program).filter(|a| a.key == "a");
+            assert_eq!(listed.count(), 1, "{selected:?} any={any}");
+            let text = line_text(&ui::footer_line(120, selected, any));
+            assert!(text.contains("a add"), "{selected:?} any={any}: {text:?}");
+        }
     }
 
     // Review Focus 2: a width landing exactly on a shedding boundary, where an
@@ -1575,8 +1645,8 @@ mod tests {
         );
     }
 
-    // The way a failed tunnel is retried must survive the narrowest footer that
-    // still shows any contextual action.
+    // At 48 columns the footer holds `a add` beside restart and not yet
+    // `e edit`, so this marks restart leading a footer with more than restart.
     #[test]
     fn the_failed_footer_keeps_restart_first_at_forty_eight_columns() {
         let text = line_text(&ui::footer_line(
@@ -1587,12 +1657,40 @@ mod tests {
         assert!(text.trim_start().starts_with("R restart"), "{text:?}");
     }
 
+    // `a add` is not about the selected row, and `R restart` is the one action
+    // a failed row exists for, so the narrow footer gives up the former first.
+    #[test]
+    fn a_narrow_failed_footer_sheds_add_before_restart() {
+        let text = line_text(&ui::footer_line(
+            40,
+            Some((TunnelStatus::Error, TunnelKind::Managed)),
+            true,
+        ));
+        assert!(text.trim_start().starts_with("R restart"), "{text:?}");
+        assert!(!text.contains("a add"), "{text:?}");
+    }
+
+    // Between restart alone and restart with edit, `a add` is what the
+    // footer spends the next cells on: it is true of every row, `e edit` of
+    // this one.
+    #[test]
+    fn a_failed_footer_at_forty_six_columns_has_room_for_restart_and_add_but_not_edit() {
+        let text = line_text(&ui::footer_line(
+            46,
+            Some((TunnelStatus::Error, TunnelKind::Managed)),
+            true,
+        ));
+        assert!(text.contains("R restart"), "{text:?}");
+        assert!(text.contains("a add"), "{text:?}");
+        assert!(!text.contains("e edit"), "{text:?}");
+    }
+
     // A blank pane under a header reads as a render that failed. The footer
     // already names `a` and `m`, so the row only has to say the list is empty.
     #[test]
     fn an_empty_account_says_so_under_the_list_header() {
         let mut app = App::new("dev");
-        app.replace_entries(Vec::new());
+        app.replace_entries(Vec::new(), HashSet::new());
         let buffer = screen(&app, 120, 30);
         let rows: Vec<String> = (0..30)
             .map(|y| row_chars(&buffer, y).iter().collect())
@@ -1638,7 +1736,7 @@ mod tests {
     #[test]
     fn the_first_answer_turns_loading_into_the_empty_row() {
         let mut app = App::new("dev");
-        app.replace_entries(Vec::new());
+        app.replace_entries(Vec::new(), HashSet::new());
         assert!(app.loaded);
         assert!(list_body_row(&app, 120, 12).contains("no tunnels in this account"));
     }
@@ -1688,7 +1786,7 @@ mod tests {
         let x = find(&row_chars(&buffer, y), "could not load tunnels").unwrap() as u16;
         assert_eq!(buffer[(x, y)].fg, theme::MUTED);
 
-        app.replace_entries(Vec::new());
+        app.replace_entries(Vec::new(), HashSet::new());
         let row = list_body_row(&app, 120, 12);
         assert!(row.contains("no tunnels in this account"), "{row:?}");
         assert!(!row.contains("could not load"), "{row:?}");
@@ -1943,7 +2041,34 @@ mod tests {
 
     #[test]
     fn the_footer_never_shows_more_than_the_board_says_it_does() {
-        assert_eq!(ui::footer_most(), 8);
+        assert_eq!(ui::footer_most(), 10);
+    }
+
+    // The page is reached with `:`, the shift of the `;` that cycles accounts,
+    // so it pairs with none of the three the case note warns about. Its footer
+    // word is not "accounts": beside `; account` the two would differ by one
+    // letter, which is the trap the contextual footer exists to avoid.
+    #[test]
+    fn the_accounts_page_is_in_the_keymap_and_on_the_footer() {
+        let doc = ui::KEYMAP
+            .iter()
+            .find(|d| d.key == ":")
+            .expect(": is not in KEYMAP");
+        assert_eq!(doc.group, ui::Group::Program);
+        assert_eq!(doc.footer, Some("manage"));
+        let text = line_text(&ui::footer_line(
+            120,
+            Some((TunnelStatus::Running, TunnelKind::Managed)),
+            true,
+        ));
+        assert!(text.contains(": manage"), "{text:?}");
+        let rows = text_of(&screen(&help_app(), 120, 40));
+        let row = format!("{:<8}{}", doc.key, doc.label);
+        assert!(
+            rows.iter().any(|r| r.contains(&row)),
+            "{row:?} is not on the page:\n{}",
+            rows.join("\n")
+        );
     }
 
     #[test]
@@ -1980,7 +2105,7 @@ mod tests {
         // for any table, and this one has to change when a key is added
         let count_row = rows
             .iter()
-            .find(|r| r.contains("30 keys bound - the footer shows at most 8"))
+            .find(|r| r.contains("31 keys bound - the footer shows at most 10"))
             .expect("the count line");
         // In this page `q` closes the page, it does not quit the program
         assert!(count_row.contains("Esc back  q back"), "{count_row:?}");
@@ -2317,7 +2442,7 @@ mod tests {
         }
         let rows = text_of(&screen(&help_app(), 120, 40));
         assert!(
-            rows.iter().any(|r| r.contains("30 keys bound")),
+            rows.iter().any(|r| r.contains("31 keys bound")),
             "{}",
             rows.join("\n")
         );
@@ -2328,7 +2453,7 @@ mod tests {
         for (w, h) in [(120, 40), (80, 60)] {
             let rows = text_of(&screen(&help_app(), w, h));
             assert!(counter(&rows).is_none(), "{w}x{h}:\n{}", rows.join("\n"));
-            assert_eq!(keys_shown(&rows), 30, "{w}x{h}");
+            assert_eq!(keys_shown(&rows), 31, "{w}x{h}");
         }
     }
 
@@ -3462,6 +3587,206 @@ mod tests {
         last
     }
 
+    fn at_the_name_prompt() -> App {
+        let mut app = app_with_two();
+        keys(&mut app, "a1");
+        assert_eq!(app.input_mode, InputMode::AddName);
+        app
+    }
+
+    #[test]
+    fn a_name_the_account_already_holds_is_refused_in_the_dialog() {
+        let mut app = at_the_name_prompt();
+        keys(&mut app, "db\n");
+        assert_eq!(app.input_mode, InputMode::AddName, "advanced past a clash");
+        assert_eq!(app.input, "db", "the typed text was discarded");
+        let error = app.draft_error.as_deref().expect("no message");
+        assert!(error.contains("'db'"), "does not name the clash: {error}");
+    }
+
+    #[test]
+    fn a_name_that_collides_with_an_unmanaged_row_is_refused() {
+        let mut app = at_the_name_prompt();
+        app.entries.push(TunnelEntry::new(
+            access("cache", 16379),
+            TunnelStatus::Running,
+            TunnelKind::External,
+        ));
+        keys(&mut app, "cache\n");
+        assert_eq!(app.input_mode, InputMode::AddName);
+    }
+
+    #[test]
+    fn an_invalid_name_is_refused_in_the_dialog() {
+        let mut app = at_the_name_prompt();
+        keys(&mut app, "Db!\n");
+        assert_eq!(app.input_mode, InputMode::AddName);
+        assert_eq!(app.input, "Db!");
+        let error = app.draft_error.as_deref().expect("no message");
+        assert!(error.contains("lowercase"), "reports no rule: {error}");
+    }
+
+    #[test]
+    fn an_instance_list_that_could_not_be_read_says_so() {
+        let mut app = at_the_name_prompt();
+        keys(&mut app, "cache\n");
+        assert_eq!(app.input_mode, InputMode::AddInstance);
+        app.instances_failed("gcloud exited 1");
+        assert!(app.status_error);
+        let status = app.status.as_deref().expect("no status");
+        assert!(status.contains("gcloud exited 1"), "no reason: {status}");
+        let error = app
+            .draft_error
+            .as_deref()
+            .expect("nothing inside the dialog");
+        assert!(error.contains("gcloud exited 1"), "no reason: {error}");
+    }
+
+    #[test]
+    fn an_instance_the_picker_never_offered_can_still_be_typed() {
+        let mut app = at_the_name_prompt();
+        app.default_zone = "europe-west1-b".to_string();
+        keys(&mut app, "cache\n");
+        app.instances_failed("gcloud exited 1");
+        assert!(app.instances.is_empty());
+        keys(&mut app, "bastion\n");
+        assert_eq!(app.input_mode, InputMode::AddJumpHost);
+        assert_eq!(app.draft.instance, "bastion");
+        assert_eq!(app.draft.zone, "europe-west1-b");
+        assert!(app.draft_error.is_none(), "an accepted name kept the error");
+    }
+
+    #[test]
+    fn the_suggested_port_is_the_one_the_cli_would_allocate() {
+        use crate::state::{allocate_port, ACCESS_PORT_BASE, ACCESS_PORT_SPAN};
+        let mut app = app_with_two();
+        let first = allocate_port(
+            "cache",
+            ACCESS_PORT_BASE,
+            ACCESS_PORT_SPAN,
+            &Default::default(),
+            |_| true,
+        )
+        .expect("a free port");
+        assert_eq!(app.suggested_local_port("cache"), first);
+
+        // Another account holds the name's first choice, which `entries` (the
+        // selected account only) cannot show
+        app.used_ports = [first].into();
+        let next = allocate_port(
+            "cache",
+            ACCESS_PORT_BASE,
+            ACCESS_PORT_SPAN,
+            &app.used_ports,
+            |_| true,
+        )
+        .expect("a free port");
+        assert_ne!(next, first);
+        assert_eq!(app.suggested_local_port("cache"), next);
+    }
+
+    #[test]
+    fn a_typed_instance_takes_the_zone_of_the_account_switched_to() {
+        let mut app = app_with_two();
+        app.accounts = vec!["dev".to_string(), "prod".to_string()];
+        app.zones = [
+            ("dev".to_string(), "europe-west1-b".to_string()),
+            ("prod".to_string(), "europe-west4-a".to_string()),
+        ]
+        .into();
+        app.default_zone = "europe-west1-b".to_string();
+        keys(&mut app, ";");
+        assert_eq!(app.account, "prod");
+        keys(&mut app, "a1cache\nbastion\n");
+        assert_eq!(app.input_mode, InputMode::AddJumpHost);
+        assert_eq!(app.draft.zone, "europe-west4-a");
+    }
+
+    #[test]
+    fn a_filter_that_matches_none_of_the_listed_instances_accepts_what_was_typed() {
+        let mut app = at_the_name_prompt();
+        app.default_zone = "europe-west1-b".to_string();
+        app.instances = vec![InstanceChoice {
+            name: "my-vm".to_string(),
+            zone: "europe-west4-a".to_string(),
+        }];
+        keys(&mut app, "cache\nbastion\n");
+        assert_eq!(app.input_mode, InputMode::AddJumpHost);
+        assert_eq!(app.draft.instance, "bastion");
+        assert_eq!(app.draft.zone, "europe-west1-b");
+    }
+
+    #[test]
+    fn accepting_a_typed_instance_clears_the_failed_list_error_from_the_status_line() {
+        let mut app = at_the_name_prompt();
+        keys(&mut app, "cache\n");
+        app.instances_failed("gcloud exited 1");
+        keys(&mut app, "bastion\n");
+        assert!(!app.status_error, "a standing error about the list");
+        let status = app.status.as_deref().unwrap_or("");
+        assert!(!status.contains("gcloud exited 1"), "{status}");
+    }
+
+    #[test]
+    fn the_instance_picker_draws_the_error_set_for_it() {
+        let mut app = at_the_name_prompt();
+        keys(&mut app, "cache\n");
+        app.instances_failed("gcloud exited 1");
+        let buffer = screen(&app, 120, 40);
+        let text: String = (0..buffer.area.height)
+            .map(|y| row_chars(&buffer, y).into_iter().collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        // The dialog wraps the line, so only a fragment that fits one row is stable
+        assert!(text.contains("Could not list instances"), "{text}");
+    }
+
+    #[test]
+    fn a_failed_instance_list_becomes_a_message_carrying_the_reason() {
+        let failed = instances_msg(Err(anyhow::anyhow!("gcloud exited 1")));
+        match failed {
+            Msg::InstancesFailed(reason) => assert_eq!(reason, "gcloud exited 1"),
+            _ => panic!("the error was dropped"),
+        }
+        assert!(matches!(instances_msg(Ok(Vec::new())), Msg::Instances(_)));
+    }
+
+    #[test]
+    fn enter_on_an_empty_instance_step_asks_for_a_name_inside_the_dialog() {
+        let mut app = at_the_name_prompt();
+        keys(&mut app, "cache\n\n");
+        assert_eq!(app.input_mode, InputMode::AddInstance);
+        assert!(app.draft_error.is_some());
+    }
+
+    #[test]
+    fn a_valid_new_name_advances_to_the_instance_step() {
+        let mut app = at_the_name_prompt();
+        keys(&mut app, "cache\n");
+        assert_eq!(app.input_mode, InputMode::AddInstance);
+        assert_eq!(app.draft.name, "cache");
+        assert!(app.draft_error.is_none());
+    }
+
+    #[test]
+    fn typing_again_clears_the_refusal() {
+        let mut app = at_the_name_prompt();
+        keys(&mut app, "db\n");
+        keys(&mut app, "2");
+        assert!(app.draft_error.is_none());
+    }
+
+    #[test]
+    fn the_refusal_is_on_screen_at_80_by_24() {
+        let mut app = at_the_name_prompt();
+        keys(&mut app, "db\n");
+        let rendered = render_to_string(&app, 80, 24);
+        assert!(
+            rendered.contains("already used in this account"),
+            "the reason is not on screen"
+        );
+    }
+
     #[test]
     fn adding_an_access_tunnel_walks_the_prompts_and_creates_it() {
         let mut app = app_with_two();
@@ -3471,21 +3796,171 @@ mod tests {
         }];
 
         // a, mode 1, name, instance, host (empty: the instance itself), ports
-        let op = keys(&mut app, "a1db\n\n\n5432\n\n");
+        let op = keys(&mut app, "a1cache\n\n\n5432\n\n");
         assert_eq!(
             op,
             Some(Op::Create(NewTunnel {
                 account: "dev".to_string(),
-                name: "db".to_string(),
+                name: "cache".to_string(),
                 mode: TunnelMode::Access,
                 instance: "my-vm".to_string(),
                 zone: "europe-west1-b".to_string(),
                 remote_port: 5432,
-                local_port: 15000,
+                local_port: 15870,
                 ..NewTunnel::default()
             }))
         );
         assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    fn failed(message: &str) -> OpResult {
+        OpResult {
+            message: message.to_string(),
+            ok: false,
+            reload: false,
+            from_create: true,
+            from_account: false,
+        }
+    }
+
+    fn unrelated(ok: bool, message: &str) -> OpResult {
+        OpResult {
+            message: message.to_string(),
+            ok,
+            reload: false,
+            from_create: false,
+            from_account: false,
+        }
+    }
+
+    fn submitted_access_draft() -> App {
+        let mut app = app_with_two();
+        app.instances = vec![InstanceChoice {
+            name: "my-vm".to_string(),
+            zone: "europe-west1-b".to_string(),
+        }];
+        keys(&mut app, "a1cache\n\n\n5432\n\n");
+        assert_eq!(app.input_mode, InputMode::Normal);
+        app
+    }
+
+    #[test]
+    fn a_create_that_failed_brings_the_draft_back() {
+        let mut app = submitted_access_draft();
+        app.apply(failed("instance not found"));
+
+        assert_eq!(app.input_mode, InputMode::AddLocalPort);
+        assert_eq!(app.draft.name, "cache");
+        assert_eq!(app.draft.instance, "my-vm");
+        assert_eq!(app.draft.remote_port, 5432);
+        assert_eq!(app.draft.local_port, 15870);
+        assert_eq!(app.input, "15870");
+        assert_eq!(app.draft_error.as_deref(), Some("instance not found"));
+    }
+
+    #[test]
+    fn a_create_that_succeeded_leaves_no_dialog_behind() {
+        let mut app = submitted_access_draft();
+        app.apply(OpResult {
+            message: "cache created".to_string(),
+            ok: true,
+            reload: true,
+            from_create: true,
+            from_account: false,
+        });
+        assert_eq!(app.input_mode, InputMode::Normal);
+        app.apply(failed("some later failure"));
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn escape_on_a_reopened_dialog_discards_the_draft_for_good() {
+        let mut app = submitted_access_draft();
+        app.apply(failed("instance not found"));
+        app.handle_key(key(KeyCode::Esc));
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.draft_error.is_none());
+        app.apply(failed("again"));
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn another_ops_failure_does_not_reopen_the_creates_draft() {
+        let mut app = submitted_access_draft();
+        app.apply(unrelated(false, "no such job"));
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.draft_error.is_none());
+        app.apply(failed("instance not found"));
+        assert_eq!(
+            app.input_mode,
+            InputMode::AddLocalPort,
+            "the draft was lost"
+        );
+        assert_eq!(app.draft_error.as_deref(), Some("instance not found"));
+    }
+
+    #[test]
+    fn another_ops_success_does_not_swallow_the_creates_draft() {
+        let mut app = submitted_access_draft();
+        app.apply(unrelated(true, "db stopped"));
+        app.apply(failed("instance not found"));
+        assert_eq!(
+            app.input_mode,
+            InputMode::AddLocalPort,
+            "the draft was lost"
+        );
+        assert_eq!(app.draft.name, "cache");
+    }
+
+    #[test]
+    fn a_failed_create_does_not_overwrite_a_second_add_in_progress() {
+        let mut app = submitted_access_draft();
+        keys(&mut app, "a1half");
+        app.apply(failed("instance not found"));
+        assert_eq!(app.input_mode, InputMode::AddName);
+        assert_eq!(app.input, "half");
+        assert!(app.draft_error.is_none());
+        assert_eq!(app.status.as_deref(), Some("instance not found"));
+    }
+
+    fn submitted_public_draft() -> App {
+        let mut app = app_with_two();
+        app.has_relay = true;
+        app.domains = vec!["svc.example.test".to_string()];
+        keys(&mut app, "a2site\nlocalhost:3000\n\n");
+        assert_eq!(app.input_mode, InputMode::Normal);
+        app
+    }
+
+    #[test]
+    fn a_public_create_that_failed_reopens_the_domain_picker_with_the_reason() {
+        let mut app = submitted_public_draft();
+        app.apply(failed("relay unreachable"));
+        assert_eq!(app.input_mode, InputMode::AddDomain);
+        assert_eq!(app.draft.name, "site");
+        assert_eq!(app.draft.local_target, "localhost:3000");
+        assert_eq!(app.input, "");
+        let rendered = render_to_string(&app, 80, 24);
+        assert!(rendered.contains("relay unreachable"), "{rendered}");
+    }
+
+    #[test]
+    fn resubmitting_a_name_the_failed_create_already_saved_is_refused_in_the_dialog() {
+        let mut app = submitted_access_draft();
+        app.apply(OpResult {
+            reload: true,
+            ..failed("could not install the job")
+        });
+        assert!(app.force_refresh, "the saved record must be reloaded");
+        // the reload brings in the record the failed create had saved
+        let mut saved = app.entries[0].clone();
+        saved.tunnel.name = "cache".to_string();
+        app.entries.push(saved);
+        let op = keys(&mut app, "\n");
+        assert_eq!(op, None, "the clash went to the daemon");
+        assert_eq!(app.input_mode, InputMode::AddLocalPort);
+        let error = app.draft_error.clone().expect("a refusal");
+        assert!(error.contains("already used"), "{error}");
     }
 
     #[test]
@@ -3546,6 +4021,150 @@ mod tests {
             ops::add_arguments(&draft),
             ("10.0.0.10:443".to_string(), Some("bastion".to_string()))
         );
+    }
+
+    // Two accounts on the machine and a `db` already on the other one, so a
+    // move from `dev` has somewhere to go and something to collide with
+    fn with_a_second_account() -> App {
+        let mut app = app_with_two();
+        app.accounts = vec!["dev".to_string(), "prod".to_string()];
+        app
+    }
+
+    fn tunnels_on_disk(names: &[(&str, &str)]) -> crate::config::testing::TempConfigDir {
+        let dir = crate::config::testing::TempConfigDir::new();
+        let tunnels = names
+            .iter()
+            .enumerate()
+            .map(|(i, (name, account))| PersistentTunnel {
+                account_name: account.to_string(),
+                ..access(name, 15500 + i as u16)
+            })
+            .collect();
+        crate::state::TunnelState { tunnels }.save().expect("saved");
+        dir
+    }
+
+    // `e` used to open the target prompt and nothing else, so renaming a
+    // tunnel or moving it between accounts was a CLI-only act. The three are
+    // one chooser rather than three top-level keys, as `a` already is.
+    #[test]
+    fn e_offers_target_rename_and_move() {
+        let mut app = with_a_second_account();
+        keys(&mut app, "e");
+        assert_eq!(app.input_mode, InputMode::ChooseEdit);
+        let text = dialog_text(&screen(&app, 80, 24));
+        for phrase in ["Target and ports", "Rename", "Move"] {
+            assert!(text.contains(phrase), "{phrase:?} is not offered: {text}");
+        }
+
+        keys(&mut app, "1");
+        assert_eq!(app.input_mode, InputMode::EditTarget);
+        assert_eq!(app.input, "5432:15432", "the ports are pre-filled");
+
+        let mut app = with_a_second_account();
+        keys(&mut app, "e2");
+        assert_eq!(app.input_mode, InputMode::RenameTo);
+        assert_eq!(app.input, "db", "the name is pre-filled to be edited");
+
+        let mut app = with_a_second_account();
+        keys(&mut app, "e3");
+        assert_eq!(app.input_mode, InputMode::MoveTo);
+    }
+
+    // The name is unique per account, so the clash is knowable before the
+    // dialog closes; letting it reach `rename` makes it a failure afterwards
+    #[test]
+    fn renaming_from_the_tui_refuses_a_taken_name_in_the_dialog() {
+        let mut app = with_a_second_account();
+        keys(&mut app, "e2");
+        for _ in 0.."db".len() {
+            app.handle_key(key(KeyCode::Backspace));
+        }
+        assert_eq!(keys(&mut app, "api\n"), None, "api is taken");
+        assert_eq!(app.input_mode, InputMode::RenameTo, "the dialog stays");
+        assert_eq!(app.input, "api", "the typed text was discarded");
+        let said = app.draft_error.clone().expect("a reason beside the field");
+        assert!(said.contains("'api'"), "{said}");
+
+        for _ in 0.."api".len() {
+            app.handle_key(key(KeyCode::Backspace));
+        }
+        assert_eq!(
+            keys(&mut app, "postgres\n"),
+            Some(Op::Rename(RenameTunnel {
+                account: "dev".to_string(),
+                name: "db".to_string(),
+                new_name: "postgres".to_string(),
+            }))
+        );
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    // Decision 2: the destination already holding the name is a question, not
+    // a refusal, so the dialog asks it rather than throwing the move away
+    #[test]
+    fn moving_onto_a_taken_name_offers_a_rename_rather_than_cancelling() {
+        let _dir = tunnels_on_disk(&[("db", "dev"), ("db", "prod")]);
+        let mut app = with_a_second_account();
+        keys(&mut app, "e3");
+        assert_eq!(app.input_mode, InputMode::MoveTo);
+        assert_eq!(keys(&mut app, "\n"), None, "prod already holds a db");
+        assert_eq!(app.input_mode, InputMode::MoveRename, "the move goes on");
+        let said = app.draft_error.clone().expect("the reason is on screen");
+        assert!(said.contains("prod"), "{said}");
+        let text = dialog_text(&screen(&app, 80, 24));
+        assert!(text.contains("prod"), "{text}");
+
+        for _ in 0..app.input.chars().count() {
+            app.handle_key(key(KeyCode::Backspace));
+        }
+        assert_eq!(
+            keys(&mut app, "postgres\n"),
+            Some(Op::Move(MoveTunnel {
+                name: "db".to_string(),
+                from: "dev".to_string(),
+                to: "prod".to_string(),
+                rename_to: Some("postgres".to_string()),
+            }))
+        );
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    // A rename rewrites a record in `tunnels.toml` and a move hands one to
+    // another account. A stranger's process has no record, and a run's lives
+    // elsewhere until `m` imports it, so neither has anything to rewrite.
+    #[test]
+    fn moving_an_unmanaged_or_ephemeral_row_is_refused() {
+        let mut app = with_a_second_account();
+        app.entries.push(TunnelEntry::new(
+            access("cache:6379", 16379),
+            TunnelStatus::Running,
+            TunnelKind::External,
+        ));
+        app.selected = app.entries.len() - 1;
+        assert_eq!(keys(&mut app, "e"), None);
+        assert_eq!(app.input_mode, InputMode::Normal, "no dialog opened");
+        let status = app.status.clone().expect("a refusal is said out loud");
+        assert!(status.contains("not managed by gtunnel"), "{status}");
+        assert!(app.status_error);
+
+        let mut app = with_a_second_account();
+        app.entries.push(TunnelEntry::new(
+            access("run", 16380),
+            TunnelStatus::Running,
+            TunnelKind::Ephemeral,
+        ));
+        app.selected = app.entries.len() - 1;
+        assert_eq!(keys(&mut app, "e3"), None);
+        assert_eq!(app.input_mode, InputMode::Normal, "the dialog is gone");
+        let status = app.status.clone().expect("a refusal is said out loud");
+        assert!(status.contains("run"), "{status}");
+        assert!(
+            status.contains('m'),
+            "it says what makes it movable: {status}"
+        );
+        assert!(app.status_error);
     }
 
     #[test]
@@ -3685,6 +4304,43 @@ mod tests {
                 InputMode::EditTarget,
                 "10.0.0.10:443",
                 vec!["New value:", "10.0.0.10:443_", hint],
+            ),
+        );
+        let mut app = base();
+        app.input_mode = InputMode::ChooseEdit;
+        add(
+            "edit choice",
+            (
+                app,
+                vec![
+                    "Target and ports - what it forwards, and where to",
+                    "Rename - the same account, another name",
+                    "Move - hand it to another account",
+                    "Esc to cancel",
+                ],
+            ),
+        );
+        add(
+            "rename",
+            prompt(
+                InputMode::RenameTo,
+                "postgres",
+                vec!["New name:", "postgres_", hint],
+            ),
+        );
+        let mut app = base();
+        app.accounts = vec!["dev".to_string(), "prod".to_string()];
+        app.input_mode = InputMode::MoveTo;
+        add(
+            "move account",
+            (app, vec!["Move it to which account:", "prod"]),
+        );
+        add(
+            "move rename",
+            prompt(
+                InputMode::MoveRename,
+                "postgres",
+                vec!["New name on the destination account:", "postgres_", hint],
             ),
         );
         let mut app = base();
@@ -4622,5 +5278,282 @@ mod config_page_tests {
         // And a short page gives the row up before it gives up the file
         press(&mut app, KeyCode::Tab);
         let _ = rows(&app, 40, 12);
+    }
+}
+
+#[cfg(test)]
+mod accounts_page_tests {
+    use super::app::*;
+    use super::*;
+    use crate::config::testing::TempConfigDir;
+    use crate::config::{save_config, Account, Config};
+    use crate::state::{AccessTarget, PersistentTunnel, TunnelSpec, TunnelState};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn account(name: &str, project: &str, zone: &str) -> Account {
+        Account {
+            name: name.to_string(),
+            gcloud_configuration: "default".to_string(),
+            project: project.to_string(),
+            default_zone: zone.to_string(),
+            impersonate_service_account: None,
+            expose: None,
+        }
+    }
+
+    fn two_accounts() -> Config {
+        let mut config = Config::default();
+        config
+            .add_account(account("dev", "example-dev-1a2b", "europe-west1-b"))
+            .expect("fixture adds");
+        config
+            .add_account(account("prod", "example-prod-3c4d", "europe-west4-a"))
+            .expect("fixture adds");
+        config
+    }
+
+    fn tunnel(name: &str, local_port: u16) -> PersistentTunnel {
+        PersistentTunnel {
+            name: name.to_string(),
+            account_name: "dev".to_string(),
+            auto_start: false,
+            spec: TunnelSpec::Access {
+                target: AccessTarget::Instance {
+                    instance: "bastion".to_string(),
+                    zone: "europe-west1-b".to_string(),
+                },
+                remote_port: 5432,
+                local_port,
+            },
+        }
+    }
+
+    fn page_app() -> App {
+        let mut app = App::new("dev");
+        app.reload_config(&two_accounts());
+        app.handle_key(key(KeyCode::Char(':')));
+        app
+    }
+
+    fn rows(app: &App, width: u16, height: u16) -> Vec<String> {
+        let backend = ratatui::backend::TestBackend::new(width, height);
+        let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+        terminal.draw(|f| ui::render(f, app)).expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    // Clears whatever the field was pre-filled with, then types
+    fn retype(app: &mut App, text: &str) {
+        for _ in 0..app.input.chars().count() {
+            app.handle_key(key(KeyCode::Backspace));
+        }
+        for c in text.chars() {
+            app.handle_key(key(KeyCode::Char(c)));
+        }
+    }
+
+    // The header names one account; this page is where the others are, so each
+    // row has to carry what tells them apart - the project and the zone - and
+    // the one the rest of the screen is showing has to be findable at a glance.
+    #[test]
+    fn the_accounts_page_lists_every_account_and_marks_the_selected_one() {
+        let app = page_app();
+        assert_eq!(app.input_mode, InputMode::Accounts);
+        let rows = rows(&app, 80, 24);
+        // Both values, because the header already carries the project of the
+        // account on screen and a row found by that alone could be the header
+        let row_of = |project: &str, zone: &str| {
+            rows.iter()
+                .find(|r| r.contains(project) && r.contains(zone))
+                .unwrap_or_else(|| panic!("no row for {project} in {zone}:\n{}", rows.join("\n")))
+                .clone()
+        };
+        let dev = row_of("example-dev-1a2b", "europe-west1-b");
+        let prod = row_of("example-prod-3c4d", "europe-west4-a");
+        assert!(dev.contains(" dev "), "{dev:?}");
+        assert!(prod.contains(" prod "), "{prod:?}");
+        assert!(
+            dev.contains('*'),
+            "the account on screen is marked: {dev:?}"
+        );
+        assert!(!prod.contains('*'), "only that one is marked: {prod:?}");
+        let page = rows.join("\n");
+        for hint in ["a add", "e edit", "d remove", "Esc back"] {
+            assert!(page.contains(hint), "{hint} is missing:\n{page}");
+        }
+    }
+
+    // The dialog asks for a gcloud configuration and not a project, because
+    // `account add` reads the project and the zone from the configuration.
+    // The name is checked here as well as there: a duplicate that reached the
+    // command would come back as a failure after a gcloud call.
+    #[test]
+    fn the_add_dialog_asks_for_a_configuration_and_a_name_it_can_use() {
+        let mut app = page_app();
+        app.handle_key(key(KeyCode::Char('a')));
+        assert_eq!(app.input_mode, InputMode::AccountConfiguration);
+        retype(&mut app, "work");
+        assert_eq!(app.handle_key(key(KeyCode::Enter)), None);
+        assert_eq!(app.input_mode, InputMode::AccountName);
+
+        retype(&mut app, "dev");
+        assert_eq!(app.handle_key(key(KeyCode::Enter)), None, "dev is taken");
+        assert_eq!(app.input_mode, InputMode::AccountName, "the dialog stays");
+        let said = app.draft_error.clone().expect("a reason beside the field");
+        assert!(said.contains("already an account"), "{said}");
+
+        retype(&mut app, "Sandbox");
+        assert_eq!(
+            app.handle_key(key(KeyCode::Enter)),
+            None,
+            "not a valid name"
+        );
+        let said = app.draft_error.clone().expect("a reason beside the field");
+        assert!(said.contains("lowercase"), "{said}");
+
+        retype(&mut app, "sandbox");
+        assert_eq!(
+            app.handle_key(key(KeyCode::Enter)),
+            Some(Op::AccountAdd(NewAccount {
+                configuration: "work".to_string(),
+                name: "sandbox".to_string(),
+            }))
+        );
+        assert_eq!(app.input_mode, InputMode::Accounts, "back on the page");
+    }
+
+    // `cmd_account_edit` refuses a call with nothing to change and refuses an
+    // empty value, so the dialog pre-fills both fields and sends only what
+    // the person actually altered.
+    #[test]
+    fn the_edit_dialog_sends_only_the_field_that_changed() {
+        let mut app = page_app();
+        app.handle_key(key(KeyCode::Char('e')));
+        assert_eq!(app.input_mode, InputMode::AccountProject);
+        assert_eq!(app.input, "example-dev-1a2b", "the project is pre-filled");
+        assert_eq!(app.handle_key(key(KeyCode::Enter)), None);
+        assert_eq!(app.input, "europe-west1-b", "the zone is pre-filled");
+
+        retype(&mut app, "europe-west4-a");
+        assert_eq!(
+            app.handle_key(key(KeyCode::Enter)),
+            Some(Op::AccountEdit(AccountEdit {
+                name: "dev".to_string(),
+                project: None,
+                zone: Some("europe-west4-a".to_string()),
+            }))
+        );
+        assert_eq!(app.input_mode, InputMode::Accounts);
+
+        // Enter through both fields alters nothing, and a command that would
+        // be refused for having nothing to change is not sent
+        app.handle_key(key(KeyCode::Char('e')));
+        assert_eq!(app.handle_key(key(KeyCode::Enter)), None);
+        assert_eq!(app.handle_key(key(KeyCode::Enter)), None);
+        assert_eq!(app.input_mode, InputMode::Accounts);
+        let notice = app.account_notice.clone().expect("the page says so");
+        assert_eq!(notice.text, "dev is unchanged");
+        assert!(notice.ok);
+    }
+
+    // Selecting is two things at once: the screen moves to that account, and
+    // the choice is written down, so the next `gtunnel` command agrees with
+    // what the person is looking at.
+    #[test]
+    fn enter_puts_an_account_on_screen_and_writes_the_choice_down() {
+        let mut app = page_app();
+        app.handle_key(key(KeyCode::Down));
+        assert_eq!(
+            app.handle_key(key(KeyCode::Enter)),
+            Some(Op::AccountSelect("prod".to_string()))
+        );
+        assert_eq!(app.account, "prod", "the screen moved");
+        assert_eq!(app.default_zone, "europe-west4-a", "and so did the zone");
+        assert!(app.entries.is_empty(), "dev's rows are not prod's");
+        assert_eq!(app.input_mode, InputMode::Normal, "the page is done");
+    }
+
+    // The two cells between pairs are what make the row read as keys rather
+    // than as a sentence. Word-wrapping collapsed them to one, which turned
+    // the hint into "Enter select a add e edit".
+    #[test]
+    fn the_page_keys_keep_two_cells_between_each_pair() {
+        let app = page_app();
+        let wide = rows(&app, 80, 24);
+        let hint = wide
+            .iter()
+            .find(|r| r.contains("Esc back"))
+            .unwrap_or_else(|| panic!("no hint row:\n{}", wide.join("\n")));
+        assert!(hint.contains("j/k move  Enter select  a add"), "{hint:?}");
+
+        // Too narrow for one row: the pairs take two rows whole, rather than
+        // one row with the end of it cut off
+        let narrow = rows(&app, 50, 24);
+        let hinted: Vec<&String> = narrow
+            .iter()
+            .filter(|r| r.contains("j/k move") || r.contains("Esc back"))
+            .collect();
+        assert_eq!(hinted.len(), 2, "{}", narrow.join("\n"));
+        for pair in ["j/k move", "Enter select", "a add", "e edit", "d remove"] {
+            assert!(
+                narrow.iter().any(|r| r.contains(pair)),
+                "{pair} was cut:\n{}",
+                narrow.join("\n")
+            );
+        }
+    }
+
+    // `gtunnel account remove` refuses an account that still holds tunnels,
+    // before the confirmation and whatever `--yes` says, because no flag
+    // answers what becomes of them. The page asks the same command and so
+    // meets the same refusal: its job is to show it, not to pre-empt it.
+    #[tokio::test]
+    async fn deleting_an_account_with_tunnels_says_why_it_cannot() {
+        let _dir = TempConfigDir::new();
+        let config = two_accounts();
+        save_config(&config).expect("fixture saves");
+        let mut state = TunnelState::default();
+        state.add(tunnel("db", 15432)).expect("fixture adds");
+        state.add(tunnel("cache", 16379)).expect("fixture adds");
+        state.save().expect("fixture saves");
+
+        let mut app = App::new("dev");
+        app.reload_config(&config);
+        app.handle_key(key(KeyCode::Char(':')));
+        app.handle_key(key(KeyCode::Char('d')));
+        assert_eq!(app.input_mode, InputMode::AccountConfirm);
+        let op = app.handle_key(key(KeyCode::Char('y'))).expect("y removes");
+        assert_eq!(op, Op::AccountRemove("dev".to_string()));
+        assert_eq!(app.input_mode, InputMode::Accounts, "back on the page");
+
+        let result = ops::execute("dev", op).await;
+        assert!(!result.ok, "{}", result.message);
+        assert!(result.from_account, "the page is what has to hear of it");
+        for part in ["2 tunnel(s)", "gtunnel delete", "gtunnel move"] {
+            assert!(result.message.contains(part), "{}", result.message);
+        }
+        let refusal = result.message.clone();
+        app.apply(result);
+        assert_eq!(
+            app.account_notice.as_ref().map(|n| (n.text.clone(), n.ok)),
+            Some((refusal, false)),
+            "the page carries the refusal whole"
+        );
+        let page = rows(&app, 80, 24).join("\n");
+        assert!(page.contains("tunnel(s)"), "the page says why:\n{page}");
+        assert!(page.contains("gtunnel"), "and what to do about it:\n{page}");
+        let config = crate::config::load_config().expect("loads");
+        assert!(config.get_account(Some("dev")).is_ok(), "the account stays");
     }
 }

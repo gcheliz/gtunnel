@@ -1,7 +1,11 @@
 use anyhow::{bail, Context, Result};
 use std::collections::HashSet;
 
-use super::app::{EditTunnel, NewTunnel, Op, OpResult, TunnelEntry, TunnelKind, TunnelMode};
+use super::app::{
+    AccountEdit, EditTunnel, MoveTunnel, NewAccount, NewTunnel, Op, OpResult, RenameTunnel,
+    TunnelEntry, TunnelKind, TunnelMode,
+};
+use crate::commands::{account, relocate};
 use crate::commands::{find_tunnel, resolve};
 use crate::config::load_config;
 use crate::daemon;
@@ -18,7 +22,7 @@ const IMPORT_HANDOVER: Duration = Duration::from_secs(10);
 const TCP_HEALTH_TIMEOUT: Duration = Duration::from_secs(2);
 
 // Everything the list shows for one account, read fresh
-pub async fn load_entries(account: &str) -> Result<Vec<TunnelEntry>> {
+pub async fn load_entries(account: &str) -> Result<(Vec<TunnelEntry>, HashSet<u16>)> {
     let state = TunnelState::load()?;
     let mut entries = Vec::new();
     // Every gtunnel pid on the machine, so another account's tunnel is not
@@ -68,7 +72,7 @@ pub async fn load_entries(account: &str) -> Result<Vec<TunnelEntry>> {
         entries.push(entry);
     }
 
-    Ok(entries)
+    Ok((entries, state.used_local_ports()))
 }
 
 /// What to call a `gcloud` process gtunnel did not start.
@@ -216,6 +220,15 @@ pub async fn collect(
     })
 }
 
+// An op that writes config.toml, so the accounts the TUI holds are stale
+// whether it succeeded or not: a half-made account is still an account
+fn touches_accounts(op: &Op) -> bool {
+    matches!(
+        op,
+        Op::AccountAdd(_) | Op::AccountEdit(_) | Op::AccountRemove(_) | Op::AccountSelect(_)
+    )
+}
+
 // Runs on a tokio task; the UI thread never waits on gcloud or the API
 pub async fn execute(account: &str, op: Op) -> OpResult {
     match run(account, &op).await {
@@ -223,11 +236,18 @@ pub async fn execute(account: &str, op: Op) -> OpResult {
             message,
             ok: true,
             reload: true,
+            from_create: matches!(op, Op::Create(_)),
+            from_account: touches_accounts(&op),
         },
         Err(e) => OpResult {
             message: format!("{e:#}"),
             ok: false,
-            reload: matches!(op, Op::Delete(_) | Op::Import(_)),
+            // A failed create may already have saved its record: `add` saves
+            // before it installs and starts, so the list must be re-read or
+            // the name check cannot see the half-made tunnel.
+            reload: matches!(op, Op::Delete(_) | Op::Import(_) | Op::Create(_)),
+            from_create: matches!(op, Op::Create(_)),
+            from_account: touches_accounts(&op),
         },
     }
 }
@@ -250,7 +270,63 @@ async fn run(account: &str, op: &Op) -> Result<String> {
         Op::ClearLog(name) => clear_log(account, name),
         Op::Create(new) => create(new).await,
         Op::Edit(edit) => edit_tunnel(edit).await,
+        Op::Rename(rename) => rename_tunnel(rename).await,
+        Op::Move(moving) => move_tunnel(moving).await,
+        Op::AccountAdd(new) => add_account(new).await,
+        Op::AccountEdit(edit) => edit_account(edit),
+        Op::AccountRemove(name) => remove_account(name),
+        Op::AccountSelect(name) => select_account(name),
     }
+}
+
+// Both of these are the CLI's own commands, for the reason `create` calls
+// `cmd_add`: which names are free, what moves with a label and which tunnels
+// may not leave their account at all are answered in one place, and the
+// dialog is a second way to ask rather than a second set of rules.
+async fn rename_tunnel(rename: &RenameTunnel) -> Result<String> {
+    relocate::cmd_rename(Some(&rename.account), &rename.name, &rename.new_name).await?;
+    Ok(format!("renamed {} to {}", rename.name, rename.new_name))
+}
+
+async fn move_tunnel(moving: &MoveTunnel) -> Result<String> {
+    relocate::cmd_move(
+        &moving.name,
+        Some(&moving.from),
+        &moving.to,
+        moving.rename_to.as_deref(),
+    )
+    .await?;
+    Ok(match &moving.rename_to {
+        Some(new) => format!("moved {} to {} as {new}", moving.name, moving.to),
+        None => format!("moved {} to {}", moving.name, moving.to),
+    })
+}
+
+// The four below are the CLI's own commands, for the reason `create` calls
+// `cmd_add`: what an account may be called, which zone is real and whether an
+// account may go at all are answered in one place, and the page is a second
+// way to ask rather than a second set of rules.
+async fn add_account(new: &NewAccount) -> Result<String> {
+    account::cmd_account_add(&new.configuration, &new.name).await?;
+    Ok(format!("added account {}", new.name))
+}
+
+fn edit_account(edit: &AccountEdit) -> Result<String> {
+    account::cmd_account_edit(&edit.name, edit.project.as_deref(), edit.zone.as_deref())?;
+    Ok(format!("{} updated", edit.name))
+}
+
+// `--yes` answers a question the TUI has already asked on the page. It does
+// not answer the refusal underneath: an account that still holds tunnels is
+// refused here whatever this flag says.
+fn remove_account(name: &str) -> Result<String> {
+    account::cmd_account_remove(name, true)?;
+    Ok(format!("removed account {name}"))
+}
+
+fn select_account(name: &str) -> Result<String> {
+    account::cmd_account_select(name)?;
+    Ok(format!("selected account {name}"))
 }
 
 // What the draft means to `add`: a tunnel to a host the instance reaches names

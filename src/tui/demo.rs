@@ -167,6 +167,22 @@ impl App {
             ("staging".to_string(), "gtunnel-staging-000000".to_string()),
         ]
         .into();
+        app.zones = [
+            ("demo".to_string(), "europe-west1-b".to_string()),
+            ("staging".to_string(), "europe-west4-a".to_string()),
+        ]
+        .into();
+        app.default_zone = "europe-west1-b".to_string();
+        // Both accounts', as a real load carries: ports are the laptop's, so the
+        // Add dialog must not suggest the other account's
+        app.used_ports = demo_entries()
+            .into_iter()
+            .chain(staging_entries())
+            .filter_map(|e| match e.tunnel.spec {
+                TunnelSpec::Access { local_port, .. } => Some(local_port),
+                _ => None,
+            })
+            .collect();
         app.load_demo_account();
         app.set_status("demo data: nothing here touches GCP");
         app

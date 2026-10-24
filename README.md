@@ -111,9 +111,11 @@ roughly USD 25/month per account, nothing per tunnel. `relay down` removes all o
 ## The TUI
 
 `gtunnel` with no subcommand opens the TUI; `gtunnel demo` opens it filled with synthetic
-data and touches no GCP project and no config file. `?` opens all 23 bindings as a page,
-`;` switches account and project together, and the footer offers only what the selected
-tunnel can do. Metrics refresh every 5s, health every 30s, load-balancer request counts
+data and touches no GCP project and no config file. `?` opens all 31 bindings as a page,
+`;` switches account and project together, `:` opens the accounts page to add, edit, select
+and remove them, and the footer offers only what the selected tunnel can do. `e` chooses
+between editing the target and ports, renaming, and moving the tunnel to another account.
+Metrics refresh every 5s, health every 30s, load-balancer request counts
 every 60s. Below 121 columns the list stacks above Details, Logs and Metrics.
 
 Every binding and pane: [docs/usage.md](docs/usage.md#the-tui). Why each one looks the way
@@ -123,7 +125,9 @@ it does: [docs/design.md](docs/design.md).
 
 Beyond the five above: `run` holds an ephemeral tunnel in the foreground and tears its
 route down on Ctrl+C, `logs -f` follows a tunnel's log, and `doctor --fix` removes
-leftovers. `start`, `stop`, `restart`, `autostart`, `list`, `delete`, `zones`, `account`,
+leftovers. `rename` moves a tunnel's service and log with its name, and `move` hands an
+Access tunnel to another account, verifying the destination before it writes anything.
+`start`, `stop`, `restart`, `autostart`, `list`, `delete`, `zones`, `account`,
 `reset`, `demo` and `update` do what they say. `--account <name>` works on every command.
 Each one, its output, and which of them write to GCP:
 [docs/usage.md](docs/usage.md#command-map).

@@ -199,6 +199,38 @@ pub enum Commands {
         name: String,
     },
 
+    // Rename a tunnel
+    #[command(about = "Rename a tunnel and move its service and log with it")]
+    Rename {
+        // Current tunnel name
+        #[arg(help = "Current tunnel name")]
+        old: String,
+
+        // New tunnel name
+        #[arg(help = "New tunnel name")]
+        new: String,
+    },
+
+    // Move an Access tunnel to another account
+    #[command(
+        about = "Move an Access tunnel to another account",
+        long_about = "Move an Access tunnel to another account. The global --account names the \
+source and --to the destination."
+    )]
+    Move {
+        // Tunnel name
+        #[arg(help = "Tunnel name")]
+        name: String,
+
+        // Destination account
+        #[arg(long, help = "Account to move the tunnel to")]
+        to: String,
+
+        // Name to land under when the destination holds the current one
+        #[arg(long, help = "New name, when the destination already has this one")]
+        rename: Option<String>,
+    },
+
     // Manage compute zones
     #[command(about = "Manage compute zones")]
     Zones {
@@ -298,6 +330,8 @@ impl Commands {
             | Commands::Logs { .. }
             | Commands::List
             | Commands::Delete { .. }
+            | Commands::Rename { .. }
+            | Commands::Move { .. }
             | Commands::Zones { .. }
             | Commands::Domains { .. }
             | Commands::Relay { .. } => true,
@@ -395,8 +429,36 @@ pub enum AccountCommands {
         name: String,
     },
 
+    // Add an account from an existing gcloud configuration
+    #[command(about = "Add an account from an existing gcloud configuration")]
+    Add {
+        // Account name
+        #[arg(help = "Account name")]
+        name: String,
+
+        // gcloud configuration to take project and zone from
+        #[arg(long, help = "gcloud configuration to take project and zone from")]
+        configuration: String,
+    },
+
+    // Change an account's project or default zone
+    #[command(about = "Change an account's project or default zone")]
+    Edit {
+        // Account name
+        #[arg(help = "Account name")]
+        name: String,
+
+        // New project
+        #[arg(long, help = "New project")]
+        project: Option<String>,
+
+        // New default zone
+        #[arg(long, help = "New default zone")]
+        zone: Option<String>,
+    },
+
     // Remove an account
-    #[command(about = "Remove an account")]
+    #[command(about = "Remove an account that holds no tunnels")]
     Remove {
         // Account name
         #[arg(help = "Account name")]
@@ -414,6 +476,45 @@ mod tests {
 
     fn parse(args: &[&str]) -> Cli {
         Cli::try_parse_from(args).expect("should parse")
+    }
+
+    #[test]
+    fn rename_takes_the_old_and_the_new_name_and_an_account() {
+        let cli = parse(&["gtunnel", "rename", "db", "pg", "--account", "dev"]);
+        assert_eq!(cli.account.as_deref(), Some("dev"));
+        match cli.command.expect("command") {
+            Commands::Rename { old, new } => assert_eq!((old.as_str(), new.as_str()), ("db", "pg")),
+            other => panic!("parsed as {other:?}"),
+        }
+    }
+
+    #[test]
+    fn move_takes_a_name_a_destination_and_an_optional_rename() {
+        let cli = parse(&[
+            "gtunnel",
+            "move",
+            "db",
+            "--to",
+            "prod",
+            "--rename",
+            "pg",
+            "--account",
+            "dev",
+        ]);
+        assert_eq!(cli.account.as_deref(), Some("dev"));
+        match cli.command.expect("command") {
+            Commands::Move { name, to, rename } => {
+                assert_eq!((name.as_str(), to.as_str()), ("db", "prod"));
+                assert_eq!(rename.as_deref(), Some("pg"));
+            }
+            other => panic!("parsed as {other:?}"),
+        }
+        assert!(Cli::try_parse_from(["gtunnel", "move", "db"]).is_err());
+        let help = Cli::try_parse_from(["gtunnel", "move", "--help"])
+            .err()
+            .expect("help exits")
+            .to_string();
+        assert!(help.contains("--account names the source"), "{help}");
     }
 
     #[test]

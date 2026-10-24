@@ -108,6 +108,12 @@ async fn main() -> Result<()> {
         }) => commands::access::cmd_logs(account, &name, follow, lines).await,
         Some(Commands::List) => commands::access::cmd_list(account).await,
         Some(Commands::Delete { name }) => commands::access::cmd_delete(account, &name).await,
+        Some(Commands::Rename { old, new }) => {
+            commands::relocate::cmd_rename(account, &old, &new).await
+        }
+        Some(Commands::Move { name, to, rename }) => {
+            commands::relocate::cmd_move(&name, account, &to, rename.as_deref()).await
+        }
         Some(Commands::Zones { command }) => match command {
             None => commands::access::cmd_zones(account, None).await,
             Some(ZonesCommands::Default { zone }) => {
@@ -149,6 +155,15 @@ async fn main() -> Result<()> {
             Some(AccountCommands::Select { name }) | Some(AccountCommands::Default { name }) => {
                 commands::account::cmd_account_select(&name)
             }
+            Some(AccountCommands::Add {
+                name,
+                configuration,
+            }) => commands::account::cmd_account_add(&configuration, &name).await,
+            Some(AccountCommands::Edit {
+                name,
+                project,
+                zone,
+            }) => commands::account::cmd_account_edit(&name, project.as_deref(), zone.as_deref()),
             Some(AccountCommands::Remove { name, yes }) => {
                 commands::account::cmd_account_remove(&name, yes)
             }

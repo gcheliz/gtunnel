@@ -3,7 +3,7 @@ use anyhow::{bail, Context, Result};
 use super::{confirm, prompt, resolve};
 use crate::config::{save_config, DomainConfig};
 use crate::daemon;
-use crate::expose::naming::Names;
+use crate::expose::naming::{hostname_for, Names};
 use crate::expose::{relay, routes};
 use crate::gcp::{certmanager, dns, GcpClient};
 use crate::state::{
@@ -207,7 +207,7 @@ fn new_expose_tunnel(
         spec: TunnelSpec::Expose {
             local_target: local_target.to_string(),
             domain: domain.to_string(),
-            hostname: format!("{name}.{domain}"),
+            hostname: hostname_for(name, domain),
             relay_port,
             private,
         },
