@@ -15,13 +15,28 @@
   <sub>Every push runs <a href=".github/workflows/ci.yml">CI</a>: rustfmt, clippy with <code>-D warnings</code>, the test suite, <code>cargo audit --deny warnings</code>, a build on the declared 1.88 floor, and zizmor over the workflows.</sub>
 </p>
 
-![The gtunnel TUI: tunnel list, details, logs and metrics](docs/demo-tui.gif)
+## What gtunnel is
 
 A TUI-first manager for GCP Identity-Aware Proxy tunnels. One binary, two modes:
 a private port on `localhost` that reaches a VM inside a VPC, and a public HTTPS
-URL in front of a service running on your laptop.
+URL in front of a service running on your laptop. Tunnels are declared once, run as
+supervised user services, and are watched from a dashboard that shows whether each
+one is actually carrying traffic.
 
-No inbound firewall rules, no public IP on the target, no agent on the VM.
+![gtunnel topology: a private port inward through IAP, a public URL outward through a relay VM](docs/images/architecture/gtunnel-overview.png)
+
+| Why | What it means in practice |
+|---|---|
+| Nothing is exposed | No inbound firewall rule, no public IP on the target, no agent on the VM. IAP authorises each connection against your own Google identity |
+| Nothing is stored | gtunnel keeps no credential. Every token comes from `gcloud auth print-access-token` at connect time |
+| Access mode creates nothing in GCP | A private port is a local process plus an IAP connection, so it leaves no resource behind and costs nothing |
+| Tunnels survive the terminal | launchd on macOS, systemd `--user` on Linux: restart on failure, optional start at login, one log per tunnel |
+| The dashboard tells the truth | Live latency, active connections, load-balancer request counts and the tunnel's own log, rather than a process that is merely running |
+
+Everything in the table below ships in the current version. This README has no roadmap
+section because it describes only what the binary already does.
+
+![The gtunnel TUI: tunnel list, details, logs and metrics](docs/demo-tui.gif)
 
 ## Features
 
@@ -39,21 +54,34 @@ service-lifecycle diagrams, the account model, and every resource name.
 
 ## Prerequisites
 
-macOS or Linux, the Google Cloud SDK on `PATH`, an authenticated gcloud configuration, and
-`roles/iap.tunnelResourceAccessor` on the instance, destination group or project. IAP also
-needs a firewall rule letting `35.235.240.0/20` reach the port you are tunnelling to;
-`gtunnel doctor` prints the exact command. Public mode additionally needs a Cloud DNS
-managed zone and the IAM in [docs/troubleshooting.md](docs/troubleshooting.md#iam).
+| Requirement | How to get it | How to check |
+|---|---|---|
+| macOS or Linux | — | `uname -s` |
+| Google Cloud SDK on `PATH` | [cloud.google.com/sdk/docs/install](https://cloud.google.com/sdk/docs/install) | `gcloud version` |
+| An authenticated configuration | `gcloud init` then `gcloud auth login` | `gcloud config list` |
+| `roles/iap.tunnelResourceAccessor` | [cloud.google.com/iap/docs/using-tcp-forwarding](https://cloud.google.com/iap/docs/using-tcp-forwarding#grant-permission) on the instance, destination group or project | `gtunnel doctor` |
+| A firewall rule for `35.235.240.0/20` | `gtunnel doctor` prints the exact `gcloud compute firewall-rules create` for the port you are tunnelling to | `gtunnel doctor` |
 
-gtunnel stores no credential: every token comes from `gcloud auth print-access-token`.
+Public mode additionally needs a [Cloud DNS](https://cloud.google.com/dns/docs/zones)
+managed zone you control and the IAM in
+[docs/troubleshooting.md](docs/troubleshooting.md#iam).
+
+The guided walkthrough, from a clean machine to a first working tunnel with the output of
+every step: [docs/usage.md](docs/usage.md#getting-set-up).
 
 ## Installation
 
-`cargo install --path .`, or download `gtunnel-<target>.tar.gz` from Releases, verify the
-`.sha256` and extract. Targets per release: `aarch64-apple-darwin`, `x86_64-apple-darwin`,
-`x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`. `gtunnel update` replaces a
-downloaded binary in place after verifying the published SHA-256, and prints the right
-upgrade command instead when Homebrew or cargo installed it.
+| Route | Command |
+|---|---|
+| From source | `cargo install --path .` |
+| From a release | download `gtunnel-<target>.tar.gz` and its `.sha256`, check with `shasum -a 256 -c`, then extract onto your `PATH` |
+| Upgrade in place | `gtunnel update` |
+
+Release targets: `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-musl`,
+`aarch64-unknown-linux-musl`. `gtunnel update` replaces a downloaded binary after verifying
+the published SHA-256, and prints the right upgrade command instead when cargo or Homebrew
+installed it. Confirm the install with `gtunnel --version`, then run `gtunnel doctor` before
+the first tunnel.
 
 ## Quick start
 

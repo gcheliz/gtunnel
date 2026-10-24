@@ -8,6 +8,104 @@ captured output are shown at their default location rather than the throwaway di
 run used, and the instance names of tunnels gtunnel only observed are replaced with generic
 ones.
 
+## Getting set up
+
+From a machine with nothing installed to a first working tunnel. Each step links to the
+section below that shows its full output.
+
+### 1. Install the Google Cloud SDK
+
+gtunnel shells out to `gcloud` for every connection and stores no credential of its own, so
+the SDK comes first: [cloud.google.com/sdk/docs/install](https://cloud.google.com/sdk/docs/install).
+
+```
+$ gcloud version
+Google Cloud SDK 590.0.0
+alpha 2026.10.16
+bq 2.1.40
+```
+
+### 2. Authenticate and pick a project
+
+```
+gcloud init                 # creates a configuration: account, project, region
+gcloud auth login           # the credential gtunnel will mint tokens from
+gcloud config list          # confirm account and project
+```
+
+A gtunnel account wraps one gcloud configuration, so getting this right is what `gtunnel
+init` reads in the next step. If you work across environments, make one gcloud
+configuration per environment now — `gcloud config configurations create <name>`.
+
+### 3. Grant yourself IAP access
+
+Tunnelling needs `roles/iap.tunnelResourceAccessor` on the instance, the destination group,
+or the project:
+[cloud.google.com/iap/docs/using-tcp-forwarding](https://cloud.google.com/iap/docs/using-tcp-forwarding#grant-permission).
+Without it a tunnel starts and then fails with `4033`; the
+[error table](troubleshooting.md) lists what each code means.
+
+IAP also connects from a fixed range, so the target port needs a firewall rule allowing
+`35.235.240.0/20`. `gtunnel doctor` prints the exact `gcloud compute firewall-rules create`
+for the port you are tunnelling to rather than making you compose it.
+
+### 4. Install gtunnel
+
+```
+cargo install --path .                    # from source
+gtunnel --version
+```
+
+```
+$ gtunnel --version
+gtunnel 0.1.0
+```
+
+Or take `gtunnel-<target>.tar.gz` and its `.sha256` from Releases, verify with
+`shasum -a 256 -c gtunnel-<target>.tar.gz.sha256`, and extract onto your `PATH`. Later
+upgrades are [`gtunnel update`](#update).
+
+### 5. Create the account
+
+Order matters: every other command needs an account, and says so until one exists.
+
+```
+$ gtunnel doctor
+Error: gtunnel is not initialized. Run `gtunnel init`.
+```
+
+```
+gtunnel init
+```
+
+[init](#init) shows the prompts. A default zone is required — `gtunnel zones` lists the ones
+in the project.
+
+### 6. Check the ground before the first tunnel
+
+```
+gtunnel doctor
+```
+
+[doctor](#doctor) reports what it can see and prints the exact command for anything it
+cannot fix itself: missing credentials, a gcloud Python without numpy, a missing firewall
+rule. Clear its findings before adding a tunnel, so a failure later is about the tunnel and
+not about the setup.
+
+### 7. Add a tunnel
+
+```
+gtunnel add db my-vm:5432 -s
+psql -h localhost -p 15432
+```
+
+[add](#add) covers the three shapes a target can take: a port of an instance, a host behind
+a jump instance with `--via`, and an IAP destination group. `-s` installs the user service
+and starts it, so the tunnel survives closing the terminal.
+
+Publishing a local service instead needs a Cloud DNS managed zone and a one-off relay per
+account: [domains](#zones-and-domains), [relay](#relay), then [expose](#expose).
+
 ## Command map
 
 | Command | Purpose | Touches GCP |
@@ -122,6 +220,12 @@ window, so moving inside it moves the highlight and not the rows, and a
 Details value too long for its row (a URL, a target, how the tunnel was started) wraps under
 its label instead of being cut. When the terminal is short, Logs keeps at least 4 rows and
 Metrics shrinks, then disappears, before Logs does.
+
+Metrics redraws every 5 seconds, and its `active` is the most client connections the local
+port carried since the last redraw, not the number open at the instant it drew. The count is
+sampled twice a second: a `kubectl` call holds its socket for a few hundred milliseconds, so
+a figure read once every 5 seconds landed between requests and reported 0 under real
+traffic. The tunnel's log records the same number, and only when it changes.
 
 ### The config page
 
