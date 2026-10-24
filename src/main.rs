@@ -111,6 +111,9 @@ async fn main() -> Result<()> {
         Some(Commands::Rename { old, new }) => {
             commands::relocate::cmd_rename(account, &old, &new).await
         }
+        Some(Commands::Move { name, to, rename }) => {
+            commands::relocate::cmd_move(&name, account, &to, rename.as_deref()).await
+        }
         Some(Commands::Zones { command }) => match command {
             None => commands::access::cmd_zones(account, None).await,
             Some(ZonesCommands::Default { zone }) => {

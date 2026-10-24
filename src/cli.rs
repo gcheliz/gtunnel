@@ -211,6 +211,22 @@ pub enum Commands {
         new: String,
     },
 
+    // Move an Access tunnel to another account
+    #[command(about = "Move an Access tunnel to another account")]
+    Move {
+        // Tunnel name
+        #[arg(help = "Tunnel name")]
+        name: String,
+
+        // Destination account
+        #[arg(long, help = "Account to move the tunnel to")]
+        to: String,
+
+        // Name to land under when the destination holds the current one
+        #[arg(long, help = "New name, when the destination already has this one")]
+        rename: Option<String>,
+    },
+
     // Manage compute zones
     #[command(about = "Manage compute zones")]
     Zones {
@@ -311,6 +327,7 @@ impl Commands {
             | Commands::List
             | Commands::Delete { .. }
             | Commands::Rename { .. }
+            | Commands::Move { .. }
             | Commands::Zones { .. }
             | Commands::Domains { .. }
             | Commands::Relay { .. } => true,
@@ -437,6 +454,30 @@ mod tests {
             Commands::Rename { old, new } => assert_eq!((old.as_str(), new.as_str()), ("db", "pg")),
             other => panic!("parsed as {other:?}"),
         }
+    }
+
+    #[test]
+    fn move_takes_a_name_a_destination_and_an_optional_rename() {
+        let cli = parse(&[
+            "gtunnel",
+            "move",
+            "db",
+            "--to",
+            "prod",
+            "--rename",
+            "pg",
+            "--account",
+            "dev",
+        ]);
+        assert_eq!(cli.account.as_deref(), Some("dev"));
+        match cli.command.expect("command") {
+            Commands::Move { name, to, rename } => {
+                assert_eq!((name.as_str(), to.as_str()), ("db", "prod"));
+                assert_eq!(rename.as_deref(), Some("pg"));
+            }
+            other => panic!("parsed as {other:?}"),
+        }
+        assert!(Cli::try_parse_from(["gtunnel", "move", "db"]).is_err());
     }
 
     #[test]

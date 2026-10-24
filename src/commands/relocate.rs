@@ -1,25 +1,68 @@
 use anyhow::{bail, Context, Result};
 use std::path::Path;
 
+use super::access::verify_instance;
 use super::{find_tunnel, resolve};
 use crate::config::{Account, Config};
 use crate::daemon::{self, ServiceSpec};
 use crate::expose::naming::hostname_for;
 use crate::expose::routes;
 use crate::gcp::GcpClient;
-use crate::state::{validate_tunnel_name, PersistentTunnel, TunnelSpec, TunnelState, TunnelStatus};
+use crate::state::{
+    validate_tunnel_name, AccessTarget, PersistentTunnel, TunnelSpec, TunnelState, TunnelStatus,
+};
 
-/// Refuse a new name before anything is touched. A name is unique per
-/// account, not globally, so only this account's tunnels can collide.
-fn check_rename(state: &TunnelState, account: &str, old: &str, new: &str) -> Result<()> {
+/// Refuse a rename or a move before anything is touched. A name is unique per
+/// account, not globally, so only the destination account's tunnels can
+/// collide; a move is a rename whose account changes too.
+fn check_relocate(state: &TunnelState, from: &str, to: &str, old: &str, new: &str) -> Result<()> {
     validate_tunnel_name(new)?;
-    if state.find_for_account(old, account).is_none() {
-        bail!("Tunnel '{old}' not found for account '{account}'");
+    let Some(tunnel) = state.find_for_account(old, from) else {
+        bail!("Tunnel '{old}' not found for account '{from}'");
+    };
+    if from != to {
+        if tunnel.is_expose() {
+            // A public tunnel's backend, host rule, named port and DNS record
+            // live in the source project; rebuilding them in another needs a
+            // relay and a domain that may not be there
+            bail!(
+                "'{old}' is an Expose tunnel and cannot move between accounts; \
+                 run `gtunnel delete {old}` on '{from}', then `gtunnel expose` on '{to}'"
+            );
+        }
+        if let TunnelSpec::Access {
+            target: AccessTarget::DestGroup { group, .. },
+            ..
+        } = &tunnel.spec
+        {
+            // The group is a resource of the source project, so the same
+            // argv in the destination would name something that is not there
+            bail!(
+                "'{old}' reaches its host through the destination group '{group}' of '{from}'; \
+                 create the group in '{to}', then `gtunnel delete {old}` and `gtunnel add` it there"
+            );
+        }
     }
-    if state.find_for_account(new, account).is_some() {
-        bail!("Tunnel '{new}' already exists on account '{account}'");
+    if state.find_for_account(new, to).is_some() {
+        bail!("Tunnel '{new}' already exists on account '{to}'");
     }
     Ok(())
+}
+
+/// A move that stays on its account is a rename, which has its own command.
+fn check_accounts_differ(from: &str, to: &str, name: &str) -> Result<()> {
+    if from == to {
+        bail!(
+            "Tunnel '{name}' is already on account '{to}'; use `gtunnel rename` to change its name"
+        );
+    }
+    Ok(())
+}
+
+/// The name a move lands under: the one the caller chose when the destination
+/// holds the old one, otherwise the old name unchanged.
+fn target_name<'a>(name: &'a str, rename_to: Option<&'a str>) -> &'a str {
+    rename_to.unwrap_or(name)
 }
 
 /// The whole of a rename that touches no daemon. A public tunnel's hostname is
@@ -35,25 +78,31 @@ fn rename_record(tunnel: &mut PersistentTunnel, new: &str) {
     }
 }
 
-fn rename_in_state(
+fn relocate_in_state(
     state: &mut TunnelState,
-    account: &str,
+    from: &str,
+    to: &str,
     old: &str,
     new: &str,
 ) -> Result<PersistentTunnel> {
-    check_rename(state, account, old, new)?;
+    check_relocate(state, from, to, old, new)?;
     let mut tunnel = state
-        .remove_for_account(old, account)
-        .with_context(|| format!("Tunnel '{old}' not found for account '{account}'"))?;
+        .remove_for_account(old, from)
+        .with_context(|| format!("Tunnel '{old}' not found for account '{from}'"))?;
     rename_record(&mut tunnel, new);
+    // The local port stays: ports are machine-wide, so it is free here too
+    tunnel.account_name = to.to_string();
     state.add(tunnel.clone())?;
     Ok(tunnel)
 }
 
-/// Everything `run_rename` does to the outside world, so the order of those
+/// Everything `run_relocate` does to the outside world, so the order of those
 /// effects can be asserted without a daemon or a project to run them against.
 trait RenameOps {
     fn label(&self, name: &str) -> String;
+    /// Whether what the tunnel points at exists in this ops' account, asked
+    /// only of the destination of a move
+    async fn verify_target(&self, tunnel: &PersistentTunnel) -> Result<()>;
     async fn is_running(&self, label: &str) -> bool;
     fn spec_for(&self, tunnel: &PersistentTunnel) -> Result<ServiceSpec>;
     async fn remove_route(&self, tunnel: &PersistentTunnel) -> Result<()>;
@@ -66,7 +115,10 @@ trait RenameOps {
     fn remove_log(&self, path: &Path) -> Result<()>;
 }
 
-/// Rename a tunnel and move everything keyed to its name.
+/// Rename a tunnel, and with `from != to` move it to another account, taking
+/// everything keyed to its name and account with it. `src` is the account the
+/// tunnel leaves and `dst` the one it lands in; a rename passes the same ops
+/// twice.
 ///
 /// Everything that can be computed or refused is done before the first
 /// irreversible step, so a bad name, a missing gcloud or a broken relay config
@@ -76,75 +128,91 @@ trait RenameOps {
 /// new tunnel can always be brought up with `gtunnel start <new>`, which
 /// reinstalls the service and rebuilds the route. Cleanup that nothing depends
 /// on, the old log, runs last.
-async fn run_rename(
-    ops: &impl RenameOps,
+async fn run_relocate(
+    src: &impl RenameOps,
+    dst: &impl RenameOps,
     state: &mut TunnelState,
-    account: &str,
+    from: &str,
+    to: &str,
     old: &str,
     new: &str,
 ) -> Result<()> {
-    check_rename(state, account, old, new)?;
+    check_relocate(state, from, to, old, new)?;
     let before = state
-        .find_for_account(old, account)
+        .find_for_account(old, from)
         .cloned()
-        .with_context(|| format!("Tunnel '{old}' not found for account '{account}'"))?;
+        .with_context(|| format!("Tunnel '{old}' not found for account '{from}'"))?;
     let old_log = before.log_path()?;
     let mut renamed = before.clone();
     rename_record(&mut renamed, new);
+    renamed.account_name = to.to_string();
+    let moving = from != to;
+    // The one check that asks a remote project a question, so it goes before
+    // everything else: a typo in the destination must cost nothing
+    if moving {
+        dst.verify_target(&renamed).await?;
+    }
     // Pure, and it fails on the things most likely to be wrong: install it
     // later with this spec, but find out now
-    let spec = ops.spec_for(&renamed)?;
+    let spec = dst.spec_for(&renamed)?;
 
-    let old_label = ops.label(old);
-    let was_running = ops.is_running(&old_label).await;
+    let old_label = src.label(old);
+    let was_running = src.is_running(&old_label).await;
 
     // The old route goes first: it is keyed to the old name and nothing else
     // will ever remove it
     if before.is_expose() {
-        ops.remove_route(&before).await?;
+        src.remove_route(&before).await?;
     }
-    ops.stop(&old_label).await;
-    ops.uninstall(&old_label).await?;
+    src.stop(&old_label).await;
+    src.uninstall(&old_label).await?;
 
-    rename_in_state(state, account, old, new)?;
-    ops.save(state)?;
+    relocate_in_state(state, from, to, old, new)?;
+    dst.save(state)?;
 
     // install writes the login copy when auto-start is on, which restores it
-    ops.install(&spec).await?;
+    dst.install(&spec).await?;
     let route = if renamed.is_expose() {
-        ops.ensure_route(&renamed).await
+        dst.ensure_route(&renamed).await
     } else {
         Ok(())
     };
     // A tunnel that was running is brought back even when its route could not
     // be rebuilt: stopped helps nobody, and the error below says what is wrong
     let start = if was_running {
-        ops.start(&spec.label).await
+        dst.start(&spec.label).await
     } else {
         Ok(())
     };
     // Cleanup, not a precondition, so it neither aborts nor waits on the
     // outcome above: the old log is orphaned either way, and a reused name
     // would inherit it
-    if let Err(e) = ops.remove_log(&old_log) {
+    if let Err(e) = src.remove_log(&old_log) {
         eprintln!("Warning: could not remove the old log: {e:#}");
     }
+    let verb = if moving { "moved" } else { "renamed" };
     let done = if was_running {
-        "renamed, installed and restarted"
+        format!("{verb}, installed and restarted")
     } else {
-        "renamed and installed"
+        format!("{verb} and installed")
     };
-    let retry = format!("run `gtunnel start {new}` to retry");
+    // The start command resolves the account from its own flag, so a moved
+    // tunnel has to be named on the account it now lives on
+    let retry = if moving {
+        format!("run `gtunnel start {new} --account {to}` to retry")
+    } else {
+        format!("run `gtunnel start {new}` to retry")
+    };
     match (route, start) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(route), Ok(())) => Err(route.context(format!(
             "'{new}' was {done}, but its route was not rebuilt; {retry}"
         ))),
         (Ok(()), Err(start)) => Err(start.context(format!(
-            "'{new}' was renamed and installed, but it could not be started; {retry}"
+            "'{new}' was {verb} and installed, but it could not be started; {retry}"
         ))),
         (Err(route), Err(start)) => bail!(
-            "'{new}' was renamed and installed, but its route was not rebuilt ({route:#}) \
+            "'{new}' was {verb} and installed, but its route was not rebuilt ({route:#}) \
              and it could not be started ({start:#}); {retry}"
         ),
     }
@@ -159,6 +227,19 @@ struct LiveOps {
 impl RenameOps for LiveOps {
     fn label(&self, name: &str) -> String {
         daemon::platform_label(&self.acct.name, name)
+    }
+    async fn verify_target(&self, tunnel: &PersistentTunnel) -> Result<()> {
+        match &tunnel.spec {
+            TunnelSpec::Access {
+                target:
+                    AccessTarget::Instance { instance, zone }
+                    | AccessTarget::Jump { instance, zone, .. },
+                ..
+            } => verify_instance(&self.acct, zone, instance).await,
+            // Refused before this is reached: a group is not portable, and an
+            // Expose tunnel does not move
+            _ => Ok(()),
+        }
     }
     async fn is_running(&self, label: &str) -> bool {
         daemon::status(label).await == TunnelStatus::Running
@@ -199,6 +280,47 @@ impl RenameOps for LiveOps {
     }
 }
 
+pub async fn cmd_move(
+    name: &str,
+    from: Option<&str>,
+    to: &str,
+    rename_to: Option<&str>,
+) -> Result<()> {
+    // Two accounts, so two ops: the source stops and cleans up the old
+    // service, the destination verifies, installs and starts the new one
+    let (config, src_acct) = resolve(from)?;
+    let dst_acct = config.get_account(Some(to))?.clone();
+    check_accounts_differ(&src_acct.name, &dst_acct.name, name)?;
+    let mut state = TunnelState::load()?;
+    find_tunnel(&state, name, &src_acct.name)?;
+    let new = target_name(name, rename_to);
+    let src = LiveOps {
+        client: GcpClient::for_account(&src_acct),
+        config: config.clone(),
+        acct: src_acct.clone(),
+    };
+    let dst = LiveOps {
+        client: GcpClient::for_account(&dst_acct),
+        config,
+        acct: dst_acct.clone(),
+    };
+    run_relocate(
+        &src,
+        &dst,
+        &mut state,
+        &src_acct.name,
+        &dst_acct.name,
+        name,
+        new,
+    )
+    .await?;
+    println!("Moved {name} from {} to {}", src_acct.name, dst_acct.name);
+    if new != name {
+        println!("It is now called {new}");
+    }
+    Ok(())
+}
+
 pub async fn cmd_rename(account: Option<&str>, old: &str, new: &str) -> Result<()> {
     let (config, acct) = resolve(account)?;
     let mut state = TunnelState::load()?;
@@ -208,7 +330,7 @@ pub async fn cmd_rename(account: Option<&str>, old: &str, new: &str) -> Result<(
         config,
         acct: acct.clone(),
     };
-    run_rename(&ops, &mut state, &acct.name, old, new).await?;
+    run_relocate(&ops, &ops, &mut state, &acct.name, &acct.name, old, new).await?;
     println!("Renamed {old} to {new}");
     Ok(())
 }
@@ -245,27 +367,27 @@ mod tests {
     #[test]
     fn renaming_to_a_name_the_account_holds_is_refused() {
         let state = state_of(vec![access("db", "dev"), access("cache", "dev")]);
-        let err = check_rename(&state, "dev", "db", "cache").unwrap_err();
+        let err = check_relocate(&state, "dev", "dev", "db", "cache").unwrap_err();
         assert!(err.to_string().contains("already exists"), "{err}");
     }
 
     #[test]
     fn renaming_to_a_name_only_another_account_holds_is_allowed() {
         let state = state_of(vec![access("db", "dev"), access("cache", "prod")]);
-        assert!(check_rename(&state, "dev", "db", "cache").is_ok());
+        assert!(check_relocate(&state, "dev", "dev", "db", "cache").is_ok());
     }
 
     #[test]
     fn renaming_to_an_invalid_name_is_refused() {
         let state = state_of(vec![access("db", "dev")]);
-        let err = check_rename(&state, "dev", "db", "My_Db").unwrap_err();
+        let err = check_relocate(&state, "dev", "dev", "db", "My_Db").unwrap_err();
         assert!(err.to_string().contains("Invalid tunnel name"), "{err}");
     }
 
     #[test]
     fn a_rename_moves_the_record_and_leaves_no_old_name() {
         let mut state = state_of(vec![access("db", "dev"), access("other", "prod")]);
-        let moved = rename_in_state(&mut state, "dev", "db", "pg").expect("renames");
+        let moved = relocate_in_state(&mut state, "dev", "dev", "db", "pg").expect("renames");
         assert_eq!(moved.name, "pg");
         assert!(state.find_for_account("db", "dev").is_none());
         assert!(state.find_for_account("pg", "dev").is_some());
@@ -297,10 +419,14 @@ mod tests {
 
     use std::cell::RefCell;
     use std::path::PathBuf;
+    use std::rc::Rc;
 
     /// Records every effect in order; a named step can be made to fail.
     struct Recorder {
-        calls: RefCell<Vec<String>>,
+        calls: Rc<RefCell<Vec<String>>>,
+        /// Prefixes every recorded step and label, so two recorders sharing
+        /// one log tell the source's effects from the destination's
+        tag: &'static str,
         fail: Vec<&'static str>,
         running: bool,
         specs_built: RefCell<u32>,
@@ -310,19 +436,35 @@ mod tests {
     impl Recorder {
         fn new(fail: &'static str, running: bool) -> Self {
             Self {
-                calls: RefCell::new(Vec::new()),
+                calls: Rc::new(RefCell::new(Vec::new())),
+                tag: "",
                 fail: vec![fail],
                 running,
                 specs_built: RefCell::new(0),
                 installed: RefCell::new(None),
             }
         }
+        /// A second recorder writing to the same log under its own tag
+        fn sharing(&self, tag: &'static str, fail: &'static str, running: bool) -> Self {
+            Self {
+                calls: Rc::clone(&self.calls),
+                tag,
+                fail: vec![fail],
+                running,
+                specs_built: RefCell::new(0),
+                installed: RefCell::new(None),
+            }
+        }
+        fn tagged(mut self, tag: &'static str) -> Self {
+            self.tag = tag;
+            self
+        }
         fn and_failing(mut self, step: &'static str) -> Self {
             self.fail.push(step);
             self
         }
         fn step(&self, name: &str) -> Result<()> {
-            self.calls.borrow_mut().push(name.to_string());
+            self.calls.borrow_mut().push(format!("{}{name}", self.tag));
             if self.fail.contains(&name) {
                 bail!("{name} failed");
             }
@@ -335,7 +477,10 @@ mod tests {
 
     impl RenameOps for Recorder {
         fn label(&self, name: &str) -> String {
-            format!("label-{name}")
+            format!("{}label-{name}", self.tag)
+        }
+        async fn verify_target(&self, _: &PersistentTunnel) -> Result<()> {
+            self.step("verify")
         }
         async fn is_running(&self, _: &str) -> bool {
             self.running
@@ -398,7 +543,9 @@ mod tests {
 
     fn run(ops: &Recorder, t: PersistentTunnel) -> (Result<()>, TunnelState) {
         let mut state = state_of(vec![t]);
-        let result = futures_block(run_rename(ops, &mut state, "dev", "old", "new"));
+        let result = futures_block(run_relocate(
+            ops, ops, &mut state, "dev", "dev", "old", "new",
+        ));
         (result, state)
     }
 
@@ -483,5 +630,130 @@ mod tests {
         let installed = ops.installed.borrow().clone().expect("installed");
         assert_eq!(installed.args, vec!["spec-1"]);
         assert_eq!(installed.label, "label-new");
+    }
+
+    fn moved(
+        src: &Recorder,
+        dst: &Recorder,
+        state: &mut TunnelState,
+        name: &str,
+        new: &str,
+    ) -> Result<()> {
+        futures_block(run_relocate(src, dst, state, "dev", "prod", name, new))
+    }
+
+    #[test]
+    fn moving_an_expose_tunnel_is_refused_with_the_path_to_take() {
+        let state = state_of(vec![public("api")]);
+        let err = check_relocate(&state, "dev", "prod", "api", "api").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("delete"), "{msg}");
+        assert!(msg.contains("expose"), "{msg}");
+    }
+
+    #[test]
+    fn moving_onto_a_taken_name_without_a_rename_is_refused() {
+        let state = state_of(vec![access("db", "dev"), access("db", "prod")]);
+        let err = check_relocate(&state, "dev", "prod", "db", "db").unwrap_err();
+        assert!(err.to_string().contains("already exists"), "{err}");
+        assert!(err.to_string().contains("prod"), "{err}");
+    }
+
+    #[test]
+    fn moving_onto_a_taken_name_with_a_rename_lands_under_the_new_name() {
+        let mut state = state_of(vec![access("db", "dev"), access("db", "prod")]);
+        let src = Recorder::new("none", false).tagged("src:");
+        let dst = src.sharing("dst:", "none", false);
+        moved(&src, &dst, &mut state, "db", "pg").expect("moves");
+        assert!(state.find_for_account("db", "dev").is_none());
+        let landed = state.find_for_account("pg", "prod").expect("lands as pg");
+        assert_eq!(landed.account_name, "prod");
+        assert!(
+            state.find_for_account("db", "prod").is_some(),
+            "the destination's own db is untouched"
+        );
+        assert_eq!(state.tunnels.len(), 2);
+    }
+
+    #[test]
+    fn a_move_verifies_the_instance_exists_in_the_destination_first() {
+        let mut state = state_of(vec![access("db", "dev")]);
+        let src = Recorder::new("none", true).tagged("src:");
+        let dst = src.sharing("dst:", "verify", true);
+        let result = moved(&src, &dst, &mut state, "db", "db");
+        assert!(result.is_err());
+        assert_eq!(src.calls(), vec!["dst:verify"], "nothing else ran");
+        assert!(state.find_for_account("db", "dev").is_some());
+        assert!(state.find_for_account("db", "prod").is_none());
+    }
+
+    #[test]
+    fn a_move_to_the_account_the_tunnel_is_already_on_is_refused() {
+        let err = check_accounts_differ("dev", "dev", "db").unwrap_err();
+        assert!(err.to_string().contains("already on"), "{err}");
+        assert!(check_accounts_differ("dev", "prod", "db").is_ok());
+    }
+
+    #[test]
+    fn a_destination_group_tunnel_is_refused_because_its_group_is_in_the_old_project() {
+        let mut t = access("db", "dev");
+        t.spec = TunnelSpec::Access {
+            target: AccessTarget::DestGroup {
+                host: "db.internal".to_string(),
+                region: "europe-west1".to_string(),
+                group: "my-group".to_string(),
+                network: "default".to_string(),
+            },
+            remote_port: 5432,
+            local_port: 15432,
+        };
+        let state = state_of(vec![t]);
+        let err = check_relocate(&state, "dev", "prod", "db", "db").unwrap_err();
+        assert!(err.to_string().contains("destination group"), "{err}");
+    }
+
+    #[test]
+    fn a_move_stops_the_source_service_and_installs_the_destination_one() {
+        let mut state = state_of(vec![access("db", "dev")]);
+        let src = Recorder::new("none", true).tagged("src:");
+        let dst = src.sharing("dst:", "none", false);
+        moved(&src, &dst, &mut state, "db", "db").expect("moves");
+        assert_eq!(
+            src.calls(),
+            vec![
+                "dst:verify",
+                "dst:spec",
+                "src:stop",
+                "src:uninstall",
+                "dst:save",
+                "dst:install",
+                "dst:start",
+                "src:remove_log",
+            ]
+        );
+        let installed = dst.installed.borrow().clone().expect("installed");
+        assert_eq!(installed.label, "dst:label-db");
+        assert!(state.find_for_account("db", "prod").is_some());
+        assert!(state.find_for_account("db", "dev").is_none());
+    }
+
+    #[test]
+    fn a_failed_move_names_the_account_to_retry_on() {
+        let mut state = state_of(vec![access("db", "dev")]);
+        let src = Recorder::new("none", true).tagged("src:");
+        let dst = src.sharing("dst:", "start", true);
+        let msg = format!(
+            "{:#}",
+            moved(&src, &dst, &mut state, "db", "pg").unwrap_err()
+        );
+        assert!(msg.contains("moved"), "{msg}");
+        assert!(msg.contains("gtunnel start pg --account prod"), "{msg}");
+        assert!(state.find_for_account("pg", "prod").is_some());
+    }
+
+    #[test]
+    fn a_move_target_name_is_the_rename_or_the_old_name() {
+        assert_eq!(target_name("db", None), "db");
+        assert_eq!(target_name("db", Some("pg")), "pg");
     }
 }

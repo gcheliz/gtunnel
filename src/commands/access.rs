@@ -142,7 +142,7 @@ pub async fn cmd_add(
 }
 
 // A typo in an instance name otherwise surfaces as a tunnel that never starts
-async fn verify_instance(acct: &Account, zone: &str, instance: &str) -> Result<()> {
+pub(crate) async fn verify_instance(acct: &Account, zone: &str, instance: &str) -> Result<()> {
     let client = GcpClient::for_account(acct);
     match compute::get_instance(&client, &acct.project, zone, instance).await {
         Ok(Some(_)) => Ok(()),
