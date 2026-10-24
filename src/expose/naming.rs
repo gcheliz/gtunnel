@@ -26,6 +26,13 @@ fn trim(name: String, max: usize) -> String {
     cut.trim_end_matches('-').to_string()
 }
 
+/// The public hostname of an Expose tunnel. One rule, because creating a
+/// tunnel and renaming one must agree on it or a rename drifts the hostname
+/// away from the name the backend and DNS record are keyed to.
+pub fn hostname_for(tunnel: &str, domain: &str) -> String {
+    format!("{tunnel}.{domain}")
+}
+
 impl Names {
     pub fn new(account: &str) -> Self {
         let a = account;
