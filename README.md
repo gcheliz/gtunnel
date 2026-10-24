@@ -19,7 +19,9 @@ URL in front of a service running on your laptop. Tunnels are declared once, run
 supervised user services, and are watched from a dashboard that shows whether each
 one is actually carrying traffic.
 
-![gtunnel topology: a private port inward through IAP, a public URL outward through a relay VM](docs/images/architecture/gtunnel-overview.png)
+<p align="center">
+  <img src="docs/demo-tui.gif" alt="The gtunnel TUI: tunnel list, details, logs and metrics" width="720">
+</p>
 
 | Why | What it means in practice |
 |---|---|
@@ -32,7 +34,7 @@ one is actually carrying traffic.
 Everything in the table below ships in the current version. This README has no roadmap
 section because it describes only what the binary already does.
 
-![The gtunnel TUI: tunnel list, details, logs and metrics](docs/demo-tui.gif)
+![gtunnel topology: a private port inward through IAP, a public URL outward through a relay VM](docs/images/architecture/gtunnel-overview.png)
 
 ## Features
 
@@ -123,7 +125,9 @@ gtunnel add db my-vm:5432 -s    # localhost:15432 -> my-vm:5432, started now
 psql -h localhost -p 15432
 ```
 
-![gtunnel add, list, start, stop and delete](docs/demo-access.gif)
+<p align="center">
+  <img src="docs/demo-access.gif" alt="gtunnel add, list, start, stop and delete" width="720">
+</p>
 
 ### A public URL to a local service
 

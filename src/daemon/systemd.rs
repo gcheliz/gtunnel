@@ -93,8 +93,12 @@ pub async fn watchdog_installed() -> bool {
 /// The watchdog as systemd spells it: a oneshot service that exits, and a
 /// timer that fires it again. `OnUnitActiveSec` measures from the end of the
 /// last run, so a slow pass delays the next one rather than overlapping it.
+/// systemd's name for the watchdog units. See [`super::launchd::WATCHDOG_LABEL`]
+/// for why it is a constant here rather than the host's label.
+pub const WATCHDOG_LABEL: &str = "gtunnel-watchdog";
+
 pub fn render_watchdog_units(program: &std::path::Path, log: &std::path::Path) -> (String, String) {
-    let label = super::watchdog_label();
+    let label = WATCHDOG_LABEL;
     let service = format!(
         r#"[Unit]
 Description=gtunnel - restart tunnels that are refusing connections

@@ -124,7 +124,10 @@ impl Breaker {
             // Waiting. The restart happens on the first check at or after the
             // scheduled moment, not on a clock of the breaker's own.
             State::Open => {
-                if self.next_attempt.is_some_and(|due| now < due) {
+                if self
+                    .next_attempt
+                    .is_some_and(|due| still_waiting(due, now, backoff(self.attempt)))
+                {
                     return Action::Nothing;
                 }
                 self.state = State::HalfOpen;
@@ -153,6 +156,23 @@ impl Breaker {
         self.attempt = attempt;
         self.next_attempt = Some(now + backoff(attempt));
     }
+}
+
+/// Whether a scheduled restart is still ahead, read by a clock that may have
+/// stepped between passes.
+///
+/// `due` was written on an earlier pass, so the two times can come from
+/// different clocks: an NTP correction or a laptop resuming with a bad clock
+/// moves `now` backwards, and a plain `now < due` then stays true for the
+/// whole length of the skew - the wedged tunnel that tripped the breaker
+/// waits out a clock error rather than being restarted. This breaker never
+/// schedules anything further out than one backoff, so a `due` beyond that is
+/// a stepped clock and the wait is over.
+/// The restart happens on the first check *at or after* the scheduled moment,
+/// so a remaining of zero is due, not waiting.
+fn still_waiting(due: SystemTime, now: SystemTime, backoff: Duration) -> bool {
+    due.duration_since(now)
+        .is_ok_and(|remaining| !remaining.is_zero() && remaining <= backoff)
 }
 
 /// `10s * 2^(attempt - 1)`, saturating rather than overflowing: an attempt
@@ -594,6 +614,44 @@ mod tests {
             verdict,
             Action::StopAndReport(Reason::DescriptorsExhausted),
             "the failure after the last restart is a report, not a fifth restart"
+        );
+    }
+
+    // `next_attempt` is an absolute time written on a previous pass, and the
+    // clock moves between passes: an NTP correction, or a laptop resuming
+    // with a bad clock, steps `now` backwards. A plain `now < due` then holds
+    // for the whole length of the skew, and the wedged tunnel the breaker
+    // tripped on waits out a clock error instead of being restarted
+    #[test]
+    fn a_clock_that_steps_backwards_does_not_park_a_tripped_breaker() {
+        let mut breaker = Breaker::default();
+        let now = epoch() + secs(86_400);
+        for _ in 0..RUN {
+            breaker.observe(Observation::Failed(Reason::ProbeRefused), now);
+        }
+
+        // The clock jumps back an hour; the restart was due ten seconds out
+        let stepped = now - secs(3_600);
+        assert_eq!(
+            breaker.observe(Observation::Failed(Reason::ProbeRefused), stepped),
+            Action::Restart,
+            "a restart due further ahead than one backoff is a stepped clock, not a wait"
+        );
+    }
+
+    // The guard must not fire on an ordinary wait, or every backoff collapses
+    // to nothing and the ladder restarts four times in four passes
+    #[test]
+    fn an_ordinary_wait_is_still_a_wait() {
+        let mut breaker = Breaker::default();
+        let now = epoch();
+        for _ in 0..RUN {
+            breaker.observe(Observation::Failed(Reason::ProbeRefused), now);
+        }
+        assert_eq!(
+            breaker.observe(Observation::Failed(Reason::ProbeRefused), now + secs(1)),
+            Action::Nothing,
+            "one second into a ten-second backoff is still waiting"
         );
     }
 

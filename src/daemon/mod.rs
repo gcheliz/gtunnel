@@ -71,11 +71,12 @@ pub const WATCHDOG_INTERVAL: u64 = 30;
 
 /// The watchdog is one job for the whole machine, not one per tunnel, so its
 /// label carries no account or tunnel segment.
+/// Each service manager owns its own spelling; this picks the host's.
 pub fn watchdog_label() -> &'static str {
     if cfg!(target_os = "macos") {
-        "com.gtunnel.watchdog"
+        launchd::WATCHDOG_LABEL
     } else {
-        "gtunnel-watchdog"
+        systemd::WATCHDOG_LABEL
     }
 }
 
@@ -466,6 +467,26 @@ mod tests {
             "{timer}"
         );
         assert!(timer.contains("[Timer]"), "{timer}");
+    }
+
+    // Each renderer writes a file for its own service manager, so the label it
+    // embeds is that manager's, never the one the host happens to use. Reading
+    // it from `watchdog_label` made the plist carry `gtunnel-watchdog` when the
+    // tests ran on Linux, and the timer point at `com.gtunnel.watchdog.service`
+    // when they ran on macOS - a unit naming a service that does not exist
+    #[test]
+    fn each_renderer_carries_its_own_service_managers_label() {
+        let program = std::path::Path::new("/usr/local/bin/gtunnel");
+        let log = std::path::Path::new("/tmp/watchdog.log");
+
+        let plist = launchd::render_watchdog_plist(program, log);
+        assert!(
+            plist.contains("<string>com.gtunnel.watchdog</string>"),
+            "{plist}"
+        );
+
+        let (_, timer) = systemd::render_watchdog_units(program, log);
+        assert!(timer.contains("Unit=gtunnel-watchdog.service"), "{timer}");
     }
 
     // Review Focus 1: a daemon that cannot find gcloud must fail loudly, not

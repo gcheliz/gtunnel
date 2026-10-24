@@ -150,16 +150,6 @@ fn targets(state: &TunnelState) -> (Vec<&PersistentTunnel>, Vec<String>) {
     (watched, skipped)
 }
 
-/// The local address a tunnel answers on, for Access and jump tunnels.
-fn probe_addr(tunnel: &PersistentTunnel) -> Option<String> {
-    match &tunnel.spec {
-        crate::state::TunnelSpec::Access { local_port, .. } => {
-            Some(format!("127.0.0.1:{local_port}"))
-        }
-        crate::state::TunnelSpec::Expose { .. } => None,
-    }
-}
-
 fn key(tunnel: &PersistentTunnel) -> String {
     format!("{}.{}", tunnel.account_name, tunnel.name)
 }
@@ -210,9 +200,13 @@ async fn visit(
     now: SystemTime,
     verbose: bool,
 ) -> Result<()> {
-    let Some(addr) = probe_addr(tunnel) else {
+    // The port is both what the probe dials and what `lsof` is asked about
+    // later, so it is read once. An Expose tunnel has none: nothing local
+    // listens, so there is nothing here to probe.
+    let Some(port) = local_port(tunnel) else {
         return Ok(());
     };
+    let addr = format!("127.0.0.1:{port}");
     let label = daemon::platform_label(&tunnel.account_name, &tunnel.name);
     let status = daemon::status(&label).await;
     let probe_ok = probe::tcp_probe(&addr, PROBE_TIMEOUT).await.is_some();
@@ -220,12 +214,7 @@ async fn visit(
     let log_path = tunnel.log_path()?;
     let len = std::fs::metadata(&log_path).map_or(0, |m| m.len());
 
-    let row = rows.entry(key(tunnel)).or_insert_with(|| Row {
-        // A tunnel seen for the first time starts from the end of its log:
-        // everything already in it is history, not news
-        log_len: len,
-        ..Row::default()
-    });
+    let row = row_for(rows, key(tunnel), len);
     let gained =
         daemon::read_from(&log_path, unread_from(len, row.log_len)).contains(DESCRIPTOR_ERROR);
     row.log_len = len;
@@ -245,7 +234,7 @@ async fn visit(
     let holders = match action {
         // Only asked for when it is about to be printed: one lsof listing
         // per pass per wedged tunnel, never on the healthy path
-        Action::StopAndReport(_) => probe::holders_for_port(local_port(tunnel).unwrap_or(0)),
+        Action::StopAndReport(_) => probe::holders_for_port(port),
         _ => Vec::new(),
     };
     // The action first, then the line that describes it. A breaker that
@@ -283,6 +272,20 @@ async fn visit(
         let _ = daemon::log_event(&log_path, &line);
     }
     outcome
+}
+
+/// The row this pass works from, seeded on the first sighting.
+///
+/// A tunnel nobody has watched before starts from the *end* of its log:
+/// everything already in it is history, not news. Seeding from zero instead
+/// would make the first pass after `watch install` read every descriptor
+/// error the tunnel has ever logged as something that just happened, and
+/// restart a tunnel that is working.
+fn row_for(rows: &mut persist::BreakerFile, key: String, len: u64) -> &mut Row {
+    rows.entry(key).or_insert_with(|| Row {
+        log_len: len,
+        ..Row::default()
+    })
 }
 
 fn local_port(tunnel: &PersistentTunnel) -> Option<u16> {
@@ -355,6 +358,45 @@ mod tests {
     use crate::breaker::{Action, Reason};
     use crate::probe::Holder;
     use crate::state::TunnelStatus;
+
+    // The first pass after `watch install` meets tunnels that have been
+    // running for weeks. Starting their offset at zero would read every
+    // descriptor error in those weeks of log as news and restart a tunnel
+    // that is working perfectly well
+    #[test]
+    fn a_tunnel_seen_for_the_first_time_starts_from_the_end_of_its_log() {
+        let mut rows = persist::BreakerFile::new();
+        let key = "dev.kubernetes".to_string();
+
+        let row = row_for(&mut rows, key.clone(), 9_000);
+        assert_eq!(
+            row.log_len, 9_000,
+            "a first sighting treats the whole existing log as history"
+        );
+        assert_eq!(
+            unread_from(9_000, row.log_len),
+            9_000,
+            "so this pass reads nothing: the unread part starts at the end"
+        );
+    }
+
+    // The seed is for the first sighting only. A tunnel already in the file
+    // keeps the offset the last pass left, or every pass would re-read from
+    // wherever the log happens to be now and never see what it gained
+    #[test]
+    fn a_tunnel_already_in_the_file_keeps_the_offset_the_last_pass_left() {
+        let mut rows = persist::BreakerFile::new();
+        let key = "dev.kubernetes".to_string();
+        row_for(&mut rows, key.clone(), 9_000);
+
+        let row = row_for(&mut rows, key.clone(), 9_400);
+        assert_eq!(row.log_len, 9_000, "the stored offset wins over the seed");
+        assert_eq!(
+            unread_from(9_400, row.log_len),
+            9_000,
+            "so the 400 bytes the log gained are what gets read"
+        );
+    }
 
     // The offset a pass remembers is a position in the FILE. Reading a
     // tail window and indexing it with that offset compares two different

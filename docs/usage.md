@@ -693,9 +693,13 @@ dev.kubernetes: Pass -> Nothing
 prod.kubernetes: Pass -> Nothing
 ```
 
-Three lines of a longer pass: there is one per tunnel, whether or not anything happened.
-`Pass` means the port accepted a connection, `NotRunning` that the service is not up, and
-the word after the arrow is what the watchdog did about it.
+Three lines of a longer pass: there is one per tunnel it watches, whether or not anything
+happened. `Pass` means the port accepted a connection, `NotRunning` that the service is not
+up, and the word after the arrow is what the watchdog did about it.
+
+A public tunnel gets a `skipped <account>.<name>: …` line instead of an arrow, because its
+health lives in a load balancer and a TCP probe to a local port would answer a different
+question. Both kinds of line appear only under `-v`.
 
 | Form | What it does |
 |---|---|

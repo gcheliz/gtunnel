@@ -93,6 +93,11 @@ pub async fn watchdog_installed() -> bool {
     print_service(super::watchdog_label()).await.is_some()
 }
 
+/// launchd's name for the watchdog job. It belongs to launchd rather than to
+/// the host: this renderer writes a plist whichever platform compiles it, and
+/// a plist carrying systemd's label is a plist for nothing.
+pub const WATCHDOG_LABEL: &str = "com.gtunnel.watchdog";
+
 /// The watchdog's plist. Deliberately unlike a tunnel's: no `KeepAlive`,
 /// because this job is supposed to exit every time, and `StartInterval`
 /// instead, because waking on a timer is the whole of what it does. A
@@ -130,7 +135,7 @@ pub fn render_watchdog_plist(program: &std::path::Path, log: &std::path::Path) -
 </dict>
 </plist>
 "#,
-        label = super::watchdog_label(),
+        label = WATCHDOG_LABEL,
         program = xml_escape(&program.to_string_lossy()),
         interval = super::WATCHDOG_INTERVAL,
         log = xml_escape(&log.to_string_lossy()),
