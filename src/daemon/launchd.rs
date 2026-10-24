@@ -82,6 +82,11 @@ pub fn render_plist(spec: &ServiceSpec) -> String {
     </dict>
     <key>ThrottleInterval</key>
     <integer>10</integer>
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>{max_files}</integer>
+    </dict>
     <key>StandardOutPath</key>
     <string>{log}</string>
     <key>StandardErrorPath</key>
@@ -92,6 +97,7 @@ pub fn render_plist(spec: &ServiceSpec) -> String {
 </plist>
 "#,
         label = xml_escape(&spec.label),
+        max_files = super::TUNNEL_MAX_FILES,
     )
 }
 

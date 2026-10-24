@@ -49,6 +49,27 @@ fn daemon_env(gcloud: &std::path::Path) -> Vec<(String, String)> {
     ]
 }
 
+/// How many file descriptors a tunnel's service may hold open.
+///
+/// A launchd job inherits a soft `RLIMIT_NOFILE` of 256 (`launchctl limit
+/// maxfiles`), and a forwarding tunnel spends one descriptor per connected
+/// client. Left alone that is a ceiling on concurrent clients that nobody
+/// chose: past it ssh's `accept()` returns EMFILE and the listener refuses
+/// every new connection while the process stays alive, which is the one
+/// failure launchd cannot see, because `KeepAlive` only fires on exit.
+///
+/// 4096 is far more than a tunnel needs and well under the kernel's own
+/// `kern.maxfilesperproc` of 61440, so it is a raise that cannot be refused.
+/// Only the soft limit is set: the hard limit is root's to raise, and a
+/// plist asking for it fails to load rather than being ignored.
+pub const TUNNEL_MAX_FILES: u64 = 4096;
+
+// Both bounds hold at build time: above launchd's 256 default so the limit is
+// a raise, and under macOS's `kern.maxfilesperproc` of 61440 so it cannot be
+// refused. A later edit that breaks either fails the build, not a test run.
+const _: () = assert!(TUNNEL_MAX_FILES > 256);
+const _: () = assert!(TUNNEL_MAX_FILES <= 61440);
+
 pub fn service_spec(cfg: &Config, t: &PersistentTunnel) -> Result<ServiceSpec> {
     let acct = cfg.get_account(Some(&t.account_name))?;
     let gcloud = crate::gcp::gcloud::require_gcloud()?;
@@ -280,6 +301,40 @@ mod tests {
             auto_start: false,
             description: "db -> postgres-1:5432 (europe-west1-b)".to_string(),
         }
+    }
+
+    // A launchd job inherits a soft RLIMIT_NOFILE of 256 unless its plist
+    // raises it, and a forwarding tunnel spends one descriptor per client.
+    // That made 256 a ceiling on concurrent clients that nobody chose and
+    // nothing documented: past it ssh's accept() returns EMFILE and the
+    // listener refuses every new connection while staying alive, so launchd,
+    // which only restarts on exit, never notices.
+    #[test]
+    fn a_tunnel_is_not_capped_at_launchds_256_descriptors() {
+        let plist = launchd::render_plist(&spec());
+        assert!(plist.contains("<key>SoftResourceLimits</key>"), "{plist}");
+        assert!(plist.contains("<key>NumberOfFiles</key>"), "{plist}");
+        assert!(
+            plist.contains(&format!("<integer>{TUNNEL_MAX_FILES}</integer>")),
+            "{plist}"
+        );
+    }
+
+    // Only the soft limit: raising the hard limit is root's to do, and a
+    // plist that asks for it fails to load rather than being ignored.
+    #[test]
+    fn a_tunnel_does_not_ask_for_a_hard_limit_it_cannot_have() {
+        let plist = launchd::render_plist(&spec());
+        assert!(!plist.contains("HardResourceLimits"), "{plist}");
+    }
+
+    #[test]
+    fn a_tunnel_unit_is_not_capped_at_the_default_descriptors() {
+        let unit = systemd::render_unit(&spec());
+        assert!(
+            unit.contains(&format!("LimitNOFILE={TUNNEL_MAX_FILES}")),
+            "{unit}"
+        );
     }
 
     // Review Focus 1: a daemon that cannot find gcloud must fail loudly, not
