@@ -2,6 +2,8 @@
 name = "gtunnel"
 version = "0.1.0"
 edition = "2021"
+# ratatui 0.30 sets this floor; every other dependency is at 1.85 or below.
+rust-version = "1.88"
 description = "TUI-first CLI for GCP IAP tunnels and public URLs via a GCP relay"
 authors = ["gcheliz"]
 license = "MIT"
