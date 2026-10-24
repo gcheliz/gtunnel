@@ -9,6 +9,10 @@ pub fn gcloud_common(acct: &Account) -> Vec<String> {
     let mut args = vec![
         format!("--configuration={}", acct.gcloud_configuration),
         format!("--project={}", acct.project),
+        // The per-connection lines in gcloud's iap_tunnel are log.info, and
+        // the default verbosity is warning, so a tunnel carrying traffic
+        // logged nothing to say so
+        "--verbosity=info".to_string(),
     ];
     if let Some(sa) = &acct.impersonate_service_account {
         args.push(format!("--impersonate-service-account={sa}"));
@@ -323,9 +327,21 @@ mod tests {
                 "--zone=europe-west1-b",
                 "--configuration=work",
                 "--project=proj-1",
+                "--verbosity=info",
                 "--impersonate-service-account=sa@proj-1.iam.gserviceaccount.com",
             ]
         );
+    }
+
+    // The lines that say a client connected are log.info in iap_tunnel.py,
+    // and gcloud's default verbosity is warning, so a tunnel carrying
+    // traffic printed nothing at all.
+    #[test]
+    fn every_gcloud_command_asks_for_its_connection_lines() {
+        for t in [instance_tunnel(), jump_tunnel()] {
+            let argv = access_argv(&account(), &t).expect("argv");
+            assert!(argv.contains(&"--verbosity=info".to_string()), "{argv:?}");
+        }
     }
 
     #[test]
