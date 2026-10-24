@@ -28,7 +28,7 @@ pub enum Commands {
     // Examples:
     //   gtunnel add db my-vm:5432 -z europe-west1-b --start
     //   gtunnel add pg 10.0.0.5:5432 --dest-group prod --region europe-west1 --network default
-    //   gtunnel add k8s-dev 10.3.0.13:443 --via private-cluster-bastion --local-port 8443
+    //   gtunnel add k8s 10.0.0.10:443 --via bastion --local-port 8443
     #[command(about = "Add a persistent Access tunnel (IAP TCP forward to localhost)")]
     Add {
         // Tunnel name
@@ -455,10 +455,10 @@ mod tests {
         let cli = parse(&[
             "gtunnel",
             "add",
-            "k8s-dev",
-            "10.3.0.13:443",
+            "k8s",
+            "10.0.0.10:443",
             "--via",
-            "private-cluster-bastion",
+            "bastion",
             "--zone",
             "europe-west1-b",
             "--local-port",
@@ -472,8 +472,8 @@ mod tests {
                 local_port,
                 ..
             } => {
-                assert_eq!(target, "10.3.0.13:443");
-                assert_eq!(via.as_deref(), Some("private-cluster-bastion"));
+                assert_eq!(target, "10.0.0.10:443");
+                assert_eq!(via.as_deref(), Some("bastion"));
                 assert_eq!(zone.as_deref(), Some("europe-west1-b"));
                 assert_eq!(local_port, Some(8443));
             }

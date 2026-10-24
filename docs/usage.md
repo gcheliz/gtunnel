@@ -131,8 +131,8 @@ cannot infer.
 ```
 $ gtunnel init
 gcloud configurations:
-  1. default (active)  project=holded-app-dev-a612  account=gonzalo.cheliz@holded.com
-Configuration number [1]: Account name [default]: Project [holded-app-dev-a612]:
+  1. default (active)  project=example-dev-1a2b  account=you@example.com
+Configuration number [1]: Account name [default]: Project [example-dev-1a2b]:
 Service account to impersonate (optional) []: Default zone: Error: A default zone is required
 ```
 
@@ -170,7 +170,7 @@ only one account.
 |---|---|
 | Shape | `<platform>`, or `<platform>-<service>` when the platform has more than one |
 | Leave out | the account, environment or project — no `-dev`, `-prod`, `-staging` |
-| Allowed | up to 40 characters of `a-z`, `0-9` and `-` |
+| Allowed | up to 40 characters of `a-z`, `0-9` and `-`, starting with a letter and ending with a letter or digit |
 
 ```
 gtunnel add k8s   … --account dev     # same name
@@ -198,8 +198,8 @@ bastion needs `--via`: IAP carries an ssh connection and ssh makes the forward f
 side. A private GKE master, for example:
 
 ```
-$ gtunnel add k8s 10.3.0.13:443 --via private-cluster-bastion -z europe-west1-b --local-port 8443
-○ k8s  localhost:8443 -> 10.3.0.13:443 via private-cluster-bastion
+$ gtunnel add k8s 10.0.0.10:443 --via bastion -z europe-west1-b --local-port 8443
+○ k8s  localhost:8443 -> 10.0.0.10:443 via bastion
 ```
 
 The tunnel is installed and stopped; `-s` starts it in the same command.
@@ -209,7 +209,7 @@ certificate is issued for its own IP and not for `127.0.0.1`:
 
 ```yaml
     server: https://127.0.0.1:8443
-    tls-server-name: 10.3.0.13
+    tls-server-name: 10.0.0.10
 ```
 
 ## expose

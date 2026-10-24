@@ -282,9 +282,9 @@ mod tests {
             auto_start: false,
             spec: TunnelSpec::Access {
                 target: AccessTarget::Jump {
-                    instance: "private-cluster-bastion".to_string(),
+                    instance: "bastion".to_string(),
                     zone: "europe-west1-b".to_string(),
-                    host: "10.3.0.13".to_string(),
+                    host: "10.0.0.10".to_string(),
                 },
                 remote_port: 443,
                 local_port: 8443,
@@ -493,7 +493,7 @@ mod tests {
         let argv = access_argv(&account(), &jump_tunnel()).expect("argv");
         assert_eq!(argv[0], "compute", "{argv:?}");
         assert_eq!(argv[1], "ssh", "{argv:?}");
-        assert_eq!(argv[2], "private-cluster-bastion", "{argv:?}");
+        assert_eq!(argv[2], "bastion", "{argv:?}");
         assert!(
             argv.contains(&"--tunnel-through-iap".to_string()),
             "{argv:?}"
@@ -505,7 +505,7 @@ mod tests {
         let dash = argv.iter().position(|a| a == "--").expect("an ssh argv");
         assert!(
             argv[dash..].contains(&"-L".to_string())
-                && argv.last() == Some(&"8443:10.3.0.13:443".to_string()),
+                && argv.last() == Some(&"8443:10.0.0.10:443".to_string()),
             "the forward is local, from the local port to the host the bastion reaches: {argv:?}"
         );
         assert!(

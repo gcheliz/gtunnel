@@ -460,8 +460,8 @@ gcloud 123 me 6u IPv4 0x4 0t0 TCP 127.0.0.1:15432 (LISTEN)
     fn one_loopback_client_counts_once() {
         let real = "\
 COMMAND   PID    USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
-ssh      2146 gonzalo    8u  IPv4 0x3a6c8252f144aa71      0t0  TCP 127.0.0.1:8443->127.0.0.1:64306 (ESTABLISHED)
-Python  12253 gonzalo    3u  IPv4 0xc78928f83ee41eb7      0t0  TCP 127.0.0.1:64306->127.0.0.1:8443 (ESTABLISHED)
+ssh      2146     you    8u  IPv4 0x3a6c8252f144aa71      0t0  TCP 127.0.0.1:8443->127.0.0.1:64306 (ESTABLISHED)
+Python  12253     you    3u  IPv4 0xc78928f83ee41eb7      0t0  TCP 127.0.0.1:64306->127.0.0.1:8443 (ESTABLISHED)
 ";
         assert_eq!(parse_lsof_established(real, 8443), 1);
     }
@@ -470,8 +470,7 @@ Python  12253 gonzalo    3u  IPv4 0xc78928f83ee41eb7      0t0  TCP 127.0.0.1:643
     // only one row, and it is still one connection
     #[test]
     fn a_remote_client_counts_once() {
-        let text =
-            "ssh 2146 gonzalo 8u IPv4 0x1 0t0 TCP 10.0.0.2:8443->10.0.0.9:51234 (ESTABLISHED)\n";
+        let text = "ssh 2146 you 8u IPv4 0x1 0t0 TCP 10.0.0.2:8443->10.0.0.9:51234 (ESTABLISHED)\n";
         assert_eq!(parse_lsof_established(text, 8443), 1);
     }
 

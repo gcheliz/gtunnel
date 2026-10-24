@@ -99,7 +99,7 @@ fn demo_entries() -> Vec<TunnelEntry> {
 
     // Someone else's gcloud process, which gtunnel reports but never touches
     let mut redis = TunnelEntry::new(
-        access("demo", "pid-48210", "cache-1", 6379, 15379, false),
+        access("demo", "cache-1:6379", "cache-1", 6379, 15379, false),
         TunnelStatus::Running,
         TunnelKind::External,
     );

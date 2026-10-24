@@ -42,7 +42,11 @@ GCP relay in place of Cloudflare Tunnel.
 - **Full lifecycle from the keyboard** - add, edit, start, stop, restart, delete,
   auto-start, copy and open, without leaving the TUI.
 - **Unmanaged tunnels** - a `gcloud start-iap-tunnel` process started outside gtunnel
-  is listed and can be imported with `m`; every other action on it is refused.
+  is listed and read-only. It is named for the target and port it holds rather than
+  for its pid, which is the one fact about it nothing can act on; the pid returns only
+  to tell two strangers on the same target apart. Every action on such a row is
+  refused, the footer offers none of them, the refusal is on screen rather than
+  silent, and Details credits the process to whoever started it instead of to gtunnel.
 - **A mark and a header** - a cloud resting on a line, drawn in braille and banded in
   the four Google Cloud hues, with the platform beside the mark and the product beside
   the name. The art is one fixed size, because a braille glyph scaled up reads as a loose

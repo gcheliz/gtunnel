@@ -414,6 +414,8 @@ git commit -m "feat: ? documents every bound key, m and h included"
 
 ### Task 6: The README wears the same mark
 
+> **Superseded.** The README now carries `docs/logo.png` (done outside this plan), so the text-mark test below no longer applies and no step of this task should be run. Kept as history.
+
 **Files:**
 - Modify: `README.md:2-7`
 - Test: `src/tui/mod.rs`
@@ -483,5 +485,5 @@ Check against the `Main` board: the cloud sits over the name, the name is centre
   and furniture around a mark that stays 11 cells by one row.
 - Three attempts were made to enlarge the mark for the taller header, and all three were
   reverted. The reason is now a Global Constraint and a test; do not spend a fourth.
-- Tasks 5 and 6 are open. Task 4 shipped, and the account indicator it duplicated in the footer
+- Task 6 is superseded (the README carries `docs/logo.png`); Task 5 is open here but shipped with the keymap page. Task 4 shipped, and the account indicator it duplicated in the footer
   was removed there rather than here.

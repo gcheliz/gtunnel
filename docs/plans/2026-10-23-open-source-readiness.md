@@ -23,6 +23,14 @@ kept so the choice stays traceable; they are deliberately not in numerical order
 | 0 | Must land before the first `git add -A`, and phase 2's commits are the first ones after phase 1. |
 | 2 | Lowest urgency; its MSRV job is the gate that later coverage work builds on. |
 
+**Status (2026-10-24)**
+
+| Phase | State |
+|---|---|
+| 1 | Shipped: the design landed through the TUI plans (header, list, resize, keymap page, account field) |
+| 0 | Done on this machine: the global ignore (`~/.config/git/ignore`) and `.git/hooks/pre-commit` exist. Neither is in the repository, so a fresh clone needs the same two files |
+| 2 | In progress by another agent: the MSRV half (`Cargo.toml`, `.github/workflows/ci.yml`). The edition migration is deferred, see below |
+
 **Phases 3 and 4 of the findings (coverage gate, cargo-deny, CONTRIBUTING/SECURITY/CODE_OF_CONDUCT,
 dual licence, README restructure) are out of scope for this plan.** See `## Deferred`.
 
@@ -258,7 +266,7 @@ step 5 for the reasoning.
 ratatui binds the floor at 1.88.0. Edition 2024 needs 1.85, so it fits beneath that floor and
 costs no MSRV.
 
-- [ ] **Step 1: Declare the MSRV**
+- [x] **Step 1: Declare the MSRV**
 
 Add to `[package]` in `Cargo.toml`, after `edition`:
 ```toml
@@ -266,7 +274,7 @@ Add to `[package]` in `Cargo.toml`, after `edition`:
 rust-version = "1.88"
 ```
 
-- [ ] **Step 2: Add the MSRV job to CI**
+- [x] **Step 2: Add the MSRV job to CI**
 
 The declaration cannot be checked locally, so the job that checks it is written in the same breath.
 Append to `.github/workflows/ci.yml`, as a sibling of `test` and `audit`:
@@ -288,7 +296,7 @@ Append to `.github/workflows/ci.yml`, as a sibling of `test` and `audit`:
         run: cargo check --locked --all-targets
 ```
 
-- [ ] **Step 3: Run the job locally with act -- this is the only MSRV evidence available**
+- [x] **Step 3: Run the job locally with act -- this is the only MSRV evidence available**
 
 ```bash
 act -j msrv --container-architecture linux/amd64 > /tmp/act-msrv.log 2>&1; echo "EXIT=$?"
@@ -394,3 +402,6 @@ From the findings, deliberately not in this plan:
 | MIT or Apache-2.0 dual licence | Cheapest now, while `gcheliz` is sole copyright holder; needs every contributor's consent afterwards | Any outside contribution -- this is the one item that gets harder with time |
 | Signature verification for releases | Larger than a policy change; needs key management | Publishing to a wider audience than the maintainer |
 | OpenSSF Scorecard | A workflow and a badge for a single-maintainer repo | Organisational adoption |
+| Edition 2024 migration | Rewrites files another session edits; do after the identifier-rewrite work lands | The identifier-rewrite work landing |
+
+- edition 2024 migration: rewrites files another session edits; do after the identifier-rewrite work lands (Phase 2 Step 6 stays open until then).

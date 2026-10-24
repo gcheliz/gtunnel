@@ -1,19 +1,20 @@
-```
- ██████╗ ████████╗██╗   ██╗███╗   ██╗███╗   ██╗███████╗██╗
-██╔════╝ ╚══██╔══╝██║   ██║████╗  ██║████╗  ██║██╔════╝██║
-██║  ███╗   ██║   ██║   ██║██╔██╗ ██║██╔██╗ ██║█████╗  ██║
-██║   ██║   ██║   ██║   ██║██║╚██╗██║██║╚██╗██║██╔══╝  ██║
-╚██████╔╝   ██║   ╚██████╔╝██║ ╚████║██║ ╚████║███████╗███████╗
- ╚═════╝    ╚═╝    ╚═════╝ ╚═╝  ╚═══╝╚═╝  ╚═══╝╚══════╝╚══════╝
-```
+<p align="center">
+  <img src="docs/logo.png" alt="gtunnel" width="420">
+</p>
+
+<p align="center">
+  <a href="https://github.com/gcheliz/gtunnel/actions/workflows/ci.yml"><img src="https://github.com/gcheliz/gtunnel/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg" alt="Platform: macOS and Linux">
+</p>
+
+![The gtunnel TUI: tunnel list, details, logs and metrics](docs/demo-tui.gif)
 
 A TUI-first manager for GCP Identity-Aware Proxy tunnels. One binary, two modes:
 a private port on `localhost` that reaches a VM inside a VPC, and a public HTTPS
 URL in front of a service running on your laptop.
 
 No inbound firewall rules, no public IP on the target, no agent on the VM.
-
-![The gtunnel TUI: tunnel list, details, logs and metrics](docs/demo-tui.gif)
 
 ## Features
 
@@ -26,7 +27,7 @@ No inbound firewall rules, no public IP on the target, no agent on the VM.
 | Managed services | launchd on macOS, systemd `--user` on Linux. Restart on failure, optional auto-start at login |
 | Ephemeral runs | `gtunnel run` holds a tunnel in the foreground and tears its route down on exit, including on Ctrl+C |
 | Multiple accounts | One gcloud configuration, project and zone per account; `;` cycles them in the TUI |
-| Unmanaged discovery | `gcloud start-iap-tunnel` processes started outside gtunnel are listed, and `m` takes them over |
+| Unmanaged discovery | `gcloud start-iap-tunnel` processes started outside gtunnel are listed, named for the target they hold, and read-only: every action on them is refused |
 | Health and alerts | Health checks every 30s; a tunnel going unhealthy raises a system notification |
 | Doctor | Reports leftovers, missing firewall rules and broken credentials, and removes what is safe to remove |
 | Self-update | `gtunnel update` verifies the published SHA-256 before replacing the binary |
@@ -118,17 +119,31 @@ certificate: roughly USD 25/month per account, and nothing per tunnel.
 `gtunnel` with no subcommand opens the TUI. `gtunnel demo` opens it filled with
 synthetic data and touches no GCP project and no config file.
 
-| Key | Action | Key | Action |
-|---|---|---|---|
-| `j` `k` arrows | Move | `a` | Add a tunnel |
-| `s` | Start | `e` | Edit the selected tunnel |
-| `S` | Stop | `d` | Delete |
-| `R` | Restart | `A` | Toggle auto-start at login |
-| `r` | Refresh now | `c` | Copy the URL |
-| `;` | Next account | `o` | Open the URL |
-| `m` | Import an unmanaged run | `h` | Health check now |
-| `L` | Clear this tunnel's log | | |
-| `?` | Help | `q` | Quit |
+The header is the mark, the platform and product beside it, and the active account
+over its GCP project id at the right edge, so the project a key is about to act on
+is never off screen. `;` switches both together.
+
+The list is a table with a `NAME  MODE  URL` header and fixed cells for the
+auto-start and health flags. It hides a name suffix equal to the tunnel's own
+account, so `k8s-dev` under `dev` reads `k8s`; Details prints the full stored name,
+and every command still takes it. Every pane follows the terminal: below 100
+columns the list stacks above Details, Logs and Metrics instead of sharing a row
+with them, Logs keeps a minimum height so it survives a 24-row window, and a
+Details value too long for its row wraps under its label.
+
+`?` opens all 23 bindings as a page, in these four groups:
+
+| Group | Keys |
+|---|---|
+| Tunnel | `s` start, `S` stop, `R` restart (rewrites the service), `A` toggle auto-start at login, `h` force a health check now |
+| The list | `a` add, `e` edit the selected one, `d` delete, `m` import an ephemeral run as managed, `up`/`k` and `down`/`j` move the selection |
+| This tunnel's URL and log | `c` copy the URL, `o` open it in a browser, `L` clear this tunnel's log, `r` refresh the list, metrics and health |
+| The program | `;` cycle accounts, `?` this page, `q` quit, `Esc` close a page or cancel a prompt, `Ctrl+Z` suspend to the shell, `Ctrl+C` quit from anywhere |
+
+The footer shows at most eight of them, chosen for the selected tunnel, so it never
+carries both halves of the three case-sensitive pairs: `s`/`S` start and stop,
+`a`/`A` add and auto-start, `r`/`R` refresh and restart. The keymap page is where
+that difference is stated.
 
 Metrics refresh every 5s, health every 30s, load-balancer request counts every 60s
 over a 10-minute window.

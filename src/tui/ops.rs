@@ -55,9 +55,12 @@ pub async fn load_entries(account: &str) -> Result<Vec<TunnelEntry>> {
         ));
     }
 
+    let mut taken: HashSet<String> = entries.iter().map(|e| e.tunnel.name.clone()).collect();
     for external in external_tunnels(&managed_pids) {
+        let name = external_name(&external, &taken);
+        taken.insert(name.clone());
         let mut entry = TunnelEntry::new(
-            external_as_tunnel(account, &external),
+            external_as_tunnel(account, &external, name),
             TunnelStatus::Running,
             TunnelKind::External,
         );
@@ -68,10 +71,26 @@ pub async fn load_entries(account: &str) -> Result<Vec<TunnelEntry>> {
     Ok(entries)
 }
 
+/// What to call a `gcloud` process gtunnel did not start.
+///
+/// The pid is unique and the target is not, which is why the name used to be
+/// `pid-NNNNN` — but the pid is also the one fact the reader cannot act on,
+/// because every action on the row is refused. What the row is for is saying
+/// which service already holds a port, so the target says it, and the pid
+/// comes back only where it has to: two strangers on the same target and port,
+/// or a target a name in this account already spells.
+fn external_name(external: &ExternalTunnel, taken: &HashSet<String>) -> String {
+    let base = format!("{}:{}", external.target, external.remote_port);
+    match taken.contains(&base) {
+        true => format!("{base}@{}", external.pid),
+        false => base,
+    }
+}
+
 // An unmanaged gcloud process has no record, so the list builds one to show it
-fn external_as_tunnel(account: &str, external: &ExternalTunnel) -> PersistentTunnel {
+fn external_as_tunnel(account: &str, external: &ExternalTunnel, name: String) -> PersistentTunnel {
     PersistentTunnel {
-        name: format!("pid-{}", external.pid),
+        name,
         account_name: account.to_string(),
         auto_start: false,
         spec: TunnelSpec::Access {
@@ -510,6 +529,49 @@ mod tests {
         assert_eq!(
             targets[1].pid, None,
             "a managed row is read from its service"
+        );
+    }
+
+    fn stranger(pid: u32, target: &str, remote_port: u16) -> ExternalTunnel {
+        ExternalTunnel {
+            pid,
+            target: target.to_string(),
+            remote_port,
+            local_port: Some(15379),
+            zone: None,
+        }
+    }
+
+    // The pid was the only unique thing about a stranger, but it is also the
+    // only thing the reader cannot use: the row refuses every action, so the
+    // name's whole job is to say which service already holds the port.
+    #[test]
+    fn an_unmanaged_tunnel_is_named_for_its_target_rather_than_its_pid() {
+        let taken = HashSet::new();
+        assert_eq!(
+            external_name(&stranger(48210, "cache-1", 6379), &taken),
+            "cache-1:6379"
+        );
+    }
+
+    #[test]
+    fn two_unmanaged_tunnels_to_one_target_are_told_apart_by_pid() {
+        let mut taken = HashSet::new();
+        let first = external_name(&stranger(48210, "cache-1", 6379), &taken);
+        taken.insert(first.clone());
+        let second = external_name(&stranger(48211, "cache-1", 6379), &taken);
+        assert_eq!(first, "cache-1:6379");
+        assert_eq!(second, "cache-1:6379@48211");
+    }
+
+    // A stranger reaching a target a managed tunnel already names would
+    // otherwise shadow it in a list keyed by name
+    #[test]
+    fn an_unmanaged_name_gives_way_to_a_name_the_account_already_uses() {
+        let taken = HashSet::from(["cache-1:6379".to_string()]);
+        assert_eq!(
+            external_name(&stranger(48210, "cache-1", 6379), &taken),
+            "cache-1:6379@48210"
         );
     }
 }
