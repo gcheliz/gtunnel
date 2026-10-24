@@ -797,12 +797,13 @@ mod tests {
 
     // Every action in the running set refuses on someone else's process, so a
     // footer built from the status alone offered five keys that all did
-    // nothing. What is left is the one key that still works on the list.
+    // nothing. The unmanaged set is empty now; `a add` is in the program
+    // group, which every row's kind shares.
     #[test]
     fn an_unmanaged_row_offers_no_action_that_would_refuse() {
         let (ctx, _) = ui::footer_groups(Some((TunnelStatus::Running, TunnelKind::External)), true);
         let keys: Vec<&str> = ctx.iter().map(|a| a.key).collect();
-        assert_eq!(keys, vec!["a"], "{keys:?}");
+        assert!(keys.is_empty(), "{keys:?}");
     }
 
     // The pane read `started by gtunnel (auto-start off)` over a process
@@ -1430,7 +1431,32 @@ mod tests {
     #[test]
     fn an_empty_account_offers_a_way_to_fill_it() {
         let (ctx, _) = ui::footer_groups(None, false);
-        assert_eq!(ctx.iter().map(|a| a.key).collect::<Vec<_>>(), ["a", "m"]);
+        assert_eq!(ctx.iter().map(|a| a.key).collect::<Vec<_>>(), ["m"]);
+    }
+
+    // `a` sat in the two sets that least needed it: an empty account and a
+    // stranger's row. On every managed row the key that adds a tunnel was not
+    // advertised at all, so the footer taught it only where nothing else was
+    // on offer. It belongs to the program, which is on screen whatever is
+    // selected.
+    #[test]
+    fn adding_a_tunnel_is_on_the_footer_in_every_state() {
+        let states = [
+            (Some((TunnelStatus::Running, TunnelKind::Managed)), true),
+            (Some((TunnelStatus::Stopped, TunnelKind::Managed)), true),
+            (Some((TunnelStatus::Error, TunnelKind::Managed)), true),
+            (Some((TunnelStatus::Running, TunnelKind::External)), true),
+            (Some((TunnelStatus::Stopped, TunnelKind::External)), true),
+            (None, true),
+            (None, false),
+        ];
+        for (selected, any) in states {
+            let (contextual, program) = ui::footer_groups(selected, any);
+            let listed = contextual.iter().chain(program).filter(|a| a.key == "a");
+            assert_eq!(listed.count(), 1, "{selected:?} any={any}");
+            let text = line_text(&ui::footer_line(120, selected, any));
+            assert!(text.contains("a add"), "{selected:?} any={any}: {text:?}");
+        }
     }
 
     // Review Focus 2: a width landing exactly on a shedding boundary, where an
@@ -1881,7 +1907,7 @@ mod tests {
 
     #[test]
     fn the_footer_never_shows_more_than_the_board_says_it_does() {
-        assert_eq!(ui::footer_most(), 8);
+        assert_eq!(ui::footer_most(), 9);
     }
 
     #[test]
@@ -1918,7 +1944,7 @@ mod tests {
         // for any table, and this one has to change when a key is added
         let count_row = rows
             .iter()
-            .find(|r| r.contains("30 keys bound - the footer shows at most 8"))
+            .find(|r| r.contains("30 keys bound - the footer shows at most 9"))
             .expect("the count line");
         // In this page `q` closes the page, it does not quit the program
         assert!(count_row.contains("Esc back  q back"), "{count_row:?}");

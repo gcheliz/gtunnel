@@ -457,7 +457,7 @@ pub const KEYMAP: &[KeyDoc] = &[
         Group::Tunnel,
     ),
     doc("h", None, "force a health check now", Group::Tunnel),
-    doc("a", Some("add a tunnel"), "add a tunnel", Group::List),
+    doc("a", Some("add"), "add a tunnel", Group::List),
     doc("e", Some("edit"), "edit the selected one", Group::List),
     doc("d", Some("delete"), "delete it", Group::List),
     doc(
@@ -605,16 +605,25 @@ const ACTIONS_ERROR: &[Action] = &[
     Action::of("L"),
 ];
 
-const ACTIONS_EMPTY: &[Action] = &[Action::of("a"), Action::of("m")];
+const ACTIONS_EMPTY: &[Action] = &[Action::of("m")];
 
 /// Someone else's `gcloud` process. Every tunnel action refuses on it, and the
 /// running set offered five of them, so the footer named five keys that did
-/// nothing. Adding a tunnel of your own is what is left - `r` refresh also
-/// works, but it has no footer word, being a key the screen never advertises.
-const ACTIONS_UNMANAGED: &[Action] = &[Action::of("a")];
+/// nothing. Nothing is left to offer here: `a` add now lives in the program
+/// group, and `r` refresh has no footer word, being a key the screen never
+/// advertises.
+const ACTIONS_UNMANAGED: &[Action] = &[];
 
-/// Always available, always flush right, and the last thing to shed.
-const ACTIONS_PROGRAM: &[Action] = &[Action::of(";"), Action::of("?"), Action::of("q")];
+/// Always available, always flush right, and the last thing to shed. `a add`
+/// leads because the group sheds from the front: it is the first to go and
+/// `?` and `q` the last, and it is here rather than in a contextual set
+/// because adding a tunnel is as valid on a running row as on an empty list.
+const ACTIONS_PROGRAM: &[Action] = &[
+    Action::of("a"),
+    Action::of(";"),
+    Action::of("?"),
+    Action::of("q"),
+];
 
 /// The most actions the footer ever shows at once, for the help page's count
 /// line. Computed so a new action cannot leave the sentence wrong.
@@ -1603,12 +1612,14 @@ pub fn footer_line(
     };
 
     let mut shown = all_contextual.len();
+    let mut skipped = 0;
     let mut program = all_program;
     while !fits(&all_contextual[..shown], program) {
         if shown > 0 {
             shown -= 1;
         } else if program.len() > 2 {
-            program = &all_program[1..];
+            skipped += 1;
+            program = &all_program[skipped..];
         } else {
             break;
         }
