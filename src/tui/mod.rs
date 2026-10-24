@@ -2136,6 +2136,34 @@ mod tests {
         );
     }
 
+    // Nothing on the main screen says which gtunnel is running, and a bug
+    // report that names no version is a bug report about a guess. The help
+    // page is where someone already goes to ask what the program does.
+    #[test]
+    fn the_help_frame_names_the_running_version_when_the_border_can_hold_it() {
+        let title = ui::help_modal_title(ui::help_modal_width(120));
+        assert!(title.contains("Keys"), "{title:?} dropped the subject");
+        assert!(
+            title.contains(env!("CARGO_PKG_VERSION")),
+            "{title:?} does not name the running version"
+        );
+    }
+
+    // A clipped title is worse than no version: ratatui truncates it silently,
+    // so the frame would read ` Keys - gtunn`.
+    #[test]
+    fn a_narrow_help_frame_drops_the_version_rather_than_clipping_it() {
+        for screen_width in 1u16..=200 {
+            let modal = ui::help_modal_width(screen_width);
+            let title = ui::help_modal_title(modal);
+            let room = modal.saturating_sub(2) as usize;
+            assert!(
+                title.chars().count() <= room || room == 0,
+                "{screen_width}: title {title:?} does not fit {room} cells"
+            );
+        }
+    }
+
     #[test]
     fn the_help_page_never_panics_and_keeps_every_row_in_the_terminal() {
         for (width, height) in [(1, 1), (10, 4), (20, 8), (40, 12), (60, 24), (120, 40)] {
