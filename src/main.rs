@@ -1,3 +1,4 @@
+mod breaker;
 mod cli;
 mod commands;
 mod config;
