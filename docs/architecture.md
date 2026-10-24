@@ -206,8 +206,8 @@ separate switch, with `loginctl enable-linger` deciding whether it survives a lo
 | `<config>/logs/<account>-<name>.log` | Per-tunnel log, written by the service |
 | `<config>/update-check.json` | Last version check |
 
-`<config>` is `~/Library/Application Support/gtunnel` on macOS and
-`~/.config/gtunnel` on Linux, and `GTUNNEL_CONFIG_DIR` overrides it.
+`<config>` is `~/.gtunnel` (or `~/Library/Application Support/gtunnel` on macOS
+and `~/.config/gtunnel` on Linux), and `GTUNNEL_CONFIG_DIR` overrides it.
 
 ### The account and config model
 

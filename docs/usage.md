@@ -971,9 +971,9 @@ The value of `VISUAL` or `EDITOR` is split into a program and its arguments here
 handed to a shell, so `code -w` works and nothing in the variable is interpreted as a
 command line. Quotes group a path containing spaces and do nothing else.
 
-With `GTUNNEL_CONFIG_DIR` unset the directory is `~/Library/Application Support/gtunnel` on
-macOS and `$XDG_CONFIG_HOME/gtunnel` on Linux, which is `~/.config/gtunnel` unless that
-variable says otherwise.
+With `GTUNNEL_CONFIG_DIR` unset the directory is `~/.gtunnel` (falling back to
+`~/Library/Application Support/gtunnel` on macOS and `$XDG_CONFIG_HOME/gtunnel` on
+Linux if `~/.gtunnel` does not exist).
 
 ### Exit codes
 

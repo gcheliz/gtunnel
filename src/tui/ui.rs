@@ -393,6 +393,7 @@ impl Group {
     /// The order the help page stacks the groups in. Spelled out beside the enum
     /// and not derived from it, because the page's reading order is a design
     /// choice and a new variant should have to be placed on purpose.
+    #[allow(dead_code)]
     pub const ALL: [Group; 4] = [Group::Tunnel, Group::List, Group::UrlAndLog, Group::Program];
 
     /// The heading as the design sets it: upper case and phrased as what the
@@ -1748,6 +1749,63 @@ fn help_note(width: usize) -> Vec<Line<'static>> {
         .collect()
 }
 
+fn shorten_path(path: &std::path::Path, max_width: usize) -> String {
+    let s = if let Some(home) = dirs::home_dir() {
+        if let Ok(rel) = path.strip_prefix(&home) {
+            format!("~/{}", rel.display())
+        } else {
+            path.display().to_string()
+        }
+    } else {
+        path.display().to_string()
+    };
+
+    if s.chars().count() <= max_width {
+        s
+    } else {
+        let chars: Vec<char> = s.chars().collect();
+        let keep = max_width.saturating_sub(4);
+        let start = chars.len().saturating_sub(keep);
+        format!(".../{}", chars[start..].iter().collect::<String>())
+    }
+}
+
+fn help_paths(width: usize) -> Vec<Line<'static>> {
+    let mut rows = vec![Line::styled(
+        "SESSION PATHS",
+        Style::default()
+            .fg(theme::MUTED)
+            .add_modifier(Modifier::BOLD),
+    )];
+    let config_p = crate::config::config_path().ok();
+    let tunnels_p = crate::state::tunnels_path().ok();
+    let logs_p = crate::config::config_dir().ok().map(|d| d.join("logs"));
+
+    let items = [
+        ("Config", config_p),
+        ("Tunnels", tunnels_p),
+        ("Logs", logs_p),
+    ];
+
+    let max_val_width = width.saturating_sub(HELP_KEY_CELLS);
+    for (label, path) in items {
+        let display_path = match path {
+            Some(p) => shorten_path(&p, max_val_width),
+            None => "-".to_string(),
+        };
+        rows.push(Line::from(vec![
+            Span::styled(
+                format!("{:<width$}", label, width = HELP_KEY_CELLS),
+                Style::default()
+                    .fg(theme::ACCENT)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(display_path, Style::default().fg(theme::LABEL)),
+        ]));
+    }
+    rows
+}
+
 /// The last row of the page: what the page counts on the left, how to leave on
 /// the right. It falls to two rows when one cannot hold both, because the way
 /// out matters more than sitting beside the count.
@@ -1847,20 +1905,25 @@ pub struct HelpPage {
 /// row on where the reader is in it, so a window is never mistaken for the page.
 pub fn help_page(width: usize, height: usize, scroll: usize) -> HelpPage {
     let two = width >= HELP_TWO_COLUMNS;
-    let mut body = if two {
+    let body = if two {
         let column = (width - HELP_GAP) / 2;
-        let left = help_stack(&[Group::Tunnel, Group::List]);
+        let mut left = help_stack(&[Group::Tunnel, Group::List]);
+        left.push(Line::raw(""));
+        left.extend(help_paths(column));
         let mut right = help_stack(&[Group::UrlAndLog, Group::Program]);
         right.push(Line::raw(""));
         right.extend(help_note(column));
         help_columns(left, right, column)
     } else {
-        help_stack(&Group::ALL)
+        let mut rows = help_stack(&[Group::Tunnel, Group::List]);
+        rows.push(Line::raw(""));
+        rows.extend(help_paths(width));
+        rows.push(Line::raw(""));
+        rows.extend(help_stack(&[Group::UrlAndLog, Group::Program]));
+        rows.push(Line::raw(""));
+        rows.extend(help_note(width));
+        rows
     };
-    if !two {
-        body.push(Line::raw(""));
-        body.extend(help_note(width));
-    }
     let footer = help_footer(width);
     let avail = height.saturating_sub(footer.len() + 1);
 
