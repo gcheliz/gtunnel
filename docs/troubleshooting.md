@@ -121,6 +121,30 @@ emptied when its tunnel starts, so a line in it was written by the process runni
 | `remote port forwarding failed` | The relay port is busy on the relay VM | `gtunnel restart <name>`, then `gtunnel doctor` |
 | `numpy` | gcloud's Python has no NumPy | See NumPy below |
 
+### One level, two scales
+
+How much a tunnel says is one setting, `info` by default. gcloud and ssh scale verbosity
+differently and the same word means different things to each, so gtunnel maps the level
+to both rather than making you set two:
+
+| gtunnel level | gcloud `--verbosity` | ssh `-o LogLevel` | What you get |
+|---|---|---|---|
+| `quiet` | `warning` | `ERROR` | Failures only. A working tunnel says nothing |
+| `info` (default) | `info` | `DEBUG` | The listener or forward coming up, and one line per client connecting |
+| `debug` | `debug` | `DEBUG3` | The above plus gcloud's and ssh's own internals, for a tunnel that will not carry traffic |
+
+`info` maps to ssh `DEBUG`, one step further than the name suggests, because ssh's levels
+run `QUIET < FATAL < ERROR < INFO < VERBOSE < DEBUG` and both lines a person means by
+"tell me it is working" are `debug()` calls; at `VERBOSE` ssh prints three lines for a
+whole session and nothing per connection.
+
+`quiet` maps to ssh `ERROR` rather than `QUIET`, because `QUIET` suppresses the failure
+messages that are the only reason to open a quiet tunnel's log at all.
+
+Set it with `--log-level`, `GTUNNEL_LOG_LEVEL` or `log_level` in `config.toml`, in that
+order of precedence — see [usage.md](usage.md#the-log-level). A running tunnel keeps the
+level it started under until `gtunnel restart <name>`.
+
 ### Who writes what
 
 Two processes append to the same file. The service's child writes continuously, whether
@@ -129,7 +153,7 @@ gtunnel process is running.
 
 | Writer | Lines | When |
 |---|---|---|
-| The service's child | gcloud's own output at `--verbosity=info`, and, for the kinds that run ssh (`--via` and public), ssh's at `LogLevel=DEBUG` | Always, from start to exit |
+| The service's child | gcloud's own output at the configured `--verbosity`, and, for the kinds that run ssh (`--via` and public), ssh's at the matching `LogLevel` (see the table above) | Always, from start to exit |
 | gtunnel | `gtunnel: <message>`, always prefixed and timestamped | Only while the TUI or a gtunnel command is running |
 
 The shapes below are what each kind of line looks like, not a captured transcript:
@@ -158,9 +182,8 @@ A `--via` tunnel never prints `Listening on port`. It runs `gcloud compute ssh
 flag on it, and there is no listener inside gcloud to announce one. Its equivalent is
 ssh's forwarding line.
 
-`DEBUG` rather than `VERBOSE` for ssh, because ssh's levels run `QUIET < FATAL < ERROR <
-INFO < VERBOSE < DEBUG` and every line in the table above is a debug one. At `VERBOSE`
-ssh prints three lines for a whole session and nothing at all per connection.
+Every ssh line in the table above is a debug one, which is why the default level
+reaches ssh as `DEBUG`; see [One level, two scales](#one-level-two-scales).
 
 ### A gap in the connection counts is not an idle tunnel
 
@@ -174,10 +197,17 @@ A tunnel gtunnel does not manage owns no log here, so it gets neither kind of li
 
 ### How large a log gets
 
-`--verbosity=info` and `LogLevel=DEBUG` make a tunnel talkative: around 90 lines per ssh
-handshake, and a line or two per client connection after that. A log is emptied when its
-tunnel starts, and past 8 MiB gtunnel keeps the last 2 MiB and replaces the rest with a
-first line saying it did.
+The default level makes a tunnel talkative: around 90 lines per ssh handshake, and a line
+or two per client connection after that. The level is the lever on that figure.
+
+| Level | Per ssh handshake | Per client connection |
+|---|---|---|
+| `quiet` | almost nothing; a failure only | nothing |
+| `info` (default) | around 90 lines | a line or two |
+| `debug` | substantially more, gcloud's and ssh's internals included | several |
+
+The bound is the same at all three: a log is emptied when its tunnel starts, and past
+8 MiB gtunnel keeps the last 2 MiB and replaces the rest with a first line saying it did.
 
 That trim runs when a gtunnel process writes to the log, which is while the TUI is open
 or a command is running. A tunnel nobody has looked at for a month is bounded the next
