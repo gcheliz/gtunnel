@@ -41,6 +41,11 @@ fn daemon_env(gcloud: &std::path::Path) -> Vec<(String, String)> {
     vec![
         ("CLOUDSDK_CORE_DISABLE_PROMPTS".to_string(), "1".to_string()),
         ("PATH".to_string(), path),
+        // gcloud is Python, and Python block-buffers a stdout that is not a
+        // terminal. The service redirects stdout into the tunnel's log, so
+        // without this a line is held until 4 KiB have accumulated or the
+        // process exits, and a working tunnel reads as a silent one.
+        ("PYTHONUNBUFFERED".to_string(), "1".to_string()),
     ]
 }
 
@@ -318,6 +323,19 @@ mod tests {
             "{unit}"
         );
         assert!(unit.contains("WantedBy=default.target"), "{unit}");
+    }
+
+    // The fixture above carries a hand-written env, so it can only test the
+    // renderer. What a tunnel actually runs with comes from `daemon_env`, and
+    // that is what this pins.
+    #[test]
+    fn the_child_does_not_block_buffer_its_output_into_the_log() {
+        let env = daemon_env(std::path::Path::new("/opt/homebrew/bin/gcloud"));
+        assert!(
+            env.iter().any(|(k, v)| k == "PYTHONUNBUFFERED" && v == "1"),
+            "gcloud is Python and its stdout block-buffers into a redirected \
+             file, so a tunnel's lines arrive 4 KiB at a time or at exit\n{env:?}"
+        );
     }
 
     #[test]
