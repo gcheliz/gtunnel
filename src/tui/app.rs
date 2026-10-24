@@ -136,6 +136,10 @@ pub enum Op {
     ClearLog(String),
     Create(NewTunnel),
     Edit(EditTunnel),
+    AccountAdd(NewAccount),
+    AccountEdit(AccountEdit),
+    AccountRemove(String),
+    AccountSelect(String),
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -169,6 +173,36 @@ pub struct EditTunnel {
     pub value: String,
 }
 
+/// What the accounts page sends to `gtunnel account add`: a gcloud
+/// configuration and a name. There is no project field, because the project
+/// and the zone are read from the configuration, which is the one place that
+/// already knows them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NewAccount {
+    pub configuration: String,
+    pub name: String,
+}
+
+/// An edit of one account. Each field is `None` when it is unchanged, and
+/// never `Some("")`: `cmd_account_edit` refuses both an empty value and a call
+/// with nothing to change, so the page must not send either.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AccountEdit {
+    pub name: String,
+    pub project: Option<String>,
+    pub zone: Option<String>,
+}
+
+/// What the page's two dialogs have gathered. One struct for both, because
+/// the fields they collect do not overlap: add asks for a configuration and a
+/// name, edit knows the name already and asks for a project and a zone.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AccountDraft {
+    pub configuration: String,
+    pub name: String,
+    pub project: String,
+}
+
 // What an Op produced, handed back to the UI thread
 #[derive(Debug, Clone)]
 pub struct OpResult {
@@ -178,6 +212,10 @@ pub struct OpResult {
     pub reload: bool,
     // Ops overlap, so only a create's own result may settle a create's draft
     pub from_create: bool,
+    // The op changed config.toml, so the accounts page and the header are
+    // stale as well, and the page is where the result has to be read: a
+    // refusal goes to a status line the page is covering
+    pub from_account: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -195,6 +233,14 @@ pub enum InputMode {
     Confirm,
     Help,
     Config,
+    Accounts,
+    AccountConfiguration,
+    AccountName,
+    AccountProject,
+    AccountZone,
+    // The accounts page's own confirmation. `Confirm` answers for the list,
+    // where `y` deletes the selected tunnel, and one mode cannot mean both
+    AccountConfirm,
 }
 
 impl InputMode {
@@ -208,11 +254,28 @@ impl InputMode {
                 | InputMode::AddLocalPort
                 | InputMode::AddLocalTarget
                 | InputMode::EditTarget
+        ) || self.is_account_text()
+    }
+
+    /// The text modes the accounts page opens. They are told apart from the
+    /// rest because `Esc` in one of them goes back to the page, not to the
+    /// list the page is covering.
+    pub fn is_account_text(&self) -> bool {
+        matches!(
+            self,
+            InputMode::AccountConfiguration
+                | InputMode::AccountName
+                | InputMode::AccountProject
+                | InputMode::AccountZone
         )
     }
 
     pub fn prompt(&self) -> &'static str {
         match self {
+            InputMode::AccountConfiguration => "gcloud configuration:",
+            InputMode::AccountName => "Account name:",
+            InputMode::AccountProject => "Project (Enter keeps it):",
+            InputMode::AccountZone => "Default zone (Enter keeps it):",
             InputMode::AddName => "Name:",
             InputMode::AddInstance => "Instance (type to filter):",
             InputMode::AddJumpHost => "Host it reaches (Enter for the instance itself):",
@@ -486,6 +549,14 @@ pub struct App {
     pub domains: Vec<String>,
     pub domain_selected: usize,
     pub confirm_message: Option<String>,
+    // Where the cursor is on the accounts page, an index into `accounts`
+    pub account_selected: usize,
+    // What the add and edit dialogs have collected so far
+    pub account_draft: AccountDraft,
+    // How the last account operation ended, said on the page. The page covers
+    // the status line, and a refusal the user cannot read is a key that did
+    // nothing as far as they can tell.
+    pub account_notice: Option<Notice>,
     pub has_relay: bool,
     // Set when the instance picker opens, so the loop knows to fetch the list
     pub want_instances: bool,
@@ -548,6 +619,9 @@ impl App {
             domains: Vec::new(),
             domain_selected: 0,
             confirm_message: None,
+            account_selected: 0,
+            account_draft: AccountDraft::default(),
+            account_notice: None,
             has_relay: false,
             want_instances: false,
             force_refresh: false,
@@ -672,7 +746,15 @@ impl App {
         }
         let current = self.accounts.iter().position(|a| *a == self.account);
         let next = current.map(|i| (i + 1) % self.accounts.len()).unwrap_or(0);
-        self.account = self.accounts[next].clone();
+        let name = self.accounts[next].clone();
+        self.switch_to_account(&name);
+    }
+
+    /// Puts another account on screen. `;` and the accounts page both land
+    /// here, so the two cannot drift: everything the old account's rows,
+    /// logs and relay said is dropped, because none of it describes this one.
+    fn switch_to_account(&mut self, name: &str) {
+        self.account = name.to_string();
         self.default_zone = self.zones.get(&self.account).cloned().unwrap_or_default();
         self.selected = 0;
         self.entries.clear();
@@ -690,6 +772,113 @@ impl App {
             self.force_refresh = true;
         }
         self.set_status(format!("account {}", self.account));
+    }
+
+    // --- the accounts page ---
+
+    /// Opens the page with the cursor on the account the rest of the screen
+    /// is showing, which is the row every other key on the page acts on.
+    fn open_accounts(&mut self) {
+        self.account_selected = self
+            .accounts
+            .iter()
+            .position(|a| *a == self.account)
+            .unwrap_or(0);
+        self.account_notice = None;
+        self.input_mode = InputMode::Accounts;
+    }
+
+    pub fn account_at_cursor(&self) -> Option<&String> {
+        self.accounts.get(self.account_selected)
+    }
+
+    fn accounts_key(&mut self, code: KeyCode) -> Option<Op> {
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char(':') => {
+                self.input_mode = InputMode::Normal;
+                self.account_notice = None;
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                let last = self.accounts.len().saturating_sub(1);
+                self.account_selected = (self.account_selected + 1).min(last);
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.account_selected = self.account_selected.saturating_sub(1)
+            }
+            KeyCode::Enter => return self.select_account(),
+            KeyCode::Char('a') => self.open_account_add(),
+            KeyCode::Char('e') => self.open_account_edit(),
+            KeyCode::Char('d') => self.ask_remove_account(),
+            _ => {}
+        }
+        None
+    }
+
+    /// The cursor's account takes the screen, and the choice is written to
+    /// `config.toml` so the next `gtunnel` command agrees with what is on it.
+    fn select_account(&mut self) -> Option<Op> {
+        let name = self.account_at_cursor()?.clone();
+        if name != self.account {
+            self.switch_to_account(&name);
+        }
+        self.input_mode = InputMode::Normal;
+        self.account_notice = None;
+        self.spinner.start(&format!("select {name}"));
+        Some(Op::AccountSelect(name))
+    }
+
+    // The configuration is typed rather than picked: listing them is a gcloud
+    // call, and `account add` already answers an unknown one by name
+    fn open_account_add(&mut self) {
+        self.account_draft = AccountDraft::default();
+        self.input.clear();
+        self.draft_error = None;
+        self.account_notice = None;
+        self.input_mode = InputMode::AccountConfiguration;
+    }
+
+    // The fields come pre-filled, because an edit of the zone must not make
+    // the person retype the project to keep it
+    fn open_account_edit(&mut self) {
+        let Some(name) = self.account_at_cursor().cloned() else {
+            return;
+        };
+        self.account_draft = AccountDraft {
+            name: name.clone(),
+            ..AccountDraft::default()
+        };
+        self.input = self.projects.get(&name).cloned().unwrap_or_default();
+        self.draft_error = None;
+        self.account_notice = None;
+        self.input_mode = InputMode::AccountProject;
+    }
+
+    fn ask_remove_account(&mut self) {
+        let Some(name) = self.account_at_cursor().cloned() else {
+            return;
+        };
+        self.account_draft = AccountDraft {
+            name: name.clone(),
+            ..AccountDraft::default()
+        };
+        self.account_notice = None;
+        self.confirm_message = Some(format!("Remove account '{name}'? (y/n)"));
+        self.input_mode = InputMode::AccountConfirm;
+    }
+
+    // Whether the account can go is `gtunnel account remove`'s to answer: it
+    // refuses one that still holds tunnels, and the page shows what it said
+    fn confirm_account(&mut self, code: KeyCode) -> Option<Op> {
+        let name = std::mem::take(&mut self.account_draft.name);
+        self.confirm_message = None;
+        self.input_mode = InputMode::Accounts;
+        match code {
+            KeyCode::Char('y') | KeyCode::Char('Y') if !name.is_empty() => {
+                self.spinner.start(&format!("remove {name}"));
+                Some(Op::AccountRemove(name))
+            }
+            _ => None,
+        }
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<Op> {
@@ -717,6 +906,8 @@ impl App {
                 self.config_key(key.code);
                 return None;
             }
+            InputMode::Accounts => return self.accounts_key(key.code),
+            InputMode::AccountConfirm => return self.confirm_account(key.code),
             InputMode::ChooseMode => return self.choose_mode(key.code),
             InputMode::Confirm => return self.confirm(key.code),
             InputMode::AddInstance => return self.pick_instance(key.code),
@@ -731,6 +922,7 @@ impl App {
             KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
             KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
             KeyCode::Char(';') => self.next_account(),
+            KeyCode::Char(':') => self.open_accounts(),
             KeyCode::Char('r') => {
                 self.force_refresh = true;
                 self.set_status("refreshing");
@@ -963,6 +1155,18 @@ impl App {
             .iter()
             .map(|a| (a.name.clone(), a.project.clone()))
             .collect();
+        // A zone edited here would otherwise stay as it was loaded at start,
+        // and a typed instance would be looked for in the old one
+        self.zones = config
+            .accounts
+            .iter()
+            .map(|a| (a.name.clone(), a.default_zone.clone()))
+            .collect();
+        // The cursor is an index, so an account removed out from under it
+        // would point past the end of a shorter list
+        self.account_selected = self
+            .account_selected
+            .min(self.accounts.len().saturating_sub(1));
         if !self.accounts.contains(&self.account)
             && let Some(first) = self.accounts.first()
         {
@@ -983,6 +1187,7 @@ impl App {
                 Some((a.name.clone(), domains.collect()))
             })
             .collect();
+        self.default_zone = self.zones.get(&self.account).cloned().unwrap_or_default();
         self.show_relay_for_account();
         self.force_refresh = true;
     }
@@ -1239,7 +1444,13 @@ impl App {
     fn type_line(&mut self, code: KeyCode) -> Option<Op> {
         match code {
             KeyCode::Esc => {
+                // A dialog the page opened goes back to the page: the list
+                // underneath is not where this person was
+                let from_page = self.input_mode.is_account_text();
                 self.cancel_dialog();
+                if from_page {
+                    self.input_mode = InputMode::Accounts;
+                }
                 None
             }
             KeyCode::Backspace => {
@@ -1257,9 +1468,85 @@ impl App {
         }
     }
 
+    // A dialog the page opened is done with: the page is what it returns to
+    fn back_to_page(&mut self) {
+        self.input.clear();
+        self.draft_error = None;
+        self.confirm_message = None;
+        self.input_mode = InputMode::Accounts;
+    }
+
+    /// A field's new value, or `None` when it is to be left alone. Blank
+    /// means unchanged rather than empty, because the field arrives
+    /// pre-filled and `cmd_account_edit` refuses an empty value outright.
+    fn changed(now: &str, before: Option<&String>) -> Option<String> {
+        let now = now.trim();
+        (!now.is_empty() && Some(now) != before.map(String::as_str)).then(|| now.to_string())
+    }
+
     fn advance(&mut self) -> Option<Op> {
         let value = std::mem::take(&mut self.input);
         match self.input_mode {
+            InputMode::AccountConfiguration => {
+                if value.trim().is_empty() {
+                    self.draft_error =
+                        Some("Name the gcloud configuration this account uses".to_string());
+                    return None;
+                }
+                self.account_draft.configuration = value.trim().to_string();
+                self.draft_error = None;
+                self.input_mode = InputMode::AccountName;
+                None
+            }
+            InputMode::AccountName => {
+                let name = value.trim().to_string();
+                if let Err(e) = crate::config::validate_account_name(&name) {
+                    self.draft_error = Some(e.to_string());
+                    self.input = value;
+                    return None;
+                }
+                if self.accounts.contains(&name) {
+                    self.draft_error = Some(format!("'{name}' is already an account"));
+                    self.input = value;
+                    return None;
+                }
+                let new = NewAccount {
+                    configuration: self.account_draft.configuration.clone(),
+                    name: name.clone(),
+                };
+                self.back_to_page();
+                self.spinner.start(&format!("add {name}"));
+                Some(Op::AccountAdd(new))
+            }
+            InputMode::AccountProject => {
+                self.account_draft.project = value.trim().to_string();
+                self.input = self
+                    .zones
+                    .get(&self.account_draft.name)
+                    .cloned()
+                    .unwrap_or_default();
+                self.input_mode = InputMode::AccountZone;
+                None
+            }
+            InputMode::AccountZone => {
+                let name = self.account_draft.name.clone();
+                let project = Self::changed(&self.account_draft.project, self.projects.get(&name));
+                let zone = Self::changed(&value, self.zones.get(&name));
+                self.back_to_page();
+                if project.is_none() && zone.is_none() {
+                    self.account_notice = Some(Notice {
+                        text: format!("{name} is unchanged"),
+                        ok: true,
+                    });
+                    return None;
+                }
+                self.spinner.start(&format!("edit {name}"));
+                Some(Op::AccountEdit(AccountEdit {
+                    name,
+                    project,
+                    zone,
+                }))
+            }
             InputMode::AddName => {
                 if value.trim().is_empty() {
                     self.input = value;
@@ -1453,6 +1740,14 @@ impl App {
         self.spinner.stop();
         self.set_status(result.message.clone());
         self.status_error = !result.ok;
+        // The page covers the status line, and a refusal there is one nobody
+        // reads: it is the page that asked, so the page is told
+        if result.from_account {
+            self.account_notice = Some(Notice {
+                text: result.message.clone(),
+                ok: result.ok,
+            });
+        }
         // Ops run concurrently, so only a create's own result settles its
         // draft. A dialog already open is someone's work in progress and is
         // not overwritten; the failure still reaches the status line.

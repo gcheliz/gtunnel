@@ -494,6 +494,16 @@ pub const KEYMAP: &[KeyDoc] = &[
         Group::UrlAndLog,
     ),
     doc(";", Some("account"), "cycle accounts", Group::Program),
+    // `:` is the shift of `;`, so the key that cycles accounts and the key
+    // that opens all of them are the same key twice. Its footer word is not
+    // "accounts": beside `; account` that is a one-letter difference, which
+    // is the trap the contextual footer exists to dissolve.
+    doc(
+        ":",
+        Some("manage"),
+        "open the accounts page",
+        Group::Program,
+    ),
     doc("?", Some("keys"), "this page", Group::Program),
     doc("q", Some("quit"), "quit", Group::Program),
     doc(
@@ -615,17 +625,27 @@ const ACTIONS_EMPTY: &[Action] = &[Action::of("m")];
 /// advertises.
 const ACTIONS_UNMANAGED: &[Action] = &[];
 
-/// Always available, always flush right, and the last thing to shed. `a add`
-/// leads because the group sheds from the front: it goes before the
-/// program's others but after every contextual action except the first, and
-/// `?` and `q` go last. It is here rather than in a contextual set
-/// because adding a tunnel is as valid on a running row as on an empty list.
+/// Always available, always flush right, and the last thing to shed. The
+/// group sheds from the front, so its order is the order it is given up in:
+/// `: manage` first, because a terminal too narrow for everything is not one
+/// where someone is reorganising their accounts; then `a add`, which is true
+/// of every row but is not what the row in front of them is; then
+/// `; account`, with `?` and `q` left. `a add` is here rather than in a
+/// contextual set because adding a tunnel is as valid on a running row as on
+/// an empty list.
 const ACTIONS_PROGRAM: &[Action] = &[
+    Action::of(":"),
     Action::of("a"),
     Action::of(";"),
     Action::of("?"),
     Action::of("q"),
 ];
+
+/// The program actions that outlast the row's own first action: `; account`,
+/// `? keys` and `q quit`. Everything in front of them goes before it.
+const PROGRAM_CORE: usize = 3;
+/// And the two that never go at all.
+const PROGRAM_FLOOR: usize = 2;
 
 /// The most actions the footer ever shows at once, for the help page's count
 /// line. Computed so a new action cannot leave the sentence wrong.
@@ -771,8 +791,9 @@ pub fn render(f: &mut Frame, app: &App) {
         InputMode::Normal => {}
         InputMode::Help => render_help_modal(f, app),
         InputMode::Config => render_config_modal(f, app),
+        InputMode::Accounts => render_accounts(f, app),
         InputMode::ChooseMode => render_choose_mode(f),
-        InputMode::Confirm => {
+        InputMode::AccountConfirm | InputMode::Confirm => {
             if let Some(message) = &app.confirm_message {
                 render_confirm(f, message);
             }
@@ -1597,8 +1618,8 @@ fn group_spans(actions: &[Action], out: &mut Vec<Span<'static>>) {
 /// Shedding order: the contextual group goes from its end, because the actions
 /// are listed in the order a user reaches for them, but stops at its first
 /// entry. Then `a add` goes, which is true of every row, then that first entry,
-/// the one the row exists for. Only once the group is empty does
-/// `; account` go, leaving the two that must never disappear: `?`
+/// the one the row exists for. Only once the group is empty do `; account`
+/// and then `: manage` go, leaving the two that must never disappear: `?`
 /// says what the keys are, and `q` is the way out.
 pub fn footer_line(
     width: u16,
@@ -1620,15 +1641,15 @@ pub fn footer_line(
     let mut program = all_program;
     while !fits(&all_contextual[..shown], program) {
         if shown > 1 {
-            // everything after the row's first action goes before `a add`
+            // everything after the row's first action goes before `: manage`
             shown -= 1;
-        } else if skipped == 0 {
-            skipped = 1;
+        } else if all_program.len() - skipped > PROGRAM_CORE {
+            skipped += 1;
         } else if shown > 0 {
             // the row's own first action, `R restart` on a failure, outlasts
-            // `a add` but not `; account`
+            // the program's extras but not `; account`
             shown = 0;
-        } else if all_program.len() - skipped > 2 {
+        } else if all_program.len() - skipped > PROGRAM_FLOOR {
             skipped += 1;
         } else {
             break;
@@ -2357,6 +2378,140 @@ fn render_choose_mode(f: &mut Frame) {
     );
 }
 
+/// The keys the accounts page answers to, in the order a reader meets them.
+const ACCOUNT_KEYS: [(&str, &str); 6] = [
+    ("j/k", "move"),
+    ("Enter", "select"),
+    ("a", "add"),
+    ("e", "edit"),
+    ("d", "remove"),
+    ("Esc", "back"),
+];
+
+/// The cells the whole hint wants on one row, indent included.
+fn account_keys_cells() -> usize {
+    ACCOUNT_KEYS
+        .iter()
+        .map(|(k, l)| cells(k) + 1 + cells(l))
+        .sum::<usize>()
+        + 2 * (ACCOUNT_KEYS.len() - 1)
+        + 2
+}
+
+/// The hint as rows that fit `width`, a pair never split across two of them.
+///
+/// Not word-wrapped: wrapping collapses the two cells between pairs to one,
+/// and the row then reads as a sentence - "Enter select a add e edit" - with
+/// nothing to say where one key ends and the next begins.
+fn account_key_rows(width: usize) -> Vec<Line<'static>> {
+    let mut rows: Vec<Vec<Span<'static>>> = Vec::new();
+    let mut used = 0;
+    for (i, (key, label)) in ACCOUNT_KEYS.iter().enumerate() {
+        let pair = cells(key) + 1 + cells(label);
+        if i == 0 || used + 2 + pair > width {
+            rows.push(vec![Span::raw("  ")]);
+            used = 2;
+        } else {
+            rows.last_mut()
+                .expect("a row to add to")
+                .push(Span::raw("  "));
+            used += 2;
+        }
+        let row = rows.last_mut().expect("a row to add to");
+        row.push(Span::styled(
+            *key,
+            Style::default()
+                .fg(theme::ACCENT)
+                .add_modifier(Modifier::BOLD),
+        ));
+        row.push(Span::raw(" "));
+        row.push(Span::styled(*label, Style::default().fg(theme::LABEL)));
+        used += pair;
+    }
+    rows.into_iter().map(Line::from).collect()
+}
+
+/// One row per account: whether it is the one on screen, its name, its
+/// project and its zone.
+///
+/// The project and the zone are what tell two accounts apart — the name is a
+/// label this machine chose — so the row carries both rather than the name
+/// alone. The columns are sized to the widest value and not capped here: the
+/// dialog's own width decides what is cut, as the list's pane does.
+pub fn account_rows(accounts: &[String], app: &App) -> Vec<String> {
+    let widest = |values: &[String]| values.iter().map(|v| cells(v)).max().unwrap_or(0);
+    let projects: Vec<String> = accounts
+        .iter()
+        .map(|a| app.projects.get(a).cloned().unwrap_or_default())
+        .collect();
+    let name_w = widest(accounts);
+    let project_w = widest(&projects);
+    accounts
+        .iter()
+        .zip(projects.iter())
+        .map(|(name, project)| {
+            // The account on screen, which is what every other pane is about
+            let mark = if *name == app.account { "*" } else { " " };
+            let zone = app.zones.get(name).cloned().unwrap_or_default();
+            format!("{mark} {name:<name_w$}  {project:<project_w$}  {zone}")
+                .trim_end()
+                .to_string()
+        })
+        .collect()
+}
+
+/// The accounts page. It is a dialog and not a full-screen page like the
+/// config one, because its content is a handful of short rows: a frame sized
+/// to them leaves the list and the header visible behind it, which is what
+/// says the page is a detour and not another screen.
+fn render_accounts(f: &mut Frame, app: &App) {
+    let rows = account_rows(&app.accounts, app);
+    let widest = rows
+        .iter()
+        .map(|r| cells(r) + 2)
+        .max()
+        .unwrap_or(0)
+        .max(account_keys_cells());
+    render_dialog(
+        f,
+        "Accounts",
+        dialog_width(widest, "Accounts"),
+        |w, room| {
+            let keys = account_key_rows(w);
+            let notice: Vec<Line<'static>> = app
+                .account_notice
+                .iter()
+                .flat_map(|n| {
+                    let colour = if n.ok { theme::OK } else { theme::BAD };
+                    wrapped_indent(&n.text, 2, w, Style::default().fg(colour))
+                })
+                .collect();
+            // The rows have the first claim on the frame, as the picker's do: a
+            // page that shows its keys and no accounts has stopped being a list
+            let visible = room.saturating_sub(keys.len() + notice.len()).max(1);
+            let at = app.account_selected.min(rows.len().saturating_sub(1));
+            let start = (at + 1).saturating_sub(visible);
+            let listed: Vec<Line<'static>> = rows
+                .iter()
+                .enumerate()
+                .skip(start)
+                .take(visible)
+                .map(|(i, row)| picker_row(&fit(row, w.saturating_sub(2)), i == at))
+                .collect();
+            let mut sections = vec![listed];
+            if !notice.is_empty() {
+                sections.push(notice);
+            }
+            sections.push(keys);
+            stacked(&sections, room).unwrap_or_else(|| {
+                let mut lines: Vec<Line<'static>> = sections.concat();
+                lines.truncate(room);
+                lines
+            })
+        },
+    );
+}
+
 fn render_confirm(f: &mut Frame, message: &str) {
     render_dialog(
         f,
@@ -2380,10 +2535,11 @@ fn render_prompt(f: &mut Frame, app: &App, mode: InputMode) {
         TunnelMode::Access => "New access tunnel",
         TunnelMode::Public => "New public URL",
     };
-    let title = if mode == InputMode::EditTarget {
-        "Edit"
-    } else {
-        title
+    let title = match mode {
+        InputMode::EditTarget => "Edit",
+        InputMode::AccountConfiguration | InputMode::AccountName => "New account",
+        InputMode::AccountProject | InputMode::AccountZone => "Edit account",
+        _ => title,
     };
     let prompt = mode.prompt();
     let widest = cells(prompt)
