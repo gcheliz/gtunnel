@@ -55,7 +55,8 @@ pub enum Action {
     StopAndReport(Reason),
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 enum State {
     #[default]
     Closed,
@@ -67,7 +68,8 @@ enum State {
     Stopped,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Breaker {
     state: State,
     failures: u8,
@@ -163,6 +165,192 @@ impl Breaker {
 /// and a panic in the watchdog would take every tunnel's check with it.
 fn backoff(attempt: u8) -> Duration {
     BASE_BACKOFF.saturating_mul(1u32 << attempt.saturating_sub(1).min(16))
+}
+
+/// Where a breaker's memory lives between runs. A thirty-second agent is a
+/// fresh process every time, so a state machine with no file has no memory
+/// at all.
+pub mod persist {
+    use super::Breaker;
+    use anyhow::{Context, Result};
+    use std::collections::BTreeMap;
+    use std::path::{Path, PathBuf};
+
+    /// Every breaker, keyed `"<account>.<name>"`. Ordered, so the file does
+    /// not churn between saves that changed nothing.
+    pub type BreakerFile = BTreeMap<String, Breaker>;
+
+    pub fn path() -> Result<PathBuf> {
+        Ok(crate::config::config_dir()?.join("breakers.toml"))
+    }
+
+    /// Every breaker as it was left. A file that is not there is every
+    /// breaker closed, which is what a first run should see; a file that is
+    /// there and unreadable is an error, because silently starting over
+    /// would restart tunnels a previous run had deliberately stopped.
+    pub fn load() -> Result<BreakerFile> {
+        let path = path()?;
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return Ok(BreakerFile::new());
+        };
+        toml::from_str(&text).with_context(|| format!("Failed to parse {}", path.display()))
+    }
+
+    /// Writes the breakers of tunnels that still exist, and only those: a
+    /// deleted tunnel's row would otherwise sit in the file forever.
+    ///
+    /// The write goes to a sibling temp file and is renamed into place.
+    /// Rename is atomic within a filesystem and truncate-then-write is not,
+    /// so a save that fails partway leaves the previous file whole rather
+    /// than leaving an empty one that reads as every breaker closed.
+    pub fn save(breakers: &BreakerFile, live: &[String]) -> Result<()> {
+        let path = path()?;
+        let dir = path.parent().context("breakers.toml has no directory")?;
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("Failed to create {}", dir.display()))?;
+
+        let kept: BreakerFile = breakers
+            .iter()
+            .filter(|(key, _)| live.iter().any(|k| k == *key))
+            .map(|(key, breaker)| (key.clone(), breaker.clone()))
+            .collect();
+        let text = toml::to_string_pretty(&kept).context("Failed to serialize the breakers")?;
+
+        let temp = path.with_extension("toml.new");
+        write_private(&temp, &text)
+            .with_context(|| format!("Failed to write {}", temp.display()))?;
+        std::fs::rename(&temp, &path).with_context(|| {
+            let _ = std::fs::remove_file(&temp);
+            format!("Failed to replace {}", path.display())
+        })?;
+        Ok(())
+    }
+
+    // Owner-only, like every other file gtunnel writes: the keys name the
+    // accounts and tunnels on this machine
+    fn write_private(path: &Path, text: &str) -> Result<()> {
+        std::fs::write(path, text)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(path)?.permissions();
+            perms.set_mode(0o600);
+            std::fs::set_permissions(path, perms)?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod persist_tests {
+    use super::persist::{self, BreakerFile};
+    use super::{Breaker, Observation, Reason};
+    use crate::config::testing::TempConfigDir;
+    use std::time::SystemTime;
+
+    // A breaker that has counted something, so a round trip has something to
+    // lose
+    fn armed() -> Breaker {
+        let mut breaker = Breaker::default();
+        let now = SystemTime::UNIX_EPOCH;
+        breaker.observe(Observation::Failed(Reason::ProbeRefused), now);
+        breaker.observe(Observation::Failed(Reason::DescriptorsExhausted), now);
+        breaker
+    }
+
+    fn one(key: &str, breaker: Breaker) -> BreakerFile {
+        BreakerFile::from([(key.to_string(), breaker)])
+    }
+
+    // The agent is a fresh process every thirty seconds, so this is the
+    // entire memory of the state machine
+    #[test]
+    fn a_breaker_survives_the_process_that_wrote_it() {
+        let _dir = TempConfigDir::new();
+        let key = "dev.kubernetes".to_string();
+        persist::save(&one(&key, armed()), std::slice::from_ref(&key)).expect("save");
+
+        let back = persist::load().expect("load");
+        assert_eq!(back.get(&key), Some(&armed()), "a round trip lost state");
+    }
+
+    #[test]
+    fn a_missing_file_is_every_breaker_closed_rather_than_an_error() {
+        let _dir = TempConfigDir::new();
+        assert!(!persist::path().expect("path").exists());
+        assert_eq!(
+            persist::load().expect("a first run is not an error").len(),
+            0
+        );
+    }
+
+    // Starting over silently would restart tunnels a previous run stopped on
+    // purpose, so this is an error - and the file stays put for a person to
+    // look at
+    #[test]
+    fn a_corrupt_file_is_an_error_that_names_the_file_and_does_not_delete_it() {
+        let _dir = TempConfigDir::new();
+        let path = persist::path().expect("path");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "this is not toml {{{").unwrap();
+
+        let err = persist::load().expect_err("a corrupt file is an error");
+        assert!(
+            format!("{err:#}").contains("breakers.toml"),
+            "the error must name the file: {err:#}"
+        );
+        assert!(path.exists(), "a corrupt file is evidence, not litter");
+    }
+
+    #[test]
+    fn rows_for_tunnels_that_no_longer_exist_are_forgotten_on_save() {
+        let _dir = TempConfigDir::new();
+        let mut file = BreakerFile::new();
+        file.insert("dev.kubernetes".to_string(), armed());
+        file.insert("dev.deleted-last-week".to_string(), armed());
+        persist::save(&file, &["dev.kubernetes".to_string()]).expect("save");
+
+        let back = persist::load().expect("load");
+        assert_eq!(back.len(), 1, "{back:?}");
+        assert!(back.contains_key("dev.kubernetes"));
+    }
+
+    // Truncate-then-write loses the old file the moment it opens the new
+    // one; write-then-rename cannot. The discriminator is a directory the
+    // temp file cannot be created in: the atomic save fails and leaves the
+    // previous file whole, where a direct write would have emptied it.
+    #[test]
+    fn a_write_interrupted_partway_leaves_the_previous_file_intact() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _dir = TempConfigDir::new();
+            let key = "dev.kubernetes".to_string();
+            persist::save(&one(&key, armed()), std::slice::from_ref(&key)).expect("the first save");
+            let path = persist::path().expect("path");
+            let before = std::fs::read_to_string(&path).expect("read");
+
+            let parent = path.parent().unwrap().to_path_buf();
+            let saved = std::fs::metadata(&parent).unwrap().permissions();
+            std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o500)).unwrap();
+            // root ignores the mode, and so would make this prove nothing
+            let writable = std::fs::write(parent.join(".probe"), b"x").is_ok();
+            let outcome = persist::save(&BreakerFile::new(), &[]);
+            let after = std::fs::read_to_string(&path).ok();
+            std::fs::set_permissions(&parent, saved).unwrap();
+
+            if writable {
+                let _ = std::fs::remove_file(parent.join(".probe"));
+                return;
+            }
+            assert!(outcome.is_err(), "a save that cannot write must say so");
+            assert_eq!(
+                after.as_deref(),
+                Some(before.as_str()),
+                "the previous file must survive a failed save"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
