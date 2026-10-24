@@ -322,17 +322,22 @@ mod tests {
     // call site, so the two tools cannot drift apart
     #[test]
     fn an_access_tunnel_carries_the_levels_verbosity() {
-        for level in [LogLevel::Quiet, LogLevel::Info, LogLevel::Debug] {
-            let argv = access_argv(&account(), &instance_tunnel(), level).expect("argv");
-            let want = format!("--verbosity={}", level.gcloud_verbosity());
-            assert!(argv.contains(&want), "{level}: {argv:?}");
-            assert_eq!(
-                argv.iter()
-                    .filter(|a| a.starts_with("--verbosity="))
-                    .count(),
-                1,
-                "one verbosity, not two: {argv:?}"
-            );
+        // Both shapes `access_argv` builds without a jump host. A dest group
+        // takes a different branch to the same `gcloud_common`, and a guard
+        // that covers only the instance shape would not notice if it stopped.
+        for tunnel in [instance_tunnel(), dest_group_tunnel()] {
+            for level in [LogLevel::Quiet, LogLevel::Info, LogLevel::Debug] {
+                let argv = access_argv(&account(), &tunnel, level).expect("argv");
+                let want = format!("--verbosity={}", level.gcloud_verbosity());
+                assert!(argv.contains(&want), "{level}: {argv:?}");
+                assert_eq!(
+                    argv.iter()
+                        .filter(|a| a.starts_with("--verbosity="))
+                        .count(),
+                    1,
+                    "one verbosity, not two: {argv:?}"
+                );
+            }
         }
     }
 
@@ -387,6 +392,23 @@ mod tests {
                 "5432",
                 "--local-host-port=localhost:15432",
                 "--zone=europe-west1-b",
+                "--configuration=work",
+                "--project=proj-1",
+                "--verbosity=info",
+            ]
+        );
+
+        assert_eq!(
+            access_argv(&account(), &dest_group_tunnel(), d).expect("dest group"),
+            vec![
+                "compute",
+                "start-iap-tunnel",
+                "10.0.0.5",
+                "5432",
+                "--local-host-port=localhost:15001",
+                "--region=europe-west1",
+                "--network=default",
+                "--dest-group=prod",
                 "--configuration=work",
                 "--project=proj-1",
                 "--verbosity=info",
