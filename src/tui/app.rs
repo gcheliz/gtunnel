@@ -1,6 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -8,7 +8,9 @@ use std::time::Duration;
 
 use crate::discovery::ExternalTunnel;
 use crate::probe::{HealthStatus, MetricsHistory, TunnelMetrics};
-use crate::state::{PersistentTunnel, TunnelSpec, TunnelStatus};
+use crate::state::{
+    allocate_port, PersistentTunnel, TunnelSpec, TunnelStatus, ACCESS_PORT_BASE, ACCESS_PORT_SPAN,
+};
 
 // Longer than any terminal is wide: the pane draws the tail it has room for, so
 // a buffer sized to one guess at the width left the rest of the chart blank
@@ -432,6 +434,9 @@ pub struct App {
     // switch that changes the account and a typed instance never inherits the
     // previous account's zone
     pub zones: HashMap<String, String>,
+    // Local ports are a property of the laptop, so this is every account's, not
+    // the selected one's; `entries` alone would suggest a port another account holds
+    pub used_ports: HashSet<u16>,
     pub entries: Vec<TunnelEntry>,
     // False until a load has answered for this account. An empty list means
     // nothing before that, so the pane must not claim the account is empty
@@ -518,6 +523,7 @@ impl App {
             relays: HashMap::new(),
             default_zone: String::new(),
             zones: HashMap::new(),
+            used_ports: HashSet::new(),
             entries: Vec::new(),
             loaded: false,
             load_failed: false,
@@ -1215,20 +1221,19 @@ impl App {
         self.input_mode = InputMode::EditTarget;
     }
 
-    // The next free port in gtunnel's own range, so the suggestion never
-    // collides with a tunnel already on screen
-    pub fn suggested_local_port(&self) -> u16 {
-        let taken: std::collections::HashSet<u16> = self
-            .entries
-            .iter()
-            .filter_map(|e| match e.tunnel.spec {
-                TunnelSpec::Access { local_port, .. } => Some(local_port),
-                _ => None,
-            })
-            .collect();
-        (15_000..16_000)
-            .find(|port| !taken.contains(port))
-            .unwrap_or(15_000)
+    // The port `gtunnel add` would allocate for this name, so the dialog and the
+    // CLI agree. The probe is `|_| true` on purpose: a real one binds a socket per
+    // candidate and this runs on the thread that draws. The suggestion is advisory
+    // and the CLI re-probes the host when the tunnel is actually added.
+    pub fn suggested_local_port(&self, name: &str) -> u16 {
+        allocate_port(
+            name,
+            ACCESS_PORT_BASE,
+            ACCESS_PORT_SPAN,
+            &self.used_ports,
+            |_| true,
+        )
+        .unwrap_or(ACCESS_PORT_BASE)
     }
 
     fn type_line(&mut self, code: KeyCode) -> Option<Op> {
@@ -1291,7 +1296,7 @@ impl App {
             InputMode::AddRemotePort => match value.trim().parse::<u16>() {
                 Ok(port) => {
                     self.draft.remote_port = port;
-                    self.draft.local_port = self.suggested_local_port();
+                    self.draft.local_port = self.suggested_local_port(&self.draft.name);
                     self.input_mode = InputMode::AddLocalPort;
                     None
                 }
@@ -1474,7 +1479,8 @@ impl App {
     }
 
     // Keeps the selection on the same tunnel across a reload
-    pub fn replace_entries(&mut self, entries: Vec<TunnelEntry>) {
+    pub fn replace_entries(&mut self, entries: Vec<TunnelEntry>, used_ports: HashSet<u16>) {
+        self.used_ports = used_ports;
         self.loaded = true;
         self.load_failed = false;
         let selected_name = self.selected_entry().map(|e| e.name().to_string());

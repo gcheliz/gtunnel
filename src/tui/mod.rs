@@ -6,6 +6,7 @@ pub mod theme;
 pub mod ui;
 
 use anyhow::Result;
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
@@ -23,7 +24,7 @@ enum Msg {
     Instances(Vec<app::InstanceChoice>),
     InstancesFailed(String),
     Tick,
-    Entries(Vec<TunnelEntry>),
+    Entries(Vec<TunnelEntry>, HashSet<u16>),
     EntriesFailed(String),
     Metrics(Vec<(String, crate::probe::TunnelMetrics)>),
     Health(Vec<(String, HealthStatus)>),
@@ -243,7 +244,7 @@ async fn event_loop(
                     });
                 }
             }
-            Msg::Entries(entries) => app.replace_entries(entries),
+            Msg::Entries(entries, used_ports) => app.replace_entries(entries, used_ports),
             Msg::EntriesFailed(error) => app.load_failed(&error),
             Msg::Metrics(metrics) => {
                 for (name, m) in metrics {
@@ -367,7 +368,7 @@ fn schedule(app: &mut App, timers: &mut Timers, tx: &mpsc::UnboundedSender<Msg>)
         let account = account.clone();
         tokio::spawn(async move {
             let _ = tx.send(match ops::load_entries(&account).await {
-                Ok(entries) => Msg::Entries(entries),
+                Ok((entries, used_ports)) => Msg::Entries(entries, used_ports),
                 Err(e) => Msg::EntriesFailed(format!("{e:#}")),
             });
         });
@@ -684,11 +685,14 @@ mod tests {
             "a spent slot does not come back on its own"
         );
 
-        app.replace_entries(vec![TunnelEntry::new(
-            access("other", 15999),
-            TunnelStatus::Running,
-            TunnelKind::Managed,
-        )]);
+        app.replace_entries(
+            vec![TunnelEntry::new(
+                access("other", 15999),
+                TunnelStatus::Running,
+                TunnelKind::Managed,
+            )],
+            HashSet::new(),
+        );
         assert_eq!(
             health_round(&mut app, &mut timers).len(),
             1,
@@ -1526,7 +1530,7 @@ mod tests {
     #[test]
     fn an_empty_account_says_so_under_the_list_header() {
         let mut app = App::new("dev");
-        app.replace_entries(Vec::new());
+        app.replace_entries(Vec::new(), HashSet::new());
         let buffer = screen(&app, 120, 30);
         let rows: Vec<String> = (0..30)
             .map(|y| row_chars(&buffer, y).iter().collect())
@@ -1572,7 +1576,7 @@ mod tests {
     #[test]
     fn the_first_answer_turns_loading_into_the_empty_row() {
         let mut app = App::new("dev");
-        app.replace_entries(Vec::new());
+        app.replace_entries(Vec::new(), HashSet::new());
         assert!(app.loaded);
         assert!(list_body_row(&app, 120, 12).contains("no tunnels in this account"));
     }
@@ -1622,7 +1626,7 @@ mod tests {
         let x = find(&row_chars(&buffer, y), "could not load tunnels").unwrap() as u16;
         assert_eq!(buffer[(x, y)].fg, theme::MUTED);
 
-        app.replace_entries(Vec::new());
+        app.replace_entries(Vec::new(), HashSet::new());
         let row = list_body_row(&app, 120, 12);
         assert!(row.contains("no tunnels in this account"), "{row:?}");
         assert!(!row.contains("could not load"), "{row:?}");
@@ -3421,6 +3425,35 @@ mod tests {
     }
 
     #[test]
+    fn the_suggested_port_is_the_one_the_cli_would_allocate() {
+        use crate::state::{allocate_port, ACCESS_PORT_BASE, ACCESS_PORT_SPAN};
+        let mut app = app_with_two();
+        let first = allocate_port(
+            "cache",
+            ACCESS_PORT_BASE,
+            ACCESS_PORT_SPAN,
+            &Default::default(),
+            |_| true,
+        )
+        .expect("a free port");
+        assert_eq!(app.suggested_local_port("cache"), first);
+
+        // Another account holds the name's first choice, which `entries` (the
+        // selected account only) cannot show
+        app.used_ports = [first].into();
+        let next = allocate_port(
+            "cache",
+            ACCESS_PORT_BASE,
+            ACCESS_PORT_SPAN,
+            &app.used_ports,
+            |_| true,
+        )
+        .expect("a free port");
+        assert_ne!(next, first);
+        assert_eq!(app.suggested_local_port("cache"), next);
+    }
+
+    #[test]
     fn a_typed_instance_takes_the_zone_of_the_account_switched_to() {
         let mut app = app_with_two();
         app.accounts = vec!["dev".to_string(), "prod".to_string()];
@@ -3541,7 +3574,7 @@ mod tests {
                 instance: "my-vm".to_string(),
                 zone: "europe-west1-b".to_string(),
                 remote_port: 5432,
-                local_port: 15000,
+                local_port: 15870,
                 ..NewTunnel::default()
             }))
         );
@@ -3586,8 +3619,8 @@ mod tests {
         assert_eq!(app.draft.name, "cache");
         assert_eq!(app.draft.instance, "my-vm");
         assert_eq!(app.draft.remote_port, 5432);
-        assert_eq!(app.draft.local_port, 15000);
-        assert_eq!(app.input, "15000");
+        assert_eq!(app.draft.local_port, 15870);
+        assert_eq!(app.input, "15870");
         assert_eq!(app.draft_error.as_deref(), Some("instance not found"));
     }
 

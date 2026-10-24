@@ -18,7 +18,7 @@ const IMPORT_HANDOVER: Duration = Duration::from_secs(10);
 const TCP_HEALTH_TIMEOUT: Duration = Duration::from_secs(2);
 
 // Everything the list shows for one account, read fresh
-pub async fn load_entries(account: &str) -> Result<Vec<TunnelEntry>> {
+pub async fn load_entries(account: &str) -> Result<(Vec<TunnelEntry>, HashSet<u16>)> {
     let state = TunnelState::load()?;
     let mut entries = Vec::new();
     // Every gtunnel pid on the machine, so another account's tunnel is not
@@ -68,7 +68,7 @@ pub async fn load_entries(account: &str) -> Result<Vec<TunnelEntry>> {
         entries.push(entry);
     }
 
-    Ok(entries)
+    Ok((entries, state.used_local_ports()))
 }
 
 /// What to call a `gcloud` process gtunnel did not start.
