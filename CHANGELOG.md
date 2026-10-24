@@ -5,6 +5,12 @@ what is on `main` and not yet tagged.
 
 ## [0.1.2](https://github.com/gcheliz/gtunnel/compare/v0.1.1...v0.1.2) - 2026-10-24
 
+### Added
+
+- the help frame names the running version, so a bug report can quote it
+  ([#15](https://github.com/gcheliz/gtunnel/pull/15)). Press `?`; the title reads
+  `Keys - gtunnel 0.1.2`, and sheds the version below 28 columns rather than clipping it
+
 ### Documentation
 
 - the version table described a 1.0 project, and this one is not ([#17](https://github.com/gcheliz/gtunnel/pull/17))
