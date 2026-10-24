@@ -192,21 +192,26 @@ token that cannot be minted, including an expired refresh token, counts as logge
 would hide it; `init` has no account yet. Background services run `gcloud` directly and
 never go through this check.
 
-On a terminal, a failed probe runs `gcloud auth login --configuration=<configuration>` with
-the terminal handed to it, then probes again. Only the second probe counts: a login that
-exits 0 and still cannot mint a token fails like any other. The sample below is
-illustrative, since the login output belongs to gcloud.
+On a terminal, a failed probe prompts for confirmation (`[y/N]`, defaulting to `No`)
+before running `gcloud auth login --configuration=<configuration>` with the terminal handed
+to it, then probes again. Only the second probe counts: a login that exits 0 and still cannot
+mint a token fails like any other. The sample below is illustrative, since the login output
+belongs to gcloud.
 
 ```
 $ gtunnel list
-gcloud has no usable credentials for 'prod'. Starting `gcloud auth login`.
+gcloud has no usable credentials for account 'prod'.
+gtunnel requires an authenticated GCP account to establish tunnels.
+Do you want to log in now? [y/N] [n]: y
+Starting `gcloud auth login`.
 Your browser has been opened to visit: ...
 You are now logged in as [you@example.com].
 NAME  STATUS  ...
 ```
 
-When the login is cancelled, fails, or there is no terminal (stdin or stdout is redirected,
-as under cron or CI), gtunnel exits 1 without starting anything.
+When the confirmation is declined, the login is cancelled or fails, or there is no
+terminal (stdin or stdout is redirected, as under cron or CI), gtunnel exits 1 without
+starting anything or opening a browser.
 
 ```
 $ gtunnel list < /dev/null
@@ -966,9 +971,9 @@ The value of `VISUAL` or `EDITOR` is split into a program and its arguments here
 handed to a shell, so `code -w` works and nothing in the variable is interpreted as a
 command line. Quotes group a path containing spaces and do nothing else.
 
-With `GTUNNEL_CONFIG_DIR` unset the directory is `~/Library/Application Support/gtunnel` on
-macOS and `$XDG_CONFIG_HOME/gtunnel` on Linux, which is `~/.config/gtunnel` unless that
-variable says otherwise.
+With `GTUNNEL_CONFIG_DIR` unset the directory is `~/.gtunnel` (falling back to
+`~/Library/Application Support/gtunnel` on macOS and `$XDG_CONFIG_HOME/gtunnel` on
+Linux if `~/.gtunnel` does not exist).
 
 ### Exit codes
 

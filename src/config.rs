@@ -160,8 +160,18 @@ pub fn config_dir() -> Result<PathBuf> {
     if let Ok(dir) = std::env::var("GTUNNEL_CONFIG_DIR") {
         return Ok(PathBuf::from(dir));
     }
-    let base = dirs::config_dir().context("Could not determine the config directory")?;
-    Ok(base.join("gtunnel"))
+    let home = dirs::home_dir().context("Could not determine home directory")?;
+    let dot_gtunnel = home.join(".gtunnel");
+    if dot_gtunnel.exists() {
+        return Ok(dot_gtunnel);
+    }
+    if let Some(base) = dirs::config_dir() {
+        let legacy = base.join("gtunnel");
+        if legacy.exists() {
+            return Ok(legacy);
+        }
+    }
+    Ok(dot_gtunnel)
 }
 
 pub fn config_path() -> Result<PathBuf> {
@@ -207,7 +217,7 @@ fn set_owner_only(_path: &std::path::Path) -> Result<()> {
 // The variable is process-wide, so they share one lock and one guard type.
 #[cfg(test)]
 pub mod testing {
-    static CONFIG_DIR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    pub(crate) static CONFIG_DIR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     pub struct TempConfigDir {
         // Held to keep the directory alive for the test's lifetime, and read
@@ -303,6 +313,28 @@ mod tests {
             let err = load_config().expect_err("should fail");
             assert!(err.to_string().contains("gtunnel init"), "got: {err}");
         });
+    }
+
+    #[test]
+    fn config_dir_prefers_dot_gtunnel_under_home() {
+        if let Some(home) = dirs::home_dir() {
+            let dot_gtunnel = home.join(".gtunnel");
+            if dot_gtunnel.exists() {
+                let guard = testing::CONFIG_DIR_LOCK
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                let prev = std::env::var_os("GTUNNEL_CONFIG_DIR");
+                // SAFETY: CONFIG_DIR_LOCK is held through the guard above.
+                unsafe { std::env::remove_var("GTUNNEL_CONFIG_DIR") };
+                let dir = config_dir().expect("config_dir");
+                if let Some(p) = prev {
+                    // SAFETY: CONFIG_DIR_LOCK is held through the guard above.
+                    unsafe { std::env::set_var("GTUNNEL_CONFIG_DIR", p) };
+                }
+                drop(guard);
+                assert_eq!(dir, dot_gtunnel);
+            }
+        }
     }
 
     #[test]

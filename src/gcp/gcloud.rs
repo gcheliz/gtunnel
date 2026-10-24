@@ -185,24 +185,36 @@ async fn run_login(acct: &Account) -> Result<()> {
     Ok(())
 }
 
+// Explains why credentials are required and asks for confirmation before
+// launching a browser login, preventing unexpected window popups
+pub fn confirm_login(account_name: &str) -> Result<bool> {
+    eprintln!("gcloud has no usable credentials for account '{account_name}'.");
+    eprintln!("gtunnel requires an authenticated GCP account to establish tunnels.");
+    crate::commands::confirm("Do you want to log in now?", false)
+}
+
 // Runs before the TUI takes the screen, so the login's output lands on a
 // normal terminal and nothing prints after raw mode starts
 pub async fn ensure_logged_in(acct: &Account) -> Result<()> {
-    ensure_logged_in_with(acct, is_interactive()).await
+    ensure_logged_in_with(acct, is_interactive(), confirm_login).await
 }
 
-async fn ensure_logged_in_with(acct: &Account, interactive: bool) -> Result<()> {
+// Checks credentials against GCP and asks confirmation before opening a browser
+// when interactive. Non-interactive sessions fail immediately without prompting.
+pub async fn ensure_logged_in_with<F>(acct: &Account, interactive: bool, confirm: F) -> Result<()>
+where
+    F: FnOnce(&str) -> Result<bool>,
+{
     let probe_ok = print_access_token(acct).await.is_ok();
     match next_step(probe_ok, interactive) {
         AuthStep::Proceed => return Ok(()),
         AuthStep::Login => {
-            eprintln!(
-                "gcloud has no usable credentials for '{}'. Starting `gcloud auth login`.",
-                acct.name
-            );
-            // A login that exits 0 proves nothing; only a second probe does
-            if run_login(acct).await.is_ok() && print_access_token(acct).await.is_ok() {
-                return Ok(());
+            if confirm(&acct.name)? {
+                eprintln!("Starting `gcloud auth login`.");
+                // A login that exits 0 proves nothing; only a second probe does
+                if run_login(acct).await.is_ok() && print_access_token(acct).await.is_ok() {
+                    return Ok(());
+                }
             }
         }
         AuthStep::Fail => {}
@@ -217,10 +229,12 @@ async fn ensure_logged_in_with(acct: &Account, interactive: bool) -> Result<()> 
 mod tests {
     use super::*;
 
+    // A nonexistent configuration ensures print_access_token cannot succeed
+    // against a live developer config during unit tests
     fn account(impersonate: Option<&str>) -> Account {
         Account {
             name: "prod".to_string(),
-            gcloud_configuration: "work".to_string(),
+            gcloud_configuration: "__gtunnel_test_nonexistent__".to_string(),
             project: "my-project".to_string(),
             default_zone: "europe-west1-b".to_string(),
             impersonate_service_account: impersonate.map(str::to_string),
@@ -232,7 +246,11 @@ mod tests {
     fn login_names_the_configuration_and_nothing_else() {
         assert_eq!(
             login_argv(&account(None)),
-            vec!["auth", "login", "--configuration=work"]
+            vec![
+                "auth",
+                "login",
+                "--configuration=__gtunnel_test_nonexistent__"
+            ]
         );
     }
 
@@ -257,5 +275,47 @@ mod tests {
     #[test]
     fn a_failed_probe_without_a_terminal_fails() {
         assert_eq!(next_step(false, false), AuthStep::Fail);
+    }
+
+    #[tokio::test]
+    async fn interactive_login_aborts_if_user_declines_confirmation() {
+        let acct = account(None);
+        let mut prompted = false;
+        let res = ensure_logged_in_with(&acct, true, |name| {
+            prompted = true;
+            assert_eq!(name, "prod");
+            Ok(false)
+        })
+        .await;
+
+        assert!(
+            prompted,
+            "User must be prompted when credentials probe fails"
+        );
+        let err = res.expect_err("ensure_logged_in_with must fail when confirmation is declined");
+        assert!(
+            err.to_string()
+                .contains("gtunnel needs a logged-in Google account for 'prod'"),
+            "Unexpected error message: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn non_interactive_login_never_prompts_for_confirmation() {
+        let acct = account(None);
+        let mut prompted = false;
+        let res = ensure_logged_in_with(&acct, false, |_| {
+            prompted = true;
+            Ok(true)
+        })
+        .await;
+
+        assert!(!prompted, "Non-interactive sessions must never prompt");
+        let err = res.expect_err("ensure_logged_in_with must fail without a terminal");
+        assert!(
+            err.to_string()
+                .contains("gtunnel needs a logged-in Google account for 'prod'"),
+            "Unexpected error message: {err}"
+        );
     }
 }
