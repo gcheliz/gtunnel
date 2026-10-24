@@ -11,10 +11,6 @@
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg" alt="Platform: macOS and Linux">
 </p>
 
-<p align="center">
-  <sub>Every push runs <a href=".github/workflows/ci.yml">CI</a>: rustfmt, clippy with <code>-D warnings</code>, the test suite, <code>cargo audit --deny warnings</code>, a build on the declared 1.88 floor, and zizmor over the workflows.</sub>
-</p>
-
 ## What gtunnel is
 
 A TUI-first manager for GCP Identity-Aware Proxy tunnels. One binary, two modes:
@@ -74,11 +70,18 @@ every step: [docs/usage.md](docs/usage.md#getting-set-up).
 | Route | Command |
 |---|---|
 | From source | `cargo install --path .` |
-| From a release | download `gtunnel-<target>.tar.gz` and its `.sha256`, check with `shasum -a 256 -c`, then extract onto your `PATH` |
+| From a release | download the file for your machine below and its `.sha256`, check with `shasum -a 256 -c`, then extract onto your `PATH` |
 | Upgrade in place | `gtunnel update` |
 
-Release targets: `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-musl`,
-`aarch64-unknown-linux-musl`. `gtunnel update` replaces a downloaded binary after verifying
+| Machine | File |
+|---|---|
+| Apple Silicon Mac | `gtunnel-macos-arm64.tar.gz` |
+| Intel Mac | `gtunnel-macos-intel.tar.gz` |
+| Linux, amd64 | `gtunnel-linux-amd64.tar.gz` |
+| Linux, arm64 | `gtunnel-linux-arm64.tar.gz` |
+
+The Linux builds are static musl binaries, so they do not depend on the host's glibc.
+`gtunnel update` replaces a downloaded binary after verifying
 the published SHA-256, and prints the right upgrade command instead when cargo or Homebrew
 installed it. Confirm the install with `gtunnel --version`, then run `gtunnel doctor` before
 the first tunnel.
@@ -175,6 +178,10 @@ tunnel claims, and re-checks that claim immediately before each removal. A Cloud
 record carries no description, so gtunnel treats one as its own only while it still holds
 a tagged backend, host rule or named port for the same tunnel. `gtunnel reset` removes
 local state only; cloud resources go with `gtunnel relay down`.
+
+Every push to main and every pull request runs [CI](.github/workflows/ci.yml): rustfmt,
+clippy with `-D warnings`, the test suite, `cargo audit --deny warnings`, a `cargo check` on
+the declared 1.88 floor, and zizmor over the workflows.
 
 ## License
 
