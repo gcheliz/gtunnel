@@ -56,8 +56,16 @@ const MARK_BRAILLE: [&str; MARK_ROWS] =
 
 /// The same shape for a font with no braille coverage. Eleven cells again,
 /// so a terminal that falls back here keeps the lockup's geometry.
+///
+/// Quadrant blocks give two rows where braille gives four, so each cell is
+/// the honest reduction of its braille cell: a full block where the dots
+/// reach the upper rows too, a half block where they reach only the lower
+/// two, and `─` for a cell carrying nothing but the line, which a half block
+/// would thicken into a slab. No cell may be an upper-half block: the shape
+/// has none whose lower rows are empty, and one opens a hole under the cloud
+/// instead of lifting it.
 const MARK_FALLBACK: [&str; MARK_ROWS] =
-    ["\u{2500}\u{2500}\u{2597}\u{2584}\u{259f}\u{2580}\u{2599}\u{2584}\u{2596}\u{2500}\u{2500}"];
+    ["\u{2500}\u{2500}\u{2584}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2584}\u{2500}\u{2500}"];
 
 /// Which hue each cell of the small mark carries. The line runs off both ends
 /// in the same colour, and the four brand hues band the cloud left to right.
