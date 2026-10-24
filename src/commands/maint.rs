@@ -57,12 +57,15 @@ pub async fn cmd_reset(assume_yes: bool) -> Result<()> {
         if alive {
             println!("  stopping run {} (pid {})", record.name, record.pid);
             #[cfg(unix)]
-            // SAFETY: kill(2) takes two integers and no pointer, so it cannot touch
-            // our memory. The pid is read back from a record this tool wrote for
-            // its own run, and SIGTERM to a pid that has since exited is a no-op
-            // error that is deliberately ignored here.
-            unsafe {
-                libc::kill(record.pid as libc::pid_t, libc::SIGTERM);
+            if let Some(pid) = crate::ephemeral::signalable(record.pid) {
+                // SAFETY: kill(2) takes two integers and no pointer, so it cannot
+                // touch our memory. The pid is read back from a record this tool
+                // wrote, and `signalable` has rejected 0 and negative values, so
+                // it names one process and never a group. SIGTERM to a pid that
+                // has since exited is a no-op error, deliberately ignored here.
+                unsafe {
+                    libc::kill(pid, libc::SIGTERM);
+                }
             }
         }
     }

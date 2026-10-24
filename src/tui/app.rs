@@ -413,6 +413,10 @@ pub struct App {
     // Keyed by account name so `;` swaps the subtitle in the same draw as the
     // name, with no second piece of state to fall out of step
     pub projects: HashMap<String, String>,
+    // Account to its relay domains; an account with no entry has no relay.
+    // Keyed like `projects` for the same reason, so `has_relay` and `domains`
+    // are derived from the account on screen and never outlive a switch
+    pub relays: HashMap<String, Vec<String>>,
     pub entries: Vec<TunnelEntry>,
     // False until a load has answered for this account. An empty list means
     // nothing before that, so the pane must not claim the account is empty
@@ -488,6 +492,7 @@ impl App {
             account: initial_account.to_string(),
             accounts: vec![initial_account.to_string()],
             projects: HashMap::new(),
+            relays: HashMap::new(),
             entries: Vec::new(),
             loaded: false,
             load_failed: false,
@@ -635,6 +640,7 @@ impl App {
         if self.demo {
             self.load_demo_account();
         } else {
+            self.show_relay_for_account();
             self.force_refresh = true;
         }
         self.set_status(format!("account {}", self.account));
@@ -911,28 +917,36 @@ impl App {
             .iter()
             .map(|a| (a.name.clone(), a.project.clone()))
             .collect();
-        if !self.accounts.contains(&self.account) {
-            if let Some(first) = self.accounts.first() {
-                self.account = first.clone();
-                self.selected = 0;
-                self.entries.clear();
-                self.loaded = false;
-                self.load_failed = false;
-                self.list_offset.set(0);
-                self.logs.clear();
-            }
+        if !self.accounts.contains(&self.account)
+            && let Some(first) = self.accounts.first()
+        {
+            self.account = first.clone();
+            self.selected = 0;
+            self.entries.clear();
+            self.loaded = false;
+            self.load_failed = false;
+            self.list_offset.set(0);
+            self.logs.clear();
         }
-        // The Public flow and the domain picker only make sense with a relay
-        let expose = config
+        self.relays = config
             .accounts
             .iter()
-            .find(|a| a.name == self.account)
-            .and_then(|a| a.expose.as_ref());
-        self.has_relay = expose.is_some();
-        self.domains = expose
-            .map(|e| e.domains.iter().map(|d| d.domain.clone()).collect())
-            .unwrap_or_default();
+            .filter_map(|a| {
+                let expose = a.expose.as_ref()?;
+                let domains = expose.domains.iter().map(|d| d.domain.clone());
+                Some((a.name.clone(), domains.collect()))
+            })
+            .collect();
+        self.show_relay_for_account();
         self.force_refresh = true;
+    }
+
+    /// The Public flow and the domain picker only make sense with a relay, and
+    /// whether there is one belongs to the account on screen.
+    fn show_relay_for_account(&mut self) {
+        self.has_relay = self.relays.contains_key(&self.account);
+        self.domains = self.relays.get(&self.account).cloned().unwrap_or_default();
+        self.domain_selected = 0;
     }
 
     fn config_key(&mut self, code: KeyCode) {

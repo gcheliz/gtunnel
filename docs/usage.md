@@ -75,7 +75,7 @@ data and never touches GCP or a config file.
 | Tunnel | `s` start, `S` stop, `R` restart, `A` toggle auto-start, `h` health check now |
 | The list | `a` add, `e` edit, `d` delete, `m` import an ephemeral run as managed, `j` `k` or the arrows move the selection |
 | This tunnel's URL and log | `c` copy the URL, `o` open it, `L` clear the log, `r` refresh the list, metrics and health |
-| The program | `;` cycle accounts, `?` the keymap, `C` the config page, `q` quit, `Esc` close a page or cancel a prompt, `PgUp` `PgDn` and `g` `G` scroll the keymap page, `Ctrl+Z` suspend, `Ctrl+C` quit from anywhere |
+| The program | `;` cycle accounts (the relay and its domains change with the account), `?` the keymap, `C` the config page, `q` quit, `Esc` close a page or cancel a prompt, `PgUp` `PgDn` and `g` `G` scroll the keymap page, `Ctrl+Z` suspend, `Ctrl+C` quit from anywhere |
 
 Case matters in three pairs: `s`/`S` start and stop, `a`/`A` add and auto-start, `r`/`R`
 refresh and restart. The footer shows only what the selected tunnel can do, so it never has

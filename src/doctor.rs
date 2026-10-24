@@ -274,10 +274,10 @@ pub fn find_expose_orphans(
     // holds a resource it did tag for the same tunnel.
     let mut owned_labels: HashSet<&str> = HashSet::new();
     for backend in backends {
-        if backend.description.as_deref() == Some(owner.as_str()) {
-            if let Some(tunnel) = backend.name.strip_prefix(&backend_prefix) {
-                owned_labels.insert(tunnel);
-            }
+        if backend.description.as_deref() == Some(owner.as_str())
+            && let Some(tunnel) = backend.name.strip_prefix(&backend_prefix)
+        {
+            owned_labels.insert(tunnel);
         }
     }
     for port in named_ports {
@@ -584,13 +584,12 @@ async fn relay_findings(
             &names.certificate(&domain.domain),
         )
         .await
+            && state != "ACTIVE"
         {
-            if state != "ACTIVE" {
-                findings.push(Finding::CertNotActive {
-                    domain: domain.domain.clone(),
-                    state,
-                });
-            }
+            findings.push(Finding::CertNotActive {
+                domain: domain.domain.clone(),
+                state,
+            });
         }
     }
 

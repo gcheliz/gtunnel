@@ -1241,13 +1241,13 @@ fn render_logs(f: &mut Frame, app: &App, area: Rect) {
         }
     }
 
-    if annotated.is_empty() {
-        if let Some(entry) = app.selected_entry() {
-            annotated.push(Line::styled(
-                empty_log_note(&entry.tunnel.spec, entry.status),
-                Style::default().fg(theme::MUTED),
-            ));
-        }
+    if annotated.is_empty()
+        && let Some(entry) = app.selected_entry()
+    {
+        annotated.push(Line::styled(
+            empty_log_note(&entry.tunnel.spec, entry.status),
+            Style::default().fg(theme::MUTED),
+        ));
     }
 
     // The pane shows the newest lines, so it scrolls past everything that wraps

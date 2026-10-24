@@ -120,21 +120,19 @@ pub fn active_connections(port: u16) -> u64 {
     if let Ok(out) = std::process::Command::new("lsof")
         .args(["-nP", &format!("-iTCP:{port}"), "-sTCP:ESTABLISHED"])
         .output()
+        && out.status.success()
     {
-        if out.status.success() {
-            return parse_lsof_established(&String::from_utf8_lossy(&out.stdout), port);
-        }
+        return parse_lsof_established(&String::from_utf8_lossy(&out.stdout), port);
     }
     if let Ok(out) = std::process::Command::new("ss")
         .args(["-tnH", "state", "established", &format!("sport = :{port}")])
         .output()
+        && out.status.success()
     {
-        if out.status.success() {
-            let text = String::from_utf8_lossy(&out.stdout);
-            // `ss -H` drops the header, so every row counts
-            let rows = text.lines().filter(|l| !l.trim().is_empty()).count() as u64;
-            return rows.max(parse_ss_established(&text));
-        }
+        let text = String::from_utf8_lossy(&out.stdout);
+        // `ss -H` drops the header, so every row counts
+        let rows = text.lines().filter(|l| !l.trim().is_empty()).count() as u64;
+        return rows.max(parse_ss_established(&text));
     }
     0
 }
@@ -232,19 +230,17 @@ async fn measure(
             }
         }
         TunnelSpec::Expose { hostname, .. } => {
-            if include_lb {
-                if let Ok(acct) = cfg.get_account(Some(&t.account_name)) {
-                    let client = GcpClient::for_account(acct);
-                    let backend = crate::expose::naming::Names::new(&acct.name).backend(&t.name);
-                    metrics.lb = monitoring::lb_request_stats(
-                        &client,
-                        &acct.project,
-                        &backend,
-                        LB_WINDOW_MINUTES,
-                    )
-                    .await
-                    .ok();
-                }
+            if include_lb && let Ok(acct) = cfg.get_account(Some(&t.account_name)) {
+                let client = GcpClient::for_account(acct);
+                let backend = crate::expose::naming::Names::new(&acct.name).backend(&t.name);
+                metrics.lb = monitoring::lb_request_stats(
+                    &client,
+                    &acct.project,
+                    &backend,
+                    LB_WINDOW_MINUTES,
+                )
+                .await
+                .ok();
             }
             let probe = http_probe(&format!("https://{hostname}")).await;
             metrics.available = metrics.available && probe == HealthStatus::Healthy;

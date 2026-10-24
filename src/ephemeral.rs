@@ -68,11 +68,26 @@ pub async fn wait_for_pid_exit(pid: u32, budget: std::time::Duration) -> bool {
     }
 }
 
+/// The only way a recorded pid becomes an argument to `kill(2)`. A pid is a
+/// number read back from a file, and kill gives three of its values a meaning
+/// that is not "this process": 0 signals our own process group, a negative
+/// value signals a group, and -1 signals everything we may signal. A record
+/// that holds 0 (a spawn that lost its child id) or a value past `i32::MAX`
+/// (which wraps negative) must therefore read as "no process", never as a
+/// broadcast.
+pub fn signalable(pid: u32) -> Option<libc::pid_t> {
+    i32::try_from(pid).ok().filter(|p| *p > 0)
+}
+
 pub fn pid_is_alive(pid: u32) -> bool {
+    let Some(pid) = signalable(pid) else {
+        return false;
+    };
     // SAFETY: kill(2) with signal 0 takes two integers and no pointer, and sends
     // nothing: it only reports whether the pid exists and may be signalled, so
-    // there is no memory or process state to corrupt.
-    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+    // there is no memory or process state to corrupt. `signalable` guarantees
+    // the pid is positive, so it names one process and never a group.
+    unsafe { libc::kill(pid, 0) == 0 }
 }
 
 pub fn list_ephemeral() -> Result<Vec<(EphemeralRecord, bool)>> {
@@ -203,10 +218,18 @@ fn start_child(
         .spawn()
         .with_context(|| format!("Failed to run {}", gcloud_path.display()))?;
 
+    // No id means the child was already reaped, so there is nothing to record
+    // and a recorded 0 would later read as a process group
+    let Some(pid) = child.id() else {
+        bail!(
+            "{} exited before it could be recorded",
+            gcloud_path.display()
+        );
+    };
     let record = EphemeralRecord {
         name: name.to_string(),
         account_name: acct.name.clone(),
-        pid: child.id().unwrap_or(0),
+        pid,
         spec,
         started_at: now_secs(),
     };
@@ -301,11 +324,11 @@ pub async fn cmd_run(
         Err(e) => {
             // The route is already published; leaving it would serve a
             // hostname with nothing behind it
-            if let Some(expose) = &expose_config {
-                if let Err(cleanup) = routes::remove_route(&client, &acct, expose, &tunnel).await {
-                    eprintln!("Failed to remove the relay route: {cleanup:#}");
-                    eprintln!("Run `gtunnel doctor --fix` to clean it up");
-                }
+            if let Some(expose) = &expose_config
+                && let Err(cleanup) = routes::remove_route(&client, &acct, expose, &tunnel).await
+            {
+                eprintln!("Failed to remove the relay route: {cleanup:#}");
+                eprintln!("Run `gtunnel doctor --fix` to clean it up");
             }
             return Err(e);
         }
@@ -351,11 +374,10 @@ pub async fn cmd_run(
     tokio::select! {
         _ = pump => {}
         status = child.wait() => {
-            if let Ok(status) = status {
-                if !status.success() {
+            if let Ok(status) = status
+                && !status.success() {
                     println!("gcloud exited with {status}");
                 }
-            }
         }
         _ = stop_signal() => {
             println!();
@@ -440,6 +462,35 @@ mod tests {
         assert!(list_ephemeral().expect("list").is_empty());
     }
 
+    #[test]
+    fn a_pid_that_would_signal_a_group_is_never_signalable() {
+        assert_eq!(signalable(0), None, "kill(0) signals our own process group");
+        assert_eq!(
+            signalable(u32::MAX),
+            None,
+            "u32::MAX wraps to -1, which signals every process we may signal"
+        );
+        assert_eq!(signalable(i32::MAX as u32 + 1), None, "negative: a group");
+        assert_eq!(signalable(1234), Some(1234));
+    }
+
+    #[test]
+    fn a_record_with_pid_zero_is_not_running() {
+        assert!(!pid_is_alive(0), "kill(0, 0) succeeds for our own group");
+        let _temp = TempConfigDir::new();
+        let record = EphemeralRecord {
+            name: "gt-zero00".to_string(),
+            account_name: "dev".to_string(),
+            pid: 0,
+            spec: spec(),
+            started_at: 1_700_000_000,
+        };
+        record.save().expect("save");
+        let found = list_ephemeral().expect("list");
+        assert_eq!(found.len(), 1, "an old record with pid 0 still parses");
+        assert!(!found[0].1, "pid 0 must not read as a live run");
+    }
+
     // Importing a run SIGTERMs it, and the dying process removes its relay
     // route on the way out. Rebuilding the route before it is gone loses the
     // race, so the import has to wait for the pid first.
@@ -466,7 +517,7 @@ mod tests {
         // SAFETY: kill(2) takes two integers and no pointer. The pid is the child
         // this test spawned a few lines up and still holds, so it is not a
         // recycled pid belonging to another process.
-        unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+        unsafe { libc::kill(signalable(pid).expect("a real pid"), libc::SIGTERM) };
         assert!(
             wait_for_pid_exit(pid, Duration::from_secs(5)).await,
             "a killed pid must be reported as exited"

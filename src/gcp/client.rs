@@ -146,10 +146,10 @@ impl GcpClient {
             TokenSource::Static(t) => Ok(t.clone()),
             TokenSource::Gcloud(acct) => {
                 let mut cached = self.cached.lock().await;
-                if let Some((token, at)) = cached.as_ref() {
-                    if at.elapsed() < TOKEN_TTL {
-                        return Ok(token.clone());
-                    }
+                if let Some((token, at)) = cached.as_ref()
+                    && at.elapsed() < TOKEN_TTL
+                {
+                    return Ok(token.clone());
                 }
                 let token = super::gcloud::print_access_token(acct).await?;
                 *cached = Some((token.clone(), Instant::now()));

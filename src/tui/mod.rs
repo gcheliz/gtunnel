@@ -211,16 +211,16 @@ async fn event_loop(
                 schedule(app, &mut timers, tx);
                 // The logs panel follows the selection, so it reloads with it
                 let selected = app.selected_entry().map(|e| e.tunnel.clone());
-                if let Some(tunnel) = selected {
-                    if logs_for.as_deref() != Some(tunnel.name.as_str()) || timers_logs_due(&timers)
-                    {
-                        logs_for = Some(tunnel.name.clone());
-                        let tx = tx.clone();
-                        tokio::task::spawn_blocking(move || {
-                            let lines = ops::read_logs(&tunnel, ui::LOG_LINES);
-                            let _ = tx.send(Msg::Logs(tunnel.name.clone(), lines));
-                        });
-                    }
+                if let Some(tunnel) = selected
+                    && (logs_for.as_deref() != Some(tunnel.name.as_str())
+                        || timers_logs_due(&timers))
+                {
+                    logs_for = Some(tunnel.name.clone());
+                    let tx = tx.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let lines = ops::read_logs(&tunnel, ui::LOG_LINES);
+                        let _ = tx.send(Msg::Logs(tunnel.name.clone(), lines));
+                    });
                 }
             }
             Msg::Entries(entries) => app.replace_entries(entries),
@@ -2112,6 +2112,53 @@ mod tests {
         assert_eq!(app.project(), "sample-prod-2");
         app.projects.clear();
         assert_eq!(app.project(), "", "an unknown account has no project");
+    }
+
+    // The relay was read once for the account on screen, so `;` left the next
+    // account with the first one's Public flow and domain picker.
+    #[test]
+    fn semicolon_carries_the_relay_with_the_account() {
+        use crate::config::{Account, Config, DomainConfig, ExposeConfig};
+        let account = |name: &str, expose: Option<ExposeConfig>| Account {
+            name: name.to_string(),
+            gcloud_configuration: name.to_string(),
+            project: format!("sample-{name}"),
+            default_zone: "europe-west1-b".to_string(),
+            impersonate_service_account: None,
+            expose,
+        };
+        let relay = ExposeConfig {
+            relay_instance: "relay".to_string(),
+            relay_zone: "europe-west1-b".to_string(),
+            network: "default".to_string(),
+            default_domain: "app.example.test".to_string(),
+            domains: vec![DomainConfig {
+                domain: "app.example.test".to_string(),
+                managed_zone: "app-zone".to_string(),
+            }],
+        };
+        let config = Config {
+            selected_account: "dev".to_string(),
+            accounts: vec![account("dev", Some(relay)), account("prod", None)],
+        };
+        let mut app = App::new("dev");
+        app.reload_config(&config);
+        assert!(app.has_relay, "dev has a relay");
+        assert_eq!(app.domains, vec!["app.example.test".to_string()]);
+
+        app.handle_key(key(KeyCode::Char(';')));
+        assert_eq!(app.account, "prod");
+        assert!(!app.has_relay, "prod has none, the name alone moved");
+        assert!(app.domains.is_empty(), "{:?}", app.domains);
+        assert_eq!(keys(&mut app, "a2"), None);
+        let status = app.status.clone().expect("a status message");
+        assert!(status.contains("relay up"), "{status}");
+
+        app.input_mode = InputMode::Normal;
+        app.handle_key(key(KeyCode::Char(';')));
+        assert_eq!(app.account, "dev");
+        assert!(app.has_relay, "coming back restores the relay");
+        assert_eq!(app.domains, vec!["app.example.test".to_string()]);
     }
 
     #[test]

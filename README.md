@@ -212,6 +212,7 @@ breakdown.
 | [docs/usage.md](docs/usage.md) | Every command, with its output |
 | [docs/architecture.md](docs/architecture.md) | Topology, process model, resource names |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Error table, firewall and IAM, services, cost |
+| [docs/design.md](docs/design.md) | How the TUI displays information: hierarchy, density, colour |
 | [CHANGELOG.md](CHANGELOG.md) | Release history |
 
 The recordings above are generated from the committed

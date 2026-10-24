@@ -14,6 +14,17 @@ what is on `main` and not yet tagged.
   discard. A saved edit reloads accounts, projects, the relay and the list without
   restarting, and says what changed. Running tunnels keep their old settings until `R`.
 
+- **`;` switches the relay with the account** - the Public flow and the domain picker
+  followed the account the TUI started on, so an account without a relay offered one and an
+  account with one refused it. Both now change with the name and the project.
+
+### Fixed
+
+- **A recorded pid of 0 is never signalled** - `kill(0)` signals the caller's own process
+  group. A run record holding pid 0, or one too large for a pid, now reads as not running
+  and `reset` and the import handover skip it; a run whose `gcloud` has no pid fails to
+  start instead of recording one.
+
 ### Build
 
 - **A lint policy in `Cargo.toml`** - `unsafe_op_in_unsafe_fn`,
