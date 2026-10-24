@@ -17,6 +17,27 @@ what is on `main` and not yet tagged.
 
 ### Documentation
 
+- **The README points at `docs/` instead of restating it** - it carried the full keymap, the
+  full command map and the full error table, three tables that `docs/usage.md` and
+  `docs/troubleshooting.md` already own, and each copy drifted on its own schedule. The
+  README now orients a newcomer and links; every table it dropped exists in exactly one file
+  under `docs/`. 243 lines down to 149.
+- **Four diagrams for what the prose only described** - `docs/architecture.md` gains the jump
+  tunnel's second hop (`compute ssh --tunnel-through-iap`, which is a different command from
+  `start-iap-tunnel` and has no local listener, so nothing prints `Listening on port`), what
+  `relay up` creates against what `relay down` removes and in which order, the service
+  lifecycle across launchd and systemd with the two asymmetric auto-start switches, and the
+  account model that lets `kubernetes` exist once per account.
+- **The banner keeps the mark's gaps** - `docs/logo.svg` drew each braille dot as a
+  rounded square as wide as the pitch, so the squares met, the full-width row merged into
+  the cloud, and the mark read as one bottom-heavy blob. It is one circle per dot again, as
+  braille separates them: the gaps are what keep that row reading as a line behind the
+  cloud. The silhouette is unchanged - all 48 dots and their hues are still pinned to
+  `mark_dots()` - and `docs/logo.png` is re-rendered from it.
+- **The fallback lost its notch** - `MARK_FALLBACK` carried `▀` at its centre, an
+  upper-half block in a shape that has no cell with empty lower rows, so it drew a hole
+  under the cloud on every terminal without braille coverage. Each cell is now the honest
+  reduction of its braille cell, and the test bars `▀` by name.
 - **A security policy** - `SECURITY.md` names the supported version, routes reports through
   GitHub's private vulnerability reporting rather than a public issue, and says what gtunnel
   holds: no stored credential, a fresh token per call from `gcloud auth print-access-token`,
