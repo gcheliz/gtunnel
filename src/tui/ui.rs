@@ -580,9 +580,10 @@ impl Action {
 // The old footer printed all fourteen keys at once, which needed 124 cells and
 // so lost its tail on a 120-column terminal. Worse, it put `s` beside `S`, `a`
 // beside `A` and `r` beside `R`: three pairs where case is the whole
-// difference. Showing only what the selection can actually do dissolves that
-// trap rather than annotating it — the two halves of a pair are never on
-// screen together, because a tunnel cannot be both running and stopped.
+// difference. Showing only what the selection can actually do dissolves most
+// of that trap: `s`/`S` and `r`/`R` are never on screen together, because a
+// tunnel cannot be both running and stopped. `a`/`A` is the exception, since
+// `a add` is a program action and `A auto` a contextual one.
 const ACTIONS_RUNNING: &[Action] = &[
     Action::of("S"),
     Action::of("R"),
@@ -615,8 +616,9 @@ const ACTIONS_EMPTY: &[Action] = &[Action::of("m")];
 const ACTIONS_UNMANAGED: &[Action] = &[];
 
 /// Always available, always flush right, and the last thing to shed. `a add`
-/// leads because the group sheds from the front: it is the first to go and
-/// `?` and `q` the last, and it is here rather than in a contextual set
+/// leads because the group sheds from the front: it goes before the
+/// program's others but after every contextual action except the first, and
+/// `?` and `q` go last. It is here rather than in a contextual set
 /// because adding a tunnel is as valid on a running row as on an empty list.
 const ACTIONS_PROGRAM: &[Action] = &[
     Action::of("a"),
@@ -1592,9 +1594,11 @@ fn group_spans(actions: &[Action], out: &mut Vec<Span<'static>>) {
 /// The footer at this width: the selection's actions on the left, the program's
 /// on the right, and nothing drawn that does not fit whole.
 ///
-/// Shedding order is from the end of the contextual group, because the actions
-/// are listed in the order a user reaches for them. Only once that group is
-/// empty does `; account` go, leaving the two that must never disappear: `?`
+/// Shedding order: the contextual group goes from its end, because the actions
+/// are listed in the order a user reaches for them, but stops at its first
+/// entry. Then `a add` goes, which is true of every row, then that first entry,
+/// the one the row exists for. Only once the group is empty does
+/// `; account` go, leaving the two that must never disappear: `?`
 /// says what the keys are, and `q` is the way out.
 pub fn footer_line(
     width: u16,
@@ -1615,14 +1619,21 @@ pub fn footer_line(
     let mut skipped = 0;
     let mut program = all_program;
     while !fits(&all_contextual[..shown], program) {
-        if shown > 0 {
+        if shown > 1 {
+            // everything after the row's first action goes before `a add`
             shown -= 1;
-        } else if program.len() > 2 {
+        } else if skipped == 0 {
+            skipped = 1;
+        } else if shown > 0 {
+            // the row's own first action, `R restart` on a failure, outlasts
+            // `a add` but not `; account`
+            shown = 0;
+        } else if all_program.len() - skipped > 2 {
             skipped += 1;
-            program = &all_program[skipped..];
         } else {
             break;
         }
+        program = &all_program[skipped..];
     }
     let contextual = &all_contextual[..shown];
 
@@ -1658,7 +1669,7 @@ pub const HELP_TWO_COLUMNS: usize = 92;
 const HELP_KEY_CELLS: usize = 8;
 const HELP_GAP: usize = 4;
 
-const CASE_NOTE: &str = "Case is load-bearing in three places: s/S start and stop, a/A add and auto-start, r/R refresh and restart. The footer only ever shows one of each pair, so the collision cannot bite there - this page is where it has to be stated.";
+const CASE_NOTE: &str = "Case is load-bearing in three places: s/S start and stop, a/A add and auto-start, r/R refresh and restart. The footer never pairs s/S or r/R; only a/A, in two groups - this page is where it has to be stated.";
 
 /// How many keys are bound, counting `up/k` as the two keys it is. Counted
 /// from the table, because a figure typed into a sentence is wrong by the next

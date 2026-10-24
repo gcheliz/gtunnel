@@ -1424,6 +1424,16 @@ mod tests {
         let keys: Vec<_> = ctx.iter().map(|a| a.key).collect();
         assert_eq!(keys, ["s", "e", "d", "A"]);
         assert!(!keys.contains(&"S"), "s and S are never on screen together");
+        // a/A is the one pair that can share the screen, in two groups.
+        let text = line_text(&ui::footer_line(
+            120,
+            Some((TunnelStatus::Stopped, TunnelKind::Managed)),
+            true,
+        ));
+        assert!(
+            text.contains("A auto") && text.contains("a add"),
+            "{text:?}"
+        );
     }
 
     // Review Focus 4: no tunnels at all, so there is no selection to derive a
@@ -1539,8 +1549,8 @@ mod tests {
         );
     }
 
-    // The way a failed tunnel is retried must survive the narrowest footer that
-    // still shows any contextual action.
+    // At 48 columns the footer holds `a add` beside restart and not yet
+    // `e edit`, so this marks restart leading a footer with more than restart.
     #[test]
     fn the_failed_footer_keeps_restart_first_at_forty_eight_columns() {
         let text = line_text(&ui::footer_line(
@@ -1549,6 +1559,34 @@ mod tests {
             true,
         ));
         assert!(text.trim_start().starts_with("R restart"), "{text:?}");
+    }
+
+    // `a add` is not about the selected row, and `R restart` is the one action
+    // a failed row exists for, so the narrow footer gives up the former first.
+    #[test]
+    fn a_narrow_failed_footer_sheds_add_before_restart() {
+        let text = line_text(&ui::footer_line(
+            40,
+            Some((TunnelStatus::Error, TunnelKind::Managed)),
+            true,
+        ));
+        assert!(text.trim_start().starts_with("R restart"), "{text:?}");
+        assert!(!text.contains("a add"), "{text:?}");
+    }
+
+    // Between restart alone and restart with edit, `a add` is what the
+    // footer spends the next cells on: it is true of every row, `e edit` of
+    // this one.
+    #[test]
+    fn a_failed_footer_at_forty_six_columns_has_room_for_restart_and_add_but_not_edit() {
+        let text = line_text(&ui::footer_line(
+            46,
+            Some((TunnelStatus::Error, TunnelKind::Managed)),
+            true,
+        ));
+        assert!(text.contains("R restart"), "{text:?}");
+        assert!(text.contains("a add"), "{text:?}");
+        assert!(!text.contains("e edit"), "{text:?}");
     }
 
     // A blank pane under a header reads as a render that failed. The footer
