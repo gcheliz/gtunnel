@@ -252,7 +252,7 @@ async fn event_loop(
                     let Some(entry) = app.entries.iter_mut().find(|e| e.name() == name) else {
                         continue;
                     };
-                    announce(entry.name(), entry.health, health);
+                    announce(entry, health);
                     entry.health = health;
                 }
             }
@@ -297,16 +297,30 @@ fn connection_change(was: Option<u64>, now: u64) -> Option<String> {
     }
 }
 
-// A tunnel that just went bad, or just recovered, is worth interrupting for
-fn announce(name: &str, was: HealthStatus, now: HealthStatus) {
+// Which transitions are worth saying anything about. Health is polled every
+// 30s and mostly does not change, and the first poll of a session arrives
+// against Unknown, which is not a recovery.
+fn transition_line(was: HealthStatus, now: HealthStatus) -> Option<String> {
     match (was, now) {
-        (HealthStatus::Healthy, HealthStatus::Unhealthy) => {
-            crate::notify::notify("gtunnel", &format!("{name} is unhealthy"));
-        }
-        (HealthStatus::Unhealthy, HealthStatus::Healthy) => {
-            crate::notify::notify("gtunnel", &format!("{name} is healthy again"));
-        }
-        _ => {}
+        (HealthStatus::Healthy, HealthStatus::Unhealthy) => Some("unhealthy".to_string()),
+        (HealthStatus::Unhealthy, HealthStatus::Healthy) => Some("healthy again".to_string()),
+        _ => None,
+    }
+}
+
+// A tunnel that just went bad, or just recovered, is worth interrupting for.
+// It also goes in the log: a notification is gone once dismissed, and one
+// raised while the laptop slept was never seen, but the log is what the user
+// still has afterwards.
+fn announce(entry: &TunnelEntry, now: HealthStatus) {
+    let Some(what) = transition_line(entry.health, now) else {
+        return;
+    };
+    crate::notify::notify("gtunnel", &format!("{} is {what}", entry.name()));
+    if entry.kind != TunnelKind::External
+        && let Ok(path) = entry.tunnel.log_path()
+    {
+        let _ = crate::daemon::log_event(&path, &what);
     }
 }
 
@@ -458,6 +472,30 @@ mod tests {
             connection_change(Some(2), 2),
             None,
             "a line per poll is 17,280 a day that say nothing"
+        );
+    }
+
+    // A notification is gone when it is dismissed, and one raised while the
+    // laptop slept was never seen at all. The log is the durable copy.
+    #[test]
+    fn a_health_transition_is_written_where_it_can_be_read_later() {
+        assert_eq!(
+            transition_line(HealthStatus::Healthy, HealthStatus::Unhealthy),
+            Some("unhealthy".to_string())
+        );
+        assert_eq!(
+            transition_line(HealthStatus::Unhealthy, HealthStatus::Healthy),
+            Some("healthy again".to_string())
+        );
+        assert_eq!(
+            transition_line(HealthStatus::Healthy, HealthStatus::Healthy),
+            None,
+            "health is polled every 30s and mostly does not change"
+        );
+        assert_eq!(
+            transition_line(HealthStatus::Unknown, HealthStatus::Healthy),
+            None,
+            "the first poll of a session is not a recovery"
         );
     }
 
