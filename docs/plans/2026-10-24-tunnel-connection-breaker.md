@@ -92,7 +92,7 @@ it. Each client of a forwarding tunnel costs one descriptor, so 256 is a ceiling
 that nobody chose and nothing documents. The hard limit is unlimited and
 `kern.maxfilesperproc` is 61440, so 4096 is both safe and far more than a tunnel needs.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```rust
 // launchd.rs
@@ -112,11 +112,11 @@ fn a_tunnel_is_not_capped_at_the_units_default_descriptors() {
 }
 ```
 
-- [ ] **Step 2: Run them** — Expected: FAIL, neither key is written.
-- [ ] **Step 3: Add the key to both templates.** In the plist, `SoftResourceLimits` is a dict holding `NumberOfFiles`; it must not set a hard limit, which only root may raise. In the unit, `LimitNOFILE` goes in `[Service]`.
-- [ ] **Step 4: Run them** — Expected: PASS, and the whole suite green: the existing template tests assert on exact text and will need the new key accounted for.
-- [ ] **Step 5: Verify against a real service.** Install a tunnel under a throwaway `GTUNNEL_CONFIG_DIR` with an account name of its own, then read the limit off the running process rather than the file: `launchctl print gui/$UID/<label> | grep -A3 'soft resource limits'`. Expected: the file count is `TUNNEL_MAX_FILES`, not 256. Record the output in the commit body.
-- [ ] **Step 6: Commit** — `fix: a tunnel is not capped at launchd's 256 descriptors`
+- [x] **Step 2: Run them** — Expected: FAIL, neither key is written.
+- [x] **Step 3: Add the key to both templates.** In the plist, `SoftResourceLimits` is a dict holding `NumberOfFiles`; it must not set a hard limit, which only root may raise. In the unit, `LimitNOFILE` goes in `[Service]`.
+- [x] **Step 4: Run them** — Expected: PASS, and the whole suite green: the existing template tests assert on exact text and will need the new key accounted for.
+- [x] **Step 5: Verify against a real service.** Install a tunnel under a throwaway `GTUNNEL_CONFIG_DIR` with an account name of its own, then read the limit off the running process rather than the file: `launchctl print gui/$UID/<label> | grep -A3 'soft resource limits'`. Expected: the file count is `TUNNEL_MAX_FILES`, not 256. Record the output in the commit body.
+- [x] **Step 6: Commit** — `fix: a tunnel is not capped at launchd's 256 descriptors`
 
 ---
 
@@ -146,7 +146,7 @@ Two details the implementation must get right, both verified against the live fa
 | the listing must use `lsof -nP +c 0` | without `+c 0` lsof truncates the command to 9 characters, so the culprit reads `mcp-serve` and a `pgrep` for it finds nothing |
 | the row that names the holder is the **client** row | the server rows all belong to `ssh`; the holder is the pid whose *peer* is `127.0.0.1:<port>` |
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```rust
 // A fixture in the real `lsof -nP +c 0 -iTCP -sTCP:ESTABLISHED` shape, with one
@@ -178,11 +178,11 @@ fn nothing_parseable_names_nobody() {
 }
 ```
 
-- [ ] **Step 2: Run them** — Expected: FAIL, `parse_lsof_holders` not defined.
-- [ ] **Step 3: Implement.** Reuse `established_rows`, extending it to carry the command column; keep `parse_lsof_by_port` working on the same rows rather than duplicating the parse.
-- [ ] **Step 4: Run them** — Expected: PASS.
-- [ ] **Step 5: Verify against the live machine.** Run `holders_for_port` against a port with real traffic and check the answer matches `lsof -nP +c 0 -iTCP:<port> -sTCP:ESTABLISHED | awk 'NR>1{print $1, $2}' | sort | uniq -c`. Record both in the commit body.
-- [ ] **Step 6: Commit** — `feat: a tunnel's connections can be attributed to the process holding them`
+- [x] **Step 2: Run them** — Expected: FAIL, `parse_lsof_holders` not defined.
+- [x] **Step 3: Implement.** Reuse `established_rows`, extending it to carry the command column; keep `parse_lsof_by_port` working on the same rows rather than duplicating the parse.
+- [x] **Step 4: Run them** — Expected: PASS.
+- [x] **Step 5: Verify against the live machine.** Run `holders_for_port` against a port with real traffic and check the answer matches `lsof -nP +c 0 -iTCP:<port> -sTCP:ESTABLISHED | awk 'NR>1{print $1, $2}' | sort | uniq -c`. Record both in the commit body.
+- [x] **Step 6: Commit** — `feat: a tunnel's connections can be attributed to the process holding them`
 
 ---
 
@@ -192,7 +192,7 @@ fn nothing_parseable_names_nobody() {
 - Modify: `src/tunnel.rs` (`diagnose_log_line`)
 - Test: `src/tunnel.rs`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```rust
 #[test]
@@ -203,12 +203,21 @@ fn diagnose_log_line_explains_a_tunnel_out_of_descriptors() {
 }
 ```
 
-- [ ] **Step 2: Run it** — Expected: FAIL, no hint for that line.
-- [ ] **Step 3: Add the row.** The hint says the listener is out of descriptors, that a client is probably holding connections open, and points at `gtunnel doctor`, which Task 7 teaches to name the holder.
-- [ ] **Step 4: Run it** — Expected: PASS.
-- [ ] **Step 5: Commit** — `feat: the log says what a tunnel out of descriptors needs`
+- [x] **Step 2: Run it** — Expected: FAIL, no hint for that line.
+- [x] **Step 3: Add the row.** The hint says the listener is out of descriptors, that a client is probably holding connections open, and points at `gtunnel doctor`, which Task 7 teaches to name the holder.
+- [x] **Step 4: Run it** — Expected: PASS.
+- [x] **Step 5: Commit** — `feat: the log says what a tunnel out of descriptors needs`
 
 ---
+
+## Rulings made while executing Part 1
+
+| Ruling | Why | Cost if wrong |
+|---|---|---|
+| `TUNNEL_MAX_FILES`' bounds are two `const _: () = assert!(...)` items, not a test | clippy rejects `assertions-on-constants` in a test body, and a compile-time assert is strictly stronger: a bad edit fails the build rather than a run | none; the check is harder to remove by accident |
+| `holders_for_port` ships with `#[allow(dead_code)]` and a comment naming the watchdog | its consumer is Task 6. Wiring it into `doctor` early would widen Part 1 past what was approved, and the repo already carries this precedent in `daemon/mod.rs` | a dead function for one PR, removed or used in Part 2 |
+| `active_connections`' own `lsof -iTCP:<port>` call does not take `+c 0` | it counts rows and never reads COMMAND, and the column width cannot change a count | none |
+| The `+c 0` flag is a named constant with a test of its own | the live run found the truncation that the fixture test could not: a fixture holds whatever it was written to hold, so only the argv we hand lsof can pin the behaviour | none |
 
 ## Part 2
 
