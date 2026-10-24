@@ -136,6 +136,40 @@ already has it and every SHA rots on the next rebase.
 `main` takes squash merges only, so your branch's working commits never reach the published
 history. Write the pull request title as the commit message you want on `main`.
 
+## Releases
+
+You do not need to think about versions when you contribute. Use the right commit prefix
+and the rest follows.
+
+Every merge to `main` runs [`release-plz`](https://release-plz.dev), which reads the
+conventional-commit subjects since the last tag, works out the next version, and keeps one
+open pull request holding the bump: `Cargo.toml`, `Cargo.lock` and a `CHANGELOG.md` entry.
+It rewrites that pull request as more commits land, so there is only ever one.
+
+| Prefix | Effect on the version |
+|---|---|
+| `feat` | minor |
+| `fix`, `perf` | patch |
+| `feat!`, or a `BREAKING CHANGE:` trailer | major, and minor while the version is below 1.0 |
+| `docs`, `test`, `ci`, `chore`, `build` | none, and no changelog entry |
+
+Cutting the release is two steps, both for a maintainer:
+
+```
+# 1. merge the open release pull request
+# 2. tag the merge commit
+git tag -a v0.2.0 -m v0.2.0 && git push origin v0.2.0
+```
+
+Pushing the tag is what starts [`release.yml`](.github/workflows/release.yml): it builds
+the four targets, writes a `.sha256` beside each tarball, attests every asset, and
+publishes the GitHub release.
+
+The tag is manual on purpose. A tag pushed with `GITHUB_TOKEN` does not trigger another
+workflow, so an automated tag would produce a release with no binaries in it. The fix
+would be storing a long-lived push credential, which this project does not do — see
+[decision 14](docs/decisions.md).
+
 ## Reporting something
 
 | What | Where |

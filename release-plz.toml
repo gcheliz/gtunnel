@@ -1,0 +1,43 @@
+[workspace]
+# gtunnel is not on crates.io — the name there belongs to an unrelated crate — so
+# release-plz cannot ask the registry what the last version was. `git_only` makes it
+# read git tags instead, and skips `cargo publish` entirely.
+git_only = true
+
+# Must match the tags that already exist and the `tags: ["v*"]` trigger in
+# release.yml. release-plz's default for a single package would be
+# `gtunnel-v<version>`, which that trigger would still catch but which would read
+# as a different series.
+git_tag_name = "v{{ version }}"
+
+# This repository only ever runs `release-plz release-pr`, so neither of these
+# fires today. They are set so that adding the `release` command later cannot
+# surprise anyone: the tag and the GitHub release belong to release.yml, which is
+# the only thing that has the binaries and their attestations to attach.
+git_tag_enable = false
+git_release_enable = false
+
+changelog_update = true
+
+[changelog]
+header = """# Changelog
+
+Notable changes per release. Dates are the release date; an unreleased section is
+what is on `main` and not yet tagged.
+"""
+
+# One section per kind of change, in the order a reader cares about. A commit whose
+# subject carries no recognised prefix is dropped rather than filed under a heading
+# that would misdescribe it.
+commit_parsers = [
+  { message = "^feat", group = "Added" },
+  { message = "^fix", group = "Fixed" },
+  { message = "^perf", group = "Performance" },
+  { message = "^refactor", group = "Changed" },
+  { message = "^docs", group = "Documentation" },
+  { message = "^test", skip = true },
+  { message = "^ci", skip = true },
+  { message = "^chore", skip = true },
+  { message = "^build", skip = true },
+  { message = ".*", skip = true },
+]
