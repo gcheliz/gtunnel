@@ -13,6 +13,17 @@ pub struct Cli {
     )]
     pub account: Option<String>,
 
+    // How much the tunnels and the gcloud calls say. Beats GTUNNEL_LOG_LEVEL
+    // and the config file, so a one-off `--log-level debug` answers "why is
+    // this tunnel silent" without editing a file and putting it back after.
+    #[arg(
+        long,
+        global = true,
+        value_name = "LEVEL",
+        help = "How much to log: quiet, info or debug (default: info)"
+    )]
+    pub log_level: Option<crate::loglevel::LogLevel>,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 }

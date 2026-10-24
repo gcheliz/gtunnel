@@ -325,6 +325,7 @@ mod tests {
         Config {
             selected_account: selected.to_string(),
             accounts: accounts.iter().map(|a| account(a)).collect(),
+            ..Default::default()
         }
     }
 

@@ -73,8 +73,13 @@ const _: () = assert!(TUNNEL_MAX_FILES <= 61440);
 pub fn service_spec(cfg: &Config, t: &PersistentTunnel) -> Result<ServiceSpec> {
     let acct = cfg.get_account(Some(&t.account_name))?;
     let gcloud = crate::gcp::gcloud::require_gcloud()?;
+    // From the config in hand, not from startup: this argv is about to be
+    // written into a service file that outlives the command writing it, and
+    // the TUI reinstalls one hours into a session, after the config page may
+    // have changed the level.
+    let level = crate::loglevel::effective(cfg.log_level);
     let args = match &t.spec {
-        TunnelSpec::Access { .. } => tunnel::access_argv(acct, t)?,
+        TunnelSpec::Access { .. } => tunnel::access_argv(acct, t, level)?,
         TunnelSpec::Expose { .. } => {
             let ex = acct.expose.as_ref().with_context(|| {
                 format!(
@@ -82,7 +87,7 @@ pub fn service_spec(cfg: &Config, t: &PersistentTunnel) -> Result<ServiceSpec> {
                     acct.name
                 )
             })?;
-            tunnel::expose_argv(acct, ex, t)?
+            tunnel::expose_argv(acct, ex, t, level)?
         }
     };
     Ok(ServiceSpec {
@@ -278,6 +283,53 @@ pub fn remove_log(path: &std::path::Path) -> Result<()> {
 mod tests {
     use super::*;
     use crate::state::TunnelStatus;
+
+    // The level in a service file has to come from the config being installed
+    // from, not from whatever the config said when the process started. A TUI
+    // session runs for hours and reinstalls a service after its config page
+    // has been edited; before this, that edit was written into `config.toml`
+    // and then ignored by the very next restart.
+    #[test]
+    fn a_service_spec_takes_its_level_from_the_config_it_is_handed() {
+        if crate::gcp::gcloud::require_gcloud().is_err() {
+            eprintln!("no gcloud on this machine; skipping");
+            return;
+        }
+        let tunnel = crate::state::PersistentTunnel {
+            name: "db".to_string(),
+            account_name: "dev".to_string(),
+            auto_start: false,
+            spec: TunnelSpec::Access {
+                target: crate::state::AccessTarget::Instance {
+                    instance: "my-vm".to_string(),
+                    zone: "europe-west1-b".to_string(),
+                },
+                remote_port: 5432,
+                local_port: 15432,
+            },
+        };
+        for level in [
+            crate::loglevel::LogLevel::Quiet,
+            crate::loglevel::LogLevel::Info,
+            crate::loglevel::LogLevel::Debug,
+        ] {
+            let cfg = Config {
+                selected_account: "dev".to_string(),
+                log_level: level,
+                accounts: vec![crate::config::Account {
+                    name: "dev".to_string(),
+                    gcloud_configuration: "work".to_string(),
+                    project: "proj-1".to_string(),
+                    default_zone: "europe-west1-b".to_string(),
+                    impersonate_service_account: None,
+                    expose: None,
+                }],
+            };
+            let got = service_spec(&cfg, &tunnel).expect("spec");
+            let want = format!("--verbosity={}", level.gcloud_verbosity());
+            assert!(got.args.contains(&want), "{level}: {:?}", got.args);
+        }
+    }
 
     fn spec() -> ServiceSpec {
         ServiceSpec {
