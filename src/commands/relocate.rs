@@ -118,26 +118,36 @@ async fn run_rename(
     };
     // A tunnel that was running is brought back even when its route could not
     // be rebuilt: stopped helps nobody, and the error below says what is wrong
-    if was_running {
-        ops.start(&spec.label).await?;
-    }
-    if let Err(e) = route {
-        let state_word = if was_running {
-            "restarted"
-        } else {
-            "installed"
-        };
-        return Err(e.context(format!(
-            "'{new}' was renamed and {state_word}, but its route was not rebuilt; \
-             run `gtunnel start {new}` to retry"
-        )));
-    }
-    // Cleanup, not a precondition: a log that cannot be removed must not
-    // undo a rename that has already happened
+    let start = if was_running {
+        ops.start(&spec.label).await
+    } else {
+        Ok(())
+    };
+    // Cleanup, not a precondition, so it neither aborts nor waits on the
+    // outcome above: the old log is orphaned either way, and a reused name
+    // would inherit it
     if let Err(e) = ops.remove_log(&old_log) {
         eprintln!("Warning: could not remove the old log: {e:#}");
     }
-    Ok(())
+    let done = if was_running {
+        "renamed, installed and restarted"
+    } else {
+        "renamed and installed"
+    };
+    let retry = format!("run `gtunnel start {new}` to retry");
+    match (route, start) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(route), Ok(())) => Err(route.context(format!(
+            "'{new}' was {done}, but its route was not rebuilt; {retry}"
+        ))),
+        (Ok(()), Err(start)) => Err(start.context(format!(
+            "'{new}' was renamed and installed, but it could not be started; {retry}"
+        ))),
+        (Err(route), Err(start)) => bail!(
+            "'{new}' was renamed and installed, but its route was not rebuilt ({route:#}) \
+             and it could not be started ({start:#}); {retry}"
+        ),
+    }
 }
 
 struct LiveOps {
@@ -291,21 +301,29 @@ mod tests {
     /// Records every effect in order; a named step can be made to fail.
     struct Recorder {
         calls: RefCell<Vec<String>>,
-        fail: &'static str,
+        fail: Vec<&'static str>,
         running: bool,
+        specs_built: RefCell<u32>,
+        installed: RefCell<Option<ServiceSpec>>,
     }
 
     impl Recorder {
         fn new(fail: &'static str, running: bool) -> Self {
             Self {
                 calls: RefCell::new(Vec::new()),
-                fail,
+                fail: vec![fail],
                 running,
+                specs_built: RefCell::new(0),
+                installed: RefCell::new(None),
             }
+        }
+        fn and_failing(mut self, step: &'static str) -> Self {
+            self.fail.push(step);
+            self
         }
         fn step(&self, name: &str) -> Result<()> {
             self.calls.borrow_mut().push(name.to_string());
-            if self.fail == name {
+            if self.fail.contains(&name) {
                 bail!("{name} failed");
             }
             Ok(())
@@ -324,10 +342,12 @@ mod tests {
         }
         fn spec_for(&self, t: &PersistentTunnel) -> Result<ServiceSpec> {
             self.step("spec")?;
+            *self.specs_built.borrow_mut() += 1;
             Ok(ServiceSpec {
                 label: self.label(&t.name),
                 program: PathBuf::from("gcloud"),
-                args: Vec::new(),
+                // Tells one built spec from another
+                args: vec![format!("spec-{}", self.specs_built.borrow())],
                 log_path: PathBuf::from("log"),
                 env: Vec::new(),
                 auto_start: false,
@@ -346,7 +366,8 @@ mod tests {
         fn save(&self, _: &TunnelState) -> Result<()> {
             self.step("save")
         }
-        async fn install(&self, _: &ServiceSpec) -> Result<()> {
+        async fn install(&self, spec: &ServiceSpec) -> Result<()> {
+            *self.installed.borrow_mut() = Some(spec.clone());
             self.step("install")
         }
         async fn ensure_route(&self, _: &PersistentTunnel) -> Result<()> {
@@ -422,5 +443,45 @@ mod tests {
         let msg = format!("{:#}", result.unwrap_err());
         assert!(msg.contains("restarted"), "{msg}");
         assert!(msg.contains("gtunnel start new"), "{msg}");
+    }
+
+    #[test]
+    fn a_start_failure_says_the_rename_already_happened() {
+        let ops = Recorder::new("start", true);
+        let (result, state) = run(&ops, access("old", "dev"));
+        let msg = format!("{:#}", result.unwrap_err());
+        assert!(msg.contains("renamed"), "{msg}");
+        assert!(msg.contains("gtunnel start new"), "{msg}");
+        assert!(msg.contains("start failed"), "{msg}");
+        assert!(state.find_for_account("new", "dev").is_some());
+    }
+
+    #[test]
+    fn a_route_failure_is_not_lost_when_the_start_fails_too() {
+        let ops = Recorder::new("ensure_route", true).and_failing("start");
+        let (result, _) = run(&ops, public("old"));
+        let msg = format!("{:#}", result.unwrap_err());
+        assert!(msg.contains("ensure_route failed"), "{msg}");
+        assert!(msg.contains("start failed"), "{msg}");
+        assert!(msg.contains("gtunnel start new"), "{msg}");
+    }
+
+    #[test]
+    fn the_old_log_is_removed_even_when_the_route_could_not_be_rebuilt() {
+        let ops = Recorder::new("ensure_route", false);
+        let (result, _) = run(&ops, public("old"));
+        assert!(result.is_err());
+        assert_eq!(ops.calls().last().map(String::as_str), Some("remove_log"));
+    }
+
+    #[test]
+    fn the_spec_built_before_the_first_effect_is_the_one_installed() {
+        let ops = Recorder::new("none", false);
+        let (result, _) = run(&ops, public("old"));
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(*ops.specs_built.borrow(), 1, "the spec is built once");
+        let installed = ops.installed.borrow().clone().expect("installed");
+        assert_eq!(installed.args, vec!["spec-1"]);
+        assert_eq!(installed.label, "label-new");
     }
 }
