@@ -1,13 +1,12 @@
 use anyhow::{bail, Context, Result};
 use std::path::Path;
 
-use super::access::verify_instance;
 use super::{find_tunnel, resolve};
 use crate::config::{Account, Config};
 use crate::daemon::{self, ServiceSpec};
 use crate::expose::naming::hostname_for;
 use crate::expose::routes;
-use crate::gcp::GcpClient;
+use crate::gcp::{compute, GcpClient};
 use crate::state::{
     validate_tunnel_name, AccessTarget, PersistentTunnel, TunnelSpec, TunnelState, TunnelStatus,
 };
@@ -44,9 +43,49 @@ fn check_relocate(state: &TunnelState, from: &str, to: &str, old: &str, new: &st
         }
     }
     if state.find_for_account(new, to).is_some() {
-        bail!("Tunnel '{new}' already exists on account '{to}'");
+        let hint = if from != to {
+            "; pass `--rename <new>` to land under another name"
+        } else {
+            ""
+        };
+        bail!("Tunnel '{new}' already exists on account '{to}'{hint}");
     }
     Ok(())
+}
+
+/// The destination's answer to "does the instance exist", read strictly. `add`
+/// may shrug at a lookup that cannot run because it destroys nothing; a move has
+/// already committed to tearing a working service down, and the ordinary reason
+/// for the lookup to fail is a destination account that is not logged in.
+fn destination_verdict<T>(
+    found: Result<Option<T>>,
+    account: &str,
+    project: &str,
+    zone: &str,
+    instance: &str,
+) -> Result<()> {
+    match found {
+        Ok(Some(_)) => Ok(()),
+        // The zone is the source tunnel's; a move cannot say otherwise
+        Ok(None) => bail!(
+            "Instance '{instance}' not found in zone '{zone}' of project '{project}' \
+             (account '{account}'); nothing was changed. If it lives in another zone, \
+             `gtunnel delete` the tunnel and `gtunnel add` it on '{account}'"
+        ),
+        Err(e) => Err(e.context(format!(
+            "Could not check instance '{instance}' on account '{account}'; nothing was changed"
+        ))),
+    }
+}
+
+/// The start command resolves the account from its own flag, so a tunnel on a
+/// non-default account has to be named on it.
+fn account_flag(moving: bool, account: &str) -> String {
+    if moving {
+        format!(" --account {account}")
+    } else {
+        String::new()
+    }
 }
 
 /// A move that stays on its account is a rename, which has its own command.
@@ -168,10 +207,26 @@ async fn run_relocate(
     src.uninstall(&old_label).await?;
 
     relocate_in_state(state, from, to, old, new)?;
-    dst.save(state)?;
+    // Past the uninstall the old service is gone; a failed save leaves the
+    // record where it was, and `start` rebuilds the service from that record
+    dst.save(state).map_err(|e| {
+        e.context(format!(
+            "'{old}' was stopped and uninstalled but the record was not saved, so it is \
+             still on account '{from}'; run `gtunnel start {old}{}` to bring it back",
+            account_flag(moving, from)
+        ))
+    })?;
 
     // install writes the login copy when auto-start is on, which restores it
-    dst.install(&spec).await?;
+    // The record is already on the destination, so a plain `start` would look
+    // for it on the default account and find nothing
+    dst.install(&spec).await.map_err(|e| {
+        e.context(format!(
+            "'{new}' is now on account '{to}' but its service was not installed; \
+             run `gtunnel start {new}{}` to retry",
+            account_flag(moving, to)
+        ))
+    })?;
     let route = if renamed.is_expose() {
         dst.ensure_route(&renamed).await
     } else {
@@ -198,11 +253,10 @@ async fn run_relocate(
     };
     // The start command resolves the account from its own flag, so a moved
     // tunnel has to be named on the account it now lives on
-    let retry = if moving {
-        format!("run `gtunnel start {new} --account {to}` to retry")
-    } else {
-        format!("run `gtunnel start {new}` to retry")
-    };
+    let retry = format!(
+        "run `gtunnel start {new}{}` to retry",
+        account_flag(moving, to)
+    );
     match (route, start) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(route), Ok(())) => Err(route.context(format!(
@@ -235,7 +289,11 @@ impl RenameOps for LiveOps {
                     AccessTarget::Instance { instance, zone }
                     | AccessTarget::Jump { instance, zone, .. },
                 ..
-            } => verify_instance(&self.acct, zone, instance).await,
+            } => {
+                let found =
+                    compute::get_instance(&self.client, &self.acct.project, zone, instance).await;
+                destination_verdict(found, &self.acct.name, &self.acct.project, zone, instance)
+            }
             // Refused before this is reached: a group is not portable, and an
             // Expose tunnel does not move
             _ => Ok(()),
@@ -291,6 +349,9 @@ pub async fn cmd_move(
     let (config, src_acct) = resolve(from)?;
     let dst_acct = config.get_account(Some(to))?.clone();
     check_accounts_differ(&src_acct.name, &dst_acct.name, name)?;
+    // main authenticated the source only; the destination is asked a question
+    // before the first write, and an unauthenticated one cannot answer it
+    crate::gcp::gcloud::ensure_logged_in(&dst_acct).await?;
     let mut state = TunnelState::load()?;
     find_tunnel(&state, name, &src_acct.name)?;
     let new = target_name(name, rename_to);
@@ -755,5 +816,79 @@ mod tests {
     fn a_move_target_name_is_the_rename_or_the_old_name() {
         assert_eq!(target_name("db", None), "db");
         assert_eq!(target_name("db", Some("pg")), "pg");
+    }
+
+    #[test]
+    fn a_destination_lookup_that_cannot_run_is_fatal_and_says_nothing_changed() {
+        let err = destination_verdict::<()>(
+            Err(anyhow::anyhow!("not logged in")),
+            "prod",
+            "p",
+            "z",
+            "vm",
+        )
+        .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("prod"), "{msg}");
+        assert!(msg.contains("nothing was changed"), "{msg}");
+        assert!(msg.contains("not logged in"), "{msg}");
+    }
+
+    #[test]
+    fn an_instance_missing_in_the_destination_zone_points_at_delete_and_add() {
+        let err =
+            destination_verdict::<()>(Ok(None), "prod", "p", "europe-west1-b", "vm").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("europe-west1-b"), "{msg}");
+        assert!(msg.contains("delete") && msg.contains("add"), "{msg}");
+        assert!(destination_verdict(Ok(Some(())), "prod", "p", "z", "vm").is_ok());
+    }
+
+    #[test]
+    fn a_save_that_fails_after_the_uninstall_says_where_the_tunnel_still_is() {
+        let mut state = state_of(vec![access("db", "dev")]);
+        let src = Recorder::new("none", true).tagged("src:");
+        let dst = src.sharing("dst:", "save", true);
+        let msg = format!(
+            "{:#}",
+            moved(&src, &dst, &mut state, "db", "pg").unwrap_err()
+        );
+        assert!(msg.contains("save failed"), "{msg}");
+        assert!(msg.contains("still on account 'dev'"), "{msg}");
+        assert!(msg.contains("gtunnel start db --account dev"), "{msg}");
+    }
+
+    #[test]
+    fn an_install_that_fails_after_the_save_says_the_tunnel_is_on_the_destination() {
+        let mut state = state_of(vec![access("db", "dev")]);
+        let src = Recorder::new("none", true).tagged("src:");
+        let dst = src.sharing("dst:", "install", true);
+        let msg = format!(
+            "{:#}",
+            moved(&src, &dst, &mut state, "db", "pg").unwrap_err()
+        );
+        assert!(msg.contains("install failed"), "{msg}");
+        assert!(msg.contains("now on account 'prod'"), "{msg}");
+        assert!(msg.contains("gtunnel start pg --account prod"), "{msg}");
+    }
+
+    #[test]
+    fn a_taken_name_on_a_move_names_the_rename_flag() {
+        let state = state_of(vec![access("db", "dev"), access("db", "prod")]);
+        let err = check_relocate(&state, "dev", "prod", "db", "db").unwrap_err();
+        assert!(err.to_string().contains("--rename"), "{err}");
+    }
+
+    #[test]
+    fn a_move_keeps_auto_start_and_the_local_port() {
+        let mut t = access("db", "dev");
+        t.auto_start = true;
+        let mut state = state_of(vec![t]);
+        let moved = relocate_in_state(&mut state, "dev", "prod", "db", "db").expect("moves");
+        assert!(moved.auto_start);
+        match moved.spec {
+            TunnelSpec::Access { local_port, .. } => assert_eq!(local_port, 15432),
+            other => panic!("spec changed kind: {other:?}"),
+        }
     }
 }

@@ -212,7 +212,11 @@ pub enum Commands {
     },
 
     // Move an Access tunnel to another account
-    #[command(about = "Move an Access tunnel to another account")]
+    #[command(
+        about = "Move an Access tunnel to another account",
+        long_about = "Move an Access tunnel to another account. The global --account names the \
+source and --to the destination."
+    )]
     Move {
         // Tunnel name
         #[arg(help = "Tunnel name")]
@@ -506,6 +510,11 @@ mod tests {
             other => panic!("parsed as {other:?}"),
         }
         assert!(Cli::try_parse_from(["gtunnel", "move", "db"]).is_err());
+        let help = Cli::try_parse_from(["gtunnel", "move", "--help"])
+            .err()
+            .expect("help exits")
+            .to_string();
+        assert!(help.contains("--account names the source"), "{help}");
     }
 
     #[test]
