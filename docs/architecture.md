@@ -18,8 +18,14 @@ The service runs:
 
 ```
 gcloud compute start-iap-tunnel <instance> <remote-port> \
-  --local-host-port=localhost:<local-port> --zone=<zone> [--project ...] [--impersonate-service-account ...]
+  --local-host-port=localhost:<local-port> --zone=<zone> --verbosity=info \
+  [--project ...] [--impersonate-service-account ...]
 ```
+
+`--verbosity=info` is what makes a working tunnel say so: gcloud's per-connection lines are
+`log.info` and its default level is `warning`. The service also sets `PYTHONUNBUFFERED=1`,
+because gcloud is Python and Python block-buffers a stdout that is not a terminal, so without
+it a line waits for 4 KiB or for the process to exit.
 
 With `--dest-group` the target is an IAP destination group instead of an instance, which
 reaches a host that is not a compute instance.
@@ -43,10 +49,17 @@ This is a different gcloud command, not a different flag. IAP carries an SSH con
 SSH makes the forward, so the service runs:
 
 ```
-gcloud compute ssh <instance> --zone=<zone> --tunnel-through-iap --quiet [--project ...] -- \
+gcloud compute ssh <instance> --zone=<zone> --tunnel-through-iap --quiet \
+  --verbosity=info [--project ...] -- \
   -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
-  -L <local-port>:<host>:<remote-port>
+  -o LogLevel=DEBUG -L <local-port>:<host>:<remote-port>
 ```
+
+`--verbosity` governs gcloud, not the `ssh` it execs, so the forward needs its own level.
+`DEBUG` rather than `VERBOSE`: ssh's levels run `QUIET < FATAL < ERROR < INFO < VERBOSE <
+DEBUG`, and both lines worth having here — the forward coming up, and one per client
+connecting — are `debug()`. At `VERBOSE` ssh prints three lines for a whole session and
+nothing per connection.
 
 Two consequences follow from the command being `ssh` rather than `start-iap-tunnel`:
 there is no local listener inside gcloud, so nothing prints `Listening on port`; and the
