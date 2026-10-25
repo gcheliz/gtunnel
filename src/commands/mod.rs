@@ -3,6 +3,7 @@ pub mod account;
 pub mod expose;
 pub mod maint;
 pub mod relocate;
+pub mod supervise;
 pub mod watch;
 
 use anyhow::{Context, Result};

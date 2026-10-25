@@ -94,7 +94,7 @@ pub fn service_spec(cfg: &Config, t: &PersistentTunnel) -> Result<ServiceSpec> {
     // the TUI reinstalls one hours into a session, after the config page may
     // have changed the level.
     let level = crate::loglevel::effective(cfg.log_level);
-    let args = match &t.spec {
+    let gcloud_args = match &t.spec {
         TunnelSpec::Access { .. } => tunnel::access_argv(acct, t, level)?,
         TunnelSpec::Expose { .. } => {
             let ex = acct.expose.as_ref().with_context(|| {
@@ -106,9 +106,17 @@ pub fn service_spec(cfg: &Config, t: &PersistentTunnel) -> Result<ServiceSpec> {
             tunnel::expose_argv(acct, ex, t, level)?
         }
     };
+    let program = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("gtunnel"));
+    let mut args = vec![
+        "__supervise".to_string(),
+        "--".to_string(),
+        gcloud.to_string_lossy().to_string(),
+    ];
+    args.extend(gcloud_args);
+
     Ok(ServiceSpec {
         label: platform_label(&t.account_name, &t.name),
-        program: gcloud.clone(),
+        program,
         args,
         log_path: t.log_path()?,
         env: daemon_env(&gcloud),
@@ -252,12 +260,12 @@ pub fn trim_log(path: &std::path::Path, cap: u64, keep: u64) -> Result<()> {
     }
     let kib = cap / 1024;
     let body = format!("gtunnel: earlier lines dropped here, the log passed {kib} KiB\n{tail}");
-    file.set_len(0)
-        .with_context(|| format!("Failed to truncate {}", path.display()))?;
     file.seek(SeekFrom::Start(0))
         .with_context(|| format!("Failed to rewind {}", path.display()))?;
     file.write_all(body.as_bytes())
-        .with_context(|| format!("Failed to write {}", path.display()))
+        .with_context(|| format!("Failed to write {}", path.display()))?;
+    file.set_len(body.len() as u64)
+        .with_context(|| format!("Failed to truncate {}", path.display()))
 }
 
 /// Append one gtunnel line to a tunnel's log. The daemon's stdout is redirected

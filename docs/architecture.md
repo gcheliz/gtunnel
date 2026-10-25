@@ -145,8 +145,9 @@ services first. It never touches the Cloud DNS managed zone, which is yours.
 flowchart TB
   cli["gtunnel CLI / TUI"] --> state["tunnels.toml<br/>config.toml"]
   cli --> svc["launchd plist / systemd --user unit<br/>one per tunnel"]
-  svc --> proc["gcloud child process"]
-  proc --> log["logs/&lt;account&gt;-&lt;name&gt;.log"]
+  svc --> sup["gtunnel __supervise"]
+  sup --> proc["gcloud child process"]
+  sup --> log["logs/&lt;account&gt;-&lt;name&gt;.log"]
   cli -.reads.-> log
   cli -.polls.-> api["Compute, DNS, Certificate Manager,<br/>IAP, Monitoring REST APIs"]
   wd["launchd StartInterval / systemd timer<br/>one for the machine"] --> once["gtunnel watch --once"]
