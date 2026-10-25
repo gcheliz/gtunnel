@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.8](https://github.com/gcheliz/gtunnel/compare/v0.1.7...v0.1.8) - 2026-10-25
+
+### Added
+
+- *(tui)* bind l to copy tunnel log to clipboard and quiet jump probe noise ([#32](https://github.com/gcheliz/gtunnel/pull/32))
+
 ## [0.1.7](https://github.com/gcheliz/gtunnel/compare/v0.1.6...v0.1.7) - 2026-10-25
 
 ### Fixed
