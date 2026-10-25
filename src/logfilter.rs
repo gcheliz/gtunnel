@@ -26,9 +26,7 @@ pub fn keep(line: &str) -> bool {
         return false;
     }
     if trimmed.starts_with("debug1:") {
-        return trimmed.contains("Local forwarding listening on")
-            || trimmed.contains("Connection to port ")
-            || trimmed.contains("new direct-tcpip");
+        return trimmed.contains("Local forwarding listening on");
     }
     if trimmed.starts_with("INFO: [")
         && (trimmed.contains("Connecting with URL")
@@ -186,6 +184,10 @@ mod tests {
         assert!(!keep(
             "debug1: channel 200: free: direct-tcpip: listening port 8443"
         ));
+        assert!(!keep(
+            "debug1: Connection to port 8443 forwarding to 10.0.0.10 port 443"
+        ));
+        assert!(!keep("debug1: channel 2: new direct-tcpip"));
         assert!(!keep("debug1: kex: algorithm: curve25519-sha256"));
         assert!(!keep("debug1: Exit status 0"));
         assert!(!keep("debug2: fd 3 setting O_NONBLOCK"));
@@ -197,10 +199,6 @@ mod tests {
         assert!(keep(
             "debug1: Local forwarding listening on 127.0.0.1 port 8443."
         ));
-        assert!(keep(
-            "debug1: Connection to port 8443 forwarding to 10.3.0.13 port 443"
-        ));
-        assert!(keep("debug1: channel 2: new direct-tcpip"));
     }
 
     #[test]
@@ -242,7 +240,7 @@ mod tests {
 
     #[tokio::test]
     async fn pump_filters_and_formats_stream() {
-        let input = "debug1: noise\ndebug1: channel 2: new direct-tcpip\ndebug2: more noise\nListening on port [15432].\n";
+        let input = "debug1: noise\ndebug1: Local forwarding listening on 127.0.0.1 port 8443.\ndebug2: more noise\nListening on port [15432].\n";
         let reader = Cursor::new(input.as_bytes());
         let mut out = Vec::new();
 
@@ -250,7 +248,7 @@ mod tests {
         let output = String::from_utf8(out).expect("utf8");
 
         assert!(!output.contains("noise"));
-        assert!(output.contains("channel 2: new direct-tcpip"));
+        assert!(output.contains("Local forwarding listening on"));
         assert!(output.contains("Listening on port [15432]."));
     }
 
