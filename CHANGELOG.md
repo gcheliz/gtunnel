@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.12](https://github.com/gcheliz/gtunnel/compare/v0.1.11...v0.1.12) - 2026-10-25
+
+### Fixed
+
+- improve health check responsiveness and log filtering ([#42](https://github.com/gcheliz/gtunnel/pull/42))
+
 ## [0.1.10](https://github.com/gcheliz/gtunnel/compare/v0.1.9...v0.1.10) - 2026-10-25
 
 ### Fixed
