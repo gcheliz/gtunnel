@@ -40,7 +40,7 @@ pub async fn cmd_init() -> Result<()> {
     let name = prompt("Account name", Some(&chosen.name))?;
     validate_account_name(&name)?;
     if config.accounts.iter().any(|a| a.name == name) {
-        bail!("Account '{name}' already exists. Pick another name");
+        bail!("Account '{name}' already exists");
     }
 
     let project = prompt("Project", chosen.project.as_deref())?;

@@ -147,7 +147,7 @@ pub(crate) async fn verify_instance(acct: &Account, zone: &str, instance: &str) 
     match compute::get_instance(&client, &acct.project, zone, instance).await {
         Ok(Some(_)) => Ok(()),
         Ok(None) => bail!(
-            "Instance '{instance}' not found in zone '{zone}' of project '{}'",
+            "Instance '{instance}' not found in zone '{zone}' of project '{}'; run `gtunnel zones` to check available zones",
             acct.project
         ),
         // A lookup that cannot run is not proof the instance is missing

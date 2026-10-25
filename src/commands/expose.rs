@@ -57,7 +57,9 @@ pub async fn cmd_relay_up(
 async fn pick_managed_zone(client: &GcpClient, project: &str) -> Result<String> {
     let zones = dns::list_managed_zones(client, project).await?;
     match zones.len() {
-        0 => bail!("No Cloud DNS managed zones in project '{project}'. Create one first"),
+        0 => bail!(
+            "No Cloud DNS managed zones in project '{project}'. Create one with `gcloud dns managed-zones create`, then run `gtunnel domains add`"
+        ),
         1 => Ok(zones[0].name.clone()),
         _ => {
             println!("Cloud DNS managed zones:");
