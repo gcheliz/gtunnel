@@ -83,7 +83,7 @@ so they run on any glibc.
 
 ```
 $ gtunnel --version
-gtunnel 0.1.11
+gtunnel 0.1.12
 ```
 
 #### Proving where the binary came from
@@ -837,7 +837,7 @@ Every other command prints a one-line hint when a cached check found a newer ver
 
 ```
 $ gtunnel list
-gtunnel v9.9.9 is available (current: v0.1.11). Run `gtunnel update`.
+gtunnel v9.9.9 is available (current: v0.1.12). Run `gtunnel update`.
 ```
 
 The check runs at most once a day, in the background, and never blocks a command. An install
