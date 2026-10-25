@@ -144,7 +144,16 @@ pub async fn cmd_add(
 // A typo in an instance name otherwise surfaces as a tunnel that never starts
 pub(crate) async fn verify_instance(acct: &Account, zone: &str, instance: &str) -> Result<()> {
     let client = GcpClient::for_account(acct);
-    match compute::get_instance(&client, &acct.project, zone, instance).await {
+    verify_instance_with_client(&client, acct, zone, instance).await
+}
+
+pub(crate) async fn verify_instance_with_client(
+    client: &GcpClient,
+    acct: &Account,
+    zone: &str,
+    instance: &str,
+) -> Result<()> {
+    match compute::get_instance(client, &acct.project, zone, instance).await {
         Ok(Some(_)) => Ok(()),
         Ok(None) => bail!(
             "Instance '{instance}' not found in zone '{zone}' of project '{}'. Run `gtunnel zones` to check available zones",
@@ -504,5 +513,41 @@ mod tests {
                 .auto_start,
             "the record on disk is what the next doctor run reads"
         );
+    }
+    #[tokio::test]
+    async fn verify_instance_missing_suggests_zones() {
+        use crate::gcp::{Endpoints, GcpClient, TokenSource};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(
+                "/compute/v1/projects/proj-1/zones/europe-west1-b/instances/missing-vm",
+            ))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let client = GcpClient::new(
+            TokenSource::Static("tok".to_string()),
+            Endpoints::single(&server.uri()),
+        );
+        let acct = Account {
+            name: "dev".to_string(),
+            gcloud_configuration: "dev".to_string(),
+            project: "proj-1".to_string(),
+            default_zone: "europe-west1-b".to_string(),
+            impersonate_service_account: None,
+            expose: None,
+        };
+        let err = verify_instance_with_client(&client, &acct, "europe-west1-b", "missing-vm")
+            .await
+            .expect_err("should bail");
+        let msg = format!("{err:#}");
+        assert!(msg.contains(
+            "Instance 'missing-vm' not found in zone 'europe-west1-b' of project 'proj-1'"
+        ));
+        assert!(msg.contains("Run `gtunnel zones` to check available zones"));
     }
 }

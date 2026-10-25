@@ -330,4 +330,13 @@ mod tests {
         let err = account_from_configuration(&configs, "bare", "dev").unwrap_err();
         assert!(err.to_string().contains("project"), "{err}");
     }
+    #[test]
+    fn duplicate_account_name_is_rejected() {
+        let mut config = Config::default();
+        config.add_account(account("dev")).expect("adds");
+        let err = config
+            .add_account(account("dev"))
+            .expect_err("should reject duplicate");
+        assert_eq!(err.to_string(), "Account 'dev' already exists");
+    }
 }
