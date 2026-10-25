@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.10](https://github.com/gcheliz/gtunnel/compare/v0.1.9...v0.1.10) - 2026-10-25
+
+### Fixed
+
+- *(tui)* eliminate latency sparkline gaps, log origin endpoints, and add copy toast ([#36](https://github.com/gcheliz/gtunnel/pull/36))
+
 ## [0.1.9](https://github.com/gcheliz/gtunnel/compare/v0.1.8...v0.1.9) - 2026-10-25
 
 ### Documentation
