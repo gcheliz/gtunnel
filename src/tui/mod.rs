@@ -809,6 +809,33 @@ mod tests {
         );
     }
 
+    #[test]
+    fn s_lowercase_on_a_running_tunnel_is_a_noop() {
+        let mut app = app_with_two();
+        assert_eq!(app.handle_key(key(KeyCode::Char('s'))), None);
+        let status = app.status.clone().expect("status message");
+        assert!(status.contains("already running"), "{status}");
+    }
+
+    #[test]
+    fn s_uppercase_on_a_stopped_tunnel_is_a_noop() {
+        let mut app = app_with_two();
+        app.entries[0].status = TunnelStatus::Stopped;
+        assert_eq!(app.handle_key(key(KeyCode::Char('S'))), None);
+        let status = app.status.clone().expect("status message");
+        assert!(status.contains("not running"), "{status}");
+    }
+
+    #[test]
+    fn s_lowercase_starts_a_stopped_tunnel() {
+        let mut app = app_with_two();
+        app.entries[0].status = TunnelStatus::Stopped;
+        assert_eq!(
+            app.handle_key(key(KeyCode::Char('s'))),
+            Some(Op::Start("db".to_string()))
+        );
+    }
+
     // A log that filled with a previous run's gcloud tracebacks is noise the
     // user can clear from the row it belongs to, and the panel empties with it
     // rather than showing lines the file no longer holds

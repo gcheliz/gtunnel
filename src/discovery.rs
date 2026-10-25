@@ -21,8 +21,9 @@ pub fn parse_iap_processes(ps: &str, managed_pids: &HashSet<u32>) -> Vec<Externa
         if !line.contains("start-iap-tunnel") {
             continue;
         }
-        // The grep that looks for these processes matches itself
-        if line.contains("grep") {
+        // The grep that looks for these processes matches itself.
+        // A command with --listen-on-stdin is an OpenSSH ProxyCommand pipe, not an external port listener.
+        if line.contains("grep") || line.contains("--listen-on-stdin") {
             continue;
         }
         let mut tokens = line.split_whitespace();
@@ -186,6 +187,16 @@ mod tests {
         assert_eq!(found[0].local_port, None);
         assert_eq!(found[0].zone, None);
         assert_eq!(found[0].remote_port, 22);
+    }
+
+    #[test]
+    fn proxy_commands_with_listen_on_stdin_are_ignored() {
+        let ps = "  602 python3 /opt/google-cloud-sdk/lib/gcloud.py compute start-iap-tunnel bastion 22 --listen-on-stdin\n";
+        let found = parse_iap_processes(ps, &HashSet::new());
+        assert!(
+            found.is_empty(),
+            "listen-on-stdin proxycommand should not be parsed as an external tunnel: {found:?}"
+        );
     }
 
     #[test]

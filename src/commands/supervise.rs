@@ -15,7 +15,16 @@ pub async fn run_inner(argv: Vec<String>) -> Result<std::process::ExitStatus> {
     let prog = &argv[0];
     let args = &argv[1..];
 
-    let mut child = Command::new(prog)
+    #[cfg(unix)]
+    let mut cmd = {
+        let mut c = Command::new(prog);
+        c.process_group(0);
+        c
+    };
+    #[cfg(not(unix))]
+    let mut cmd = Command::new(prog);
+
+    let mut child = cmd
         .args(args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -39,15 +48,24 @@ pub async fn run_inner(argv: Vec<String>) -> Result<std::process::ExitStatus> {
 
     #[cfg(unix)]
     let status = {
+        let pgid = child.id().map(|id| id as i32);
         let mut sigterm =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         tokio::select! {
             res = child.wait() => res.context("failed to wait on child")?,
             _ = sigterm.recv() => {
+                if let Some(pgid) = pgid {
+                    // SAFETY: pgid is a valid process group id spawned above.
+                    unsafe { libc::kill(-pgid, libc::SIGTERM) };
+                }
                 let _ = child.kill().await;
                 child.wait().await.context("failed to wait on child after SIGTERM")?
             }
             _ = tokio::signal::ctrl_c() => {
+                if let Some(pgid) = pgid {
+                    // SAFETY: pgid is a valid process group id spawned above.
+                    unsafe { libc::kill(-pgid, libc::SIGTERM) };
+                }
                 let _ = child.kill().await;
                 child.wait().await.context("failed to wait on child after SIGINT")?
             }
