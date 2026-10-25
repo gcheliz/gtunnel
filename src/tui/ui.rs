@@ -481,6 +481,12 @@ pub const KEYMAP: &[KeyDoc] = &[
         Group::List,
     ),
     doc("c", Some("copy"), "copy the tunnel URL", Group::UrlAndLog),
+    doc(
+        "l",
+        None,
+        "copy this tunnel's log to clipboard",
+        Group::UrlAndLog,
+    ),
     doc("o", Some("open"), "open it in a browser", Group::UrlAndLog),
     doc(
         "L",

@@ -1029,6 +1029,7 @@ impl App {
             KeyCode::Char('A') => return self.op_for("auto-start", Op::ToggleAutoStart),
             KeyCode::Char('m') => return self.import_op(),
             KeyCode::Char('c') => self.copy_url(),
+            KeyCode::Char('l') => self.copy_logs(),
             KeyCode::Char('o') => self.open_url(),
             KeyCode::Char('h') => self.force_health(),
             KeyCode::Char('a') => self.open_add(),
@@ -1387,6 +1388,34 @@ impl App {
         match (self.clipboard)(&url) {
             Ok(()) => self.set_status(format!("copied {url}")),
             Err(e) => self.set_status(format!("could not copy: {e}")),
+        }
+    }
+
+    fn copy_logs(&mut self) {
+        let Some(entry) = self.selected_entry() else {
+            return;
+        };
+        let content = match entry.tunnel.log_path() {
+            Ok(path) if path.exists() => {
+                std::fs::read_to_string(&path).unwrap_or_else(|_| self.logs.join("\n"))
+            }
+            _ => self.logs.join("\n"),
+        };
+        let trimmed = content.trim();
+        if trimmed.is_empty() {
+            self.set_status(format!("log for {} is empty", entry.name()));
+            return;
+        }
+        let lines = trimmed.lines().count();
+        let noun = if lines == 1 { "line" } else { "lines" };
+        match (self.clipboard)(trimmed) {
+            Ok(()) => self.set_status(format!(
+                "copied {} log {} for {}",
+                lines,
+                noun,
+                entry.name()
+            )),
+            Err(e) => self.set_status(format!("could not copy log: {e}")),
         }
     }
 

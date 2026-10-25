@@ -1914,12 +1914,12 @@ mod tests {
         anyhow::bail!("no browser")
     }
 
-    // A help page that lists a key nothing handles is worse than none. `c` and
+    // A help page that lists a key nothing handles is worse than none. `c`, `l` and
     // `o` act outside the process, so they run against stand-ins for the
     // clipboard and the browser and are checked by what the status line says.
     #[test]
     fn every_key_the_help_page_lists_is_handled() {
-        const OUTSIDE_THE_PROCESS: [&str; 2] = ["c", "o"];
+        const OUTSIDE_THE_PROCESS: [&str; 3] = ["c", "o", "l"];
         const HELP_ONLY: [&str; 2] = ["PgUp/Dn", "g/G"];
         for doc in ui::KEYMAP {
             if doc.key == "Esc" {
@@ -2001,11 +2001,14 @@ mod tests {
                 let mut app = keymap_fixture();
                 app.clipboard = copy_ok;
                 app.opener = open_ok;
+                app.logs = vec!["line 1".to_string()];
                 let op = app.handle_key(key(KeyCode::Char(doc.key.chars().next().unwrap())));
                 assert!(op.is_none(), "{} starts no operation", doc.key);
                 let status = app.status.clone().unwrap_or_default();
                 let wanted = if doc.key == "c" {
                     "copied localhost:16379"
+                } else if doc.key == "l" {
+                    "copied 1 log line for cache"
                 } else {
                     "opened http://localhost:16379"
                 };
@@ -2041,8 +2044,14 @@ mod tests {
         let mut app = keymap_fixture();
         app.clipboard = copy_fails;
         app.opener = open_fails;
+        app.logs = vec!["line 1".to_string()];
         app.handle_key(key(KeyCode::Char('c')));
         assert_eq!(app.status.as_deref(), Some("could not copy: no clipboard"));
+        app.handle_key(key(KeyCode::Char('l')));
+        assert_eq!(
+            app.status.as_deref(),
+            Some("could not copy log: no clipboard")
+        );
         app.handle_key(key(KeyCode::Char('o')));
         assert_eq!(
             app.status.as_deref(),
@@ -2051,11 +2060,21 @@ mod tests {
     }
 
     #[test]
+    fn l_on_an_empty_log_says_so() {
+        let mut app = keymap_fixture();
+        app.clipboard = copy_ok;
+        app.logs.clear();
+        app.handle_key(key(KeyCode::Char('l')));
+        assert_eq!(app.status.as_deref(), Some("log for cache is empty"));
+    }
+
+    #[test]
     fn c_and_o_do_nothing_without_a_selected_tunnel() {
         let mut app = App::new("dev");
         app.clipboard = copy_ok;
         app.opener = open_ok;
         assert!(app.handle_key(key(KeyCode::Char('c'))).is_none());
+        assert!(app.handle_key(key(KeyCode::Char('l'))).is_none());
         assert!(app.handle_key(key(KeyCode::Char('o'))).is_none());
         assert_eq!(app.status, None);
     }
@@ -2132,7 +2151,7 @@ mod tests {
         // for any table, and this one has to change when a key is added
         let count_row = rows
             .iter()
-            .find(|r| r.contains("31 keys bound - the footer shows at most 10"))
+            .find(|r| r.contains("32 keys bound - the footer shows at most 10"))
             .expect("the count line");
         // In this page `q` closes the page, it does not quit the program
         assert!(count_row.contains("Esc back  q back"), "{count_row:?}");
@@ -2497,7 +2516,7 @@ mod tests {
         }
         let rows = text_of(&screen(&help_app(), 120, 40));
         assert!(
-            rows.iter().any(|r| r.contains("31 keys bound")),
+            rows.iter().any(|r| r.contains("32 keys bound")),
             "{}",
             rows.join("\n")
         );
@@ -2508,7 +2527,7 @@ mod tests {
         for (w, h) in [(120, 40), (80, 60)] {
             let rows = text_of(&screen(&help_app(), w, h));
             assert!(counter(&rows).is_none(), "{w}x{h}:\n{}", rows.join("\n"));
-            assert_eq!(keys_shown(&rows), 31, "{w}x{h}");
+            assert_eq!(keys_shown(&rows), 32, "{w}x{h}");
         }
     }
 
