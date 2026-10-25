@@ -15,6 +15,7 @@ pub use app::{App, EditTunnel, NewTunnel, Op, OpResult, TunnelEntry, TunnelKind}
 
 use crate::config::load_config;
 use crate::probe::HealthStatus;
+use crate::state::TunnelStatus;
 
 const TICK: Duration = Duration::from_millis(120);
 
@@ -267,9 +268,9 @@ async fn event_loop(
                         }
                         // Microseconds: a fast hop is a real measurement, and
                         // whole milliseconds would record it as nothing
-                        entry
-                            .history
-                            .record(m.latency.map_or(0, |d| d.as_micros() as u64));
+                        if let Some(d) = m.latency {
+                            entry.history.record(d.as_micros() as u64);
+                        }
                         entry.metrics = Some(m);
                     }
                 }
@@ -364,6 +365,9 @@ fn transition_line(was: HealthStatus, now: HealthStatus) -> Option<String> {
 // raised while the laptop slept was never seen, but the log is what the user
 // still has afterwards.
 fn announce(entry: &TunnelEntry, now: HealthStatus) {
+    if entry.status != TunnelStatus::Running {
+        return;
+    }
     let Some(what) = transition_line(entry.health, now) else {
         return;
     };
@@ -626,6 +630,15 @@ mod tests {
             None,
             "the first poll of a session is not a recovery"
         );
+    }
+
+    #[test]
+    fn a_stopped_tunnel_does_not_announce_unhealthy() {
+        let mut app = app_with_two();
+        app.entries[0].status = TunnelStatus::Stopped;
+        app.entries[0].health = HealthStatus::Healthy;
+        // announce returns early for stopped tunnels
+        announce(&app.entries[0], HealthStatus::Unhealthy);
     }
 
     // The first metrics of a session have nothing to compare against
@@ -2066,6 +2079,19 @@ mod tests {
         app.logs.clear();
         app.handle_key(key(KeyCode::Char('l')));
         assert_eq!(app.status.as_deref(), Some("log for cache is empty"));
+    }
+
+    #[test]
+    fn l_copies_the_log_and_triggers_a_flash_message() {
+        let mut app = keymap_fixture();
+        app.clipboard = copy_ok;
+        app.logs = vec![
+            "sample log line 1".to_string(),
+            "sample log line 2".to_string(),
+        ];
+        app.handle_key(key(KeyCode::Char('l')));
+        assert_eq!(app.status.as_deref(), Some("copied 2 log lines for cache"));
+        assert_eq!(app.flash_message(), Some("copied 2 log lines for cache"));
     }
 
     #[test]
