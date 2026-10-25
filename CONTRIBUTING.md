@@ -41,7 +41,7 @@ surprised:
 | `cargo check --locked --all-targets` on 1.88 | anything that needs a newer compiler than declared |
 | `zizmor --offline .github/workflows` | an unpinned action or a template injection |
 
-All five check runs must be green and the branch must be up to date with `main` before a
+All checks must be green and the branch must be up to date with `main` before a
 pull request can merge. Enable auto-merge and GitHub will do it for you when they pass.
 
 `rustfmt.toml` pins `style_edition = "2021"` on purpose: the 2024 style would reflow two

@@ -186,7 +186,7 @@ token that cannot be minted, including an expired refresh token, counts as logge
 
 | Checks the login | Skips the check |
 |---|---|
-| `gtunnel` (the TUI), `add`, `expose`, `run`, `start`, `stop`, `restart`, `autostart`, `logs`, `list`, `delete`, `zones`, `domains`, `relay` | `init`, `account`, `doctor`, `reset`, `demo`, `update` |
+| `gtunnel` (the TUI), `add`, `expose`, `run`, `start`, `stop`, `restart`, `autostart`, `logs`, `list`, `delete`, `rename`, `move`, `zones`, `domains`, `relay` | `init`, `account`, `doctor`, `watch`, `reset`, `demo`, `update` |
 
 `doctor` is skipped because it reports broken credentials as a finding and a login prompt
 would hide it; `init` has no account yet. Background services run `gcloud` directly and
@@ -229,8 +229,12 @@ data and never touches GCP or a config file.
 |---|---|
 | Tunnel | `s` start, `S` stop, `R` restart, `A` toggle auto-start, `h` health check now |
 | The list | `a` add, `e` edit, `d` delete, `m` import an ephemeral run as managed, `j` `k` or the arrows move the selection |
-| This tunnel's URL and log | `c` copy the URL, `o` open it, `L` clear the log, `r` refresh the list, metrics and health |
+| This tunnel's URL and log | `c` copy the URL, `l` copy the log to clipboard, `o` open it, `L` clear the log, `r` refresh the list, metrics and health |
 | The program | `;` cycle accounts (the relay and its domains change with the account), `:` the accounts page, `?` the keymap, `C` the config page, `q` quit, `Esc` close a page or cancel a prompt, `PgUp` `PgDn` and `g` `G` scroll the keymap page, `Ctrl+Z` suspend, `Ctrl+C` quit from anywhere |
+
+The keymap page also carries a **SESSION PATHS** summary section showing the active loaded
+paths for `Config` (`~/.gtunnel/config.toml`), `Tunnels` (`~/.gtunnel/tunnels.toml`), and
+`Logs` (`~/.gtunnel/logs/`).
 
 `:` is the shift of `;`, so the key that cycles accounts and the key that opens all of them
 are one key twice. The page lists every account, and adds, edits, selects and removes them;
@@ -281,12 +285,12 @@ Unmanaged `gcloud start-iap-tunnel` processes started outside gtunnel appear in 
 tagged `[not managed by gtunnel]`. Every action on them is refused except `m`, which takes
 them over.
 
-The list is a table with a `NAME  MODE  URL` header. To keep the columns aligned it hides a
-name suffix equal to the tunnel's own account (`k8s-dev` under `dev` reads `k8s`). The name
-column is as wide as the longest name; it shrinks, to no fewer than 8 cells and with a `…`,
-only when the pane could not otherwise hold a 12-cell URL. The Details pane starts with the
-full stored name. `gtunnel list` and every command keep using the full names, so `gtunnel
-start k8s-dev` is still the command.
+The list is a table with a `NAME  MODE  URL` header. If a legacy tunnel carries an account
+suffix (such as `k8s-dev` under `dev`), the list hides the redundant suffix so columns stay
+clean. The name column is as wide as the longest name; it shrinks, to no fewer than 8 cells
+and with a `…`, only when the pane could not otherwise hold a 12-cell URL. The Details pane
+shows the stored name. Tunnels should be named for what they reach (e.g. `k8s`) without
+account suffixes.
 
 The layout follows the terminal. From 121 columns the list is the left 46% and Details, Logs
 and Metrics are stacked on the right; below 121 the list takes the full width above them,
@@ -349,7 +353,7 @@ tunnel to the file it is given (`GTUNNEL_CONFIG_DIR=/tmp/cfgdemo`, 80x24):
 ┌ /tmp/cfgdemo/tunnels.toml ───────────────────────────────────────────────┐
 │ [[tunnels]]                                                              │
 │ name = "db"                                                              │
-│ account_name = "evidence"                                                │
+│ account_name = "dev"                                                     │
 │ auto_start = false                                                       │
 │                                                                          │
 │ [tunnels.spec]                                                           │
@@ -376,7 +380,7 @@ The same page after an editor that wrote text which is not TOML:
 ┌ /tmp/cfgdemo/tunnels.toml ───────────────────────────────────────────────┐
 │ [[tunnels]]                                                              │
 │ name = "db"                                                              │
-│ account_name = "evidence"                                                │
+│ account_name = "dev"                                                     │
 │ auto_start = false                                                       │
 │                                                                          │
 │ [tunnels.spec]                                                           │
@@ -500,7 +504,7 @@ Without a relay the command stops before changing anything:
 
 ```
 $ gtunnel expose web 8000
-Error: No relay for account 'evidence'. Run `gtunnel relay up`
+Error: No relay for account 'dev'. Run `gtunnel relay up`
 ```
 
 ## run
@@ -526,7 +530,7 @@ STATUS     NAME             MODE    URL                              TARGET
 
 ```
 $ gtunnel logs nope
-Error: Tunnel 'nope' not found for account 'evidence'
+Error: Tunnel 'nope' not found for account 'dev'
 ```
 
 ```
@@ -627,7 +631,7 @@ already there. `down` refuses while tunnels still use the relay unless `--force`
 
 ```
 $ gtunnel relay status
-No relay for account 'evidence'. Run `gtunnel relay up`
+No relay for account 'dev'. Run `gtunnel relay up`
 ```
 
 ### The relay's firewall is yours to close
@@ -652,7 +656,7 @@ Restrict the range on the relay's network tag before the first `gtunnel expose`.
 
 ```
 $ gtunnel account list
-* evidence         project=demo-project             zone=europe-west1-b
+* dev              project=demo-project             zone=europe-west1-b
 ```
 
 `account select <name>` sets the default. The star marks it.
@@ -759,7 +763,7 @@ and exits — it is a timer, not a service, because a job that exits immediately
 ```
 $ gtunnel watch install
 Watchdog installed: /usr/local/bin/gtunnel every 30s
-Log: ~/Library/Application Support/gtunnel/logs/watchdog.log
+Log: ~/.gtunnel/logs/watchdog.log
 ```
 
 The job runs the binary that installed it, by absolute path. Move or replace that binary
@@ -775,16 +779,16 @@ Reports what gtunnel can see without changing anything.
 
 ```
 $ gtunnel doctor
-account evidence:
-  ! gcloud has no usable credentials for account 'evidence'. Run `gcloud auth login`
+account dev:
+  - gcloud has no usable credentials for account 'dev'. Run `gcloud auth login`
 ```
 
 ```
 $ gtunnel doctor          # with a gcloud whose Python has no numpy
 gtunnel:
-  ! gcloud's Python is missing numpy, which makes IAP tunnels slow. Run `gcloud components reinstall`
-account evidence:
-  ! gcloud has no usable credentials for account 'evidence'. Run `gcloud auth login`
+  - gcloud's Python is missing numpy, which makes IAP tunnels slow. Run `gcloud components reinstall`
+account dev:
+  - gcloud has no usable credentials for account 'dev'. Run `gcloud auth login`
 ```
 
 | Flag | Effect |
@@ -805,20 +809,20 @@ Removes every local trace: services, config, state, logs. It never deletes anyth
 
 ```
 $ gtunnel reset
-This removes 1 local tunnel(s), 1 account(s) and /Users/you/Library/Application Support/gtunnel
+This removes 1 local tunnel(s), 1 account(s) and /Users/you/.gtunnel
 Remove all local gtunnel configuration? [y/N] [n]: Cancelled
 ```
 
 ```
 $ gtunnel reset -y
-This removes 1 local tunnel(s), 1 account(s) and /Users/you/Library/Application Support/gtunnel
-Removed /Users/you/Library/Application Support/gtunnel
+This removes 1 local tunnel(s), 1 account(s) and /Users/you/.gtunnel
+Removed /Users/you/.gtunnel
 Cloud resources were not deleted. Run gtunnel relay down first if you want them gone.
 ```
 
 ```
 $ gtunnel reset -y
-Nothing to remove: /Users/you/Library/Application Support/gtunnel does not exist
+Nothing to remove: /Users/you/.gtunnel does not exist
 ```
 
 ## update
