@@ -1,0 +1,123 @@
+use std::fs;
+use std::process::{Command, Output, Stdio};
+use tempfile::TempDir;
+
+struct Harness {
+    dir: TempDir,
+}
+
+const STUB: &str = r#"#!/bin/sh
+case "$1 $2" in
+  "auth print-access-token")
+    echo stub-token
+    exit 0
+    ;;
+esac
+exit 0
+"#;
+
+const CONFIG: &str = r#"selected_account = "demo"
+
+[[accounts]]
+name = "demo"
+gcloud_configuration = "work"
+project = "demo-project"
+default_zone = "europe-west1-b"
+"#;
+
+const TUNNELS: &str = r#"[[tunnels]]
+name = "db"
+account_name = "demo"
+auto_start = false
+
+[tunnels.spec]
+mode = "access"
+remote_port = 5432
+local_port = 15432
+
+[tunnels.spec.target]
+kind = "instance"
+instance = "postgres-1"
+zone = "europe-west1-b"
+"#;
+
+impl Harness {
+    fn new() -> Self {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        fs::create_dir_all(root.join("bin")).unwrap();
+        fs::create_dir_all(root.join("config")).unwrap();
+
+        let gcloud = root.join("bin/gcloud");
+        fs::write(&gcloud, STUB).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&gcloud, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        fs::write(root.join("config/config.toml"), CONFIG).unwrap();
+        fs::write(root.join("config/tunnels.toml"), TUNNELS).unwrap();
+        fs::write(
+            root.join("config/update-check.json"),
+            r#"{"latest_version":"0.0.1","checked_at":99999999999}"#,
+        )
+        .unwrap();
+        Self { dir }
+    }
+
+    fn run(&self, args: &[&str]) -> Output {
+        let root = self.dir.path();
+        let path = format!(
+            "{}:{}",
+            root.join("bin").display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        Command::new(env!("CARGO_BIN_EXE_gtunnel"))
+            .args(args)
+            .env("PATH", path)
+            .env("HOME", root)
+            .env("GTUNNEL_CONFIG_DIR", root.join("config"))
+            .stdin(Stdio::null())
+            .output()
+            .expect("run gtunnel")
+    }
+}
+
+fn stderr(out: &Output) -> String {
+    String::from_utf8_lossy(&out.stderr).into_owned()
+}
+
+#[test]
+fn logs_nonexistent_tunnel_fails_with_actionable_error() {
+    let h = Harness::new();
+    let out = h.run(&["logs", "nope"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("Error: Tunnel 'nope' not found for account 'demo'"));
+}
+
+#[test]
+fn move_same_account_fails_with_rename_suggestion() {
+    let h = Harness::new();
+    let out = h.run(&["move", "db", "--to", "demo"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains(
+        "Error: Tunnel 'db' is already on account 'demo'; use `gtunnel rename` to change its name"
+    ));
+}
+
+#[test]
+fn account_remove_with_tunnels_fails_with_guidance() {
+    let h = Harness::new();
+    let out = h.run(&["account", "remove", "demo"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("Error: Account 'demo' still has 1 tunnel(s). Delete them with `gtunnel delete`, or move them to another account with `gtunnel move`, then remove the account"));
+}
+
+#[test]
+fn account_edit_no_args_fails_with_hint() {
+    let h = Harness::new();
+    let out = h.run(&["account", "edit", "demo"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("Error: Nothing to change: pass --project, --zone, or both"));
+}
