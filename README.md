@@ -145,7 +145,7 @@ roughly USD 25/month per account, nothing per tunnel. `relay down` removes all o
 ## The TUI
 
 `gtunnel` with no subcommand opens the TUI; `gtunnel demo` opens it filled with synthetic
-data and touches no GCP project and no config file. `?` opens all 31 bindings as a page,
+data and touches no GCP project and no config file. `?` opens all 32 bindings as a page,
 `;` switches account and project together, `:` opens the accounts page to add, edit, select
 and remove them, and the footer offers only what the selected tunnel can do. `e` chooses
 between editing the target and ports, renaming, and moving the tunnel to another account.

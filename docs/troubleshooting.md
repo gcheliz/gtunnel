@@ -359,7 +359,7 @@ launchctl list | grep gtunnel
 launchctl print gui/$(id -u)/com.gtunnel.<account>.<name>
 launchctl kickstart -k gui/$(id -u)/com.gtunnel.<account>.<name>
 launchctl bootout gui/$(id -u)/com.gtunnel.<account>.<name>
-cat "$HOME/Library/Application Support/gtunnel/agents/com.gtunnel.<account>.<name>.plist"
+cat "$HOME/.gtunnel/agents/com.gtunnel.<account>.<name>.plist"
 ```
 
 A plist in `~/Library/LaunchAgents` means auto-start is on for that tunnel, nothing more:
