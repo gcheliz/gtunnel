@@ -1314,7 +1314,12 @@ fn render_logs(f: &mut Frame, app: &App, area: Rect) {
             Some(message) => format!("{} {message}", app.spinner.frame()),
             None => app.spinner.frame().to_string(),
         });
-    let activity = activity_text(running.as_deref(), app.status.as_deref(), app.status_error);
+    let flash = app.flash_message();
+    let activity = if let Some(flash) = flash {
+        Some(flash.to_string())
+    } else {
+        activity_text(running.as_deref(), app.status.as_deref(), app.status_error)
+    };
     let entry = app.selected_entry();
     let title = logs_title(entry.as_ref().map(|e| e.name()), activity.as_deref());
 
@@ -1348,12 +1353,14 @@ fn render_logs(f: &mut Frame, app: &App, area: Rect) {
     // The pane shows the newest lines, so it scrolls past everything that wraps
     // above them; without this a Paragraph renders from its first line and the
     // line the user is waiting for is the one cut off the bottom
-    let inner = pane(
-        f,
-        area,
-        &title,
-        app.status_error.then(|| Style::default().fg(theme::BAD)),
-    );
+    let border_style = if app.status_error {
+        Some(Style::default().fg(theme::BAD))
+    } else if flash.is_some() {
+        Some(Style::default().fg(theme::ACCENT))
+    } else {
+        None
+    };
+    let inner = pane(f, area, &title, border_style);
     let rows = wrapped_rows(&annotated, inner.width);
     let scroll = rows.saturating_sub(inner.height);
     f.render_widget(
@@ -1630,10 +1637,11 @@ fn group_spans(actions: &[Action], out: &mut Vec<Span<'static>>) {
 /// the one the row exists for. Only once the group is empty do `; account`
 /// and then `: manage` go, leaving the two that must never disappear: `?`
 /// says what the keys are, and `q` is the way out.
-pub fn footer_line(
+pub fn footer_line_with_flash(
     width: u16,
     selected: Option<(TunnelStatus, TunnelKind)>,
     any_tunnels: bool,
+    flash: Option<&str>,
 ) -> Line<'static> {
     let (all_contextual, all_program) = footer_groups(selected, any_tunnels);
     let w = width as usize;
@@ -1670,22 +1678,51 @@ pub fn footer_line(
     let mut spans = vec![Span::raw(" ")];
     group_spans(contextual, &mut spans);
     let used = 1 + group_cells(contextual) + group_cells(program) + 1;
-    spans.push(Span::raw(
-        " ".repeat(
-            w.saturating_sub(used)
-                .max(if contextual.is_empty() { 0 } else { 2 }),
-        ),
-    ));
+    let available = w.saturating_sub(used);
+
+    if let Some(msg) = flash
+        && available >= msg.len() + 6
+    {
+        let formatted = format!("✓ {msg}");
+        let pad = (available - formatted.chars().count()) / 2;
+        let remainder = available - pad - formatted.chars().count();
+        spans.push(Span::raw(" ".repeat(pad)));
+        spans.push(Span::styled(
+            formatted,
+            Style::default()
+                .fg(theme::ACCENT)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::raw(" ".repeat(remainder)));
+    } else {
+        spans.push(Span::raw(
+            " ".repeat(available.max(if contextual.is_empty() { 0 } else { 2 })),
+        ));
+    }
     group_spans(program, &mut spans);
     spans.push(Span::raw(" "));
 
     Line::from(spans)
 }
 
+#[allow(dead_code)]
+pub fn footer_line(
+    width: u16,
+    selected: Option<(TunnelStatus, TunnelKind)>,
+    any_tunnels: bool,
+) -> Line<'static> {
+    footer_line_with_flash(width, selected, any_tunnels, None)
+}
+
 fn render_help_bar(f: &mut Frame, area: Rect, app: &App) {
     let selected = app.selected_entry().map(|e| (e.status, e.kind));
     f.render_widget(
-        Paragraph::new(footer_line(area.width, selected, !app.entries.is_empty())),
+        Paragraph::new(footer_line_with_flash(
+            area.width,
+            selected,
+            !app.entries.is_empty(),
+            app.flash_message(),
+        )),
         area,
     );
 }

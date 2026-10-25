@@ -634,6 +634,7 @@ pub struct App {
     // by port rather than by tunnel: the sampler reads ports, and a row whose
     // tunnel has just been renamed or replaced is still the same socket
     peaks: HashMap<u16, u64>,
+    pub flash: Option<(String, std::time::Instant)>,
 }
 
 impl App {
@@ -695,6 +696,7 @@ impl App {
             input_gate: Arc::new(InputGate::default()),
             clear_screen: false,
             peaks: HashMap::new(),
+            flash: None,
         }
     }
 
@@ -1380,13 +1382,31 @@ impl App {
         self.force_refresh = true;
     }
 
+    pub fn flash(&mut self, message: impl Into<String>) {
+        self.flash = Some((message.into(), std::time::Instant::now()));
+    }
+
+    pub fn flash_message(&self) -> Option<&str> {
+        self.flash.as_ref().and_then(|(msg, time)| {
+            if time.elapsed() < std::time::Duration::from_secs(3) {
+                Some(msg.as_str())
+            } else {
+                None
+            }
+        })
+    }
+
     fn copy_url(&mut self) {
         let Some(entry) = self.selected_entry() else {
             return;
         };
         let url = entry.tunnel.display_url();
         match (self.clipboard)(&url) {
-            Ok(()) => self.set_status(format!("copied {url}")),
+            Ok(()) => {
+                let msg = format!("copied {url}");
+                self.flash(&msg);
+                self.set_status(msg);
+            }
             Err(e) => self.set_status(format!("could not copy: {e}")),
         }
     }
@@ -1409,12 +1429,11 @@ impl App {
         let lines = trimmed.lines().count();
         let noun = if lines == 1 { "line" } else { "lines" };
         match (self.clipboard)(trimmed) {
-            Ok(()) => self.set_status(format!(
-                "copied {} log {} for {}",
-                lines,
-                noun,
-                entry.name()
-            )),
+            Ok(()) => {
+                let msg = format!("copied {} log {} for {}", lines, noun, entry.name());
+                self.flash(&msg);
+                self.set_status(msg);
+            }
             Err(e) => self.set_status(format!("could not copy log: {e}")),
         }
     }

@@ -40,6 +40,10 @@ Sleep 2s
 Type ";"
 Sleep 2s
 
+# `l` copies this tunnel's log to the clipboard
+Type "l"
+Sleep 2500ms
+
 # `?` is the key map
 Type "?"
 Sleep 4s

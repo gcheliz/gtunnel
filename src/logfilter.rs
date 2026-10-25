@@ -26,13 +26,15 @@ pub fn keep(line: &str) -> bool {
         return false;
     }
     if trimmed.starts_with("debug1:") {
-        return trimmed.contains("Local forwarding listening on");
+        return trimmed.contains("Local forwarding listening on")
+            || trimmed.contains("requested from ");
     }
     if trimmed.starts_with("INFO: [")
         && (trimmed.contains("Connecting with URL")
             || trimmed.contains("Client closed connection")
             || trimmed.contains("Received WebSocket Close")
-            || trimmed.contains("Error while receiving from WebSocket"))
+            || trimmed.contains("Error while receiving from WebSocket")
+            || trimmed.contains("Bad file descriptor"))
     {
         return false;
     }
@@ -53,7 +55,11 @@ pub fn keep(line: &str) -> bool {
 
 /// Format a kept log line by sanitizing control characters and prefixing an RFC 3339 timestamp.
 pub fn format_line(line: &str) -> String {
-    let sanitized: String = line
+    let clean = line
+        .trim_start()
+        .strip_prefix("debug1: ")
+        .unwrap_or(line.trim_start());
+    let sanitized: String = clean
         .chars()
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect();
@@ -184,9 +190,6 @@ mod tests {
         assert!(!keep(
             "debug1: channel 200: free: direct-tcpip: listening port 8443"
         ));
-        assert!(!keep(
-            "debug1: Connection to port 8443 forwarding to 10.0.0.10 port 443"
-        ));
         assert!(!keep("debug1: channel 2: new direct-tcpip"));
         assert!(!keep("debug1: kex: algorithm: curve25519-sha256"));
         assert!(!keep("debug1: Exit status 0"));
@@ -198,6 +201,9 @@ mod tests {
     fn keeps_connection_and_forwarding_lines() {
         assert!(keep(
             "debug1: Local forwarding listening on 127.0.0.1 port 8443."
+        ));
+        assert!(keep(
+            "debug1: Connection to port 8443 forwarding to 10.3.0.13:443 requested from 127.0.0.1 port 59453, assigning to channel 0"
         ));
     }
 
@@ -219,6 +225,9 @@ mod tests {
         ));
         assert!(!keep("INFO: [0] Received WebSocket Close message [9: 9]."));
         assert!(!keep("INFO: [0] Error while receiving from WebSocket."));
+        assert!(!keep(
+            "INFO: [31] Error [[Errno 9] Bad file descriptor] while sending to client."
+        ));
     }
 
     #[test]
