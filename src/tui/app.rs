@@ -1011,6 +1011,9 @@ impl App {
                         return None;
                     }
                 }
+                if let Some(entry) = self.entries.get_mut(self.selected) {
+                    entry.health = HealthStatus::Checking;
+                }
                 return self.op_for("start", Op::Start);
             }
             KeyCode::Char('S') => {
@@ -1024,9 +1027,17 @@ impl App {
                         return None;
                     }
                 }
+                if let Some(entry) = self.entries.get_mut(self.selected) {
+                    entry.health = HealthStatus::Unknown;
+                }
                 return self.op_for("stop", Op::Stop);
             }
-            KeyCode::Char('R') => return self.op_for("restart", Op::Restart),
+            KeyCode::Char('R') => {
+                if let Some(entry) = self.entries.get_mut(self.selected) {
+                    entry.health = HealthStatus::Checking;
+                }
+                return self.op_for("restart", Op::Restart);
+            }
             KeyCode::Char('d') => self.ask_delete(),
             KeyCode::Char('A') => return self.op_for("auto-start", Op::ToggleAutoStart),
             KeyCode::Char('m') => return self.import_op(),

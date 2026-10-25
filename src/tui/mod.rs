@@ -2105,6 +2105,30 @@ mod tests {
         assert_eq!(app.status, None);
     }
 
+    #[test]
+    fn running_tunnel_bullet_color_is_orange_until_health_is_confirmed() {
+        assert_eq!(
+            ui::status_style(TunnelStatus::Running, HealthStatus::Checking).fg,
+            Some(theme::WARN)
+        );
+        assert_eq!(
+            ui::status_style(TunnelStatus::Running, HealthStatus::Unknown).fg,
+            Some(theme::WARN)
+        );
+        assert_eq!(
+            ui::status_style(TunnelStatus::Running, HealthStatus::Healthy).fg,
+            Some(theme::OK)
+        );
+        assert_eq!(
+            ui::status_style(TunnelStatus::Running, HealthStatus::Unhealthy).fg,
+            Some(theme::BAD)
+        );
+        assert_eq!(
+            ui::status_style(TunnelStatus::Stopped, HealthStatus::Unknown).fg,
+            Some(theme::MUTED)
+        );
+    }
+
     fn help_app() -> App {
         let mut app = app_with_two();
         app.input_mode = InputMode::Help;

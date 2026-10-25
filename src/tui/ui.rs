@@ -714,9 +714,13 @@ fn pane(f: &mut Frame, area: Rect, title: &str, border: Option<Style>) -> Rect {
     rows[1]
 }
 
-fn status_style(status: TunnelStatus) -> Style {
+pub(crate) fn status_style(status: TunnelStatus, health: HealthStatus) -> Style {
     match status {
-        TunnelStatus::Running => Style::default().fg(theme::OK),
+        TunnelStatus::Running => match health {
+            HealthStatus::Healthy => Style::default().fg(theme::OK),
+            HealthStatus::Unhealthy => Style::default().fg(theme::BAD),
+            HealthStatus::Checking | HealthStatus::Unknown => Style::default().fg(theme::WARN),
+        },
         TunnelStatus::Stopped => Style::default().fg(theme::MUTED),
         TunnelStatus::Error => Style::default().fg(theme::BAD),
     }
@@ -936,7 +940,7 @@ fn render_tunnels(f: &mut Frame, app: &App, area: Rect) {
             let mut spans = vec![
                 Span::styled(
                     format!("{} ", entry.status.symbol()),
-                    status_style(entry.status),
+                    status_style(entry.status, entry.health),
                 ),
                 Span::styled(
                     format!(

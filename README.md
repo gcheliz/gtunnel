@@ -105,7 +105,7 @@ gh attestation verify gtunnel-macos-arm64.tar.gz -o gcheliz
 Silence and exit 0 mean it checked out; a file this repository did not build fails with
 `HTTP 404` instead. Add `--format json` to read which workflow, tag and commit produced
 it — [docs/usage.md](docs/usage.md#4-install-gtunnel) shows that output. Attestations
-begin with v0.1.1.
+begin with v0.1.11.
 
 There is no `cargo install gtunnel`: the name on crates.io belongs to an unrelated crate.
 Use `--git` or `--path`, as above. Already ran it?
@@ -157,36 +157,58 @@ it does: [docs/design.md](docs/design.md).
 
 ## Commands
 
-Beyond the five above: `run` holds an ephemeral tunnel in the foreground and tears its
-route down on Ctrl+C, `logs -f` follows a tunnel's log, and `doctor --fix` removes
-leftovers. `rename` moves a tunnel's service and log with its name, and `move` hands an
-Access tunnel to another account, verifying the destination before it writes anything.
-`start`, `stop`, `restart`, `autostart`, `list`, `delete`, `zones`, `account`,
-`reset`, `demo` and `update` do what they say. `--account <name>` works on every command.
-Each one, its output, and which of them write to GCP:
-[docs/usage.md](docs/usage.md#command-map).
+| Command | Description |
+|---|---|
+| `gtunnel` | Opens the interactive TUI dashboard. |
+| `gtunnel init` | Creates a `gtunnel` account from a `gcloud` configuration. |
+| `gtunnel add` | Adds a persistent Access tunnel. |
+| `gtunnel expose` | Publishes a local service to a public URL. |
+| `gtunnel run` | Runs an ephemeral tunnel in the foreground. |
+| `gtunnel start` | Starts a stopped tunnel as a background service. |
+| `gtunnel stop` | Stops a running tunnel service. |
+| `gtunnel restart` | Restarts a tunnel service. |
+| `gtunnel delete` | Deletes a tunnel. |
+| `gtunnel logs` | Tails a tunnel's logs. |
+| `gtunnel doctor` | Checks for common configuration problems and offers fixes. |
+| `gtunnel account` | Manages accounts (`list`, `select`, `add`, `edit`, `remove`). |
+| `gtunnel domains` | Manages Cloud DNS managed zones for public tunnels. |
+| `gtunnel relay` | Manages the public relay (`up`, `down`, `recreate-cert`). |
+| `gtunnel update` | Checks for and installs updates. |
+| `gtunnel demo` | Launches the TUI with synthetic data. |
+
+Every command accepts a global `--account <name>` flag. The full command map, with every
+flag and output, is in [docs/usage.md](docs/usage.md#command-map).
 
 ## Configuration
 
-`~/.gtunnel` (with fallback to `~/Library/Application Support/gtunnel` on macOS and `~/.config/gtunnel` on Linux);
-`GTUNNEL_CONFIG_DIR` overrides it. It holds `config.toml` (accounts, relay, domains and the
-log level), `tunnels.toml`, `breakers.toml` (what the watchdog has seen of each tunnel), the
-service definitions and one log per tunnel — the full table is in
-[docs/architecture.md](docs/architecture.md#files). Local ports come from 15000-15999 and
-are derived from the tunnel name, so the same name gets the same port on every machine
-unless it is taken; relay ports come from 30000-30998.
+The configuration lives in `~/.gtunnel`, with fallbacks to standard platform
+directories. The directory holds:
+
+| File | Purpose |
+|---|---|
+| `config.toml` | Accounts, project IDs, default zones, and log level. |
+| `tunnels.toml` | The list of every persistent tunnel. |
+| `breakers.toml` | State for the watchdog's circuit breakers. |
+| `logs/` | One log file per tunnel, named `<account>-<tunnel>.log`. |
+| `services/` | `launchd` and `systemd` service definitions. |
+
+Local ports are derived from the tunnel name (15000-15999 for Access, 30000-30998 for
+Expose) to ensure stability across machines. See [docs/architecture.md](docs/architecture.md#files)
+for the full file layout.
 
 ## Troubleshooting
 
-Start with `gtunnel doctor`: it reports everything it can detect and prints the exact
-command for what it cannot fix itself. `4003` in a log means IAP cannot reach the target
-port, so allow `35.235.240.0/20` to it; `4033` means you lack
-`roles/iap.tunnelResourceAccessor`; a public tunnel returning 503 has lost its backend,
-host rule or DNS record, and `gtunnel restart <name>` re-creates them.
+`gtunnel doctor` is the first step. It checks IAM, firewall rules, and local state.
 
-[docs/troubleshooting.md](docs/troubleshooting.md) has the full error table, the IAP
-firewall and IAM requirements, the service commands for both platforms, and the cost
-breakdown.
+| Symptom | Cause | Fix |
+|---|---|---|
+| `4003` in log | IAP cannot reach the target port. | `gtunnel doctor` prints the `gcloud compute firewall-rules create` command to allow traffic from `35.235.240.0/20`. |
+| `4033` in log | You lack `roles/iap.tunnelResourceAccessor`. | `gtunnel doctor` prints the `gcloud projects add-iam-policy-binding` command. |
+| Public URL 503 | The load balancer backend is unhealthy. | `gtunnel restart <name>` re-creates the backend, host rule, and DNS record. |
+| `cargo uninstall` fails | Ambiguous crate name. | The error message prints two specifications; uninstall the one with `registry+`. |
+
+[docs/troubleshooting.md](docs/troubleshooting.md) has the full error table, IAM and firewall
+requirements, service management commands, and cost breakdown.
 
 ## Documentation
 
