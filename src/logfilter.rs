@@ -38,6 +38,9 @@ pub fn keep(line: &str) -> bool {
     {
         return false;
     }
+    if trimmed == "client_loop: send disconnect: Broken pipe" {
+        return false;
+    }
     if trimmed.contains("iap_tunnel_lightweight_websocket")
         || trimmed.contains("iap_tunnel_websocket_helper")
         || trimmed.contains("AttributeError: 'NoneType' object has no attribute 'close'")

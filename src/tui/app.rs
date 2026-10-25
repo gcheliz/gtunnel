@@ -22,7 +22,7 @@ pub const METRICS_EVERY: Duration = Duration::from_secs(5);
 // as the reading is worth: one listing covers every tunnel, so the cost is two
 // short `lsof` runs a second however many tunnels are open.
 pub const SAMPLE_EVERY: Duration = Duration::from_millis(500);
-pub const HEALTH_EVERY: Duration = Duration::from_secs(30);
+pub const HEALTH_EVERY: Duration = Duration::from_secs(5);
 pub const LB_EVERY: Duration = Duration::from_secs(60);
 pub const DISCOVERY_EVERY: Duration = Duration::from_secs(60);
 

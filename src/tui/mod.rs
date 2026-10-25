@@ -62,6 +62,10 @@ pub async fn run_tui(initial_account: Option<&str>) -> Result<()> {
     spawn_input(tx.clone(), app.input_gate.clone());
     spawn_ticker(tx.clone());
 
+    // The first health check is due now, not after the first tick
+    let mut timers = Timers::due();
+    schedule(&mut app, &mut timers, &tx);
+
     let mut terminal = ratatui::init();
     let result = event_loop(&mut terminal, &mut app, &tx, &mut rx).await;
     ratatui::restore();
@@ -356,6 +360,8 @@ fn transition_line(was: HealthStatus, now: HealthStatus) -> Option<String> {
     match (was, now) {
         (HealthStatus::Healthy, HealthStatus::Unhealthy) => Some("unhealthy".to_string()),
         (HealthStatus::Unhealthy, HealthStatus::Healthy) => Some("healthy again".to_string()),
+        // The first probe after a start is a check, not a failure
+        (HealthStatus::Checking, HealthStatus::Unhealthy) => None,
         _ => None,
     }
 }
