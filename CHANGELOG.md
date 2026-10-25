@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.5](https://github.com/gcheliz/gtunnel/compare/v0.1.4...v0.1.5) - 2026-10-25
+
+### Added
+
+- *(daemon)* supervise tunnel processes with output filtering and timestamping ([#26](https://github.com/gcheliz/gtunnel/pull/26))
+
 ## [0.1.4](https://github.com/gcheliz/gtunnel/compare/v0.1.3...v0.1.4) - 2026-10-25
 
 ### Added
