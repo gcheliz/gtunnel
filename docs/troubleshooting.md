@@ -272,6 +272,34 @@ A tunnel in this state is what the watchdog exists for: it restarts one that is 
 refusing connections, and stops one that will not come back. See `watch` in
 [usage.md](usage.md#watch).
 
+## Local port collisions
+
+A tunnel needs an unused local port to bind to. gtunnel checks both against its own
+configured tunnels and against listening sockets on the machine before writing the
+tunnel record.
+
+When another gtunnel tunnel already uses the port:
+
+```
+$ gtunnel add db postgres:5432 --local-port 5432
+Error: Local port 5432 is already used by another gtunnel tunnel
+```
+
+When an outside process holds the port:
+
+```
+$ gtunnel add db postgres:5432 --local-port 5432
+Error: Local port 5432 is already in use on this machine
+```
+
+To see which process holds it:
+
+```
+$ lsof -nP -iTCP:5432 -sTCP:LISTEN
+```
+
+Pass a different port with `--local-port <port>`, or stop the conflicting service.
+
 ## gtunnel needs a logged-in Google account
 
 ```
@@ -329,6 +357,27 @@ instance.
 
 `doctor` checks the first one for every tunnel, for instances and destination groups alike.
 The rest surface as a permission error at the moment the command runs.
+
+## Cloud DNS managed zones
+
+`gtunnel expose` and `gtunnel relay up` require a Cloud DNS managed zone in the GCP
+project to publish public hostnames. If the project has none configured:
+
+```
+Error: No Cloud DNS managed zones in project 'example-dev-1a2b'. Create one with `gcloud dns managed-zones create`, then run `gtunnel domains add`
+```
+
+Creating a managed zone requires `roles/dns.admin` on the GCP project:
+
+```
+gcloud dns managed-zones create my-zone --dns-name=example.com. --description="gtunnel zone"
+```
+
+Once created, register it with gtunnel:
+
+```
+gtunnel domains add my-zone
+```
 
 ## NumPy
 
