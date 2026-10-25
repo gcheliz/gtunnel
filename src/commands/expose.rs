@@ -356,7 +356,7 @@ mod tests {
 
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/dns/v1/projects/proj-1/managedZones"))
+            .and(path("/projects/proj-1/managedZones"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "managedZones": []
             })))
