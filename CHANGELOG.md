@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.13](https://github.com/gcheliz/gtunnel/compare/v0.1.12...v0.1.13) - 2026-10-25
+
+### Added
+
+- *(cli)* standardize command error messages and document interactive prompt flows ([#43](https://github.com/gcheliz/gtunnel/pull/43))
+
 ## [0.1.12](https://github.com/gcheliz/gtunnel/compare/v0.1.11...v0.1.12) - 2026-10-25
 
 ### Fixed
