@@ -83,7 +83,7 @@ so they run on any glibc.
 
 ```
 $ gtunnel --version
-gtunnel 0.1.11
+gtunnel 0.1.12
 ```
 
 #### Proving where the binary came from
@@ -634,6 +634,31 @@ $ gtunnel relay status
 No relay for account 'dev'. Run `gtunnel relay up`
 ```
 
+`up` prompts for confirmation before creating cloud resources:
+
+```
+$ gtunnel relay up
+Relay for account 'dev' in europe-west1-b:
+  e2-micro VM + Global HTTPS Load Balancer (~$25/mo per account)
+Create it? [y/N] [n]: y
+```
+
+Declining cancels cleanly:
+
+```
+$ gtunnel relay up
+Relay for account 'dev' in europe-west1-b:
+  e2-micro VM + Global HTTPS Load Balancer (~$25/mo per account)
+Create it? [y/N] [n]: Cancelled
+```
+
+`down` confirms before deleting the relay:
+
+```
+$ gtunnel relay down
+Delete the relay for account 'dev' and everything it owns? [y/N] [n]: Cancelled
+```
+
 ### The relay's firewall is yours to close
 
 A public tunnel forwards with `ssh -R 0.0.0.0:<relay-port>:<local target>`, so the port
@@ -682,6 +707,20 @@ offering a flag that would strand the services:
 ```
 $ gtunnel account remove dev
 Error: Account 'dev' still has 1 tunnel(s). Delete them with `gtunnel delete`, or move them to another account with `gtunnel move`, then remove the account
+```
+
+When the account holds no tunnels, it confirms before removing:
+
+```
+$ gtunnel account remove dev
+Remove account 'dev'? [y/N] [n]: Removed account 'dev'
+```
+
+Declining leaves the account untouched:
+
+```
+$ gtunnel account remove dev
+Remove account 'dev'? [y/N] [n]: Cancelled
 ```
 
 ## watch
@@ -803,6 +842,24 @@ tagged `gtunnel:<account>` that no live tunnel claims, and reconciles auto-start
 before each removal, so a tunnel started during the scan is left alone. Findings it cannot
 fix, such as a missing firewall rule, are printed with the exact command that fixes them.
 
+```
+$ gtunnel doctor --fix
+Remove 2 leftover(s)? [y/N] [n]: Cancelled
+```
+
+```
+$ gtunnel doctor --fix
+Remove 2 leftover(s)? [y/N] [n]: y
+  fixed: Stale local record for 'old-tunnel'
+```
+
+When no fixable leftovers remain:
+
+```
+$ gtunnel doctor --fix
+Nothing here is gtunnel's to remove
+```
+
 ## reset
 
 Removes every local trace: services, config, state, logs. It never deletes anything in GCP.
@@ -837,7 +894,7 @@ Every other command prints a one-line hint when a cached check found a newer ver
 
 ```
 $ gtunnel list
-gtunnel v9.9.9 is available (current: v0.1.11). Run `gtunnel update`.
+gtunnel v9.9.9 is available (current: v0.1.12). Run `gtunnel update`.
 ```
 
 The check runs at most once a day, in the background, and never blocks a command. An install

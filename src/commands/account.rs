@@ -40,7 +40,7 @@ pub async fn cmd_init() -> Result<()> {
     let name = prompt("Account name", Some(&chosen.name))?;
     validate_account_name(&name)?;
     if config.accounts.iter().any(|a| a.name == name) {
-        bail!("Account '{name}' already exists. Pick another name");
+        bail!("Account '{name}' already exists");
     }
 
     let project = prompt("Project", chosen.project.as_deref())?;
@@ -329,5 +329,14 @@ mod tests {
         assert!(err.to_string().contains("nope"), "{err}");
         let err = account_from_configuration(&configs, "bare", "dev").unwrap_err();
         assert!(err.to_string().contains("project"), "{err}");
+    }
+    #[test]
+    fn duplicate_account_name_is_rejected() {
+        let mut config = Config::default();
+        config.add_account(account("dev")).expect("adds");
+        let err = config
+            .add_account(account("dev"))
+            .expect_err("should reject duplicate");
+        assert_eq!(err.to_string(), "Account 'dev' already exists");
     }
 }

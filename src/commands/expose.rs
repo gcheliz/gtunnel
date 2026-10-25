@@ -57,7 +57,9 @@ pub async fn cmd_relay_up(
 async fn pick_managed_zone(client: &GcpClient, project: &str) -> Result<String> {
     let zones = dns::list_managed_zones(client, project).await?;
     match zones.len() {
-        0 => bail!("No Cloud DNS managed zones in project '{project}'. Create one first"),
+        0 => bail!(
+            "No Cloud DNS managed zones in project '{project}'. Create one with `gcloud dns managed-zones create`, then run `gtunnel domains add`"
+        ),
         1 => Ok(zones[0].name.clone()),
         _ => {
             println!("Cloud DNS managed zones:");
@@ -345,5 +347,34 @@ mod tests {
         let line = relay_cost_line();
         assert!(line.contains("forwarding rule"), "{line}");
         assert!(line.contains("e2-micro"), "{line}");
+    }
+    #[tokio::test]
+    async fn pick_managed_zone_empty_suggests_creating_one() {
+        use crate::gcp::{Endpoints, GcpClient, TokenSource};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/projects/proj-1/managedZones"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "managedZones": []
+            })))
+            .mount(&server)
+            .await;
+
+        let client = GcpClient::new(
+            TokenSource::Static("tok".to_string()),
+            Endpoints::single(&server.uri()),
+        );
+
+        let err = pick_managed_zone(&client, "proj-1")
+            .await
+            .expect_err("should fail");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("No Cloud DNS managed zones in project 'proj-1'"));
+        assert!(msg.contains(
+            "Create one with `gcloud dns managed-zones create`, then run `gtunnel domains add`"
+        ));
     }
 }
