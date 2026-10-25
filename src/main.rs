@@ -8,6 +8,7 @@ mod doctor;
 mod ephemeral;
 mod expose;
 mod gcp;
+mod logfilter;
 mod loglevel;
 mod notify;
 mod probe;
@@ -206,6 +207,7 @@ async fn main() -> Result<()> {
         Some(Commands::Reset { yes }) => commands::maint::cmd_reset(yes).await,
         Some(Commands::Demo) => tui::run_demo().await,
         Some(Commands::Update { check }) => update::cmd_update(check).await,
+        Some(Commands::Supervise { argv }) => commands::supervise::run(argv).await,
     };
 
     if !quiet {

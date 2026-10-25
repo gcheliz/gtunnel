@@ -333,6 +333,13 @@ source and --to the destination."
         #[arg(long, help = "Only check, don't install")]
         check: bool,
     },
+
+    // Internal command: supervise child process, filtering and timestamping output
+    #[command(name = "__supervise", hide = true)]
+    Supervise {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        argv: Vec<String>,
+    },
 }
 
 impl Cli {
@@ -355,6 +362,7 @@ impl Commands {
             | Commands::Demo
             | Commands::Update { .. }
             | Commands::Doctor { .. }
+            | Commands::Supervise { .. }
             // Runs from an agent with no terminal: a login prompt here would
             // hang the watchdog forever rather than fail
             | Commands::Watch { .. } => false,
