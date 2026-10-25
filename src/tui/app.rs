@@ -998,8 +998,32 @@ impl App {
                 self.force_refresh = true;
                 self.set_status("refreshing");
             }
-            KeyCode::Char('s') => return self.op_for("start", Op::Start),
-            KeyCode::Char('S') => return self.op_for("stop", Op::Stop),
+            KeyCode::Char('s') => {
+                if let Some(entry) = self.selected_entry() {
+                    if entry.kind == TunnelKind::External {
+                        self.refuse_external("start");
+                        return None;
+                    }
+                    if entry.status == TunnelStatus::Running {
+                        self.set_status(format!("{} is already running", entry.name()));
+                        return None;
+                    }
+                }
+                return self.op_for("start", Op::Start);
+            }
+            KeyCode::Char('S') => {
+                if let Some(entry) = self.selected_entry() {
+                    if entry.kind == TunnelKind::External {
+                        self.refuse_external("stop");
+                        return None;
+                    }
+                    if entry.status != TunnelStatus::Running {
+                        self.set_status(format!("{} is not running", entry.name()));
+                        return None;
+                    }
+                }
+                return self.op_for("stop", Op::Stop);
+            }
             KeyCode::Char('R') => return self.op_for("restart", Op::Restart),
             KeyCode::Char('d') => self.ask_delete(),
             KeyCode::Char('A') => return self.op_for("auto-start", Op::ToggleAutoStart),
