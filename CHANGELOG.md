@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.11](https://github.com/gcheliz/gtunnel/compare/v0.1.10...v0.1.11) - 2026-10-25
+
+### Added
+
+- *(tui)* intermediate health status and README overhaul ([#38](https://github.com/gcheliz/gtunnel/pull/38))
+
 ## [0.1.10](https://github.com/gcheliz/gtunnel/compare/v0.1.9...v0.1.10) - 2026-10-25
 
 ### Fixed
