@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.7](https://github.com/gcheliz/gtunnel/compare/v0.1.6...v0.1.7) - 2026-10-25
+
+### Fixed
+
+- *(logfilter)* drop iap websocket teardown tracebacks and routine connection info lines ([#30](https://github.com/gcheliz/gtunnel/pull/30))
+
 ## [0.1.6](https://github.com/gcheliz/gtunnel/compare/v0.1.5...v0.1.6) - 2026-10-25
 
 ### Fixed
