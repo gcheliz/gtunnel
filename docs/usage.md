@@ -898,8 +898,8 @@ gtunnel v9.9.9 is available (current: v0.1.12). Run `gtunnel update`.
 ```
 
 The check runs at most once a day, in the background, and never blocks a command. An install
-from Homebrew or cargo is detected and `update` prints the right upgrade command instead of
-replacing the binary.
+from Homebrew is detected and `update` prints `brew upgrade gtunnel` instead of replacing the
+binary. Standalone downloads and `~/.cargo/bin` binaries update themselves directly.
 
 ## Reference
 

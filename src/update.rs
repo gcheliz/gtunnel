@@ -113,9 +113,7 @@ enum InstallMethod {
 }
 
 // What to tell someone whose copy a package manager owns, or None when the binary is
-// ours to replace. `gtunnel` on crates.io is an unrelated crate by another author, so
-// the cargo route has to name this repository: a bare `cargo install gtunnel` would
-// install a stranger's binary over this one.
+// ours to replace.
 fn upgrade_hint(method: &InstallMethod) -> Option<String> {
     match method {
         InstallMethod::Homebrew => {
@@ -454,11 +452,9 @@ mod tests {
     #[test]
     fn a_cargo_bin_path_updates_itself_as_a_binary() {
         let exe = PathBuf::from("/Users/you/.cargo/bin/gtunnel");
-        assert!(matches!(
-            detect_install_method_from_path(&exe),
-            InstallMethod::Binary(_)
-        ));
-        assert!(upgrade_hint(&InstallMethod::Binary(exe)).is_none());
+        let method = detect_install_method_from_path(&exe);
+        assert!(matches!(method, InstallMethod::Binary(_)));
+        assert!(upgrade_hint(&method).is_none());
     }
 
     #[test]
