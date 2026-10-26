@@ -1,103 +1,266 @@
 name: Release
 
+# One workflow, two halves, chosen by what was pushed.
+#
+# A push to main is the release train. CI runs once, and release-plz works out
+# whether the commits since the last tag deserve a version. When they do, a draft
+# release opens at once, and only when CI is green does one push land the bump
+# commit and its tag together. No release pull request and no second merge.
+#
+# A push of a v* tag is the build. The four targets are built from the tagged
+# commit, attested, uploaded to the draft, and the draft is published as latest.
+# Building from the tag run, not from the train, is what makes each attestation
+# name `release.yml@refs/tags/v<version>` and the commit the binary came from.
+#
+# The bump push uses RELEASE_TOKEN, a fine-grained personal access token scoped to
+# this repository with Contents: write and nothing else. A push made with
+# GITHUB_TOKEN starts no workflow, so the tag would never come back here to be
+# built. The token's owner is the admin the main ruleset lets bypass a pull
+# request, which is what lets the bump commit land on main without one.
 on:
   push:
     branches: [main]
-    paths:
-      - "Cargo.toml"
-  # The matrix is the only proof the four targets still compile, and a tag is
-  # an expensive place to find out they do not. This runs the build on demand;
-  # publishing stays tag-only, below.
+    tags: ["v*"]
+  # A dry run walks the whole path without publishing: it computes the version,
+  # runs CI, opens the draft and builds the four targets, then stops before the
+  # bump commit, the tag, the attestations and the release. Tagging from a
+  # dispatch also requires main and `dry_run` off.
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Stop before anything is pushed or published
+        type: boolean
+        default: true
 
-# Nothing inherits write access. The release job alone may write repository
-# contents, and the build job's extra grants only let it sign what it just built
-# — a build step runs third-party actions and must not be able to publish. Every
-# action below is pinned to a commit because these binaries are what
-# `gtunnel update` installs
+# Nothing inherits write access. A job widens only what it uses, and every action
+# below is pinned to a commit because these binaries are what `gtunnel update`
+# installs
 permissions:
   contents: read
+
+# Never cancelled: a train stopped between the bump push and the tag, or a build
+# stopped between upload and publish, is a half-made release. Trains on main
+# queue; each tag builds in a group of its own. A queued train starts from the
+# newest main, so it covers every commit the trains before it did not release.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # On tag push, verify the tag matches Cargo.toml.
-  # On push to main, check whether Cargo.toml's version is already tagged;
-  # if untagged (e.g. release PR merged), trigger the automated release pipeline.
-  verify:
+  # ---- The train: push to main ------------------------------------------------
+
+  # Works out the next version without committing it. The bump commit this train
+  # pushes starts the workflow again, and the subject guard stops it here.
+  plan:
+    if: >-
+      github.ref_type == 'branch'
+      && !startsWith(github.event.head_commit.message, 'chore(release):')
     runs-on: ubuntu-24.04
     outputs:
-      should_release: ${{ steps.check.outputs.should_release }}
-      tag: ${{ steps.check.outputs.tag }}
-      version: ${{ steps.check.outputs.version }}
+      release: ${{ steps.bump.outputs.release }}
+      version: ${{ steps.bump.outputs.version }}
+      tag: ${{ steps.bump.outputs.tag }}
+    steps:
+      # Full history: release-plz finds the last tag and reads every commit since
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
+        with:
+          tool: release-plz@0.4.1
+      - name: Compute the bump
+        id: bump
+        env:
+          # Read-only: release-plz reads pull request numbers for changelog links
+          GIT_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          release-plz update
+          if git diff --quiet -- Cargo.toml; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "Nothing since the last tag cuts a release."
+            exit 0
+          fi
+          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          python3 -I .github/scripts/sync-doc-versions.py "${version}"
+          .github/scripts/release-notes.sh "${version}" < CHANGELOG.md > notes.md
+          {
+            echo "release=true"
+            echo "version=${version}"
+            echo "tag=v${version}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Next release: v${version}"
+          git diff --stat
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: steps.bump.outputs.release == 'true'
+        with:
+          name: bump
+          path: |
+            Cargo.toml
+            Cargo.lock
+            CHANGELOG.md
+            README.md
+            docs/usage.md
+            notes.md
+          if-no-files-found: error
+
+  # The same five jobs a pull request runs. This call is also the only run that
+  # saves the build cache, because its ref is main.
+  ci:
+    if: >-
+      github.ref_type == 'branch'
+      && !startsWith(github.event.head_commit.message, 'chore(release):')
+    permissions:
+      contents: read
+    # The documented local form; actionlint and older runners do not read `$/`
+    uses: ./.github/workflows/ci.yml # zizmor: ignore[self-repository]
+
+  # Opens before CI finishes, so the notes can be read while it runs. A draft is
+  # invisible to `gtunnel update`, which asks for the latest published release.
+  draft:
+    needs: plan
+    if: needs.plan.outputs.release == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: bump
+          path: bump
+      - name: Open the draft release
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # A train whose CI failed leaves its draft behind; the next one replaces
+          # it. A published release of this tag means the version was already
+          # shipped, and nothing here may touch it.
+          if state=$(gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json isDraft -q .isDraft 2>/dev/null); then
+            if [ "${state}" != "true" ]; then
+              echo "::error::${TAG} is already published; refusing to draft it again"
+              exit 1
+            fi
+            gh release delete "${TAG}" --repo "${GITHUB_REPOSITORY}" --yes
+          fi
+          gh release create "${TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --draft \
+            --title "${TAG}" \
+            --notes-file bump/notes.md \
+            --target "${GITHUB_SHA}"
+
+  # Runs only once CI is green and the draft exists: commits the bump and pushes
+  # it with its tag in one atomic push, so main never holds one without the other.
+  # The tag push is made with RELEASE_TOKEN, so it starts this workflow again,
+  # and that run takes the lower half of this file.
+  tag:
+    needs: [plan, ci, draft]
+    if: >-
+      needs.plan.outputs.release == 'true'
+      && github.ref == 'refs/heads/main'
+      && (github.event_name == 'push' || inputs.dry_run == false)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Determine if release is required and verify tag
-        id: check
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: bump
+          path: bump
+      - name: Commit the bump and push it with the tag
         env:
-          BEFORE_SHA: ${{ github.event.before }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${RELEASE_TOKEN}" ]; then
+            echo "::error::RELEASE_TOKEN is not set. Add a fine-grained token with Contents: write as a repository secret."
+            exit 1
+          fi
+
+          # A newer merge landed while this train ran. Its own train starts from
+          # that newer main and its changelog covers these commits too, so this
+          # one stands down rather than push a bump onto a main it never tested.
+          git fetch --quiet origin main
+          if [ "$(git rev-parse origin/main)" != "${GITHUB_SHA}" ]; then
+            echo "::notice::main moved past ${GITHUB_SHA}; the newer train releases instead"
+            exit 0
+          fi
+
+          cp bump/Cargo.toml bump/Cargo.lock bump/CHANGELOG.md bump/README.md .
+          cp bump/docs/usage.md docs/usage.md
+
+          # The commit is the token owner's, as a push from their laptop would be
+          if ! user=$(GH_TOKEN="${RELEASE_TOKEN}" gh api user -q '"\(.id)+\(.login) \(.login)"'); then
+            echo "::error::RELEASE_TOKEN was refused; it may be expired or revoked"
+            exit 1
+          fi
+          read -r noreply login <<< "${user}"
+          git config user.name "${login}"
+          git config user.email "${noreply}@users.noreply.github.com"
+
+          git add Cargo.toml Cargo.lock CHANGELOG.md README.md docs/usage.md
+          git commit --quiet -m "chore(release): ${TAG}"
+          git tag -a "${TAG}" -m "${TAG}"
+
+          remote="https://x-access-token:${RELEASE_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if ! git push --atomic "${remote}" HEAD:refs/heads/main "refs/tags/${TAG}"; then
+            echo "::error::Pushing ${TAG} failed: RELEASE_TOKEN is missing, expired or lacks Contents: write, or main moved"
+            exit 1
+          fi
+          echo "Pushed $(git rev-parse --short HEAD) and ${TAG}; the tag push starts this workflow again to build it."
+
+  # ---- The build: push of a v* tag --------------------------------------------
+
+  # A tag must name the version Cargo.toml holds; the updater trusts that pairing.
+  # A dispatch builds whatever main holds, as proof, and publishes nothing.
+  verify:
+    if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.check.outputs.tag }}
+      publish: ${{ steps.check.outputs.publish }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Match the tag to Cargo.toml
+        id: check
         run: |
           set -euo pipefail
           crate=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
-          expected_tag="v${crate}"
-
-          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
-            echo "should_release=false" >> "$GITHUB_OUTPUT"
-            echo "tag=${expected_tag}" >> "$GITHUB_OUTPUT"
-            echo "version=${crate}" >> "$GITHUB_OUTPUT"
-            echo "workflow_dispatch build proof"
+          if [ "${GITHUB_REF_TYPE}" != "tag" ]; then
+            {
+              echo "tag=v${crate}"
+              echo "publish=false"
+            } >> "$GITHUB_OUTPUT"
+            echo "Dispatched build proof of ${crate}; nothing is published."
             exit 0
           fi
-
-          if [ "${GITHUB_REF_TYPE:-}" = "tag" ] || [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            tag="${GITHUB_REF_NAME}"
-            if [ "${tag}" != "${expected_tag}" ]; then
-              echo "::error::tag ${tag} does not name the crate version ${crate}; expected ${expected_tag}"
-              exit 1
-            fi
-            echo "should_release=true" >> "$GITHUB_OUTPUT"
-            echo "tag=${tag}" >> "$GITHUB_OUTPUT"
-            echo "version=${crate}" >> "$GITHUB_OUTPUT"
-            echo "tag ${tag} matches Cargo.toml ${crate}"
-            exit 0
+          if [ "${GITHUB_REF_NAME}" != "v${crate}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not name the crate version ${crate}; expected v${crate}"
+            exit 1
           fi
-
-          # Push to main: check if Cargo.toml was modified in this push
-          if [ -n "${BEFORE_SHA:-}" ] && [ "${BEFORE_SHA}" != "0000000000000000000000000000000000000000" ]; then
-            diff_range="${BEFORE_SHA}..HEAD"
-          else
-            diff_range="HEAD~1..HEAD"
-          fi
-
-          if ! git diff --name-only "${diff_range}" | grep -q "^Cargo.toml$"; then
-            echo "should_release=false" >> "$GITHUB_OUTPUT"
-            echo "tag=${expected_tag}" >> "$GITHUB_OUTPUT"
-            echo "version=${crate}" >> "$GITHUB_OUTPUT"
-            echo "Cargo.toml was not changed in this push to main; skipping release build."
-            exit 0
-          fi
-
-          # Check if tag already exists
-          if git rev-parse -q --verify "refs/tags/${expected_tag}" >/dev/null; then
-            echo "should_release=false" >> "$GITHUB_OUTPUT"
-            echo "tag=${expected_tag}" >> "$GITHUB_OUTPUT"
-            echo "version=${crate}" >> "$GITHUB_OUTPUT"
-            echo "Version ${crate} is already tagged (${expected_tag}); skipping release build."
-          else
-            echo "should_release=true" >> "$GITHUB_OUTPUT"
-            echo "tag=${expected_tag}" >> "$GITHUB_OUTPUT"
-            echo "version=${crate}" >> "$GITHUB_OUTPUT"
-            echo "Version ${crate} is untagged. Triggering release for ${expected_tag}."
-          fi
+          {
+            echo "tag=${GITHUB_REF_NAME}"
+            echo "publish=true"
+          } >> "$GITHUB_OUTPUT"
 
   build:
     name: Build ${{ matrix.slug }}
     needs: verify
-    if: github.event_name == 'workflow_dispatch' || needs.verify.outputs.should_release == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -168,7 +331,7 @@ jobs:
       # for us to keep or lose. Only tag builds are attested; a dispatched run builds
       # throwaway artifacts that nobody downloads
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        if: needs.verify.outputs.should_release == 'true'
+        if: needs.verify.outputs.publish == 'true'
         with:
           subject-path: gtunnel-${{ matrix.slug }}-${{ needs.verify.outputs.tag }}.tar.gz
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -179,11 +342,12 @@ jobs:
             gtunnel-${{ matrix.slug }}-${{ needs.verify.outputs.tag }}.tar.gz.sha256
           if-no-files-found: error
 
-  release:
+  # Uploads to the draft the train opened, then publishes it. Draft first, every
+  # asset, then publish: the order immutable releases require, and the reason a
+  # half-uploaded release is never what `gtunnel update` finds as latest.
+  publish:
     needs: [verify, build]
-    # A dispatched run builds and stops there: it has no tag to name a release
-    # after, and `gtunnel update` must never meet one it cannot resolve
-    if: needs.verify.outputs.should_release == 'true'
+    if: needs.verify.outputs.publish == 'true'
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -191,30 +355,31 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Ensure tag exists on remote
-        env:
-          TAG: ${{ needs.verify.outputs.tag }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          if ! gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" >/dev/null 2>&1; then
-            echo "Creating tag ${TAG} at ${GITHUB_SHA}..."
-            gh api "repos/${GITHUB_REPOSITORY}/git/refs" \
-              -f ref="refs/tags/${TAG}" \
-              -f sha="${GITHUB_SHA}"
-          fi
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
+          pattern: gtunnel-*
           path: assets
           merge-multiple: true
-      - name: Publish release
+      - name: Publish the release
         env:
           TAG: ${{ needs.verify.outputs.tag }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release create "${TAG}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --title "${TAG}" \
-            --generate-notes \
-            assets/*
+          if state=$(gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json isDraft -q .isDraft 2>/dev/null); then
+            if [ "${state}" != "true" ]; then
+              echo "::error::${TAG} is already published; its assets are not replaced"
+              exit 1
+            fi
+            gh release upload "${TAG}" assets/* --repo "${GITHUB_REPOSITORY}" --clobber
+            gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false --latest
+          else
+            # A tag pushed by hand has no draft; its notes come from the changelog
+            .github/scripts/release-notes.sh "${TAG#v}" < CHANGELOG.md > notes.md
+            gh release create "${TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "${TAG}" \
+              --notes-file notes.md \
+              --latest \
+              assets/*
+          fi
