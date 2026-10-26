@@ -742,11 +742,19 @@ async fn relay_findings(
     findings
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct FindingJson {
+    pub account: String,
+    pub description: String,
+    pub fixable: bool,
+}
+
 pub async fn cmd_doctor(
     account: Option<&str>,
     fix: bool,
     assume_yes: bool,
     all: bool,
+    json: bool,
 ) -> Result<()> {
     let (config, acct) = resolve(account)?;
     let state = TunnelState::load()?;
@@ -761,6 +769,19 @@ pub async fn cmd_doctor(
     };
 
     let findings = run_doctor(&config, &state, &accounts).await;
+    if json {
+        let json_findings: Vec<FindingJson> = findings
+            .iter()
+            .map(|(account_name, finding)| FindingJson {
+                account: account_name.clone(),
+                description: finding.describe(),
+                fixable: finding.fixable(),
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&json_findings)?);
+        return Ok(());
+    }
+
     if findings.is_empty() {
         println!("Nothing to report");
         return Ok(());

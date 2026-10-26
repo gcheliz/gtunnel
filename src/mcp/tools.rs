@@ -1,0 +1,534 @@
+use serde_json::{json, Value};
+use std::time::Duration;
+
+use super::protocol::{
+    JsonRpcError, ResourceContent, ResourceDefinition, ResourceReadResult, ToolCallResult,
+    ToolDefinition, INTERNAL_ERROR, INVALID_PARAMS,
+};
+use crate::commands::access::{cmd_add, cmd_delete, cmd_restart, cmd_start, cmd_stop};
+use crate::commands::resolve;
+use crate::config::load_config;
+use crate::daemon;
+use crate::doctor::run_doctor;
+use crate::probe;
+use crate::state::{TunnelSpec, TunnelState, TunnelStatus};
+
+pub fn all_tools() -> Vec<ToolDefinition> {
+    vec![
+        ToolDefinition {
+            name: "gtunnel_list_tunnels".to_string(),
+            description: "List all configured tunnels and their daemon statuses for the given or default account".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "account": {
+                        "type": "string",
+                        "description": "Optional GCP account name (defaults to active account)"
+                    }
+                },
+                "required": []
+            }),
+        },
+        ToolDefinition {
+            name: "gtunnel_start_tunnel".to_string(),
+            description: "Start a persistent tunnel daemon".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Tunnel name to start"
+                    },
+                    "account": {
+                        "type": "string",
+                        "description": "Optional GCP account name"
+                    }
+                },
+                "required": ["name"]
+            }),
+        },
+        ToolDefinition {
+            name: "gtunnel_stop_tunnel".to_string(),
+            description: "Stop a running tunnel daemon".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Tunnel name to stop"
+                    },
+                    "account": {
+                        "type": "string",
+                        "description": "Optional GCP account name"
+                    }
+                },
+                "required": ["name"]
+            }),
+        },
+        ToolDefinition {
+            name: "gtunnel_restart_tunnel".to_string(),
+            description: "Restart a tunnel daemon (reinstalls service spec and restarts)".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Tunnel name to restart"
+                    },
+                    "account": {
+                        "type": "string",
+                        "description": "Optional GCP account name"
+                    }
+                },
+                "required": ["name"]
+            }),
+        },
+        ToolDefinition {
+            name: "gtunnel_get_status".to_string(),
+            description: "Get detailed runtime status, PID, restarts, and active TCP probe latency for a tunnel".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Tunnel name"
+                    },
+                    "account": {
+                        "type": "string",
+                        "description": "Optional GCP account name"
+                    }
+                },
+                "required": ["name"]
+            }),
+        },
+        ToolDefinition {
+            name: "gtunnel_get_logs".to_string(),
+            description: "Read the most recent log lines for a tunnel daemon".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Tunnel name"
+                    },
+                    "lines": {
+                        "type": "integer",
+                        "description": "Number of lines to read from log tail (default: 50)"
+                    },
+                    "account": {
+                        "type": "string",
+                        "description": "Optional GCP account name"
+                    }
+                },
+                "required": ["name"]
+            }),
+        },
+        ToolDefinition {
+            name: "gtunnel_add_tunnel".to_string(),
+            description: "Add a persistent Access tunnel (IAP TCP forward to localhost)".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Tunnel name (lowercase letters, digits, and dashes; no env suffixes)"
+                    },
+                    "target": {
+                        "type": "string",
+                        "description": "Remote target: INSTANCE:PORT, or HOST:PORT with --via or --dest-group"
+                    },
+                    "via": {
+                        "type": "string",
+                        "description": "Instance to forward from via ssh (bastion jump)"
+                    },
+                    "zone": {
+                        "type": "string",
+                        "description": "Compute zone of the instance"
+                    },
+                    "local_port": {
+                        "type": "integer",
+                        "description": "Local port to listen on (automatically allocated if omitted)"
+                    },
+                    "dest_group": {
+                        "type": "string",
+                        "description": "IAP destination group"
+                    },
+                    "region": {
+                        "type": "string",
+                        "description": "Region of the destination group"
+                    },
+                    "network": {
+                        "type": "string",
+                        "description": "Network of the destination group"
+                    },
+                    "start": {
+                        "type": "boolean",
+                        "description": "Start the tunnel immediately after adding"
+                    },
+                    "account": {
+                        "type": "string",
+                        "description": "Optional GCP account name"
+                    }
+                },
+                "required": ["name", "target"]
+            }),
+        },
+        ToolDefinition {
+            name: "gtunnel_delete_tunnel".to_string(),
+            description: "Delete a persistent tunnel, stopping its daemon and removing its service and log".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Tunnel name to delete"
+                    },
+                    "account": {
+                        "type": "string",
+                        "description": "Optional GCP account name"
+                    }
+                },
+                "required": ["name"]
+            }),
+        },
+        ToolDefinition {
+            name: "gtunnel_list_accounts".to_string(),
+            description: "List all configured accounts and show the currently selected active account".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {},
+                "required": []
+            }),
+        },
+        ToolDefinition {
+            name: "gtunnel_doctor".to_string(),
+            description: "Run diagnostic checks on local configuration and GCP resources".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "account": {
+                        "type": "string",
+                        "description": "Optional GCP account name"
+                    },
+                    "all": {
+                        "type": "boolean",
+                        "description": "Check every configured account"
+                    }
+                },
+                "required": []
+            }),
+        },
+    ]
+}
+
+pub fn all_resources() -> Vec<ResourceDefinition> {
+    vec![
+        ResourceDefinition {
+            uri: "gtunnel://tunnels".to_string(),
+            name: "All Configured Tunnels".to_string(),
+            description: Some("Complete JSON snapshot of all persistent tunnels".to_string()),
+            mime_type: Some("application/json".to_string()),
+        },
+        ResourceDefinition {
+            uri: "gtunnel://accounts".to_string(),
+            name: "All Configured Accounts".to_string(),
+            description: Some(
+                "Complete JSON snapshot of all configured accounts and selection".to_string(),
+            ),
+            mime_type: Some("application/json".to_string()),
+        },
+    ]
+}
+
+pub async fn execute_tool(
+    name: &str,
+    params: Option<&Value>,
+) -> Result<ToolCallResult, JsonRpcError> {
+    let empty_map = serde_json::Map::new();
+    let map = params.and_then(Value::as_object).unwrap_or(&empty_map);
+
+    let get_str = |key: &str| map.get(key).and_then(Value::as_str);
+    let get_u16 = |key: &str| map.get(key).and_then(Value::as_u64).map(|n| n as u16);
+    let get_usize = |key: &str| map.get(key).and_then(Value::as_u64).map(|n| n as usize);
+    let get_bool = |key: &str| map.get(key).and_then(Value::as_bool).unwrap_or(false);
+
+    match name {
+        "gtunnel_list_tunnels" => {
+            let account = get_str("account");
+            let (_, acct) =
+                resolve(account).map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
+            let state = TunnelState::load()
+                .map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
+            let tunnels = state.tunnels_for_account(&acct.name);
+
+            let mut results = Vec::new();
+            for t in tunnels {
+                let label = daemon::platform_label(&t.account_name, &t.name);
+                let status = daemon::status(&label).await;
+                results.push(json!({
+                    "name": t.name,
+                    "account": t.account_name,
+                    "status": match status {
+                        TunnelStatus::Running => "running",
+                        TunnelStatus::Stopped => "stopped",
+                        TunnelStatus::Error => "error",
+                    },
+                    "mode": t.display_kind(),
+                    "url": t.display_url(),
+                    "target": t.display_target(),
+                    "auto_start": t.auto_start,
+                }));
+            }
+            Ok(ToolCallResult::text(
+                serde_json::to_string_pretty(&results).unwrap_or_default(),
+            ))
+        }
+        "gtunnel_start_tunnel" => {
+            let tunnel_name = get_str("name")
+                .ok_or_else(|| JsonRpcError::new(INVALID_PARAMS, "Missing 'name'"))?;
+            let account = get_str("account");
+            cmd_start(account, tunnel_name)
+                .await
+                .map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
+            Ok(ToolCallResult::text(format!(
+                "Started tunnel '{tunnel_name}'"
+            )))
+        }
+        "gtunnel_stop_tunnel" => {
+            let tunnel_name = get_str("name")
+                .ok_or_else(|| JsonRpcError::new(INVALID_PARAMS, "Missing 'name'"))?;
+            let account = get_str("account");
+            cmd_stop(account, tunnel_name)
+                .await
+                .map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
+            Ok(ToolCallResult::text(format!(
+                "Stopped tunnel '{tunnel_name}'"
+            )))
+        }
+        "gtunnel_restart_tunnel" => {
+            let tunnel_name = get_str("name")
+                .ok_or_else(|| JsonRpcError::new(INVALID_PARAMS, "Missing 'name'"))?;
+            let account = get_str("account");
+            cmd_restart(account, tunnel_name)
+                .await
+                .map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
+            Ok(ToolCallResult::text(format!(
+                "Restarted tunnel '{tunnel_name}'"
+            )))
+        }
+        "gtunnel_get_status" => {
+            let tunnel_name = get_str("name")
+                .ok_or_else(|| JsonRpcError::new(INVALID_PARAMS, "Missing 'name'"))?;
+            let account = get_str("account");
+            let (_, acct) =
+                resolve(account).map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
+            let state = TunnelState::load()
+                .map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
+            let t = state
+                .find_for_account(tunnel_name, &acct.name)
+                .ok_or_else(|| {
+                    JsonRpcError::new(
+                        INVALID_PARAMS,
+                        format!(
+                            "Tunnel '{tunnel_name}' not found for account '{}'",
+                            acct.name
+                        ),
+                    )
+                })?;
+
+            let label = daemon::platform_label(&t.account_name, &t.name);
+            let status = daemon::status(&label).await;
+            let runtime = daemon::runtime_info(&label).await;
+
+            let probe_latency_ms = if status == TunnelStatus::Running {
+                if let TunnelSpec::Access { local_port, .. } = &t.spec {
+                    probe::tcp_probe(
+                        &format!("127.0.0.1:{local_port}"),
+                        Duration::from_millis(500),
+                    )
+                    .await
+                    .map(|d| d.as_millis())
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            let payload = json!({
+                "name": t.name,
+                "account": t.account_name,
+                "status": match status {
+                    TunnelStatus::Running => "running",
+                    TunnelStatus::Stopped => "stopped",
+                    TunnelStatus::Error => "error",
+                },
+                "pid": runtime.pid,
+                "restarts": runtime.restarts,
+                "probe_latency_ms": probe_latency_ms,
+                "url": t.display_url(),
+                "target": t.display_target(),
+            });
+            Ok(ToolCallResult::text(
+                serde_json::to_string_pretty(&payload).unwrap_or_default(),
+            ))
+        }
+        "gtunnel_get_logs" => {
+            let tunnel_name = get_str("name")
+                .ok_or_else(|| JsonRpcError::new(INVALID_PARAMS, "Missing 'name'"))?;
+            let lines = get_usize("lines").unwrap_or(50);
+            let account = get_str("account");
+            let (_, acct) =
+                resolve(account).map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
+            let state = TunnelState::load()
+                .map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
+            let t = state
+                .find_for_account(tunnel_name, &acct.name)
+                .ok_or_else(|| {
+                    JsonRpcError::new(INVALID_PARAMS, format!("Tunnel '{tunnel_name}' not found"))
+                })?;
+
+            let log_path = t
+                .log_path()
+                .map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
+            let text = daemon::read_tail(&log_path, daemon::TAIL_WINDOW);
+            let tail_lines: Vec<&str> = text.lines().rev().take(lines).collect();
+            let joined = tail_lines
+                .into_iter()
+                .rev()
+                .collect::<Vec<&str>>()
+                .join("\n");
+            Ok(ToolCallResult::text(joined))
+        }
+        "gtunnel_add_tunnel" => {
+            let tunnel_name = get_str("name")
+                .ok_or_else(|| JsonRpcError::new(INVALID_PARAMS, "Missing 'name'"))?;
+            let target = get_str("target")
+                .ok_or_else(|| JsonRpcError::new(INVALID_PARAMS, "Missing 'target'"))?;
+            let via = get_str("via");
+            let zone = get_str("zone");
+            let local_port = get_u16("local_port");
+            let dest_group = get_str("dest_group");
+            let region = get_str("region");
+            let network = get_str("network");
+            let start = get_bool("start");
+            let account = get_str("account");
+
+            cmd_add(
+                account,
+                tunnel_name,
+                target,
+                via,
+                zone,
+                local_port,
+                dest_group,
+                region,
+                network,
+                start,
+            )
+            .await
+            .map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
+
+            Ok(ToolCallResult::text(format!(
+                "Added tunnel '{tunnel_name}' for target '{target}'"
+            )))
+        }
+        "gtunnel_delete_tunnel" => {
+            let tunnel_name = get_str("name")
+                .ok_or_else(|| JsonRpcError::new(INVALID_PARAMS, "Missing 'name'"))?;
+            let account = get_str("account");
+            cmd_delete(account, tunnel_name)
+                .await
+                .map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
+            Ok(ToolCallResult::text(format!(
+                "Deleted tunnel '{tunnel_name}'"
+            )))
+        }
+        "gtunnel_list_accounts" => {
+            let config =
+                load_config().map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
+            let payload = json!({
+                "selected_account": config.selected_account,
+                "accounts": config.accounts.iter().map(|a| json!({
+                    "name": a.name,
+                    "project": a.project,
+                    "default_zone": a.default_zone,
+                    "gcloud_configuration": a.gcloud_configuration,
+                    "selected": a.name == config.selected_account,
+                })).collect::<Vec<Value>>(),
+            });
+            Ok(ToolCallResult::text(
+                serde_json::to_string_pretty(&payload).unwrap_or_default(),
+            ))
+        }
+        "gtunnel_doctor" => {
+            let account = get_str("account");
+            let all = get_bool("all");
+            let (config, acct) =
+                resolve(account).map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
+            let state = TunnelState::load()
+                .map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
+            let accounts: Vec<&crate::config::Account> = if all {
+                config.accounts.iter().collect()
+            } else {
+                vec![config
+                    .accounts
+                    .iter()
+                    .find(|a| a.name == acct.name)
+                    .unwrap_or(&acct)]
+            };
+
+            let findings = run_doctor(&config, &state, &accounts).await;
+            let json_findings: Vec<Value> = findings
+                .iter()
+                .map(|(acct_name, finding)| {
+                    json!({
+                        "account": acct_name,
+                        "description": finding.describe(),
+                        "fixable": finding.fixable(),
+                    })
+                })
+                .collect();
+            Ok(ToolCallResult::text(
+                serde_json::to_string_pretty(&json_findings).unwrap_or_default(),
+            ))
+        }
+        _ => Err(JsonRpcError::new(
+            super::protocol::METHOD_NOT_FOUND,
+            format!("Unknown tool '{name}'"),
+        )),
+    }
+}
+
+pub fn read_resource(uri: &str) -> Result<ResourceReadResult, JsonRpcError> {
+    match uri {
+        "gtunnel://tunnels" => {
+            let state = TunnelState::load()
+                .map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
+            let text = serde_json::to_string_pretty(&state.tunnels).unwrap_or_default();
+            Ok(ResourceReadResult {
+                contents: vec![ResourceContent {
+                    uri: uri.to_string(),
+                    mime_type: Some("application/json".to_string()),
+                    text,
+                }],
+            })
+        }
+        "gtunnel://accounts" => {
+            let config =
+                load_config().map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
+            let text = serde_json::to_string_pretty(&config.accounts).unwrap_or_default();
+            Ok(ResourceReadResult {
+                contents: vec![ResourceContent {
+                    uri: uri.to_string(),
+                    mime_type: Some("application/json".to_string()),
+                    text,
+                }],
+            })
+        }
+        _ => Err(JsonRpcError::new(
+            INVALID_PARAMS,
+            format!("Resource '{uri}' not found"),
+        )),
+    }
+}

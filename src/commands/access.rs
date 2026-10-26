@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 use std::time::Duration;
 
-use super::{find_tunnel, resolve, tunnel_status, ListLayout, ListRow};
+use super::{find_tunnel, resolve, status_word, tunnel_status, ListLayout, ListRow};
 use crate::config::Account;
 use crate::daemon;
 use crate::expose::routes;
@@ -346,10 +346,55 @@ pub async fn cmd_logs(account: Option<&str>, name: &str, follow: bool, lines: us
     }
 }
 
-pub async fn cmd_list(account: Option<&str>) -> Result<()> {
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ListRowJson {
+    pub status: String,
+    pub name: String,
+    pub mode: String,
+    pub url: String,
+    pub target: String,
+    pub account: String,
+    pub auto_start: bool,
+    pub unmanaged: bool,
+}
+
+pub async fn cmd_list(account: Option<&str>, json: bool) -> Result<()> {
     let (_, acct) = resolve(account)?;
     let state = TunnelState::load()?;
     let tunnels = state.tunnels_for_account(&acct.name);
+    let external = external_rows().await;
+
+    if json {
+        let mut json_rows = Vec::new();
+        for tunnel in tunnels {
+            let status = tunnel_status(tunnel).await;
+            json_rows.push(ListRowJson {
+                status: status_word(status).to_string(),
+                name: tunnel.name.clone(),
+                mode: tunnel.display_kind().to_string(),
+                url: tunnel.display_url(),
+                target: tunnel.display_target(),
+                account: tunnel.account_name.clone(),
+                auto_start: tunnel.auto_start,
+                unmanaged: false,
+            });
+        }
+        for ext in external {
+            json_rows.push(ListRowJson {
+                status: status_word(ext.status).to_string(),
+                name: ext.name,
+                mode: ext.mode.to_string(),
+                url: ext.url,
+                target: ext.target,
+                account: acct.name.clone(),
+                auto_start: false,
+                unmanaged: true,
+            });
+        }
+        println!("{}", serde_json::to_string_pretty(&json_rows)?);
+        return Ok(());
+    }
+
     if tunnels.is_empty() {
         println!("No tunnels for account '{}'", acct.name);
         return Ok(());
@@ -361,7 +406,7 @@ pub async fn cmd_list(account: Option<&str>) -> Result<()> {
         let status = tunnel_status(tunnel).await;
         rows.push(ListRow::from_tunnel(status, tunnel));
     }
-    rows.extend(external_rows().await);
+    rows.extend(external);
 
     let layout = ListLayout::fit(&rows);
     println!("{}", layout.header());

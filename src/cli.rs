@@ -200,7 +200,10 @@ pub enum Commands {
 
     // List all tunnels (for scripting)
     #[command(about = "List all tunnels")]
-    List,
+    List {
+        #[arg(long, help = "Output in JSON format")]
+        json: bool,
+    },
 
     // Delete a tunnel
     #[command(about = "Delete a tunnel")]
@@ -312,6 +315,10 @@ source and --to the destination."
             help = "Check every configured account, not just the selected one"
         )]
         all: bool,
+
+        // Output in JSON format
+        #[arg(long, help = "Output in JSON format")]
+        json: bool,
     },
 
     // Remove all local gtunnel configuration
@@ -332,6 +339,14 @@ source and --to the destination."
         // Only check, don't install
         #[arg(long, help = "Only check, don't install")]
         check: bool,
+    },
+
+    // Run Model Context Protocol (MCP) stdio server
+    #[command(about = "Run Model Context Protocol (MCP) stdio server")]
+    Mcp {
+        // Validate tool definitions and exit
+        #[arg(long, help = "Validate tool definitions and exit")]
+        validate: bool,
     },
 
     // Internal command: supervise child process, filtering and timestamping output
@@ -362,6 +377,7 @@ impl Commands {
             | Commands::Demo
             | Commands::Update { .. }
             | Commands::Doctor { .. }
+            | Commands::Mcp { .. }
             | Commands::Supervise { .. }
             // Runs from an agent with no terminal: a login prompt here would
             // hang the watchdog forever rather than fail
@@ -384,7 +400,7 @@ impl Commands {
             | Commands::Start { .. }
             | Commands::Stop { .. }
             | Commands::Restart { .. }
-            | Commands::List
+            | Commands::List { .. }
             | Commands::Move { .. }
             | Commands::Relay { .. } => true,
         }
@@ -479,7 +495,10 @@ pub enum RelayCommands {
 pub enum AccountCommands {
     // List all configured accounts
     #[command(about = "List all configured accounts")]
-    List,
+    List {
+        #[arg(long, help = "Output in JSON format")]
+        json: bool,
+    },
 
     // Set the default account
     #[command(about = "Set the default account")]
@@ -809,7 +828,7 @@ mod tests {
     fn account_flag_is_global() {
         let cli = parse(&["gtunnel", "--account", "prod", "list"]);
         assert_eq!(cli.account.as_deref(), Some("prod"));
-        assert_eq!(cli.command, Some(Commands::List));
+        assert_eq!(cli.command, Some(Commands::List { json: false }));
     }
 
     #[test]
