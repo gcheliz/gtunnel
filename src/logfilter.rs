@@ -206,7 +206,7 @@ mod tests {
             "debug1: Local forwarding listening on 127.0.0.1 port 8443."
         ));
         assert!(keep(
-            "debug1: Connection to port 8443 forwarding to 10.3.0.13:443 requested from 127.0.0.1 port 59453, assigning to channel 0"
+            "debug1: Connection to port 8443 forwarding to 10.0.0.10:443 requested from 127.0.0.1 port 59453, assigning to channel 0"
         ));
     }
 
