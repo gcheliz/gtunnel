@@ -31,13 +31,6 @@ on:
         description: Stop before anything is pushed or published
         type: boolean
         default: true
-      # Only feat, fix, perf and refactor cut a release on merge. A maintainer who
-      # wants the held docs or dependency lines out now sets this: release-plz
-      # computes the bump with that filter lifted, and the train runs as usual.
-      force:
-        description: Release even if only docs, ci, test or chore commits landed
-        type: boolean
-        default: false
 
 # Nothing inherits write access. A job widens only what it uses, and every action
 # below is pinned to a commit because these binaries are what `gtunnel update`
@@ -86,18 +79,9 @@ jobs:
         env:
           # Read-only: release-plz reads pull request numbers for changelog links
           GIT_TOKEN: ${{ github.token }}
-          FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force }}
         run: |
           set -euo pipefail
-          if [ "${FORCE}" = "true" ]; then
-            # Same config, minus the release_commits filter, so every commit
-            # since the last tag counts toward the bump
-            config="${RUNNER_TEMP}/release-plz-force.toml"
-            grep -v '^release_commits' release-plz.toml > "${config}"
-            release-plz update --config "${config}"
-          else
-            release-plz update
-          fi
+          release-plz update
           if git diff --quiet -- Cargo.toml; then
             echo "release=false" >> "$GITHUB_OUTPUT"
             echo "Nothing since the last tag cuts a release."

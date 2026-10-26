@@ -158,12 +158,12 @@ not after the first stable release.
 | `perf` | patch | Performance |
 | `refactor` | patch | Changed |
 | `feat!`, or a `BREAKING CHANGE:` trailer | minor; it becomes major at 1.0 | under its own prefix |
-| `docs` | none on its own | Documentation, in the next release |
+| `docs` | patch | Documentation |
 | `test`, `ci`, `chore`, `build` | none | none |
 
-A `docs` merge is held, not dropped: its line waits in the changelog until a `feat`, `fix`,
-`perf` or `refactor` cuts the next release. A documentation fix a user is waiting for
-ships with the next code change, or with a `fix(docs):` if it cannot wait.
+Every row that writes a changelog line releases on merge, with nothing to dispatch. The
+last row writes none and changes nothing a user gets, so it releases nothing; its commits
+reach users with the next release.
 
 **The pull request title is the commit message.** `main` takes squash merges, so the title
 is the only subject that reaches the history and the only one release-plz reads. A branch
@@ -174,15 +174,6 @@ significant change in it.
 The tag push starts `release.yml` again on the tag: it builds the four targets, writes a
 `.sha256` beside each tarball, attests every asset, and publishes the draft as the latest
 release. See [decision 14](docs/decisions.md).
-
-A merge that only holds `docs`, `ci`, `test` or `chore` lines releases nothing. To ship
-them now, a maintainer dispatches the train on `main` with the filter lifted:
-
-```
-gh workflow run release.yml --ref main -f dry_run=false -f force=true
-```
-
-Add `-f dry_run=true` instead to see the version it would cut first.
 
 A maintainer can rehearse the train without releasing anything:
 

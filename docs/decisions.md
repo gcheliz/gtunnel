@@ -235,10 +235,9 @@ One merge to `main` is one release. `release.yml` runs a train on the merge comm
 | verify | runs on the tag: it must point at a commit on `main` and name the version that commit declares |
 | build, publish | four targets, a `.sha256` each, an attestation each, then the draft is published as latest |
 
-Only `feat`, `fix`, `perf` and `refactor` cut a release (`release_commits` in
-`release-plz.toml`). A merge of documentation, tests or CI alone changes no version;
-its lines reach the changelog with the next release that does, or sooner when a
-maintainer dispatches the train with `force`, which lifts the filter for that one run.
+Every merge that writes a changelog line, `feat`, `fix`, `perf`, `refactor` or `docs`,
+cuts a release (`release_commits` in `release-plz.toml`). A merge of tests, CI or chores
+alone writes no line and changes nothing a user gets, so it changes no version.
 
 The bump is pushed with `RELEASE_TOKEN`, a fine-grained token with Contents: write on
 this repository only. A push made with the workflow's own token starts no workflows, so
