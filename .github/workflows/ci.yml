@@ -1,9 +1,11 @@
 name: CI
 
+# Pull requests run this directly. A push to main does not: cut-release.yml calls it
+# as the first gate of the release train, so the tree on main is tested once, and
+# that call is also the run that writes the cache, because its ref is main.
 on:
-  push:
-    branches: [main]
   pull_request:
+  workflow_call:
 
 # Nothing here publishes or comments, so the token is read-only for every job
 # and a compromised step cannot push or tag
@@ -11,10 +13,11 @@ permissions:
   contents: read
 
 # Pushing twice to a branch used to leave five jobs running against a commit
-# nobody will merge. The newer push supersedes them. `main` is excluded by the
-# ref in the group key, so a merge queue of real commits never cancels itself.
+# nobody will merge. The newer push supersedes them. The event name keeps a
+# called run inside a release train in a group of its own, so a pull request can
+# never cancel it, and `main` never cancels itself.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
@@ -28,7 +31,6 @@ env:
 
 jobs:
   test:
-    if: "!startsWith(github.event.head_commit.message, 'chore: release')"
     strategy:
       fail-fast: false
       matrix:
@@ -60,7 +62,6 @@ jobs:
   # cargo-audit is installed rather than wrapped in an action: one less
   # third-party step with a token in scope, and the version is pinned here
   audit:
-    if: "!startsWith(github.event.head_commit.message, 'chore: release')"
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -84,7 +85,6 @@ jobs:
   # A declared rust-version that nothing checks rots on the next dependency bump.
   # This job is the only thing that makes the Cargo.toml field a fact.
   msrv:
-    if: "!startsWith(github.event.head_commit.message, 'chore: release')"
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -105,7 +105,6 @@ jobs:
   # them offline, so the job needs no token beyond the read-only checkout, and
   # it is installed the way cargo-audit is: pinned, no third-party action
   zizmor:
-    if: "!startsWith(github.event.head_commit.message, 'chore: release')"
     runs-on: ubuntu-24.04
     permissions:
       contents: read
