@@ -72,9 +72,10 @@ Substitute your machine's file: `gtunnel-macos-arm64`, `gtunnel-macos-intel`,
 `gtunnel-linux-amd64` or `gtunnel-linux-arm64`.
 
 ```
-F=gtunnel-macos-arm64.tar.gz
-curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/latest/download/$F"
-curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/latest/download/$F.sha256"
+VERSION="v0.1.13"
+F="gtunnel-macos-arm64-${VERSION}.tar.gz"
+curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F"
+curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F.sha256"
 shasum -a 256 -c "$F.sha256" && tar -xzf "$F" && sudo mv gtunnel /usr/local/bin/
 ```
 
@@ -94,7 +95,7 @@ asset also carries a build attestation, signed by GitHub with a short-lived cert
 tied to this repository's Release workflow and recorded in a public transparency log.
 
 ```
-gh attestation verify gtunnel-macos-arm64.tar.gz -o gcheliz
+gh attestation verify "gtunnel-macos-arm64-${VERSION}.tar.gz" -o gcheliz
 ```
 
 It says nothing and exits 0 when the file checks out, and fails loudly when it does not —
@@ -103,7 +104,7 @@ an unattested file gets `HTTP 404: Not Found` and exit 1, whatever its checksum 
 To see what the attestation actually claims, ask for the certificate:
 
 ```
-$ gh attestation verify gtunnel-macos-arm64.tar.gz -o gcheliz --format json \
+$ gh attestation verify "gtunnel-macos-arm64-${VERSION}.tar.gz" -o gcheliz --format json \
   | python3 -c 'import json,sys; c=json.load(sys.stdin)[0]["verificationResult"]["signature"]["certificate"]; print(c["buildSignerURI"]); print(c["sourceRepositoryDigest"]); print(c["runnerEnvironment"])'
 https://github.com/gcheliz/gtunnel/.github/workflows/release.yml@refs/tags/v0.1.1
 78b5da3d7925cacd78832dc60b5ee160d98f6428
