@@ -244,6 +244,12 @@ the tag would never build, and a pull request opened with it waits for a manual 
 of its CI. That approval and the second merge it led to are what the release pull request
 cost, and why it is gone.
 
+A tag is a request to sign and publish, so two checks stand in front of it. The
+`release-tags` ruleset lets only an admin create, move or delete a `v*` tag, and the tag
+run publishes only a tag that points at a commit on `main`, names the version that commit
+declares, and has the draft the train opened. A tag pushed any other way builds nothing
+that reaches users.
+
 The costs: the commit prefix is load-bearing, so a `feat` typed as a `chore` ships nothing;
 and a standing secret must be rotated before it expires, or the train fails at the tag job
 with an error naming it.

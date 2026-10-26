@@ -236,7 +236,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Match the tag to Cargo.toml
+          fetch-depth: 0
+      # A tag is a request to sign and publish a binary, so it must name a commit
+      # that is already on main and the version that commit declares. The
+      # release-tags ruleset limits who can push a v* tag; this limits what it
+      # can point at.
+      - name: Match the tag to main and to Cargo.toml
         id: check
         run: |
           set -euo pipefail
@@ -251,6 +256,12 @@ jobs:
           fi
           if [ "${GITHUB_REF_NAME}" != "v${crate}" ]; then
             echo "::error::tag ${GITHUB_REF_NAME} does not name the crate version ${crate}; expected v${crate}"
+            exit 1
+          fi
+          commit=$(git rev-parse "${GITHUB_REF}^{commit}")
+          git fetch --no-tags --quiet origin main
+          if ! git merge-base --is-ancestor "${commit}" origin/main; then
+            echo "::error::tag ${GITHUB_REF_NAME} points at ${commit}, which is not on main; only a commit on main is released"
             exit 1
           fi
           {
@@ -374,12 +385,11 @@ jobs:
             gh release upload "${TAG}" assets/* --repo "${GITHUB_REPOSITORY}" --clobber
             gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false --latest
           else
-            # A tag pushed by hand has no draft; its notes come from the changelog
-            .github/scripts/release-notes.sh "${TAG#v}" < CHANGELOG.md > notes.md
-            gh release create "${TAG}" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --title "${TAG}" \
-              --notes-file notes.md \
-              --latest \
-              assets/*
+            # Only the train opens a draft, so a tag without one did not come from
+            # a merge. Nothing is created from it. To finish a release by hand,
+            # open the draft and re-run this job:
+            #   gh release create vX.Y.Z --draft --title vX.Y.Z --verify-tag \
+            #     --notes-file <(.github/scripts/release-notes.sh X.Y.Z < CHANGELOG.md)
+            echo "::error::${TAG} has no draft release; only a tag cut by the release train is published"
+            exit 1
           fi
