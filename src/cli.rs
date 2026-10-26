@@ -366,20 +366,26 @@ impl Commands {
             // Runs from an agent with no terminal: a login prompt here would
             // hang the watchdog forever rather than fail
             | Commands::Watch { .. } => false,
-            Commands::Add { .. }
-            | Commands::Expose { .. }
+            | Commands::Delete { .. }
+            | Commands::Rename { .. }
+            | Commands::Autostart { .. }
+            | Commands::Logs { .. } => false,
+            Commands::Add { start, .. } => *start,
+            Commands::Zones { command } => match command {
+                Some(ZonesCommands::Default { .. }) => false,
+                None => true,
+            },
+            Commands::Domains { command } => match command {
+                Some(DomainsCommands::Default { .. } | DomainsCommands::Add { .. }) => false,
+                None => true,
+            },
+            Commands::Expose { .. }
             | Commands::Run { .. }
             | Commands::Start { .. }
             | Commands::Stop { .. }
-            | Commands::Autostart { .. }
             | Commands::Restart { .. }
-            | Commands::Logs { .. }
             | Commands::List
-            | Commands::Delete { .. }
-            | Commands::Rename { .. }
             | Commands::Move { .. }
-            | Commands::Zones { .. }
-            | Commands::Domains { .. }
             | Commands::Relay { .. } => true,
         }
     }
@@ -824,17 +830,47 @@ mod tests {
                 "{name} must not need a login"
             );
         }
-        let check: [&[&str]; 12] = [
-            &["gtunnel", "add", "db", "vm:5432"],
+        let skip_with_args: [&[&str]; 4] = [
+            &["gtunnel", "delete", "db"],
+            &["gtunnel", "rename", "old", "new"],
+            &["gtunnel", "autostart", "db"],
+            &["gtunnel", "logs", "db"],
+        ];
+        for args in skip_with_args {
+            let cli = parse(args);
+            assert!(
+                !cli.command.expect("command").needs_gcp_auth(),
+                "{:?} must not need a login",
+                args
+            );
+        }
+        assert!(!parse(&["gtunnel", "add", "db", "vm:5432"])
+            .command
+            .expect("command")
+            .needs_gcp_auth());
+        assert!(parse(&["gtunnel", "add", "db", "vm:5432", "-s"])
+            .command
+            .expect("command")
+            .needs_gcp_auth());
+        assert!(!parse(&["gtunnel", "zones", "default", "europe-west1-b"])
+            .command
+            .expect("command")
+            .needs_gcp_auth());
+        assert!(!parse(&["gtunnel", "domains", "default", "example.com"])
+            .command
+            .expect("command")
+            .needs_gcp_auth());
+        assert!(!parse(&["gtunnel", "domains", "add", "my-zone"])
+            .command
+            .expect("command")
+            .needs_gcp_auth());
+        let check: [&[&str]; 8] = [
             &["gtunnel", "expose", "api", "3000"],
             &["gtunnel", "run", "vm:5432"],
             &["gtunnel", "start", "db"],
             &["gtunnel", "stop", "db"],
-            &["gtunnel", "autostart", "db"],
             &["gtunnel", "restart", "db"],
-            &["gtunnel", "logs", "db"],
             &["gtunnel", "list"],
-            &["gtunnel", "delete", "db"],
             &["gtunnel", "zones"],
             &["gtunnel", "relay", "status"],
         ];

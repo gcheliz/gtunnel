@@ -121,3 +121,35 @@ fn account_edit_no_args_fails_with_hint() {
     assert_eq!(out.status.code(), Some(1));
     assert!(stderr(&out).contains("Error: Nothing to change: pass --project, --zone, or both"));
 }
+
+#[test]
+fn add_without_start_does_not_require_gcp_login() {
+    let h = Harness::new();
+    let out = h.run(&["add", "new-db", "10.0.0.10:5432", "--via", "bastion"]);
+    let err = stderr(&out);
+    assert!(!err.contains("needs a logged-in Google account"));
+}
+
+#[test]
+fn rename_does_not_require_gcp_login() {
+    let h = Harness::new();
+    let out = h.run(&["rename", "db", "database"]);
+    let err = stderr(&out);
+    assert!(!err.contains("needs a logged-in Google account"));
+}
+
+#[test]
+fn autostart_does_not_require_gcp_login() {
+    let h = Harness::new();
+    let out = h.run(&["autostart", "db"]);
+    let err = stderr(&out);
+    assert!(!err.contains("needs a logged-in Google account"));
+}
+
+#[test]
+fn delete_does_not_require_gcp_login() {
+    let h = Harness::new();
+    let out = h.run(&["delete", "db"]);
+    let err = stderr(&out);
+    assert!(!err.contains("needs a logged-in Google account"));
+}
