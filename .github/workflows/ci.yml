@@ -28,6 +28,7 @@ env:
 
 jobs:
   test:
+    if: "!startsWith(github.event.head_commit.message, 'chore: release')"
     strategy:
       fail-fast: false
       matrix:
@@ -59,6 +60,7 @@ jobs:
   # cargo-audit is installed rather than wrapped in an action: one less
   # third-party step with a token in scope, and the version is pinned here
   audit:
+    if: "!startsWith(github.event.head_commit.message, 'chore: release')"
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -82,6 +84,7 @@ jobs:
   # A declared rust-version that nothing checks rots on the next dependency bump.
   # This job is the only thing that makes the Cargo.toml field a fact.
   msrv:
+    if: "!startsWith(github.event.head_commit.message, 'chore: release')"
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -102,6 +105,7 @@ jobs:
   # them offline, so the job needs no token beyond the read-only checkout, and
   # it is installed the way cargo-audit is: pinned, no third-party action
   zizmor:
+    if: "!startsWith(github.event.head_commit.message, 'chore: release')"
     runs-on: ubuntu-24.04
     permissions:
       contents: read

@@ -2,8 +2,9 @@ name: Release
 
 on:
   push:
-    tags: ["v*"]
     branches: [main]
+    paths:
+      - "Cargo.toml"
   # The matrix is the only proof the four targets still compile, and a tag is
   # an expensive place to find out they do not. This runs the build on demand;
   # publishing stays tag-only, below.
@@ -37,6 +38,8 @@ jobs:
           persist-credentials: false
       - name: Determine if release is required and verify tag
         id: check
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
         run: |
           set -euo pipefail
           crate=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
@@ -63,7 +66,22 @@ jobs:
             exit 0
           fi
 
-          # Push to main: check if tag already exists
+          # Push to main: check if Cargo.toml was modified in this push
+          if [ -n "${BEFORE_SHA:-}" ] && [ "${BEFORE_SHA}" != "0000000000000000000000000000000000000000" ]; then
+            diff_range="${BEFORE_SHA}..HEAD"
+          else
+            diff_range="HEAD~1..HEAD"
+          fi
+
+          if ! git diff --name-only "${diff_range}" | grep -q "^Cargo.toml$"; then
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            echo "tag=${expected_tag}" >> "$GITHUB_OUTPUT"
+            echo "version=${crate}" >> "$GITHUB_OUTPUT"
+            echo "Cargo.toml was not changed in this push to main; skipping release build."
+            exit 0
+          fi
+
+          # Check if tag already exists
           if git rev-parse -q --verify "refs/tags/${expected_tag}" >/dev/null; then
             echo "should_release=false" >> "$GITHUB_OUTPUT"
             echo "tag=${expected_tag}" >> "$GITHUB_OUTPUT"
