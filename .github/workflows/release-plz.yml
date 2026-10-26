@@ -12,6 +12,8 @@ name: Release PR
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "CHANGELOG.md" 
 
 permissions:
   contents: read
