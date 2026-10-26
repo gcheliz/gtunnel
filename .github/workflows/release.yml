@@ -130,10 +130,11 @@ jobs:
       # The self-updater downloads gtunnel-<slug>-<tag>.tar.gz and verifies it
       # against gtunnel-<slug>-<tag>.tar.gz.sha256
       - name: Package
+        env:
+          TAG: ${{ needs.verify.outputs.tag }}
         run: |
           set -euo pipefail
-          tag="${{ needs.verify.outputs.tag }}"
-          asset="gtunnel-${{ matrix.slug }}-${tag}.tar.gz"
+          asset="gtunnel-${{ matrix.slug }}-${TAG}.tar.gz"
           tar -czf "$asset" -C "target/${{ matrix.target }}/release" gtunnel
           if command -v sha256sum >/dev/null; then
             sha256sum "$asset" > "$asset.sha256"
@@ -171,22 +172,18 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
+          persist-credentials: false
       - name: Ensure tag exists on remote
         env:
           TAG: ${{ needs.verify.outputs.tag }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if ! git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
-            echo "Tag ${TAG} does not exist locally; checking remote..."
-            if ! git ls-remote --tags origin "refs/tags/${TAG}" | grep -q "${TAG}"; then
-              echo "Creating tag ${TAG} at ${GITHUB_SHA}..."
-              git config user.name "github-actions[bot]"
-              git config user.email "github-actions[bot]@users.noreply.github.com"
-              git tag -a "${TAG}" -m "${TAG}" "${GITHUB_SHA}"
-              git push origin "${TAG}"
-            fi
+          if ! gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Creating tag ${TAG} at ${GITHUB_SHA}..."
+            gh api "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref="refs/tags/${TAG}" \
+              -f sha="${GITHUB_SHA}"
           fi
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
