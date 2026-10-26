@@ -10,6 +10,7 @@ mod expose;
 mod gcp;
 mod logfilter;
 mod loglevel;
+pub mod mcp;
 mod notify;
 mod probe;
 mod state;
@@ -129,7 +130,7 @@ async fn main() -> Result<()> {
             follow,
             lines,
         }) => commands::access::cmd_logs(account, &name, follow, lines).await,
-        Some(Commands::List) => commands::access::cmd_list(account).await,
+        Some(Commands::List { json }) => commands::access::cmd_list(account, json).await,
         Some(Commands::Delete { name }) => commands::access::cmd_delete(account, &name).await,
         Some(Commands::Rename { old, new }) => {
             commands::relocate::cmd_rename(account, &old, &new).await
@@ -174,7 +175,8 @@ async fn main() -> Result<()> {
             RelayCommands::Status => commands::expose::cmd_relay_status(account).await,
         },
         Some(Commands::Account { command }) => match command {
-            None | Some(AccountCommands::List) => commands::account::cmd_account_list(),
+            None => commands::account::cmd_account_list(false),
+            Some(AccountCommands::List { json }) => commands::account::cmd_account_list(json),
             Some(AccountCommands::Select { name }) | Some(AccountCommands::Default { name }) => {
                 commands::account::cmd_account_select(&name)
             }
@@ -201,12 +203,22 @@ async fn main() -> Result<()> {
             Some(WatchCommands::Status) => commands::watch::cmd_watch_status().await,
             None => commands::watch::cmd_watch(once, verbose).await,
         },
-        Some(Commands::Doctor { fix, yes, all }) => {
-            doctor::cmd_doctor(account, fix, yes, all).await
-        }
+        Some(Commands::Doctor {
+            fix,
+            yes,
+            all,
+            json,
+        }) => doctor::cmd_doctor(account, fix, yes, all, json).await,
         Some(Commands::Reset { yes }) => commands::maint::cmd_reset(yes).await,
         Some(Commands::Demo) => tui::run_demo().await,
         Some(Commands::Update { check }) => update::cmd_update(check).await,
+        Some(Commands::Mcp { validate }) => {
+            if validate {
+                mcp::validator::run_validate()
+            } else {
+                mcp::server::run().await
+            }
+        }
         Some(Commands::Supervise { argv }) => commands::supervise::run(argv).await,
     };
 

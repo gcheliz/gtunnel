@@ -80,8 +80,32 @@ pub async fn cmd_init() -> Result<()> {
     Ok(())
 }
 
-pub fn cmd_account_list() -> Result<()> {
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AccountJson {
+    pub name: String,
+    pub gcloud_configuration: String,
+    pub project: String,
+    pub default_zone: String,
+    pub selected: bool,
+}
+
+pub fn cmd_account_list(json: bool) -> Result<()> {
     let config = load_config()?;
+    if json {
+        let rows: Vec<AccountJson> = config
+            .accounts
+            .iter()
+            .map(|a| AccountJson {
+                name: a.name.clone(),
+                gcloud_configuration: a.gcloud_configuration.clone(),
+                project: a.project.clone(),
+                default_zone: a.default_zone.clone(),
+                selected: a.name == config.selected_account,
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(());
+    }
     if config.accounts.is_empty() {
         println!("No accounts. Run `gtunnel init`");
         return Ok(());

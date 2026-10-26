@@ -528,6 +528,24 @@ STATUS     NAME             MODE    URL                              TARGET
 ● running  pid 59670        access  -                                bastion-1:22 (europe-west1-b)  [not managed by gtunnel]
 ```
 
+Add `--json` for machine-readable output:
+
+```
+$ gtunnel list --json
+[
+  {
+    "status": "stopped",
+    "name": "db",
+    "mode": "access",
+    "url": "localhost:15432",
+    "target": "postgres-1:5432 (europe-west1-b)",
+    "account": "demo",
+    "auto_start": false,
+    "unmanaged": false
+  }
+]
+```
+
 ```
 $ gtunnel logs nope
 Error: Tunnel 'nope' not found for account 'dev'
@@ -900,6 +918,126 @@ gtunnel v9.9.9 is available (current: v0.1.12). Run `gtunnel update`.
 The check runs at most once a day, in the background, and never blocks a command. An install
 from Homebrew is detected and `update` prints `brew upgrade gtunnel` instead of replacing the
 binary. Standalone downloads and `~/.cargo/bin` binaries update themselves directly.
+
+## Model Context Protocol (MCP) and AI Agent Integration
+
+gtunnel provides first-class support for AI agents through both an in-repo Skill and a native
+Model Context Protocol (MCP) server.
+
+### The in-repo Skill
+
+Located at `.agents/skills/gtunnel/SKILL.md` using the open Agent Skills standard. It automatically
+guides AI agents (Claude Code, Gemini CLI, etc.) on:
+
+- Enforcing tunnel naming conventions (`<platform>` or `<platform>-<service>`, never account/env suffixes).
+- Routing client-side protocols through bastions (e.g. MongoDB Compass over SSH on port 2222/2223).
+- Scoping commands to the correct GCP account.
+- Performing mandatory pre-completion verification: checking daemon status, inspecting logs for IAP error codes (such as `4033`), and probing local listening ports.
+
+### The native MCP Server
+
+`gtunnel mcp` runs a newline-delimited JSON-RPC 2.0 stdio server in pure Rust. It exposes 10 tools
+and 2 live resources without requiring an external runtime.
+
+#### Exposed Tools
+
+| Tool | Parameters | What it does |
+|---|---|---|
+| `gtunnel_list_tunnels` | `account?` | Lists configured tunnels and their daemon statuses |
+| `gtunnel_start_tunnel` | `name`, `account?` | Starts a stopped tunnel daemon |
+| `gtunnel_stop_tunnel` | `name`, `account?` | Stops a running tunnel daemon |
+| `gtunnel_restart_tunnel` | `name`, `account?` | Reinstalls service spec and restarts daemon |
+| `gtunnel_get_status` | `name`, `account?` | Returns PID, restarts, and active TCP probe round-trip latency |
+| `gtunnel_get_logs` | `name`, `lines?`, `account?` | Tails daemon log with automatic error diagnosis |
+| `gtunnel_add_tunnel` | `name`, `target`, `via?`, `zone?`, `local_port?`, `dest_group?`, `region?`, `network?`, `start?`, `account?` | Adds an Access tunnel |
+| `gtunnel_delete_tunnel` | `name`, `account?` | Deletes a persistent tunnel and removes its service |
+| `gtunnel_list_accounts` | none | Lists accounts and shows active selection |
+| `gtunnel_doctor` | `account?`, `all?` | Runs diagnostic checks on GCP resources and local config |
+
+#### Live Resources
+
+| URI | What it returns |
+|---|---|
+| `gtunnel://tunnels` | JSON array of all persistent tunnels |
+| `gtunnel://accounts` | JSON snapshot of configured accounts and active selection |
+
+### Tool Validation and Testing
+
+To verify tool definitions and JSON schemas non-interactively:
+
+```
+$ gtunnel mcp --validate
+Validated 10 tools and 2 resources successfully.
+```
+
+To inspect tools, schemas, and test calls interactively using the official MCP Inspector:
+
+```
+npx @modelcontextprotocol/inspector gtunnel mcp
+```
+
+### Client Configuration
+
+#### Workspace Configuration (`.mcp.json`)
+
+To enable the `gtunnel` MCP server in your workspace, create a `.mcp.json` file in the project
+root:
+
+```json
+{
+  "mcpServers": {
+    "gtunnel": {
+      "command": "gtunnel",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+This configuration schema is supported by both **Claude Code** and **Gemini CLI**:
+
+- **Claude Code**: Automatically discovers `.mcp.json` at the root of the workspace directory. When you run Claude Code in this repository, the `gtunnel_*` tools are registered immediately.
+- **Gemini CLI**: Place the same `"mcpServers"` block in `.gemini/settings.json` (workspace level) or `~/.gemini/settings.json` (global level).
+- **Claude Desktop**: Add the `gtunnel` block under `"mcpServers"` in `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows).
+
+Optional environment variables (such as custom configuration directories or log levels) can be
+passed using the `"env"` object:
+
+```json
+{
+  "mcpServers": {
+    "gtunnel": {
+      "command": "gtunnel",
+      "args": ["mcp"],
+      "env": {
+        "GTUNNEL_LOG_LEVEL": "info"
+      }
+    }
+  }
+}
+```
+
+### Machine-readable JSON output
+
+CLI commands support `--json` for automated workflows and scripting:
+
+```
+$ gtunnel account list --json
+[
+  {
+    "name": "demo",
+    "gcloud_configuration": "work",
+    "project": "example-dev-1a2b",
+    "default_zone": "europe-west1-b",
+    "selected": true
+  }
+]
+```
+
+```
+$ gtunnel doctor --json
+[]
+```
 
 ## Reference
 

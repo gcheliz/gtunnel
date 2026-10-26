@@ -176,9 +176,36 @@ it does: [docs/design.md](docs/design.md).
 | `gtunnel relay` | Manages the public relay (`up`, `down`, `recreate-cert`). |
 | `gtunnel update` | Checks for and installs updates. |
 | `gtunnel demo` | Launches the TUI with synthetic data. |
+| `gtunnel mcp` | Runs the Model Context Protocol (MCP) stdio server. |
 
-Every command accepts a global `--account <name>` flag. The full command map, with every
+Every command accepts a global `--account <name>` flag, and `list`, `account list`, and `doctor` accept `--json`. The full command map, with every
 flag and output, is in [docs/usage.md](docs/usage.md#command-map).
+
+## AI Agents & MCP
+
+gtunnel includes native integration for AI agents (Claude Code, Gemini CLI, Cursor, etc.):
+
+- **In-Repo Skill:** Located at `.agents/skills/gtunnel/SKILL.md` using the open Agent Skills standard. Automatically equips AI agents with tunnel naming rules, target routing (e.g. MongoDB bastions), account scoping, and pre-completion verification protocols.
+- **Model Context Protocol (MCP) Server:** `gtunnel mcp` provides a native in-binary JSON-RPC 2.0 stdio server exposing 10 tools and 2 live resources (`gtunnel://tunnels`, `gtunnel://accounts`).
+- **Tool Validation:** `gtunnel mcp --validate` runs non-interactive schema validation across all registered tools. Developers can inspect tools interactively with `npx @modelcontextprotocol/inspector gtunnel mcp`.
+- **Machine-Readable Outputs:** `gtunnel list --json`, `gtunnel account list --json`, and `gtunnel doctor --json` provide structured JSON for programmatic consumption.
+
+Create a `.mcp.json` file in your workspace root (compatible with both Claude Code and Gemini CLI):
+
+```json
+{
+  "mcpServers": {
+    "gtunnel": {
+      "command": "gtunnel",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+- **Claude Code:** Reads `.mcp.json` automatically in the project directory, launching the MCP server on startup.
+- **Gemini CLI:** Add the same configuration to `.gemini/settings.json` or reference `.mcp.json` under `"mcpServers"`.
+- **Claude Desktop:** Add the entry to `~/Library/Application Support/Claude/claude_desktop_config.json`.
 
 ## Configuration
 
