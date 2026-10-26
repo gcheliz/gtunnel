@@ -2,8 +2,9 @@ name: Release
 
 on:
   push:
-    tags: ["v*"]
     branches: [main]
+    paths:
+      - "Cargo.toml"
   # The matrix is the only proof the four targets still compile, and a tag is
   # an expensive place to find out they do not. This runs the build on demand;
   # publishing stays tag-only, below.
