@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.14](https://github.com/gcheliz/gtunnel/compare/v0.1.13...v0.1.14) - 2026-10-26
+
+### Added
+
+- *(ci)* automate release tagging and include version in release assets ([#45](https://github.com/gcheliz/gtunnel/pull/45))
+
 ## [0.1.13](https://github.com/gcheliz/gtunnel/compare/v0.1.12...v0.1.13) - 2026-10-25
 
 ### Added
