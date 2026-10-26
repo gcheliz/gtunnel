@@ -263,7 +263,8 @@ record carries no description, so gtunnel treats one as its own only while it st
 a tagged backend, host rule or named port for the same tunnel. `gtunnel reset` removes
 local state only; cloud resources go with `gtunnel relay down`.
 
-Every push to main and every pull request runs [CI](.github/workflows/ci.yml): rustfmt,
+Every pull request, and every merge to main before it is released, runs
+[CI](.github/workflows/ci.yml): rustfmt,
 clippy with `-D warnings`, the test suite, `cargo audit --deny warnings`, a `cargo check` on
 the declared 1.88 floor, and zizmor over the workflows.
 

@@ -141,10 +141,11 @@ history. Write the pull request title as the commit message you want on `main`.
 You do not need to think about versions when you contribute. Use the right commit prefix
 and the rest follows.
 
-Every merge to `main` runs [`release-plz`](https://release-plz.dev), which reads the
-conventional-commit subjects since the last tag, works out the next version, and keeps one
-open pull request holding the bump: `Cargo.toml`, `Cargo.lock` and a `CHANGELOG.md` entry.
-It rewrites that pull request as more commits land, so there is only ever one.
+Every merge to `main` is released by [`release.yml`](.github/workflows/release.yml) in
+one run. [`release-plz`](https://release-plz.dev) reads the conventional-commit subjects
+since the last tag and works out the next version; the workflow tests the merge, opens a
+draft release, commits the bump (`Cargo.toml`, `Cargo.lock`, a `CHANGELOG.md` entry) and
+pushes it with the tag. There is no release pull request to merge.
 
 gtunnel is below 1.0, and semver treats a `0.x` version as unstable throughout, so every
 bump is smaller than it would be after 1.0. The right-hand column is what happens today,
@@ -156,13 +157,13 @@ not after the first stable release.
 | `fix` | patch | Fixed |
 | `perf` | patch | Performance |
 | `refactor` | patch | Changed |
-| `docs` | patch | Documentation |
 | `feat!`, or a `BREAKING CHANGE:` trailer | minor; it becomes major at 1.0 | under its own prefix |
+| `docs` | none on its own | Documentation, in the next release |
 | `test`, `ci`, `chore`, `build` | none | none |
 
-Only the last row is silent. Everything above it produces a changelog line and a release,
-`docs` included — `release-plz.toml` files documentation under its own heading on purpose,
-because a documentation fix is something a user can be waiting for.
+A `docs` merge is held, not dropped: its line waits in the changelog until a `feat`, `fix`,
+`perf` or `refactor` cuts the next release. A documentation fix a user is waiting for
+ships with the next code change, or with a `fix(docs):` if it cannot wait.
 
 **The pull request title is the commit message.** `main` takes squash merges, so the title
 is the only subject that reaches the history and the only one release-plz reads. A branch
@@ -170,15 +171,18 @@ whose commits are a `feat` and two `docs` merged under a `docs:` title ships the
 with no Added line and no sign of it in the release. Title the pull request after the most
 significant change in it.
 
-Cutting the release is automated:
+The tag push starts `release.yml` again on the tag: it builds the four targets, writes a
+`.sha256` beside each tarball, attests every asset, and publishes the draft as the latest
+release. See [decision 14](docs/decisions.md).
 
-1. Merge the open release pull request into `main`.
+A maintainer can rehearse the train without releasing anything:
 
-Merging to `main` starts [`release.yml`](.github/workflows/release.yml): it detects the
-untagged version from `Cargo.toml`, pushes the annotated tag, builds the four targets,
-writes a `.sha256` beside each tarball, attests every asset, and publishes the GitHub release.
-Releases run directly from the merge with no manual tagging steps required — see
-[decision 14](docs/decisions.md).
+```
+gh workflow run release.yml --ref <branch> -f dry_run=true
+```
+
+A dry run computes the version, runs CI, opens the draft and builds, but pushes no commit
+or tag and publishes nothing. Delete the draft it leaves behind.
 
 ## Reporting something
 

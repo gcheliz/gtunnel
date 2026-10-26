@@ -219,20 +219,31 @@ describes a program that no longer exists.
 
 ## 14. Releases are computed and published automatically
 
-**Status:** Accepted, 0.1.1 (2026-10-24), amended 0.1.14 (2026-10-26)
+**Status:** Accepted, 0.1.1 (2026-10-24), amended 0.1.14 (2026-10-26), amended 2026-10-27
 
 Deciding a version by hand means deciding it from memory, and a changelog written at
 release time is written from the diff rather than from the intent.
 
-`release-plz` runs on every merge to `main` in `git_only` mode — crates.io is not
-available to this project, so versions come from git tags rather than the registry. It
-computes the next version from the conventional-commit subjects, rewrites `Cargo.toml`,
-`Cargo.lock` and `CHANGELOG.md`, and keeps one open pull request holding the bump.
+One merge to `main` is one release. `release.yml` runs a train on the merge commit:
 
-When a maintainer merges the release pull request, `release.yml` triggers on `main`,
-detects that `Cargo.toml` holds a new version, automatically tags the commit, builds the
-matrix of four targets, signs/attests provenance, and publishes the release. This eliminates
-manual tagging without requiring external push tokens or standing secrets.
+| Job | What it does |
+|---|---|
+| plan | `release-plz update` in `git_only` mode computes the next version from the conventional-commit subjects and rewrites `Cargo.toml`, `Cargo.lock` and `CHANGELOG.md`; nothing to release ends the run |
+| ci | calls `ci.yml`, so the merged tree is tested once |
+| draft | opens a draft release with the changelog section as notes |
+| tag | commits the bump as `chore(release): vX.Y.Z` and pushes it with the annotated tag in one atomic push |
+| build, publish | run on the tag: four targets, a `.sha256` each, an attestation each, then the draft is published as latest |
 
-The cost is that the commit prefix is now load-bearing: a `feat` typed as a `chore` ships
-without a version bump and without a changelog line.
+Only `feat`, `fix`, `perf` and `refactor` cut a release (`release_commits` in
+`release-plz.toml`). A merge of documentation, tests or CI alone changes no version;
+its lines reach the changelog with the next release that does.
+
+The bump is pushed with `RELEASE_TOKEN`, a fine-grained token with Contents: write on
+this repository only. A push made with the workflow's own token starts no workflows, so
+the tag would never build, and a pull request opened with it waits for a manual approval
+of its CI. That approval and the second merge it led to are what the release pull request
+cost, and why it is gone.
+
+The costs: the commit prefix is load-bearing, so a `feat` typed as a `chore` ships nothing;
+and a standing secret must be rotated before it expires, or the train fails at the tag job
+with an error naming it.
