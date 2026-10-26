@@ -10,11 +10,11 @@ git_only = true
 # as a different series.
 git_tag_name = "v{{ version }}"
 
-# This repository only ever runs `release-plz update`, inside cut-release.yml, so
+# This repository only ever runs `release-plz update`, inside release.yml, so
 # neither of these fires today. They are set so that running `release` by mistake
-# cannot surprise anyone: cut-release.yml pushes the tag with the bump commit, and
-# release.yml publishes the release, because only it has the binaries and their
-# attestations to attach.
+# cannot surprise anyone: the train in release.yml pushes the tag with the bump
+# commit, and the tag run of the same file publishes the release, because only it
+# has the binaries and their attestations to attach.
 git_tag_enable = false
 git_release_enable = false
 

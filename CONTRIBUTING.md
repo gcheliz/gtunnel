@@ -181,8 +181,9 @@ A maintainer can rehearse the train without releasing anything:
 gh workflow run release.yml --ref <branch> -f dry_run=true
 ```
 
-A dry run computes the version, runs CI, opens the draft and builds, but pushes no commit
-or tag and publishes nothing. Delete the draft it leaves behind.
+A dry run computes the version, runs CI, opens a draft named `vX.Y.Z-dry-run` and builds,
+but pushes no commit or tag and publishes nothing. Delete that `-dry-run` draft afterwards;
+the draft without the suffix belongs to a real train.
 
 ## Reporting something
 

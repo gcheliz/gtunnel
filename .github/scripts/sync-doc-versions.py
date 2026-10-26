@@ -1,8 +1,8 @@
 """Rewrite the version strings the docs quote to the version being released.
 
 The release train runs this after release-plz has bumped Cargo.toml, so the
-bump commit carries the docs with it and the CI gate that compares them with
-Cargo.toml holds on the very next pull request. Usage:
+bump commit carries the docs with it and they quote the version being released.
+Usage:
 
     python3 -I .github/scripts/sync-doc-versions.py <version>
 

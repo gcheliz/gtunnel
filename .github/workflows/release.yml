@@ -22,9 +22,9 @@ on:
     branches: [main]
     tags: ["v*"]
   # A dry run walks the whole path without publishing: it computes the version,
-  # runs CI, opens the draft and builds the four targets, then stops before the
-  # bump commit, the tag, the attestations and the release. Tagging from a
-  # dispatch also requires main and `dry_run` off.
+  # runs CI, opens a draft named vX.Y.Z-dry-run and builds the four targets, then
+  # stops before the bump commit, the tag, the attestations and the release. A
+  # dispatch with `dry_run` off on main is a real train and builds on its tag.
   workflow_dispatch:
     inputs:
       dry_run:
@@ -42,8 +42,9 @@ permissions:
 # stopped between upload and publish, is a half-made release. Trains on main
 # queue; each tag builds in a group of its own. A queued train starts from the
 # newest main, so it covers every commit the trains before it did not release.
+# A dry run queues apart, so it can never displace a train waiting its turn.
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.ref }}${{ inputs.dry_run && '-dry-run' || '' }}
   cancel-in-progress: false
 
 env:
@@ -136,9 +137,16 @@ jobs:
       - name: Open the draft release
         env:
           TAG: ${{ needs.plan.outputs.tag }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # A dry run computes the same version a real train would, so it drafts
+          # under a name of its own: the real draft is what the tag run publishes,
+          # and a dry run from a branch must never replace it.
+          if [ "${DRY_RUN}" = "true" ]; then
+            TAG="${TAG}-dry-run"
+          fi
           # A train whose CI failed leaves its draft behind; the next one replaces
           # it. A published release of this tag means the version was already
           # shipped, and nothing here may touch it.
@@ -225,9 +233,9 @@ jobs:
   # ---- The build: push of a v* tag --------------------------------------------
 
   # A tag must name the version Cargo.toml holds; the updater trusts that pairing.
-  # A dispatch builds whatever main holds, as proof, and publishes nothing.
+  # A dry run builds whatever its ref holds, as proof, and publishes nothing.
   verify:
-    if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
+    if: github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && inputs.dry_run)
     runs-on: ubuntu-24.04
     outputs:
       tag: ${{ steps.check.outputs.tag }}

@@ -232,7 +232,8 @@ One merge to `main` is one release. `release.yml` runs a train on the merge comm
 | ci | calls `ci.yml`, so the merged tree is tested once |
 | draft | opens a draft release with the changelog section as notes |
 | tag | commits the bump as `chore(release): vX.Y.Z` and pushes it with the annotated tag in one atomic push |
-| build, publish | run on the tag: four targets, a `.sha256` each, an attestation each, then the draft is published as latest |
+| verify | runs on the tag: it must point at a commit on `main` and name the version that commit declares |
+| build, publish | four targets, a `.sha256` each, an attestation each, then the draft is published as latest |
 
 Only `feat`, `fix`, `perf` and `refactor` cut a release (`release_commits` in
 `release-plz.toml`). A merge of documentation, tests or CI alone changes no version;
