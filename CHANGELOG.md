@@ -3,6 +3,16 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.15](https://github.com/gcheliz/gtunnel/compare/v0.1.14...v0.1.15) - 2026-10-26
+
+### Added
+
+- *(update)* allow self-update to replace cargo-installed binaries directly
+
+### Documentation
+
+- clarify that cargo installs self-update directly
+
 ## [0.1.14](https://github.com/gcheliz/gtunnel/compare/v0.1.13...v0.1.14) - 2026-10-26
 
 ### Added
