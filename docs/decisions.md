@@ -179,8 +179,9 @@ build uses no cache, so a pull request run cannot decide what a release is built
 is the vendor slot of a Rust target triple, and `x86_64` is what LLVM calls amd64. A reader
 has to know both conventions before they can pick their own file.
 
-The four assets are `gtunnel-macos-arm64`, `gtunnel-macos-intel`, `gtunnel-linux-amd64` and
-`gtunnel-linux-arm64`. The triples still drive the build; only the published name changed.
+The four assets are `gtunnel-macos-arm64-v<version>.tar.gz`, `gtunnel-macos-intel-v<version>.tar.gz`,
+`gtunnel-linux-amd64-v<version>.tar.gz` and `gtunnel-linux-arm64-v<version>.tar.gz`. Including the version at
+the end prevents collisions on repeated browser downloads while preserving plain-language platform names.
 
 The slug list now exists twice — as `slug` in the release matrix and as `platform_slug()`
 in `src/update.rs` — and the updater fetches by it, so the two must change together. Both
@@ -216,9 +217,9 @@ request. Command output in the docs is captured from a real run, not written by 
 The cost is that a code-only pull request is rare. The alternative is a README that
 describes a program that no longer exists.
 
-## 14. Releases are computed automatically and tagged by hand
+## 14. Releases are computed and published automatically
 
-**Status:** Accepted, 0.1.1 (2026-10-24)
+**Status:** Accepted, 0.1.1 (2026-10-24), amended 0.1.14 (2026-10-26)
 
 Deciding a version by hand means deciding it from memory, and a changelog written at
 release time is written from the diff rather than from the intent.
@@ -226,15 +227,12 @@ release time is written from the diff rather than from the intent.
 `release-plz` runs on every merge to `main` in `git_only` mode — crates.io is not
 available to this project, so versions come from git tags rather than the registry. It
 computes the next version from the conventional-commit subjects, rewrites `Cargo.toml`,
-`Cargo.lock` and `CHANGELOG.md`, and keeps one open pull request holding the bump. A
-maintainer merges it and pushes the tag; the tag starts `release.yml`, which builds, signs
-and publishes.
+`Cargo.lock` and `CHANGELOG.md`, and keeps one open pull request holding the bump.
 
-The tag is the one manual step, and it is manual for a mechanical reason: a tag pushed
-with `GITHUB_TOKEN` does not trigger another workflow, so an automated tag would publish a
-release with no binaries in it. Closing that gap means a GitHub App or a long-lived
-personal token with push rights, stored in this repository — a standing credential in a
-project whose first decision was to hold none. One command is a cheaper price.
+When a maintainer merges the release pull request, `release.yml` triggers on `main`,
+detects that `Cargo.toml` holds a new version, automatically tags the commit, builds the
+matrix of four targets, signs/attests provenance, and publishes the release. This eliminates
+manual tagging without requiring external push tokens or standing secrets.
 
 The cost is that the commit prefix is now load-bearing: a `feat` typed as a `chore` ships
 without a version bump and without a changelog line.

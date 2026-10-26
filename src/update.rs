@@ -102,8 +102,9 @@ pub fn platform_slug() -> Option<&'static str> {
     None
 }
 
-pub fn asset_name(target: &str) -> String {
-    format!("gtunnel-{target}.tar.gz")
+pub fn asset_name(target: &str, version: &str) -> String {
+    let version = version.strip_prefix('v').unwrap_or(version);
+    format!("gtunnel-{target}-v{version}.tar.gz")
 }
 
 enum InstallMethod {
@@ -275,7 +276,7 @@ async fn get(url: &str) -> Result<Vec<u8>> {
 
 async fn perform_update(exe_path: &Path, version: &str) -> Result<()> {
     let slug = platform_slug().context("This platform has no self-update build")?;
-    let asset = asset_name(slug);
+    let asset = asset_name(slug, version);
     let base = format!("https://github.com/{REPO}/releases/download/v{version}");
 
     eprintln!("Downloading {asset}...");
@@ -376,7 +377,10 @@ mod tests {
             ["macos-arm64", "macos-intel", "linux-amd64", "linux-arm64"].contains(&slug),
             "slug not published by release.yml: {slug}"
         );
-        assert_eq!(asset_name(slug), format!("gtunnel-{slug}.tar.gz"));
+        assert_eq!(
+            asset_name(slug, "0.1.14"),
+            format!("gtunnel-{slug}-v0.1.14.tar.gz")
+        );
     }
 
     #[test]
@@ -477,7 +481,7 @@ mod tests {
     #[test]
     fn the_checksum_line_is_read_from_the_published_file() {
         assert_eq!(
-            parse_sha256_file("abc123  gtunnel-macos-arm64.tar.gz\n"),
+            parse_sha256_file("abc123  gtunnel-macos-arm64-v0.1.14.tar.gz\n"),
             Some("abc123".to_string())
         );
         assert_eq!(parse_sha256_file("   \n"), None);

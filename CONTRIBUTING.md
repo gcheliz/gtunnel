@@ -170,21 +170,14 @@ whose commits are a `feat` and two `docs` merged under a `docs:` title ships the
 with no Added line and no sign of it in the release. Title the pull request after the most
 significant change in it.
 
-Cutting the release is two steps, both for a maintainer:
+Cutting the release is automated:
 
-```
-# 1. merge the open release pull request
-# 2. tag the merge commit
-git tag -a v0.2.0 -m v0.2.0 && git push origin v0.2.0
-```
+1. Merge the open release pull request into `main`.
 
-Pushing the tag is what starts [`release.yml`](.github/workflows/release.yml): it builds
-the four targets, writes a `.sha256` beside each tarball, attests every asset, and
-publishes the GitHub release.
-
-The tag is manual on purpose. A tag pushed with `GITHUB_TOKEN` does not trigger another
-workflow, so an automated tag would produce a release with no binaries in it. The fix
-would be storing a long-lived push credential, which this project does not do — see
+Merging to `main` starts [`release.yml`](.github/workflows/release.yml): it detects the
+untagged version from `Cargo.toml`, pushes the annotated tag, builds the four targets,
+writes a `.sha256` beside each tarball, attests every asset, and publishes the GitHub release.
+Releases run directly from the merge with no manual tagging steps required — see
 [decision 14](docs/decisions.md).
 
 ## Reporting something

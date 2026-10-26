@@ -75,19 +75,20 @@ every step: [docs/usage.md](docs/usage.md#getting-set-up).
 | From a clone | `cargo install --path .` | `git pull` and run it again |
 | From the repository | `cargo install --git https://github.com/gcheliz/gtunnel` | the same command with `--force` |
 
-Pick your machine, and the release download needs no version in the URL:
+Pick your machine and release version:
 
 | Machine | File |
 |---|---|
-| Apple Silicon Mac | `gtunnel-macos-arm64.tar.gz` |
-| Intel Mac | `gtunnel-macos-intel.tar.gz` |
-| Linux, amd64 | `gtunnel-linux-amd64.tar.gz` |
-| Linux, arm64 | `gtunnel-linux-arm64.tar.gz` |
+| Apple Silicon Mac | `gtunnel-macos-arm64-v<version>.tar.gz` |
+| Intel Mac | `gtunnel-macos-intel-v<version>.tar.gz` |
+| Linux, amd64 | `gtunnel-linux-amd64-v<version>.tar.gz` |
+| Linux, arm64 | `gtunnel-linux-arm64-v<version>.tar.gz` |
 
 ```
-F=gtunnel-macos-arm64.tar.gz
-curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/latest/download/$F"
-curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/latest/download/$F.sha256"
+VERSION="v0.1.13"
+F="gtunnel-macos-arm64-${VERSION}.tar.gz"
+curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F"
+curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F.sha256"
 shasum -a 256 -c "$F.sha256" && tar -xzf "$F" && sudo mv gtunnel /usr/local/bin/
 ```
 
@@ -99,7 +100,7 @@ the [attestation](https://docs.github.com/actions/security-guides/using-artifact
 with the GitHub CLI:
 
 ```
-gh attestation verify gtunnel-macos-arm64.tar.gz -o gcheliz
+gh attestation verify "gtunnel-macos-arm64-${VERSION}.tar.gz" -o gcheliz
 ```
 
 Silence and exit 0 mean it checked out; a file this repository did not build fails with
