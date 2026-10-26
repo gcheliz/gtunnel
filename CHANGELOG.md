@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.16](https://github.com/gcheliz/gtunnel/compare/v0.1.15...v0.1.16) - 2026-10-26
+
+### Added
+
+- *(cli)* allow all config commands unauthenticated and deduplicate workflows ([#48](https://github.com/gcheliz/gtunnel/pull/48))
+
 ## [0.1.15](https://github.com/gcheliz/gtunnel/compare/v0.1.14...v0.1.15) - 2026-10-26
 
 ### Added
