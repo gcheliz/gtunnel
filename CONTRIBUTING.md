@@ -175,6 +175,15 @@ The tag push starts `release.yml` again on the tag: it builds the four targets, 
 `.sha256` beside each tarball, attests every asset, and publishes the draft as the latest
 release. See [decision 14](docs/decisions.md).
 
+A merge that only holds `docs`, `ci`, `test` or `chore` lines releases nothing. To ship
+them now, a maintainer dispatches the train on `main` with the filter lifted:
+
+```
+gh workflow run release.yml --ref main -f dry_run=false -f force=true
+```
+
+Add `-f dry_run=true` instead to see the version it would cut first.
+
 A maintainer can rehearse the train without releasing anything:
 
 ```
