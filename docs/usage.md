@@ -67,9 +67,8 @@ by another author, so a bare name would install somebody else's binary. If you h
 already run it, [troubleshooting.md](troubleshooting.md#cargo-install-gtunnel-installed-something-else)
 says what it left behind and how to undo it.
 
-The release URL carries no version, so the same four lines always fetch the current one.
-Substitute your machine's file: `gtunnel-macos-arm64`, `gtunnel-macos-intel`,
-`gtunnel-linux-amd64` or `gtunnel-linux-arm64`.
+Specify the release version and substitute your machine's file: `gtunnel-macos-arm64`,
+`gtunnel-macos-intel`, `gtunnel-linux-amd64` or `gtunnel-linux-arm64`.
 
 ```
 VERSION="v0.1.13"

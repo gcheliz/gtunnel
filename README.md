@@ -75,7 +75,7 @@ every step: [docs/usage.md](docs/usage.md#getting-set-up).
 | From a clone | `cargo install --path .` | `git pull` and run it again |
 | From the repository | `cargo install --git https://github.com/gcheliz/gtunnel` | the same command with `--force` |
 
-Pick your machine, and the release download needs no version in the URL:
+Pick your machine and release version:
 
 | Machine | File |
 |---|---|
