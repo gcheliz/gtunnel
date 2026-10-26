@@ -85,7 +85,7 @@ Pick your machine and release version:
 | Linux, arm64 | `gtunnel-linux-arm64-v<version>.tar.gz` |
 
 ```
-VERSION="v0.1.13"
+VERSION="v0.1.17"
 F="gtunnel-macos-arm64-${VERSION}.tar.gz"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F.sha256"
@@ -106,7 +106,7 @@ gh attestation verify "gtunnel-macos-arm64-${VERSION}.tar.gz" -o gcheliz
 Silence and exit 0 mean it checked out; a file this repository did not build fails with
 `HTTP 404` instead. Add `--format json` to read which workflow, tag and commit produced
 it — [docs/usage.md](docs/usage.md#4-install-gtunnel) shows that output. Attestations
-begin with v0.1.11.
+begin with v0.1.1.
 
 There is no `cargo install gtunnel`: the name on crates.io belongs to an unrelated crate.
 Use `--git` or `--path`, as above. Already ran it?
