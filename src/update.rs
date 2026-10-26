@@ -109,7 +109,6 @@ pub fn asset_name(target: &str, version: &str) -> String {
 
 enum InstallMethod {
     Homebrew,
-    Cargo,
     Binary(PathBuf),
 }
 
@@ -122,24 +121,21 @@ fn upgrade_hint(method: &InstallMethod) -> Option<String> {
         InstallMethod::Homebrew => {
             Some("gtunnel was installed with Homebrew. Run:\n  brew upgrade gtunnel".to_string())
         }
-        InstallMethod::Cargo => Some(
-            "gtunnel was installed with cargo. Run:\n  \
-             cargo install --git https://github.com/gcheliz/gtunnel --force"
-                .to_string(),
-        ),
         InstallMethod::Binary(_) => None,
     }
 }
 
 fn detect_install_method() -> InstallMethod {
     let exe = std::env::current_exe().unwrap_or_default();
+    detect_install_method_from_path(&exe)
+}
+
+fn detect_install_method_from_path(exe: &Path) -> InstallMethod {
     let path = exe.to_string_lossy();
     if path.contains("/Cellar/") || path.contains("/homebrew/") {
         InstallMethod::Homebrew
-    } else if path.contains("/.cargo/bin/") {
-        InstallMethod::Cargo
     } else {
-        InstallMethod::Binary(exe)
+        InstallMethod::Binary(exe.to_path_buf())
     }
 }
 
@@ -456,18 +452,24 @@ mod tests {
     }
 
     #[test]
-    fn a_cargo_install_is_sent_to_the_git_url_not_to_the_crates_io_name() {
-        let hint = upgrade_hint(&InstallMethod::Cargo).expect("cargo carries a hint");
-        assert!(
-            hint.contains("cargo install --git https://github.com/gcheliz/gtunnel"),
-            "the hint must name the repository: {hint}"
-        );
-        // `gtunnel` on crates.io is an unrelated crate by another author, so a bare
-        // `cargo install gtunnel` would install a stranger's binary over this one
-        assert!(
-            !hint.contains("cargo install gtunnel"),
-            "the hint must never send anyone to crates.io: {hint}"
-        );
+    fn a_cargo_bin_path_updates_itself_as_a_binary() {
+        let exe = PathBuf::from("/Users/you/.cargo/bin/gtunnel");
+        assert!(matches!(
+            detect_install_method_from_path(&exe),
+            InstallMethod::Binary(_)
+        ));
+        assert!(upgrade_hint(&InstallMethod::Binary(exe)).is_none());
+    }
+
+    #[test]
+    fn a_homebrew_install_is_sent_to_brew_upgrade() {
+        let exe = PathBuf::from("/opt/homebrew/Cellar/gtunnel/0.1.0/bin/gtunnel");
+        assert!(matches!(
+            detect_install_method_from_path(&exe),
+            InstallMethod::Homebrew
+        ));
+        let hint = upgrade_hint(&InstallMethod::Homebrew).expect("homebrew carries a hint");
+        assert!(hint.contains("brew upgrade gtunnel"));
     }
 
     #[test]
