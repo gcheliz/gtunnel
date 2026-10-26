@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.17](https://github.com/gcheliz/gtunnel/compare/v0.1.16...v0.1.17) - 2026-10-26
+
+### Added
+
+- *(mcp)* add native mcp server, agent skill, and json cli output ([#50](https://github.com/gcheliz/gtunnel/pull/50))
+
 ## [0.1.16](https://github.com/gcheliz/gtunnel/compare/v0.1.15...v0.1.16) - 2026-10-26
 
 ### Added
