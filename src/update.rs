@@ -371,9 +371,10 @@ mod tests {
             ["macos-arm64", "macos-intel", "linux-amd64", "linux-arm64"].contains(&slug),
             "slug not published by release.yml: {slug}"
         );
+        let version = env!("CARGO_PKG_VERSION");
         assert_eq!(
-            asset_name(slug, "0.1.14"),
-            format!("gtunnel-{slug}-v0.1.14.tar.gz")
+            asset_name(slug, version),
+            format!("gtunnel-{slug}-v{version}.tar.gz")
         );
     }
 
@@ -478,10 +479,9 @@ mod tests {
 
     #[test]
     fn the_checksum_line_is_read_from_the_published_file() {
-        assert_eq!(
-            parse_sha256_file("abc123  gtunnel-macos-arm64-v0.1.14.tar.gz\n"),
-            Some("abc123".to_string())
-        );
+        let version = env!("CARGO_PKG_VERSION");
+        let line = format!("abc123  gtunnel-macos-arm64-v{version}.tar.gz\n");
+        assert_eq!(parse_sha256_file(&line), Some("abc123".to_string()));
         assert_eq!(parse_sha256_file("   \n"), None);
     }
 }
