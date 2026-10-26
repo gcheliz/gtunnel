@@ -115,7 +115,7 @@ jobs:
           crate_version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
           grep -q "VERSION=\"v${crate_version}\"" README.md
           grep -q "VERSION=\"v${crate_version}\"" docs/usage.md
-          grep -q "gtunnel ${crate_version}" docs/usage.md
+          grep -qx "gtunnel ${crate_version}" docs/usage.md
           grep -q "(current: v${crate_version})" docs/usage.md
       # Installed rather than wrapped in an action: one less third-party step
       # with a token in scope, and the version is pinned here
