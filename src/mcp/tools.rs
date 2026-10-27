@@ -409,9 +409,12 @@ pub async fn execute_tool(
 
             let probe_latency_ms = if status == TunnelStatus::Running {
                 if let TunnelSpec::Access { local_port, .. } = &t.spec {
-                    probe::tcp_probe(
+                    // No log to read means a silent close is taken as an answer
+                    let log = t.log_path().unwrap_or_default();
+                    probe::probe_tunnel(
                         &format!("127.0.0.1:{local_port}"),
                         Duration::from_millis(500),
+                        &log,
                     )
                     .await
                     .map(|d| d.as_millis())

@@ -14,7 +14,7 @@ use crate::discovery::ExternalTunnel;
 use crate::ephemeral::list_ephemeral;
 use crate::expose::routes;
 use crate::gcp::GcpClient;
-use crate::probe::{collect_metrics, collect_unmanaged, http_probe, tcp_probe, HealthStatus};
+use crate::probe::{collect_metrics, collect_unmanaged, http_probe, probe_tunnel, HealthStatus};
 use crate::state::{AccessTarget, PersistentTunnel, TunnelSpec, TunnelState, TunnelStatus};
 use std::time::Duration;
 
@@ -155,7 +155,10 @@ pub async fn probe_health(tunnel: &PersistentTunnel) -> HealthStatus {
             if *local_port == 0 {
                 return HealthStatus::Unknown;
             }
-            match tcp_probe(&format!("127.0.0.1:{local_port}"), TCP_HEALTH_TIMEOUT).await {
+            // No log to read means a silent close is taken as an answer
+            let log = tunnel.log_path().unwrap_or_default();
+            let addr = format!("127.0.0.1:{local_port}");
+            match probe_tunnel(&addr, TCP_HEALTH_TIMEOUT, &log).await {
                 Some(_) => HealthStatus::Healthy,
                 None => HealthStatus::Unhealthy,
             }

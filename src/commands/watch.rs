@@ -244,9 +244,12 @@ async fn visit(
     let addr = format!("127.0.0.1:{port}");
     let label = daemon::platform_label(&tunnel.account_name, &tunnel.name);
     let status = daemon::status(&label).await;
-    let probe_ok = probe::tcp_probe(&addr, PROBE_TIMEOUT).await.is_some();
-
+    // The probe reads the log to tell a refused tunnel from a quiet service
     let log_path = tunnel.log_path()?;
+    let probe_ok = probe::probe_tunnel(&addr, PROBE_TIMEOUT, &log_path)
+        .await
+        .is_some();
+
     let len = std::fs::metadata(&log_path).map_or(0, |m| m.len());
 
     let row = row_for(rows, key(tunnel), len);
