@@ -1518,6 +1518,33 @@ pub fn sparkline_slice(samples: &[u64], width: u16) -> &[u64] {
     &samples[samples.len().saturating_sub(width)..]
 }
 
+/// Smallest span, in microseconds, the chart scale covers. Without it a series
+/// of identical samples would still be stretched to the full height.
+const CHART_MIN_SPAN_US: u64 = 10_000;
+
+/// Samples shifted and capped for the chart, with the value that fills it.
+///
+/// A `Sparkline` scales to the largest sample from a baseline of 0, so a steady
+/// round trip of 120 ms with a few ms of jitter filled every column and read as
+/// a solid block, while one spike flattened the rest. The scale is anchored on
+/// the median instead: the floor is half of it and the ceiling twice it, so a
+/// steady tunnel draws a flat low line and a spike still reaches the top.
+pub fn chart_scale(samples: &[u64]) -> (Vec<u64>, u64) {
+    if samples.is_empty() {
+        return (Vec::new(), 1);
+    }
+    let mut sorted = samples.to_vec();
+    sorted.sort_unstable();
+    let median = sorted[sorted.len() / 2];
+    let floor = median / 2;
+    let ceiling = (median * 2).max(floor + CHART_MIN_SPAN_US);
+    let drawn = samples
+        .iter()
+        .map(|s| s.saturating_sub(floor).min(ceiling - floor))
+        .collect();
+    (drawn, ceiling - floor)
+}
+
 /// How many rows these lines occupy once wrapped to `width`. An empty line
 /// still takes one, and a pane too narrow to hold anything takes one per line.
 ///
@@ -1668,9 +1695,11 @@ fn render_metrics(f: &mut Frame, app: &App, area: Rect) {
 
     if !entry.history.is_empty() {
         let samples = app.selected_sparkline();
+        let (drawn, top) = chart_scale(sparkline_slice(&samples, chunks[1].width));
         f.render_widget(
             Sparkline::default()
-                .data(sparkline_slice(&samples, chunks[1].width))
+                .data(&drawn)
+                .max(top)
                 .style(Style::default().fg(theme::ACCENT)),
             chunks[1],
         );

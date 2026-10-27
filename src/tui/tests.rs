@@ -1609,3 +1609,34 @@ fn a_failed_project_list_becomes_a_message_carrying_the_reason() {
         Msg::Projects(..)
     ));
 }
+
+#[test]
+fn a_steady_round_trip_does_not_fill_the_chart() {
+    let samples: Vec<u64> = (0..60).map(|i| 120_000 + (i % 5) * 1_000).collect();
+    let (drawn, top) = ui::chart_scale(&samples);
+    assert!(drawn.iter().all(|d| *d < top / 2), "{drawn:?} of {top}");
+    assert!(drawn.iter().all(|d| *d > 0));
+}
+
+#[test]
+fn one_spike_reaches_the_top_and_leaves_the_rest_above_the_floor() {
+    let mut samples = vec![120_000u64; 59];
+    samples.push(400_000);
+    let (drawn, top) = ui::chart_scale(&samples);
+    assert_eq!(drawn[59], top);
+    assert!(drawn[..59].iter().all(|d| *d > 0 && *d < top));
+}
+
+#[test]
+fn identical_samples_draw_no_full_height_column() {
+    let (drawn, top) = ui::chart_scale(&[40_000; 30]);
+    assert!(drawn.iter().all(|d| *d < top));
+}
+
+#[test]
+fn a_two_millisecond_tunnel_still_draws_a_chart() {
+    let samples = [1_500u64, 2_000, 2_500, 9_000, 2_000];
+    let (drawn, top) = ui::chart_scale(&samples);
+    assert_eq!(top, 10_000);
+    assert!(drawn.iter().max() > drawn.iter().min());
+}
