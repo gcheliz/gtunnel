@@ -137,6 +137,10 @@ pub struct ToolCallResult {
     pub content: Vec<ContentItem>,
     #[serde(rename = "isError", skip_serializing_if = "Option::is_none")]
     pub is_error: Option<bool>,
+    /// The same `{"error":{"kind","message"}}` object `--json` prints, so an
+    /// agent branches on one set of kind strings whichever door it used.
+    #[serde(rename = "structuredContent", skip_serializing_if = "Option::is_none")]
+    pub structured_content: Option<Value>,
 }
 
 impl ToolCallResult {
@@ -147,6 +151,7 @@ impl ToolCallResult {
                 text: text.into(),
             }],
             is_error: None,
+            structured_content: None,
         }
     }
 
@@ -157,6 +162,15 @@ impl ToolCallResult {
                 text: message.into(),
             }],
             is_error: Some(true),
+            structured_content: None,
+        }
+    }
+
+    /// A tool error that keeps its kind. The text stays the full chain.
+    pub fn failure(err: &anyhow::Error) -> Self {
+        Self {
+            structured_content: Some(crate::error::to_json(err)),
+            ..Self::error(crate::error::message_of(err))
         }
     }
 }
@@ -182,4 +196,24 @@ pub struct ResourceContent {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ResourceReadResult {
     pub contents: Vec<ResourceContent>,
+}
+
+#[cfg(test)]
+mod failure_tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_tool_carries_the_kind_beside_the_text() {
+        let err: anyhow::Error =
+            crate::error::GtunnelError::not_found("Tunnel 'x' not found").into();
+        let result = ToolCallResult::failure(&err.context("stop"));
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(result.content[0].text, "stop: Tunnel 'x' not found");
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["structuredContent"]["error"]["kind"], "not_found");
+        assert_eq!(
+            json["structuredContent"]["error"]["message"],
+            "stop: Tunnel 'x' not found"
+        );
+    }
 }

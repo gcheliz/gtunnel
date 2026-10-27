@@ -1,3 +1,4 @@
+use crate::error::GtunnelError;
 use anyhow::{bail, Context, Result};
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
@@ -152,7 +153,7 @@ pub fn parse_ttl(text: &str) -> Result<std::time::Duration> {
     };
     let invalid = || format!("Invalid TTL '{text}': use 90s, 30m or 2h (a bare number is minutes)");
     if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
-        bail!("{}", invalid());
+        return Err(GtunnelError::usage(invalid()).into());
     }
     let amount: u64 = digits.parse().with_context(invalid)?;
     let secs = amount

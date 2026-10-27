@@ -253,7 +253,7 @@ NAME  STATUS  ...
 ```
 
 When the confirmation is declined, the login is cancelled or fails, or there is no
-terminal (stdin or stdout is redirected, as under cron or CI), gtunnel exits 1 without
+terminal (stdin or stdout is redirected, as under cron or CI), gtunnel exits 4 (`auth`, see [Errors and exit codes](#errors-and-exit-codes)) without
 starting anything or opening a browser.
 
 ```
@@ -1102,6 +1102,34 @@ gtunnel v9.9.9 is available (current: v0.1.40). Run `gtunnel update`.
 The check runs at most once a day, in the background, and never blocks a command. A
 downloaded binary and one in `~/.cargo/bin` replace themselves after verifying the published
 SHA-256; a Homebrew install is detected and pointed at `brew upgrade gtunnel` instead.
+
+## Errors and exit codes
+
+A failure has a kind, and the kind decides the exit code. A script branches on the code, or
+on `error.kind` when a command runs with `--json`.
+
+| Kind | Exit | Meaning |
+|---|---|---|
+| `internal` | 1 | Anything unclassified: an unreadable config, a failed write, a tunnel that did not come up |
+| `usage` | 2 | A bad argument or setting, such as a target without a port or a bad `GTUNNEL_LOG_LEVEL`. Same code clap uses for a malformed command line |
+| `not_found` | 3 | The tunnel or the account named does not exist |
+| `auth` | 4 | gcloud has no usable credentials for the account |
+| `gcloud` | 5 | A gcloud call ran and failed |
+
+`list --json`, `account list --json` and `doctor --json` print the failure on stdout as one
+object, and nothing on stderr. `message` is the whole cause chain joined with `: `.
+
+```
+$ gtunnel list --json --account nope
+{"error":{"kind":"not_found","message":"Account 'nope' not found"}}
+$ echo $?
+3
+```
+
+Without `--json` the text stays on stderr as before and only the exit code follows the kind.
+A command-line mistake that clap rejects itself (an unknown flag) prints clap's usage text and
+exits 2 even under `--json`. MCP tool errors carry the same object as `structuredContent`
+beside the text, so an agent matches the same kind strings.
 
 ## Model Context Protocol (MCP) and AI Agent Integration
 

@@ -1,3 +1,4 @@
+use crate::error::GtunnelError;
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -104,7 +105,12 @@ async fn run_gcloud(args: &[String]) -> Result<String> {
         .with_context(|| format!("Failed to run {}", gcloud.display()))?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
-        bail!("gcloud {} failed: {}", args.join(" "), stderr.trim());
+        return Err(GtunnelError::gcloud(format!(
+            "gcloud {} failed: {}",
+            args.join(" "),
+            stderr.trim()
+        ))
+        .into());
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
@@ -127,9 +133,13 @@ pub async fn print_access_token(acct: &Account) -> Result<String> {
         acct,
         crate::loglevel::current(),
     ));
-    let stdout = run_gcloud(&args)
-        .await
-        .context("Could not get a gcloud access token. Run `gcloud auth login` and try again.")?;
+    // A token that cannot be minted is a credential problem whatever gcloud
+    // printed, so this is the one place a gcloud failure is reclassified
+    let stdout = run_gcloud(&args).await.map_err(|e| {
+        GtunnelError::auth(format!(
+            "Could not get a gcloud access token. Run `gcloud auth login` and try again: {e:#}"
+        ))
+    })?;
     Ok(stdout.trim().to_string())
 }
 
@@ -219,10 +229,11 @@ where
         }
         AuthStep::Fail => {}
     }
-    bail!(
+    Err(GtunnelError::auth(format!(
         "gtunnel needs a logged-in Google account for '{}'. Run `gcloud auth login`",
         acct.name
-    )
+    ))
+    .into())
 }
 
 #[cfg(test)]

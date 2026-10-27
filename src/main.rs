@@ -6,6 +6,7 @@ mod daemon;
 mod discovery;
 mod doctor;
 mod ephemeral;
+mod error;
 mod expose;
 mod fsutil;
 mod gcp;
@@ -30,9 +31,26 @@ use cli::{
 };
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() {
     let args = Cli::parse();
+    let json = args.wants_json();
+    if let Err(e) = run(args).await {
+        // The command already printed this failure; printing it again would
+        // double it on stderr
+        if e.downcast_ref::<commands::access::Printed>().is_some() {
+            std::process::exit(1);
+        }
+        let kind = error::kind_of(&e);
+        if json {
+            println!("{}", error::to_json(&e));
+        } else {
+            eprintln!("Error: {e:?}");
+        }
+        std::process::exit(kind.exit_code());
+    }
+}
 
+async fn run(args: Cli) -> Result<()> {
     // Before anything builds an argv or calls gcloud, and before the config
     // is needed for anything else: a bad GTUNNEL_LOG_LEVEL should fail here,
     // naming the variable, rather than somewhere downstream. A config that
@@ -236,13 +254,6 @@ async fn main() -> Result<()> {
 
     if !quiet {
         update::maybe_print_update_hint();
-    }
-    // The command already printed this failure; returning it would print it
-    // a second time on stderr
-    if let Err(e) = &result
-        && e.downcast_ref::<commands::access::Printed>().is_some()
-    {
-        std::process::exit(1);
     }
     result
 }

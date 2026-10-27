@@ -1,3 +1,4 @@
+use crate::error::GtunnelError;
 use anyhow::{bail, Context, Result};
 use std::time::Duration;
 
@@ -49,14 +50,15 @@ fn new_access_tunnel(
 
 // `INSTANCE:PORT`, or `HOST:PORT` when a destination group is used
 pub fn parse_access_target(target: &str) -> Result<(String, u16)> {
-    let (host, port) = target
-        .rsplit_once(':')
-        .with_context(|| format!("Invalid target '{target}': expected INSTANCE:PORT"))?;
-    let port: u16 = port
-        .parse()
-        .with_context(|| format!("Invalid target '{target}': expected INSTANCE:PORT"))?;
+    let invalid = || {
+        anyhow::Error::from(GtunnelError::usage(format!(
+            "Invalid target '{target}': expected INSTANCE:PORT"
+        )))
+    };
+    let (host, port) = target.rsplit_once(':').ok_or_else(invalid)?;
+    let port: u16 = port.parse().map_err(|_| invalid())?;
     if host.is_empty() || port == 0 {
-        bail!("Invalid target '{target}': expected INSTANCE:PORT");
+        return Err(invalid());
     }
     Ok((host.to_string(), port))
 }
@@ -555,7 +557,7 @@ fn set_record_auto_start(account: &str, name: &str, on: bool) -> Result<Persiste
     TunnelState::update(|state| {
         let tunnel = state
             .find_for_account_mut(name, account)
-            .with_context(|| format!("Tunnel '{name}' not found"))?;
+            .ok_or_else(|| GtunnelError::not_found(format!("Tunnel '{name}' not found")))?;
         tunnel.auto_start = on;
         Ok(tunnel.clone())
     })

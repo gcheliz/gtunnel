@@ -154,7 +154,7 @@ fn stderr(out: &Output) -> String {
 fn logs_nonexistent_tunnel_fails_with_actionable_error() {
     let h = Harness::new();
     let out = h.run(&["logs", "nope"]);
-    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(out.status.code(), Some(3));
     assert!(stderr(&out).contains("Error: Tunnel 'nope' not found for account 'demo'"));
 }
 
