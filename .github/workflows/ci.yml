@@ -53,8 +53,9 @@ jobs:
             cache-targets: true
           # A vulnerable crate reaches users as a signed-for binary `gtunnel
           # update` installs, so the advisory check gates the same commits the
-          # tests do. `cargo audit` reads Cargo.lock and compiles nothing of
-          # ours, so its cache keeps the installed binary and no target dir.
+          # tests do. `cargo deny` checks advisories, licences, bans and sources
+          # against deny.toml; it reads Cargo.lock and compiles nothing of ours,
+          # so its cache keeps the installed binary and no target dir.
           - name: audit
             check: audit
             os: ubuntu-24.04
@@ -125,8 +126,8 @@ jobs:
       - name: Audit dependencies
         if: matrix.check == 'audit'
         run: |
-          cargo install cargo-audit --locked --version 0.22.2
-          cargo audit --deny warnings
+          cargo install cargo-deny --locked --version 0.20.2
+          cargo deny --locked check
       - name: Check on the declared MSRV
         if: matrix.check == 'msrv'
         run: cargo check --locked --all-targets

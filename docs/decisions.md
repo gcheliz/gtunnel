@@ -163,7 +163,7 @@ branch.
 | `cargo fmt --check` | a formatting-only diff must never ride along with a logic change |
 | `cargo clippy --all-targets -- -D warnings` | carries the lint policy declared in `Cargo.toml` |
 | `cargo test` | on ubuntu and macos, because the service back ends differ |
-| `cargo audit --deny warnings` | a vulnerable crate reaches users as a binary they trust |
+| `cargo deny --locked check` | a vulnerable or unlicensed crate reaches users as a binary they trust |
 | `cargo check --locked` on 1.89 | a declared `rust-version` that nothing checks rots on the next bump |
 | `zizmor --offline` | the workflows hold a release token, so an injection there is the most expensive mistake available |
 
