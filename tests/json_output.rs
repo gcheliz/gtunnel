@@ -92,6 +92,7 @@ impl Harness {
             .env("HOME", root)
             .env("GTUNNEL_CONFIG_DIR", root.join("config"))
             .env("GTUNNEL_NO_NOTIFY", "1")
+            .env("GTUNNEL_NO_DISCOVERY", "1")
             .envs(env.iter().copied())
             .stdin(Stdio::null())
             .output()
