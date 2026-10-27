@@ -143,8 +143,12 @@ pub fn signalable(pid: u32) -> Option<libc::pid_t> {
     i32::try_from(pid).ok().filter(|p| *p > 0)
 }
 
-// Signal 0 asks the kernel whether the process exists without disturbing it
-fn pid_is_alive(pid: u32) -> bool {
+// Signal 0 asks the kernel whether the process exists without disturbing it.
+// A bare pid can be a recycled one, so a run record is judged by its start
+// token as well; this alone serves only callers with nothing more than a pid,
+// like the config page's `tunnels.edit-<pid>.toml` copies, where a wrong
+// "alive" merely keeps a stale copy
+pub fn pid_is_alive(pid: u32) -> bool {
     let Some(pid) = signalable(pid) else {
         return false;
     };
