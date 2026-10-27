@@ -226,9 +226,6 @@ pub fn descriptors_exhausted(tunnel: &str, log: &str, holders: &[Holder]) -> Opt
     })
 }
 
-// The watchdog is machine-wide, so doctor reports it once rather than once per
-// account. It is only worth reporting when there is a tunnel for it to watch:
-// a fresh install with nothing in tunnels.toml is not missing anything.
 /// Accounts the name rule would refuse today. Pure, because it reads only the
 /// config and needs neither gcloud nor the network.
 pub fn reserved_accounts(config: &Config) -> Vec<String> {
@@ -240,6 +237,9 @@ pub fn reserved_accounts(config: &Config) -> Vec<String> {
         .collect()
 }
 
+// The watchdog is machine-wide, so doctor reports it once rather than once per
+// account. It is only worth reporting when there is a tunnel for it to watch:
+// a fresh install with nothing in tunnels.toml is not missing anything.
 pub fn watchdog_finding(installed: bool, tunnels: usize) -> Option<Finding> {
     (!installed && tunnels > 0).then_some(Finding::WatchdogMissing)
 }
