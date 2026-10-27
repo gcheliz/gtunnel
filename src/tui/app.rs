@@ -426,7 +426,7 @@ pub struct ConfigView {
     pub path: String,
     // The private copy the editor works on, kept after a refused edit so `e`
     // reopens the user's work and `Esc` is what throws it away
-    pub staged: Option<std::path::PathBuf>,
+    pub staged: Option<super::config_edit::Staged>,
     pub notice: Option<Notice>,
 }
 
@@ -1187,6 +1187,10 @@ impl App {
             self.set_status("the demo has no config files");
             return;
         }
+        // A copy that cannot be removed is no reason to refuse the page
+        if let Ok(dir) = page_dir() {
+            let _ = super::config_edit::remove_stale_copies(&dir, crate::ephemeral::pid_is_alive);
+        }
         match self.load_config_file(ConfigFile::Config) {
             Ok(()) => {
                 self.help_extent.set(HelpExtent::default());
@@ -1247,7 +1251,7 @@ impl App {
             },
         };
 
-        let edited = self.run_editor(&staged);
+        let edited = self.run_editor(&staged.path);
         // Whatever happened, the editor drew over the screen
         self.clear_screen = true;
         let text = match edited {
@@ -1256,7 +1260,7 @@ impl App {
                 // A copy this press made is the edit that was cancelled. One
                 // left from a refused edit holds work the user has not given up
                 if fresh {
-                    let _ = edit::discard(&staged);
+                    let _ = edit::discard(&staged.path);
                 } else {
                     self.config_view.staged = Some(staged);
                 }
@@ -1264,9 +1268,11 @@ impl App {
             }
         };
 
-        let current = std::fs::read_to_string(&real).unwrap_or_default();
-        if text == current {
-            let _ = edit::discard(&staged);
+        // Compared with what the copy was taken from, not with the file now: a
+        // gtunnel that wrote in between would otherwise make an untouched copy
+        // look like an edit, and saving it would overwrite that write
+        if text == staged.original_text() {
+            let _ = edit::discard(&staged.path);
             self.config_view.staged = None;
             self.config_view.error = None;
             let _ = self.load_config_file(file);
@@ -1293,8 +1299,17 @@ impl App {
             Err(e) => return self.refuse(staged, text, format!("{e:#}")),
         };
 
-        let before = crate::state::TunnelState::load().unwrap_or_default();
+        // The state the edit started from, so the summary counts the edit and
+        // not whatever another writer left meanwhile
+        let before = toml::from_str::<crate::state::TunnelState>(&staged.original_text())
+            .unwrap_or_default();
         if let Err(e) = edit::commit(&staged, &real) {
+            if let Some(changed) = e.downcast_ref::<edit::Changed>() {
+                let mut staged = staged;
+                staged.rebase(changed.now.clone());
+                let error = format!("{changed}; saving your edit again replaces that change");
+                return self.refuse(staged, text, error);
+            }
             return self.refuse(staged, text, format!("{e:#}"));
         }
         self.config_view.staged = None;
@@ -1325,8 +1340,11 @@ impl App {
         });
     }
 
-    // The edit stays on the page, with its copy, and says why it was not saved
-    fn refuse(&mut self, staged: std::path::PathBuf, text: String, error: String) {
+    // The edit stays on the page, with its copy, and says why it was not saved.
+    // After a conflict the copy has been re-based on the file as it now is, so
+    // a deliberate second save can land; a further write in between is refused
+    // again, because the next commit compares with that re-based snapshot.
+    fn refuse(&mut self, staged: super::config_edit::Staged, text: String, error: String) {
         self.config_view.staged = Some(staged);
         self.config_view.text = Some(text);
         self.config_view.error = Some(error.clone());
@@ -1407,7 +1425,7 @@ impl App {
         match code {
             KeyCode::Esc | KeyCode::Char('q') => {
                 if let Some(staged) = self.config_view.staged.take() {
-                    let _ = super::config_edit::discard(&staged);
+                    let _ = super::config_edit::discard(&staged.path);
                     self.set_status(format!(
                         "discarded the edit to {}",
                         self.config_view.file.file_name()

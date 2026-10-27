@@ -467,7 +467,7 @@ fn an_invalid_edit_never_reaches_the_file_and_the_page_says_why() {
     assert!(error.contains("line 2"), "{error}");
     assert!(app.status_error);
     let staged = app.config_view.staged.clone().expect("the copy is kept");
-    assert!(staged.exists());
+    assert!(staged.path.exists());
     let screen = rows(&app, 120, 40).join("\n");
     assert!(screen.contains("not saved: line 2"), "{screen}");
     assert!(
@@ -655,4 +655,149 @@ fn a_blank_row_keeps_the_file_apart_from_what_is_said_about_it() {
     // And a short page gives the row up before it gives up the file
     press(&mut app, KeyCode::Tab);
     let _ = rows(&app, 40, 12);
+}
+
+// The editor and a second gtunnel at once: the copy is edited, and the CLI adds
+// a tunnel to the real file before the editor returns
+fn adds_a_tunnel_while_the_cli_adds_another(path: &Path) -> anyhow::Result<()> {
+    adds_a_tunnel(path)?;
+    only_the_cli_writes(path)
+}
+
+fn only_the_cli_writes(_: &Path) -> anyhow::Result<()> {
+    TunnelState::update(|s| s.add(tunnel("cache", 16001)))
+}
+
+fn only_the_cli_writes_a_third(_: &Path) -> anyhow::Result<()> {
+    TunnelState::update(|s| s.add(tunnel("bus", 16002)))
+}
+
+#[test]
+fn a_save_after_another_gtunnel_wrote_the_file_is_refused_and_keeps_both() {
+    let dir = seeded(2);
+    let mut app = page_app();
+    press(&mut app, KeyCode::Tab);
+    edit(&mut app, adds_a_tunnel_while_the_cli_adds_another);
+
+    let on_disk = std::fs::read_to_string(dir.path().join("tunnels.toml")).unwrap();
+    assert!(
+        on_disk.contains("cache") && !on_disk.contains("queue"),
+        "{on_disk}"
+    );
+    let error = app.config_view.error.clone().expect("refused");
+    assert!(
+        error.starts_with("tunnels.toml changed since you opened it"),
+        "{error}"
+    );
+    assert!(app
+        .status
+        .clone()
+        .unwrap()
+        .starts_with("not saved: tunnels.toml changed since you opened it"));
+    assert!(app.status_error);
+    let staged = app.config_view.staged.clone().expect("the edit is kept");
+    assert!(std::fs::read_to_string(&staged.path)
+        .unwrap()
+        .contains("queue"));
+    assert!(
+        app.config_view.text.as_deref().unwrap().contains("queue"),
+        "the page shows the edit"
+    );
+    let screen = rows(&app, 120, 40).join("\n");
+    assert!(screen.contains("changed since you opened it"), "{screen}");
+    assert!(
+        screen.contains("edit again") && screen.contains("discard"),
+        "{screen}"
+    );
+}
+
+#[test]
+fn a_second_save_after_a_refusal_replaces_the_change_it_was_warned_about() {
+    let dir = seeded(2);
+    let mut app = page_app();
+    press(&mut app, KeyCode::Tab);
+    edit(&mut app, adds_a_tunnel_while_the_cli_adds_another);
+    assert!(app.config_view.error.is_some());
+
+    edit(&mut app, leaves_alone);
+    assert_eq!(app.config_view.error, None, "{:?}", app.status);
+    assert!(
+        app.status.clone().unwrap().starts_with("reloaded"),
+        "{:?}",
+        app.status
+    );
+    let on_disk = std::fs::read_to_string(dir.path().join("tunnels.toml")).unwrap();
+    assert!(
+        on_disk.contains("queue") && !on_disk.contains("cache"),
+        "{on_disk}"
+    );
+    assert!(leftovers(&dir).is_empty(), "{:?}", leftovers(&dir));
+}
+
+#[test]
+fn a_retry_is_refused_again_if_the_file_changed_again() {
+    let dir = seeded(2);
+    let mut app = page_app();
+    press(&mut app, KeyCode::Tab);
+    edit(&mut app, adds_a_tunnel_while_the_cli_adds_another);
+    edit(&mut app, only_the_cli_writes_a_third);
+
+    let error = app.config_view.error.clone().expect("refused again");
+    assert!(
+        error.starts_with("tunnels.toml changed since you opened it"),
+        "{error}"
+    );
+    let on_disk = std::fs::read_to_string(dir.path().join("tunnels.toml")).unwrap();
+    assert!(
+        on_disk.contains("cache") && on_disk.contains("bus"),
+        "{on_disk}"
+    );
+}
+
+#[test]
+fn an_unchanged_save_after_another_gtunnel_wrote_the_file_is_not_a_save() {
+    let dir = seeded(1);
+    let mut app = page_app();
+    press(&mut app, KeyCode::Tab);
+    edit(&mut app, only_the_cli_writes);
+    assert!(app
+        .status
+        .clone()
+        .unwrap()
+        .contains("no changes to tunnels.toml"));
+    assert!(std::fs::read_to_string(dir.path().join("tunnels.toml"))
+        .unwrap()
+        .contains("cache"));
+    assert!(leftovers(&dir).is_empty());
+}
+
+#[test]
+fn opening_the_page_removes_a_dead_gtunnels_copy() {
+    // A pid above i32::MAX is never signalable, so it is dead on every machine
+    let dir = seeded(1);
+    std::fs::write(dir.path().join("tunnels.edit-4294967295.toml"), "stale\n").unwrap();
+    assert_eq!(leftovers(&dir).len(), 1);
+
+    let _app = page_app();
+    assert!(leftovers(&dir).is_empty(), "{:?}", leftovers(&dir));
+}
+
+#[test]
+fn a_config_save_after_account_select_is_refused() {
+    fn adds_staging_while_prod_is_selected(path: &Path) -> anyhow::Result<()> {
+        adds_staging(path)?;
+        crate::config::update_config(|c| c.select_account("prod"))
+    }
+    let dir = seeded(1);
+    let mut app = page_app();
+    edit(&mut app, adds_staging_while_prod_is_selected);
+
+    let error = app.config_view.error.clone().expect("refused");
+    assert!(
+        error.starts_with("config.toml changed since you opened it"),
+        "{error}"
+    );
+    let on_disk = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert!(on_disk.contains("selected_account = \"prod\""), "{on_disk}");
+    assert!(!on_disk.contains("staging"), "{on_disk}");
 }
