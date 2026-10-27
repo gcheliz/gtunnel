@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.62](https://github.com/gcheliz/gtunnel/compare/v0.1.61...v0.1.62) - 2026-10-27
+
+### Added
+
+- *(mcp)* expose tool, private unless public is true ([#159](https://github.com/gcheliz/gtunnel/pull/159))
+
 ## [0.1.61](https://github.com/gcheliz/gtunnel/compare/v0.1.60...v0.1.61) - 2026-10-27
 
 ### Added
