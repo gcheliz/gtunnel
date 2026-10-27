@@ -3,6 +3,16 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.1](https://github.com/gcheliz/gtunnel/compare/v0.2.0...v0.2.1) - 2026-10-27
+
+### Added
+
+- *(doctor)* refuse and report unknown keys in config.toml and tunnels.toml ([#163](https://github.com/gcheliz/gtunnel/pull/163))
+
+### Fixed
+
+- *(expose)* refuse port 0 in host:port, require started in the schema ([#167](https://github.com/gcheliz/gtunnel/pull/167))
+
 ## [0.2.0](https://github.com/gcheliz/gtunnel/compare/v0.1.64...v0.2.0) - 2026-10-27
 
 ### Fixed
