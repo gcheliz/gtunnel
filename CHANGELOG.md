@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.63](https://github.com/gcheliz/gtunnel/compare/v0.1.62...v0.1.63) - 2026-10-27
+
+### Added
+
+- *(account)* pick the GCP project from a list, typing stays the fallback ([#160](https://github.com/gcheliz/gtunnel/pull/160))
+
 ## [0.1.62](https://github.com/gcheliz/gtunnel/compare/v0.1.61...v0.1.62) - 2026-10-27
 
 ### Added
