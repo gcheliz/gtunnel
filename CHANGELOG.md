@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.22](https://github.com/gcheliz/gtunnel/compare/v0.1.21...v0.1.22) - 2026-10-27
+
+### Documentation
+
+- link the landing page from the README and require conventional PR titles ([#70](https://github.com/gcheliz/gtunnel/pull/70))
+
 ## [0.1.21](https://github.com/gcheliz/gtunnel/compare/v0.1.20...v0.1.21) - 2026-10-27
 
 ### Documentation
