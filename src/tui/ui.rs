@@ -1892,11 +1892,14 @@ pub fn footer_line(
 
 fn render_help_bar(f: &mut Frame, area: Rect, app: &App) {
     let selected = app.selected_entry().map(|e| (e.status, e.kind));
+    // An empty list before the first load answers, as after every `;`, is not
+    // an empty account: it offers nothing contextual rather than `m import`
+    let empty_and_known = app.entries.is_empty() && app.loaded;
     f.render_widget(
         Paragraph::new(footer_line_with_flash(
             area.width,
             selected,
-            !app.entries.is_empty(),
+            !empty_and_known,
             app.flash_message(),
         )),
         area,

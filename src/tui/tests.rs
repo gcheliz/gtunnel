@@ -1756,3 +1756,27 @@ fn rows_text(buffer: &ratatui::buffer::Buffer) -> String {
         .collect::<Vec<_>>()
         .join("\n")
 }
+
+fn frame(app: &App, width: u16, height: u16) -> String {
+    let backend = ratatui::backend::TestBackend::new(width, height);
+    let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+    terminal.draw(|f| ui::render(f, app)).expect("draw");
+    rows_text(terminal.backend().buffer())
+}
+
+// After `;` the list is empty until the new account's load answers. That is
+// not an empty account, so the footer must not offer what an empty one does:
+// `m import` flashed on every switch
+#[test]
+fn the_footer_offers_import_only_once_the_account_is_known_to_be_empty() {
+    let mut app = App::new("dev");
+    assert!(!app.loaded);
+    let waiting = frame(&app, 120, 30);
+    assert!(waiting.contains("loading"), "{waiting}");
+    assert!(!waiting.contains("m import"), "{waiting}");
+
+    app.loaded = true;
+    let empty = frame(&app, 120, 30);
+    assert!(empty.contains("no tunnels in this account"), "{empty}");
+    assert!(empty.contains("m import"), "{empty}");
+}
