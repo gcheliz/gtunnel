@@ -113,6 +113,21 @@ the throwaway account a name of its own: the service label is
 Then substitute only the value under discussion. A transcript edited further is no longer
 evidence of anything.
 
+## Issues
+
+The tracker is where a defect or a planned change lives; a plan file or a chat message is
+not a record. Search before you open one (`gh issue list --state all --search "<keywords>"`)
+and extend a match rather than duplicating it. A pull request says `Closes #N`, and the
+merge closes the issue, never a hand while the fix is unmerged.
+
+| Section | Content |
+|---|---|
+| Symptom | What a person using gtunnel sees, in one or two sentences |
+| Where | `file:line` at a named commit, so the line survives drift |
+| Why | The mechanism, not the history of how it was found |
+| Fix shape | The design already agreed, so the implementer does not re-decide it |
+| Acceptance | The test or command that proves it, as a checklist |
+
 ## Commits and pull requests
 
 Commit subjects use a conventional prefix and the imperative mood:
