@@ -493,6 +493,12 @@ gtunnel add <NAME> <HOST:PORT> --dest-group G --region R --network N [-s]
 The local port is derived from the tunnel name, so the same name gets the same port on
 every machine unless it is taken.
 
+gcloud reads any argument that starts with a dash as an option, so `add` refuses one. An
+instance is a GCE name (up to 63 lowercase letters, digits and dashes, starting with a letter),
+a zone is lowercase letters, digits and dashes, and a host is a hostname or an IP address. The
+error names the field and the value, and the same rule holds for a hand-edited `tunnels.toml`
+and for the MCP tools.
+
 ### Naming a tunnel
 
 A name is unique within its account, not across them, so the same service keeps the same
@@ -1155,7 +1161,8 @@ A tool that fails returns a normal result with `isError: true` and the whole cau
 text, such as `db failed to start` and the hint under it. A start that fails is such a failure:
 `gtunnel_add_tunnel` with `start: true` reports it and the tunnel stays in `tunnels.toml`, as
 `gtunnel add -s` leaves it. Only a call with missing or mistyped parameters is a JSON-RPC
-error. Nothing but JSON-RPC frames is ever written to stdout.
+error, and so is an instance, zone or host that gcloud would read as an option. Nothing but
+JSON-RPC frames is ever written to stdout.
 
 #### Live Resources
 

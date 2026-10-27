@@ -196,6 +196,50 @@ fn add_without_start_does_not_require_gcp_login() {
     );
 }
 
+// argv never touches a shell, but gcloud reads any element that starts with a
+// dash as one of its own options, so these never get as far as a record
+#[test]
+fn add_refuses_an_instance_that_gcloud_would_read_as_a_flag() {
+    let h = Harness::new();
+    let out = h.run(&["add", "bad", "--via=--command=id", "10.0.0.10:22"]);
+    let err = stderr(&out);
+    assert_eq!(out.status.code(), Some(1), "stderr: {err}");
+    assert!(err.contains("Invalid instance '--command=id'"), "{err}");
+    let out = h.run(&["add", "--", "bad", "--command=id:22"]);
+    let err = stderr(&out);
+    assert_eq!(out.status.code(), Some(1), "stderr: {err}");
+    assert!(err.contains("Invalid instance '--command=id'"), "{err}");
+}
+
+#[test]
+fn add_refuses_a_host_or_zone_that_gcloud_would_read_as_a_flag() {
+    let h = Harness::new();
+    let out = h.run(&[
+        "add",
+        "--via",
+        "bastion",
+        "--",
+        "bad",
+        "-oProxyCommand=id:22",
+    ]);
+    let err = stderr(&out);
+    assert_eq!(out.status.code(), Some(1), "stderr: {err}");
+    assert!(err.contains("Invalid host '-oProxyCommand=id'"), "{err}");
+    let out = h.run(&[
+        "add",
+        "bad",
+        "10.0.0.10:22",
+        "--via",
+        "bastion",
+        "--zone=-x",
+    ]);
+    let err = stderr(&out);
+    assert_eq!(out.status.code(), Some(1), "stderr: {err}");
+    assert!(err.contains("Invalid zone '-x'"), "{err}");
+    let tunnels = fs::read_to_string(h.dir.path().join("config/tunnels.toml")).unwrap();
+    assert!(!tunnels.contains("bad"), "{tunnels}");
+}
+
 #[test]
 fn add_with_start_requires_gcp_login() {
     let h = Harness::logged_out();

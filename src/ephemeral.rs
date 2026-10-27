@@ -359,6 +359,10 @@ pub async fn cmd_run(
         )
     } else {
         let (host, remote_port) = crate::commands::access::parse_access_target(&target)?;
+        crate::state::validate_instance_name(&host)?;
+        if let Some(zone) = zone {
+            crate::state::validate_zone(zone)?;
+        }
         let mut used = state.used_local_ports();
         used.extend(ephemeral_ports(&acct.name, false)?);
         let local_port = match local_port {

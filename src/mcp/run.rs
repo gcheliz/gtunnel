@@ -42,7 +42,9 @@ impl RunRequest {
         if target.starts_with('-') {
             return Err(format!("Invalid 'target': '{target}' starts with a dash"));
         }
-        crate::commands::access::parse_access_target(target)
+        let (instance, _) = crate::commands::access::parse_access_target(target)
+            .map_err(|e| format!("Invalid 'target': {e:#}"))?;
+        crate::state::validate_instance_name(&instance)
             .map_err(|e| format!("Invalid 'target': {e:#}"))?;
 
         let ttl_minutes = args
@@ -72,15 +74,7 @@ impl RunRequest {
         };
         let zone = args.get("zone").and_then(Value::as_str).map(str::to_string);
         if let Some(zone) = &zone {
-            let ok = zone.starts_with(|c: char| c.is_ascii_lowercase())
-                && zone
-                    .chars()
-                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
-            if !ok {
-                return Err(format!(
-                    "Invalid 'zone': '{zone}' is not a zone such as europe-west1-b"
-                ));
-            }
+            crate::state::validate_zone(zone).map_err(|e| format!("Invalid 'zone': {e:#}"))?;
         }
 
         Ok(Self {
