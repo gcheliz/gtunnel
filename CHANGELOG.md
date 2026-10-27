@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.26](https://github.com/gcheliz/gtunnel/compare/v0.1.25...v0.1.26) - 2026-10-27
+
+### Fixed
+
+- *(state)* write tunnels.toml, config.toml and run records atomically under a lock ([#74](https://github.com/gcheliz/gtunnel/pull/74))
+
 ## [0.1.25](https://github.com/gcheliz/gtunnel/compare/v0.1.24...v0.1.25) - 2026-10-27
 
 ### Fixed
