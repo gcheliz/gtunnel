@@ -280,3 +280,90 @@ fn the_account_form_title_counts_its_steps_and_says_what_a_configuration_is() {
     assert!(page.contains("New account 1/2"), "{page}");
     assert!(page.contains("gcloud config configurations list"), "{page}");
 }
+
+fn configuration(name: &str, project: Option<&str>, is_active: bool) -> ConfigurationChoice {
+    ConfigurationChoice {
+        name: name.to_string(),
+        project: project.map(str::to_string),
+        is_active,
+    }
+}
+
+fn add_dialog_with(list: Vec<ConfigurationChoice>) -> App {
+    let mut app = page_app();
+    app.handle_key(key(KeyCode::Char('a')));
+    assert!(
+        app.want_configurations,
+        "opening the dialog asks for the list"
+    );
+    app.configurations_arrived(list);
+    app
+}
+
+// The active configuration is the one `gcloud` itself would use, so it is
+// the likeliest answer and Enter alone takes it
+#[test]
+fn the_configuration_picker_preselects_the_active_one() {
+    let app = add_dialog_with(vec![
+        configuration("ci", Some("example-dev-1a2b"), false),
+        configuration("work", Some("example-prod-3c4d"), true),
+    ]);
+    assert_eq!(app.input_mode, InputMode::AccountConfigurationPick);
+    let chosen = &app.filtered_configurations()[app.configuration_selected];
+    assert_eq!(chosen.name, "work");
+    let page = rows(&app, 100, 30).join("\n");
+    assert!(page.contains("New account 1/2"), "{page}");
+    assert!(page.contains("(active)"), "{page}");
+}
+
+// `account add` reads the project from the configuration, so one without a
+// project would fail after a gcloud call; the dialog says the fix instead
+#[test]
+fn a_configuration_without_a_project_is_refused_with_the_fix() {
+    let mut app = add_dialog_with(vec![configuration("bare", None, true)]);
+    assert_eq!(app.handle_key(key(KeyCode::Enter)), None);
+    assert_eq!(app.input_mode, InputMode::AccountConfigurationPick);
+    let said = app.draft_error.clone().expect("a reason beside the list");
+    assert!(
+        said.contains("gcloud config set project <id> --configuration=bare"),
+        "{said}"
+    );
+}
+
+#[test]
+fn a_typed_configuration_the_list_lacks_is_taken() {
+    let mut app = add_dialog_with(vec![configuration("work", Some("example-dev-1a2b"), true)]);
+    retype(&mut app, "ci");
+    assert!(app.filtered_configurations().is_empty());
+    assert_eq!(app.handle_key(key(KeyCode::Enter)), None);
+    assert_eq!(app.account_draft.configuration, "ci");
+    assert_eq!(app.input_mode, InputMode::AccountName);
+}
+
+#[test]
+fn a_late_list_does_not_take_a_field_being_typed() {
+    let mut app = page_app();
+    app.handle_key(key(KeyCode::Char('a')));
+    retype(&mut app, "de");
+    app.configurations_arrived(vec![configuration("work", Some("example-dev-1a2b"), true)]);
+    assert_eq!(app.input_mode, InputMode::AccountConfiguration);
+    assert_eq!(app.input, "de");
+}
+
+#[test]
+fn a_list_for_a_closed_dialog_is_dropped() {
+    let mut app = page_app();
+    app.handle_key(key(KeyCode::Char('a')));
+    app.handle_key(key(KeyCode::Esc));
+    assert_eq!(app.input_mode, InputMode::Accounts);
+    app.configurations_arrived(vec![configuration("work", Some("example-dev-1a2b"), true)]);
+    assert_eq!(app.input_mode, InputMode::Accounts);
+}
+
+#[test]
+fn no_configurations_leaves_the_text_field_with_the_reason() {
+    let app = add_dialog_with(Vec::new());
+    assert_eq!(app.input_mode, InputMode::AccountConfiguration);
+    let said = app.draft_error.clone().expect("a reason beside the field");
+    assert!(said.contains("gcloud init"), "{said}");
+}

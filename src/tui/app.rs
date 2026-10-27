@@ -320,6 +320,8 @@ pub enum InputMode {
     Config,
     Accounts,
     AccountConfiguration,
+    // The configuration step once the list has arrived, as the project step is
+    AccountConfigurationPick,
     AccountName,
     AccountProject,
     // The project step once the list has arrived: the text field stays the
@@ -363,6 +365,7 @@ impl InputMode {
     pub fn prompt(&self) -> &'static str {
         match self {
             InputMode::AccountConfiguration => "gcloud configuration:",
+            InputMode::AccountConfigurationPick => "gcloud configuration (type to filter):",
             InputMode::AccountName => "Account name:",
             InputMode::AccountProject => "Project (Enter keeps it):",
             InputMode::AccountProjectPick => "Project (type to filter):",
@@ -391,6 +394,9 @@ impl InputMode {
             InputMode::AccountConfiguration => {
                 "The gcloud configuration whose login, project and zone this account uses. \
                  List them: `gcloud config configurations list`"
+            }
+            InputMode::AccountConfigurationPick => {
+                "The gcloud configuration whose login, project and zone this account uses"
             }
             InputMode::AccountName => {
                 "What you pass to `--account`. Lower case, digits and dashes, e.g. `dev`"
@@ -430,7 +436,7 @@ impl InputMode {
     pub fn step(&self, mode: TunnelMode) -> Option<(u8, u8)> {
         let access = mode == TunnelMode::Access;
         match self {
-            InputMode::AccountConfiguration => Some((1, 2)),
+            InputMode::AccountConfiguration | InputMode::AccountConfigurationPick => Some((1, 2)),
             InputMode::AccountName => Some((2, 2)),
             InputMode::AccountProject | InputMode::AccountProjectPick => Some((1, 2)),
             InputMode::AccountZone => Some((2, 2)),
@@ -531,6 +537,15 @@ pub struct InstanceChoice {
 pub struct ProjectChoice {
     pub project_id: String,
     pub name: String,
+}
+
+// A configuration the new-account picker offers. The project is kept because
+// `account add` reads it from the configuration and refuses one without
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigurationChoice {
+    pub name: String,
+    pub project: Option<String>,
+    pub is_active: bool,
 }
 
 // Braille dots, shown while an Op is in flight
@@ -641,9 +656,12 @@ impl Drop for Pause {
 
 const LIST_FAILURE: &str = "Could not list instances: ";
 const PROJECT_LIST_FAILURE: &str = "Could not list projects: ";
+const CONFIGURATION_LIST_FAILURE: &str = "Could not list gcloud configurations: ";
 
 fn is_list_failure(status: &str) -> bool {
-    status.starts_with(LIST_FAILURE) || status.starts_with(PROJECT_LIST_FAILURE)
+    status.starts_with(LIST_FAILURE)
+        || status.starts_with(PROJECT_LIST_FAILURE)
+        || status.starts_with(CONFIGURATION_LIST_FAILURE)
 }
 
 pub struct App {
@@ -715,6 +733,9 @@ pub struct App {
     // The projects the account being edited can see, and the cursor in them
     pub projects_list: Vec<ProjectChoice>,
     pub project_selected: usize,
+    // The gcloud configurations the add dialog offers, and the cursor in them
+    pub configurations_list: Vec<ConfigurationChoice>,
+    pub configuration_selected: usize,
     pub domains: Vec<String>,
     pub domain_selected: usize,
     pub confirm_message: Option<String>,
@@ -738,6 +759,8 @@ pub struct App {
     pub want_instances: bool,
     // Set when the edit dialog reaches the project, so the loop fetches the list
     pub want_projects: bool,
+    // Set when the add dialog opens, so the loop fetches the configurations
+    pub want_configurations: bool,
     // Which wording the edit dialog uses: an Expose tunnel edits its local
     // target, an Access one its `remote:local` ports
     pub edit_is_expose: bool,
@@ -810,6 +833,8 @@ impl App {
             instance_selected: 0,
             projects_list: Vec::new(),
             project_selected: 0,
+            configurations_list: Vec::new(),
+            configuration_selected: 0,
             domains: Vec::new(),
             domain_selected: 0,
             confirm_message: None,
@@ -821,6 +846,7 @@ impl App {
             has_relay: false,
             want_instances: false,
             want_projects: false,
+            want_configurations: false,
             edit_is_expose: false,
             force_refresh: false,
             follow_up_at: None,
@@ -944,6 +970,36 @@ impl App {
         }
         let message = format!("{PROJECT_LIST_FAILURE}{reason}");
         self.draft_error = Some(format!("{message}. Type the project instead"));
+        self.set_status(message);
+        self.status_error = true;
+    }
+
+    // Like the project list: a list for a dialog since closed is dropped, and
+    // one that arrives after the person started typing leaves the field to them
+    pub fn configurations_arrived(&mut self, list: Vec<ConfigurationChoice>) {
+        if self.input_mode != InputMode::AccountConfiguration {
+            return;
+        }
+        if list.is_empty() {
+            self.configurations_failed("no gcloud configuration found. Run `gcloud init`");
+            return;
+        }
+        if !self.input.is_empty() {
+            return;
+        }
+        self.configuration_selected = list.iter().position(|c| c.is_active).unwrap_or(0);
+        self.configurations_list = list;
+        self.draft_error = None;
+        self.input_mode = InputMode::AccountConfigurationPick;
+    }
+
+    // The text field stays, so a gcloud that cannot list never blocks an add
+    pub fn configurations_failed(&mut self, reason: &str) {
+        if self.input_mode != InputMode::AccountConfiguration {
+            return;
+        }
+        let message = format!("{CONFIGURATION_LIST_FAILURE}{reason}");
+        self.draft_error = Some(format!("{message}. Type the configuration instead"));
         self.set_status(message);
         self.status_error = true;
     }
@@ -1125,13 +1181,15 @@ impl App {
         Some(Op::AccountSelect(name))
     }
 
-    // The configuration is typed rather than picked: listing them is a gcloud
-    // call, and `account add` already answers an unknown one by name
+    // The field is typed until the list arrives, and stays typed when it
+    // cannot be had: `account add` answers an unknown configuration by name
     fn open_account_add(&mut self) {
         self.account_draft = AccountDraft::default();
         self.input.clear();
         self.draft_error = None;
         self.account_notice = None;
+        self.want_configurations = true;
+        self.configurations_list.clear();
         self.input_mode = InputMode::AccountConfiguration;
     }
 
@@ -1212,6 +1270,7 @@ impl App {
             InputMode::ChooseEdit => return self.choose_edit(key.code),
             InputMode::Confirm => return self.confirm(key.code),
             InputMode::AddInstance => return self.pick_instance(key.code),
+            InputMode::AccountConfigurationPick => return self.pick_configuration(key.code),
             InputMode::AccountProjectPick => return self.pick_project(key.code),
             InputMode::MoveTo => return self.pick_move_account(key.code),
             InputMode::AddDomain => return self.pick_domain(key.code),
@@ -2377,6 +2436,74 @@ impl App {
                     .unwrap_or_default();
                 self.draft_error = None;
                 self.input_mode = InputMode::AccountZone;
+            }
+            _ => {}
+        }
+        None
+    }
+
+    // Filters as you type, on the configuration name and on its project
+    pub fn filtered_configurations(&self) -> Vec<&ConfigurationChoice> {
+        let needle = self.input.to_lowercase();
+        self.configurations_list
+            .iter()
+            .filter(|c| {
+                needle.is_empty()
+                    || c.name.to_lowercase().contains(&needle)
+                    || c.project
+                        .as_deref()
+                        .is_some_and(|p| p.to_lowercase().contains(&needle))
+            })
+            .collect()
+    }
+
+    fn pick_configuration(&mut self, code: KeyCode) -> Option<Op> {
+        match code {
+            KeyCode::Esc => {
+                self.cancel_dialog();
+                self.input_mode = InputMode::Accounts;
+            }
+            KeyCode::Backspace => {
+                self.input.pop();
+                self.configuration_selected = 0;
+            }
+            KeyCode::Char(c) => {
+                self.input.push(c);
+                self.configuration_selected = 0;
+            }
+            KeyCode::Down => {
+                let last = self.filtered_configurations().len().saturating_sub(1);
+                self.configuration_selected = (self.configuration_selected + 1).min(last);
+            }
+            KeyCode::Up => {
+                self.configuration_selected = self.configuration_selected.saturating_sub(1)
+            }
+            KeyCode::Enter => {
+                let chosen = self
+                    .filtered_configurations()
+                    .get(self.configuration_selected)
+                    .map(|c| (*c).clone());
+                let configuration = match chosen {
+                    // `account add` would refuse it after a gcloud call
+                    Some(c) if c.project.is_none() => {
+                        let name = c.name;
+                        self.draft_error = Some(format!(
+                            "'{name}' has no project. Set one first: \
+                             gcloud config set project <id> --configuration={name}"
+                        ));
+                        return None;
+                    }
+                    Some(c) => c.name,
+                    // A filter that matches nothing is the person naming a
+                    // configuration the list lacks: take it
+                    None if !self.input.trim().is_empty() => self.input.trim().to_string(),
+                    None => return None,
+                };
+                self.account_draft.configuration = configuration;
+                self.clear_list_failure();
+                self.input.clear();
+                self.draft_error = None;
+                self.input_mode = InputMode::AccountName;
             }
             _ => {}
         }

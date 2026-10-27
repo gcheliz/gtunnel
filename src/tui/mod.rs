@@ -30,6 +30,8 @@ enum Msg {
     // The leading string is the account the list was fetched for
     Projects(String, Vec<app::ProjectChoice>),
     ProjectsFailed(String, String),
+    Configurations(Vec<app::ConfigurationChoice>),
+    ConfigurationsFailed(String),
     Tick,
     // The leading number is the generation the round was begun under; a result
     // whose generation is no longer the poller's current one is dropped
@@ -61,6 +63,14 @@ fn projects_msg(account: &str, result: Result<Vec<app::ProjectChoice>>) -> Msg {
     match result {
         Ok(projects) => Msg::Projects(account.to_string(), projects),
         Err(e) => Msg::ProjectsFailed(account.to_string(), format!("{e:#}")),
+    }
+}
+
+// Same seam as `instances_msg`
+fn configurations_msg(result: Result<Vec<app::ConfigurationChoice>>) -> Msg {
+    match result {
+        Ok(list) => Msg::Configurations(list),
+        Err(e) => Msg::ConfigurationsFailed(format!("{e:#}")),
     }
 }
 
@@ -357,6 +367,13 @@ async fn event_loop(
                         let _ = tx.send(instances_msg(ops::load_instances(&account).await));
                     });
                 }
+                if app.want_configurations {
+                    app.want_configurations = false;
+                    let tx = tx.clone();
+                    tokio::spawn(async move {
+                        let _ = tx.send(configurations_msg(ops::load_configurations().await));
+                    });
+                }
                 if app.want_projects {
                     app.want_projects = false;
                     let account = app.account_draft.name.clone();
@@ -404,6 +421,8 @@ async fn event_loop(
             Msg::InstancesFailed(reason) => app.instances_failed(&reason),
             Msg::Projects(account, projects) => app.projects_arrived(&account, projects),
             Msg::ProjectsFailed(account, reason) => app.projects_failed(&account, &reason),
+            Msg::Configurations(list) => app.configurations_arrived(list),
+            Msg::ConfigurationsFailed(reason) => app.configurations_failed(&reason),
             Msg::OpDone(result) => {
                 // Rounds begun for the previous account must not land in the
                 // new one's list

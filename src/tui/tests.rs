@@ -1645,6 +1645,7 @@ fn a_two_millisecond_tunnel_still_draws_a_chart() {
 fn every_form_field_has_a_description() {
     for mode in [
         InputMode::AccountConfiguration,
+        InputMode::AccountConfigurationPick,
         InputMode::AccountName,
         InputMode::AccountProject,
         InputMode::AccountProjectPick,

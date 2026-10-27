@@ -3005,6 +3005,27 @@ fn dialog_cases() -> Vec<(&'static str, App, Vec<&'static str>)> {
         ),
     );
     let mut app = base();
+    app.input_mode = InputMode::AccountConfigurationPick;
+    app.configurations_list = (0..12)
+        .map(|i| ConfigurationChoice {
+            name: format!("sample-conf-{i:02}"),
+            project: Some(format!("sample-project-{i:02}")),
+            is_active: i == 5,
+        })
+        .collect();
+    app.configuration_selected = 5;
+    add(
+        "configurations",
+        (
+            app,
+            vec![
+                "gcloud configuration (type to filter):",
+                "6/12",
+                "sample-conf-05",
+            ],
+        ),
+    );
+    let mut app = base();
     app.input_mode = InputMode::AddDomain;
     app.domain_selected = 3;
     add(

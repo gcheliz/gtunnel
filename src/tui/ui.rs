@@ -886,6 +886,7 @@ pub fn render(f: &mut Frame, app: &App) {
         }
         InputMode::ChooseEdit => render_choose_edit(f),
         InputMode::AddInstance => render_instance_picker(f, app),
+        InputMode::AccountConfigurationPick => render_configuration_picker(f, app),
         InputMode::AccountProjectPick => render_project_picker(f, app),
         InputMode::AddDomain => render_domain_picker(f, app),
         InputMode::MoveTo => render_account_picker(f, app),
@@ -2881,7 +2882,9 @@ fn render_prompt(f: &mut Frame, app: &App, mode: InputMode) {
         InputMode::EditTarget => "Edit",
         InputMode::RenameTo => "Rename",
         InputMode::MoveRename => "Move",
-        InputMode::AccountConfiguration | InputMode::AccountName => "New account",
+        InputMode::AccountConfiguration
+        | InputMode::AccountConfigurationPick
+        | InputMode::AccountName => "New account",
         InputMode::AccountProject | InputMode::AccountZone => "Edit account",
         _ => title,
     };
@@ -3067,6 +3070,35 @@ fn render_project_picker(f: &mut Frame, app: &App) {
             filter: &app.input,
             rows,
             selected: app.project_selected,
+            error: app.draft_error.as_deref(),
+        },
+    );
+}
+
+fn render_configuration_picker(f: &mut Frame, app: &App) {
+    let rows: Vec<String> = app
+        .filtered_configurations()
+        .iter()
+        .map(|c| {
+            format!(
+                "{:<20} {:<30} {}",
+                c.name,
+                c.project.as_deref().unwrap_or("no project"),
+                if c.is_active { "(active)" } else { "" }
+            )
+            .trim_end()
+            .to_string()
+        })
+        .collect();
+    render_picker(
+        f,
+        Picker {
+            title: &step_title("New account", InputMode::AccountConfigurationPick, app),
+            prompt: InputMode::AccountConfigurationPick.prompt(),
+            description: InputMode::AccountConfigurationPick.describe(),
+            filter: &app.input,
+            rows,
+            selected: app.configuration_selected,
             error: app.draft_error.as_deref(),
         },
     );
