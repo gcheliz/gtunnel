@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.3](https://github.com/gcheliz/gtunnel/compare/v0.2.2...v0.2.3) - 2026-10-27
+
+### Fixed
+
+- *(expose)* check the local target before creating the route ([#173](https://github.com/gcheliz/gtunnel/pull/173))
+
 ## [0.2.2](https://github.com/gcheliz/gtunnel/compare/v0.2.1...v0.2.2) - 2026-10-27
 
 ### Added

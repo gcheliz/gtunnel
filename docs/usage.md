@@ -72,7 +72,7 @@ Specify the release version and substitute your machine's file: `gtunnel-macos-a
 `gtunnel-macos-intel`, `gtunnel-linux-amd64` or `gtunnel-linux-arm64`.
 
 ```
-VERSION="v0.2.2"
+VERSION="v0.2.3"
 F="gtunnel-macos-arm64-${VERSION}.tar.gz"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F.sha256"
@@ -84,7 +84,7 @@ so they run on any glibc.
 
 ```
 $ gtunnel --version
-gtunnel 0.2.2
+gtunnel 0.2.3
 ```
 
 #### Proving where the binary came from
@@ -312,7 +312,7 @@ version. [update](commands.md#update) has the check itself.
 
 ```
 $ gtunnel list
-gtunnel v9.9.9 is available (current: v0.2.2). Run `gtunnel update`.
+gtunnel v9.9.9 is available (current: v0.2.3). Run `gtunnel update`.
 ```
 
 ## The TUI
