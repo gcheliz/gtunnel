@@ -163,7 +163,7 @@ async fn close_politely(stream: &mut tokio::net::TcpStream, budget: Duration) ->
 // A 4xx still proves the request reached the service; only 5xx and a failure
 // to connect mean the tunnel is not carrying traffic
 pub async fn http_probe(url: &str) -> HealthStatus {
-    let client = match reqwest::Client::builder().timeout(HTTP_TIMEOUT).build() {
+    let client = match crate::http::client_builder().timeout(HTTP_TIMEOUT).build() {
         Ok(client) => client,
         Err(_) => return HealthStatus::Unknown,
     };
