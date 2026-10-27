@@ -245,6 +245,50 @@ fn mcp_stdio_tool_call_list_accounts_succeeds() {
 }
 
 #[test]
+fn the_accounts_resource_is_the_list_accounts_payload() {
+    let h = Harness::new();
+    // An impersonated account with a relay: the two fields the resource served
+    // before the two paths shared one payload must not be lost on the way.
+    fs::write(
+        h.dir.path().join("config/config.toml"),
+        format!(
+            "{CONFIG}impersonate_service_account = \"sa@example-dev-1a2b.iam.gserviceaccount.com\"\n\n\
+             [accounts.expose]\n\
+             relay_instance = \"relay\"\n\
+             relay_zone = \"europe-west1-b\"\n\
+             network = \"default\"\n\
+             default_domain = \"example.internal\"\n"
+        ),
+    )
+    .unwrap();
+    let tool = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"gtunnel_list_accounts","arguments":{}}}"#;
+    let read = r#"{"jsonrpc":"2.0","id":2,"method":"resources/read","params":{"uri":"gtunnel://accounts"}}"#;
+    let list = r#"{"jsonrpc":"2.0","id":3,"method":"resources/list"}"#;
+    let (stdout, stderr, ok) = h.run_mcp_pipe(&format!("{tool}\n{read}\n{list}\n"));
+    assert!(ok, "stderr: {stderr}");
+    let f = frames(&stdout);
+    let from_tool: serde_json::Value =
+        serde_json::from_str(f[0]["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let from_resource: serde_json::Value =
+        serde_json::from_str(f[1]["result"]["contents"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(from_resource, from_tool);
+    assert_eq!(from_resource["selected_account"], "demo");
+    assert_eq!(from_resource["accounts"][0]["selected"], true);
+    assert_eq!(
+        from_resource["accounts"][0]["impersonate_service_account"],
+        "sa@example-dev-1a2b.iam.gserviceaccount.com"
+    );
+    assert_eq!(
+        from_resource["accounts"][0]["expose"]["relay_instance"],
+        "relay"
+    );
+    let desc = f[2]["result"]["resources"][1]["description"]
+        .as_str()
+        .unwrap();
+    assert!(desc.contains("gtunnel_list_accounts"), "{desc}");
+}
+
+#[test]
 fn mcp_stdio_resources_list_and_read() {
     let h = Harness::new();
     let req_list = r#"{"jsonrpc":"2.0","id":6,"method":"resources/list"}"#;

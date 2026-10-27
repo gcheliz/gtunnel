@@ -166,6 +166,21 @@ or not anyone asked. That is why the copy gtunnel loads and unloads itself lives
 `<config>/agents/` instead. On Linux the unit always lives in one place and `enable` is a
 separate switch, with `loginctl enable-linger` deciding whether it survives a logout.
 
+## MCP server
+
+An agent drives gtunnel through the same binary a person uses: `gtunnel mcp` speaks JSON-RPC 2.0 on stdin and stdout, so there is no runtime to install and no daemon to keep. The tools are listed in [usage.md](usage.md#the-native-mcp-server); this section is how they are built.
+
+![MCP server: an MCP client on the laptop talks JSON-RPC 2.0 over stdio to gtunnel mcp, whose tool table in src/mcp/tools.rs makes locked writes to tunnels.toml and config.toml, starts and stops the per-tunnel launchd or systemd service, and for run_tunnel spawns gtunnel run in its own process group with a TTL; gtunnel run writes the run record run/ACCT-NAME.json and the run log logs/run-ACCT-NAME.log and opens an IAP tunnel in GCP example-dev-1a2b, while the server waits up to 5s for the run record](images/architecture/gtunnel-mcp.png)
+
+| Piece | Where | Decision |
+|---|---|---|
+| Stdio server | `src/mcp/server.rs` | One JSON-RPC message per line. Stdout carries frames and nothing else, so a login prompt there would corrupt the protocol and `mcp` skips the login check. A `notifications/...` message gets no reply |
+| Tool table | `src/mcp/tools.rs`: `all_tools`, `all_resources` | The one source of names and schemas. `tools/list` serves it, and `gtunnel mcp --validate` (`src/mcp/validator.rs`) checks every definition against it |
+| Dispatch | `execute_tool`, `read_resource` | A failed operation, including an unknown account or tunnel, is a result with `isError` and a `kind`, the same kinds the CLI's `--json` errors carry. Only parameters the server cannot act on are JSON-RPC errors |
+| Accounts | `accounts_payload` | The `gtunnel_list_accounts` tool and the `gtunnel://accounts` resource call one function, so the two cannot describe the selection differently |
+| Run launcher | `src/mcp/run.rs`: `launch` | Spawns `gtunnel run <name> <target> --ttl <n>m` in its own process group, so the tunnel outlives the server and the TTL is its only owner. Waits `LAUNCH_BUDGET` (5s) for the run record, and on failure returns the log's tail as the tool error |
+| Run lookup | `find_live_run`, `live_run_log` | `stop`, `status` and `logs` look for a saved tunnel first and a live run second, in the CLI and in the tools alike |
+
 ## Files
 
 | Path | Contents |
@@ -184,6 +199,7 @@ separate switch, with `loginctl enable-linger` deciding whether it survives a lo
 | `<config>/breakers.toml` | One row per tunnel: what the watchdog has seen of it, and how far up the restart ladder it is. Rewritten whole on every pass, by writing a sibling file and renaming it, and pruned to the tunnels that still exist |
 | `<config>/logs/watchdog.log` | What the watchdog did. A pass where nothing needed doing writes nothing |
 | `<config>/logs/<account>-<name>.log` | Per-tunnel log, written by the service |
+| `<config>/logs/run-<account>-<name>.log` | Output of a `gtunnel run` that `gtunnel_run_tunnel` started. A run started in a terminal prints there and has no file |
 | `<config>/update-check.json` | Last version check |
 
 Every file gtunnel writes is written to a sibling `<name>.<pid>.new` and renamed into place,

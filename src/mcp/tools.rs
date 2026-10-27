@@ -269,7 +269,8 @@ pub fn all_resources() -> Vec<ResourceDefinition> {
             uri: "gtunnel://accounts".to_string(),
             name: "All Configured Accounts".to_string(),
             description: Some(
-                "Complete JSON snapshot of all configured accounts and selection".to_string(),
+                "The selected account and every configured account, as gtunnel_list_accounts returns them"
+                    .to_string(),
             ),
             mime_type: Some("application/json".to_string()),
         },
@@ -623,16 +624,7 @@ pub async fn execute_tool(
         "gtunnel_list_accounts" => {
             let config =
                 load_config().map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
-            let payload = json!({
-                "selected_account": config.selected_account,
-                "accounts": config.accounts.iter().map(|a| json!({
-                    "name": a.name,
-                    "project": a.project,
-                    "default_zone": a.default_zone,
-                    "gcloud_configuration": a.gcloud_configuration,
-                    "selected": a.name == config.selected_account,
-                })).collect::<Vec<Value>>(),
-            });
+            let payload = accounts_payload(&config);
             Ok(ToolCallResult::text(
                 serde_json::to_string_pretty(&payload).unwrap_or_default(),
             ))
@@ -678,6 +670,33 @@ pub async fn execute_tool(
     }
 }
 
+/// One function for the tool and the resource, so the two cannot drift apart
+/// again: the resource once served a bare array with no selection while the
+/// tool served the selection, and the docs promised the second for both.
+/// `impersonate_service_account` and `expose` ride along only when set, so a
+/// client that read them from the resource keeps them after the shapes merged.
+fn accounts_payload(config: &crate::config::Config) -> Value {
+    json!({
+        "selected_account": config.selected_account,
+        "accounts": config.accounts.iter().map(|a| {
+            let mut entry = json!({
+                "name": a.name,
+                "project": a.project,
+                "default_zone": a.default_zone,
+                "gcloud_configuration": a.gcloud_configuration,
+                "selected": a.name == config.selected_account,
+            });
+            if let Some(sa) = &a.impersonate_service_account {
+                entry["impersonate_service_account"] = json!(sa);
+            }
+            if let Some(expose) = &a.expose {
+                entry["expose"] = serde_json::to_value(expose).unwrap_or(Value::Null);
+            }
+            entry
+        }).collect::<Vec<Value>>(),
+    })
+}
+
 pub fn read_resource(uri: &str) -> Result<ResourceReadResult, JsonRpcError> {
     match uri {
         "gtunnel://tunnels" => {
@@ -695,7 +714,7 @@ pub fn read_resource(uri: &str) -> Result<ResourceReadResult, JsonRpcError> {
         "gtunnel://accounts" => {
             let config =
                 load_config().map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
-            let text = serde_json::to_string_pretty(&config.accounts).unwrap_or_default();
+            let text = serde_json::to_string_pretty(&accounts_payload(&config)).unwrap_or_default();
             Ok(ResourceReadResult {
                 contents: vec![ResourceContent {
                     uri: uri.to_string(),
