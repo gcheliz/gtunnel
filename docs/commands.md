@@ -33,9 +33,14 @@ cannot infer.
 $ gtunnel init
 gcloud configurations:
   1. default (active)  project=example-dev-1a2b  account=you@example.com
-Configuration number [1]: Account name [default]: Project [example-dev-1a2b]:
-Service account to impersonate (optional) []: Default zone: Error: A default zone is required
+Configuration number [1]: Account name [default]: Could not list projects: Could not get a gcloud access token. Run `gcloud auth login` and try again: gcloud auth print-access-token --configuration=default --project= --verbosity=info failed: ERROR: (gcloud.auth.print-access-token) Your current active account [you@example.com] does not have any valid credentials
+Project [example-dev-1a2b]: Every gcloud call of this account acts as this service account; you need roles/iam.serviceAccountTokenCreator on it. Empty: act as yourself.
+Service account to impersonate (optional) []: Default zone: Account 'sandbox' saved to ~/Library/Application Support/gtunnel
 ```
+
+The answers were `1`, `sandbox`, Enter, Enter and `europe-west1-b`, piped in, so they do not echo.
+The line before the impersonation prompt says what it does: every gcloud call of the account
+runs as that service account, which needs `roles/iam.serviceAccountTokenCreator` granted to you.
 
 The project step lists the projects the logged-in account can see, one numbered row each
 as `N. <project id>  <name>`, the gcloud configuration's own project marked `(default)`.
@@ -47,6 +52,11 @@ does not show still works.
 |---|---|
 | Has rows | Prints them, asks `Project (number or id)` |
 | Is empty, or the call fails | Prints `Could not list projects: <cause>` once, then asks `Project` as a typed field; the transcript above is this path |
+
+The zone step works the same way: the project's zones are printed as `N. <zone>`, the
+configuration's zone marked `(default)`, and `Default zone (number or name)` takes a row
+number or a zone name. A zone the project does not have is refused. When the zones cannot
+be listed, as in the transcript, the prompt is the plain `Default zone`.
 
 The list is fetched with the configuration's own credentials, and only projects in the
 `ACTIVE` state are offered, up to 5,000. The cause is one line: a `403` means the account
