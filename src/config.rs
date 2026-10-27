@@ -292,10 +292,11 @@ fn missing_from(original: &toml::Value, echoed: &toml::Value, path: &str, out: &
     match (original, echoed) {
         (toml::Value::Table(o), toml::Value::Table(e)) => {
             for (key, value) in o {
+                let key_text = segment(key);
                 let here = if path.is_empty() {
-                    key.clone()
+                    key_text
                 } else {
-                    format!("{path}.{key}")
+                    format!("{path}.{key_text}")
                 };
                 match e.get(key) {
                     Some(echo) => missing_from(value, echo, &here, out),
@@ -314,6 +315,16 @@ fn missing_from(original: &toml::Value, echoed: &toml::Value, path: &str, out: &
     }
 }
 
+// A key that holds a dot, bracket or space is quoted, so `\"remote.port\"` does
+// not read as two levels of the path
+fn segment(key: &str) -> String {
+    if key.contains(['.', '[', ']', ' ']) {
+        format!("\"{key}\"")
+    } else {
+        key.to_string()
+    }
+}
+
 // serde_ignored's own Display writes array indices as `.0`; the editor and
 // doctor show `[0]`, which reads as an index and not as a key named "0"
 fn dotted(path: &serde_ignored::Path<'_>) -> String {
@@ -322,8 +333,8 @@ fn dotted(path: &serde_ignored::Path<'_>) -> String {
         Path::Root => String::new(),
         Path::Seq { parent, index } => format!("{}[{index}]", dotted(parent)),
         Path::Map { parent, key } => match dotted(parent) {
-            head if head.is_empty() => key.clone(),
-            head => format!("{head}.{key}"),
+            head if head.is_empty() => segment(key),
+            head => format!("{head}.{}", segment(key)),
         },
         Path::Some { parent }
         | Path::NewtypeStruct { parent }
@@ -458,6 +469,16 @@ mod tests {
         let keys = unknown_keys::<TunnelState>(text).expect("parse");
         assert_eq!(keys, vec!["tunnels[0].spec.remote_prot"]);
         assert!(toml::from_str::<TunnelState>(text).is_ok(), "still loads");
+    }
+
+    #[test]
+    fn a_key_holding_a_dot_is_quoted_in_its_path() {
+        let text = "[[tunnels]]\nname = \"db\"\naccount_name = \"dev\"\n\
+            [tunnels.spec]\nmode = \"access\"\nremote_port = 5432\nlocal_port = 5432\n\
+            \"stray.key\" = 1\n[tunnels.spec.target]\nkind = \"instance\"\n\
+            instance = \"bastion\"\nzone = \"europe-west1-b\"\n";
+        let keys = unknown_keys::<TunnelState>(text).expect("parse");
+        assert_eq!(keys, vec!["tunnels[0].spec.\"stray.key\""]);
     }
 
     #[test]

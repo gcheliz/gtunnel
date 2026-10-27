@@ -482,7 +482,7 @@ line (`not saved: line 16: key with no value, expected `=``), and the keys becom
 removes it. `Tab` does nothing while a refused edit waits. An editor that exits non-zero, as
 `:cq` does in vim, cancels the edit and leaves the file as it was.
 
-A key gtunnel does not read is refused the same way, naming the first one and counting the rest (`not saved: unknown key accounts[0].expose.domains[0].log_level and 1 more`). The path says which table the key landed in, which is how a `log_level` typed below the last `[[accounts]]` shows itself. Only the save is refused: a file that already has such a key still loads, and `gtunnel doctor` reports it.
+A key gtunnel does not read is refused the same way, naming one key and counting the rest (`not saved: unknown key accounts[0].expose.domains[0].log_level and 1 more`). The path says which table the key landed in, which is how a `log_level` typed below the last `[[accounts]]` shows itself. Only the save is refused: a file that already has such a key still loads, and `gtunnel doctor` reports it.
 
 A file that changed since `e` opened it is refused too, with `not saved: tunnels.toml changed since you opened it` (or `config.toml`): another gtunnel, the CLI or the MCP server wrote it while the editor was open. The edit stays on the page and in its copy, and a second save replaces that change, so the choice is yours; a further write in between is refused again. The save takes the same lock the commands do, so it never lands in the middle of one. Leaving the text as it was is not a save, so it cannot overwrite the other change either: it reports `no changes to tunnels.toml`.
 

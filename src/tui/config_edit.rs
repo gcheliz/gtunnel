@@ -111,7 +111,7 @@ pub fn validate_config(text: &str) -> Result<Config> {
 /// first thing said: those block the file outright, this one only tells the
 /// editor that part of what was typed will not take effect. Loading stays
 /// lenient, so a file with a stray key that is already on disk keeps working;
-/// it is the save of a new one that is refused. Names the first key and counts
+/// it is the save of a new one that is refused. Names one key and counts
 /// the rest, because one line is all the page has to spare.
 fn refuse_unknown_keys<T: serde::de::DeserializeOwned + serde::Serialize>(
     text: &str,
