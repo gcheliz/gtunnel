@@ -121,6 +121,7 @@ emptied when its tunnel starts, so a line in it was written by the process runni
 | `remote port forwarding failed` | The relay port is busy on the relay VM | `gtunnel restart <name>`, then `gtunnel doctor` |
 | `Too many open files` | The tunnel ran out of file descriptors | `gtunnel doctor` names the process holding them, see below |
 | `numpy` | gcloud's Python has no NumPy | See NumPy below |
+| `timed out after` (in the TUI status line or a command's error) | A subprocess did not answer within its bound: 30s for `gcloud`, 10s for `launchctl` and `systemctl`. Usually `gcloud` waiting on a browser login or a dead network, or a wedged launchd | Run the named command by hand to see what it waits on, then `gcloud auth login` or `gtunnel doctor`. `delete` that times out stopping the job keeps the record, so retry it once the job answers |
 
 ### A start that says `failed to start`
 

@@ -96,10 +96,10 @@ pub fn require_gcloud() -> Result<PathBuf> {
 
 async fn run_gcloud(args: &[String]) -> Result<String> {
     let gcloud = require_gcloud()?;
-    let out = Command::new(&gcloud)
-        .args(args)
-        .stdin(Stdio::null())
-        .output()
+    let mut cmd = Command::new(&gcloud);
+    cmd.args(args).stdin(Stdio::null());
+    let what = format!("gcloud {}", args.join(" "));
+    let out = crate::proc::output_within(cmd, crate::proc::GCLOUD_BOUND, &what)
         .await
         .with_context(|| format!("Failed to run {}", gcloud.display()))?;
     if !out.status.success() {

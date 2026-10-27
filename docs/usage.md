@@ -1238,6 +1238,7 @@ that level on the tunnel for good.
 |---|---|---|
 | `GTUNNEL_CONFIG_DIR` | every command | Moves `config.toml`, `tunnels.toml`, `agents/` and `logs/` into that directory. The service label is still `com.gtunnel.<account>.<name>`, so give a throwaway configuration an account name of its own or `install` restarts the live job that shares the label |
 | `GTUNNEL_LOG_LEVEL` | every command | `quiet`, `info` or `debug`. Beaten by `--log-level`, beats `log_level` in `config.toml`. An empty value counts as unset; anything else that is not a level is an error naming the variable. See [The log level](#the-log-level) |
+| `GTUNNEL_SERVICE_BOUND_MS` | every command | A test and diagnostics knob: milliseconds to wait for one `launchctl` or `systemctl` call before it is reported as `timed out after`. Default 10000; an empty, zero or non-numeric value counts as unset. Leave it alone unless you are testing the timeout path or diagnosing a slow service manager |
 | `VISUAL`, then `EDITOR` | the TUI's config page | Which editor `e` opens. `VISUAL` wins because it names the full-screen editor. An empty value counts as unset, since `EDITOR=` is how a shell clears one, and neither set falls back to the platform default |
 | `PATH` | startup | Where `gcloud` is found |
 

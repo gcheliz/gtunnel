@@ -976,11 +976,12 @@ mod live {
         );
         // SAFETY: getuid(2) takes no arguments, reads no caller memory and cannot fail.
         let uid = unsafe { libc::getuid() };
-        let raw = tokio::process::Command::new("launchctl")
-            .args(["print", &format!("gui/{uid}/com.gtunnel.test.sleep")])
-            .output()
-            .await
-            .unwrap();
+        let mut print = tokio::process::Command::new("launchctl");
+        print.args(["print", &format!("gui/{uid}/com.gtunnel.test.sleep")]);
+        let raw =
+            crate::proc::output_within(print, crate::proc::service_bound(), "launchctl print")
+                .await
+                .unwrap();
         println!(
             "print rc={:?} stderr={}",
             raw.status.code(),

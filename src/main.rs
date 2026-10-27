@@ -14,6 +14,7 @@ mod loglevel;
 pub mod mcp;
 mod notify;
 mod probe;
+mod proc;
 mod state;
 mod tui;
 mod tunnel;

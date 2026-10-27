@@ -443,7 +443,16 @@ pub async fn delete_tunnel(account: Option<&str>, name: &str) -> Result<()> {
 
     let label = daemon::platform_label(&acct.name, &tunnel.name);
     let log_path = tunnel.log_path()?;
-    let _ = daemon::stop(&label).await;
+    // A stop that failed for another reason is tolerated, as before, but one that
+    // timed out leaves the job possibly running: removing the record would
+    // orphan it
+    if let Err(e) = daemon::stop(&label).await
+        && crate::proc::is_timeout(&e)
+    {
+        return Err(e.context(format!(
+            "Could not stop {name}; it was not deleted, and its job may still be running"
+        )));
+    }
     daemon::uninstall(&label).await?;
     // The log goes with the tunnel: nothing is left to own it
     daemon::remove_log(&log_path)?;
