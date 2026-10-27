@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.35](https://github.com/gcheliz/gtunnel/compare/v0.1.34...v0.1.35) - 2026-10-27
+
+### Fixed
+
+- *(daemon)* toggling auto-start no longer restarts a running tunnel ([#89](https://github.com/gcheliz/gtunnel/pull/89))
+
 ## [0.1.34](https://github.com/gcheliz/gtunnel/compare/v0.1.33...v0.1.34) - 2026-10-27
 
 ### Documentation
