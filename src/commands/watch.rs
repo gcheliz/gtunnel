@@ -11,6 +11,7 @@ use std::time::{Duration, SystemTime};
 use crate::breaker::persist::{self, Row};
 use crate::breaker::{Action, Observation, Reason};
 use crate::daemon;
+use crate::lifecycle::{self, Cause, Edge, State};
 use crate::probe::{self, Holder};
 use crate::state::{PersistentTunnel, TunnelState, TunnelStatus};
 
@@ -61,6 +62,32 @@ fn unread_from(len: u64, seen: u64) -> u64 {
     } else {
         seen
     }
+}
+
+/// Consecutive failed probes before a tunnel is called degraded: the
+/// breaker's own run length, so the watchdog and the breaker agree on what
+/// "failing" means and one blip is neither.
+const DEGRADED_AFTER: u32 = 2;
+
+/// How many checks in a row this tunnel has failed, read from the breaker
+/// rather than counted again.
+///
+/// The breaker zeroes its counter the moment it trips, so a tripped breaker
+/// (anything but closed) is by definition past the threshold. Read through its
+/// serialised form because that is the one view it already offers; a test
+/// pins the field names so a rename cannot silently turn this into zero.
+fn consecutive_failures(breaker: &crate::breaker::Breaker) -> u32 {
+    let Ok(toml::Value::Table(fields)) = toml::Value::try_from(breaker) else {
+        return 0;
+    };
+    let closed = fields.get("state").and_then(|v| v.as_str()) == Some("closed");
+    if !closed {
+        return DEGRADED_AFTER;
+    }
+    fields
+        .get("failures")
+        .and_then(|v| v.as_integer())
+        .map_or(0, |n| n as u32)
 }
 
 fn reason_text(reason: Reason) -> &'static str {
@@ -182,13 +209,20 @@ pub async fn one_pass(verbose: bool) -> Result<()> {
     };
     let live: Vec<String> = watched.iter().map(|t| key(t)).collect();
 
+    let mut edges = Vec::new();
     for tunnel in watched {
-        if let Err(err) = visit(tunnel, &mut rows, SystemTime::now(), verbose).await {
+        if let Err(err) = visit(tunnel, &mut rows, SystemTime::now(), verbose, &mut edges).await {
             // One tunnel's failure must not cost every other tunnel its check
             eprintln!("{}: {err:#}", key(tunnel));
         }
     }
 
+    // One notification for the whole pass: a wake from sleep finds every
+    // tunnel changed at once, and that is one alert, not one per tunnel
+    lifecycle::announce(&edges);
+    // After the work, so a pass that died halfway is not vouched for: the TUI
+    // takes over notifying as soon as this stops advancing
+    let _ = lifecycle::write_heartbeat();
     persist::save(&rows, &live)?;
     Ok(())
 }
@@ -199,6 +233,7 @@ async fn visit(
     rows: &mut persist::BreakerFile,
     now: SystemTime,
     verbose: bool,
+    edges: &mut Vec<Edge>,
 ) -> Result<()> {
     // The port is both what the probe dials and what `lsof` is asked about
     // later, so it is read once. An Expose tunnel has none: nothing local
@@ -230,6 +265,16 @@ async fn visit(
     if verbose {
         println!("{}: {obs:?} -> {action:?}", key(tunnel));
     }
+    let healthy = (status == TunnelStatus::Running).then_some(probe_ok);
+    let seen = lifecycle::observe(
+        status,
+        healthy,
+        consecutive_failures(&row.breaker),
+        DEGRADED_AFTER,
+    );
+    edges.extend(seen.and_then(|to| {
+        lifecycle::transition(&tunnel.account_name, &tunnel.name, to, Cause::Observed)
+    }));
 
     let holders = match action {
         // Only asked for when it is about to be printed: one lsof listing
@@ -270,6 +315,16 @@ async fn visit(
     }
     if let Some(line) = action_line(action, reason, &holders, failed.as_deref()) {
         let _ = daemon::log_event(&log_path, &line);
+    }
+    // Stopped on purpose by the watchdog, for a reason it just logged: that
+    // is a failure to say so, not an unexplained stop on the next pass
+    if matches!(action, Action::StopAndReport(_)) && failed.is_none() {
+        edges.extend(lifecycle::transition(
+            &tunnel.account_name,
+            &tunnel.name,
+            State::Failed,
+            Cause::Observed,
+        ));
     }
     outcome
 }
@@ -328,6 +383,10 @@ pub async fn cmd_watch_status() -> Result<()> {
             daemon::WATCHDOG_INTERVAL
         );
         println!("Log: {}", daemon::watchdog_log()?.display());
+        match lifecycle::heartbeat_age() {
+            Some(age) => println!("Last pass: {age}s ago"),
+            None => println!("Last pass: none recorded yet"),
+        }
     } else {
         println!("Watchdog not installed. Run `gtunnel watch install`");
     }
@@ -358,6 +417,26 @@ mod tests {
     use crate::breaker::{Action, Reason};
     use crate::probe::Holder;
     use crate::state::TunnelStatus;
+
+    // The degraded verdict reads the breaker's own counter through its
+    // serialised form, so a renamed field would quietly read as zero failures
+    // and the watchdog would never call anything degraded
+    #[test]
+    fn the_watchdog_reads_failures_from_the_breaker_not_a_second_counter() {
+        let mut breaker = crate::breaker::Breaker::default();
+        assert_eq!(consecutive_failures(&breaker), 0);
+        let now = SystemTime::UNIX_EPOCH;
+        let fail = Observation::Failed(Reason::ProbeRefused);
+        breaker.observe(fail, now);
+        assert_eq!(consecutive_failures(&breaker), 1);
+        breaker.observe(fail, now);
+        assert!(
+            consecutive_failures(&breaker) >= DEGRADED_AFTER,
+            "a tripped breaker has zeroed its counter and is still failing"
+        );
+        breaker.observe(Observation::NotRunning, now);
+        assert_eq!(consecutive_failures(&breaker), 0);
+    }
 
     // The first pass after `watch install` meets tunnels that have been
     // running for weeks. Starting their offset at zero would read every

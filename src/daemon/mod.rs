@@ -386,6 +386,7 @@ mod tests {
                     impersonate_service_account: None,
                     expose: None,
                 }],
+                ..Config::default()
             };
             let got = service_spec(&cfg, &tunnel).expect("spec");
             let want = format!("--verbosity={}", level.gcloud_verbosity());
@@ -425,6 +426,7 @@ mod tests {
                 impersonate_service_account: None,
                 expose: None,
             }],
+            ..Config::default()
         };
         let got = service_spec(&cfg, &tunnel).expect("spec");
         let a = &got.args;

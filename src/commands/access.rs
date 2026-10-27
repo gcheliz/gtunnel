@@ -6,6 +6,7 @@ use crate::config::Account;
 use crate::daemon;
 use crate::expose::routes;
 use crate::gcp::{compute, GcpClient};
+use crate::lifecycle::{self, Cause, State};
 use crate::state::{
     allocate_port, local_port_is_free, validate_tunnel_name, AccessTarget, PersistentTunnel,
     TunnelSpec, TunnelState, TunnelStatus, ACCESS_PORT_BASE, ACCESS_PORT_SPAN,
@@ -388,6 +389,27 @@ fn is_quiet(spec: &daemon::ServiceSpec) -> bool {
 /// passes: an `Ok` means the tunnel was ready when looked at, not that the
 /// request was sent.
 pub async fn start_tunnel(account: Option<&str>, name: &str) -> Result<Started> {
+    let (_, acct) = resolve(account)?;
+    // Recorded before anything runs, so the watchdog that looks while the job
+    // is still loading finds a start in flight and not a tunnel that died
+    lifecycle::record_user(&acct.name, name, State::Starting);
+    match start_inner(account, name).await {
+        Ok(started) => {
+            lifecycle::record_user(&acct.name, name, State::Up);
+            Ok(started)
+        }
+        Err(err) => {
+            // The one edge here that is not the user's: they asked for a
+            // start and it did not happen, which is worth a notification
+            // when it was the TUI that asked and nobody is reading stderr
+            let edge = lifecycle::transition(&acct.name, name, State::Failed, Cause::Observed);
+            lifecycle::announce(edge.as_slice());
+            Err(err)
+        }
+    }
+}
+
+async fn start_inner(account: Option<&str>, name: &str) -> Result<Started> {
     let (config, acct) = resolve(account)?;
     let state = TunnelState::load()?;
     let tunnel = find_tunnel(&state, name, &acct.name)?;
@@ -482,6 +504,9 @@ pub async fn stop_tunnel(account: Option<&str>, name: &str) -> Result<()> {
     let (_, acct) = resolve(account)?;
     let state = TunnelState::load()?;
     let tunnel = find_tunnel(&state, name, &acct.name)?;
+    // Before the stop, not after: a pass that looks in between would see a
+    // running tunnel go away that nobody had said was meant to
+    lifecycle::record_user(&acct.name, name, State::Stopped);
     daemon::stop(&daemon::platform_label(&acct.name, &tunnel.name)).await?;
     if let Ok(log) = tunnel.log_path() {
         let _ = daemon::log_event(&log, "stopped by gtunnel");
@@ -537,6 +562,7 @@ pub async fn restart_tunnel(account: Option<&str>, name: &str) -> Result<Started
     let (_, acct) = resolve(account)?;
     let state = TunnelState::load()?;
     let tunnel = find_tunnel(&state, name, &acct.name)?;
+    lifecycle::record_user(&acct.name, name, State::Stopped);
     let _ = daemon::stop(&daemon::platform_label(&acct.name, &tunnel.name)).await;
     start_tunnel(account, name).await
 }
@@ -563,6 +589,9 @@ pub async fn delete_tunnel(account: Option<&str>, name: &str) -> Result<()> {
 
     let label = daemon::platform_label(&acct.name, &tunnel.name);
     let log_path = tunnel.log_path()?;
+    // Gone from the ledger first: the stop below is the user's, and a row left
+    // behind would announce the deleted tunnel as a crash
+    lifecycle::forget(&acct.name, name);
     // A stop that failed for another reason is tolerated, as before, but one that
     // timed out leaves the job possibly running: removing the record would
     // orphan it

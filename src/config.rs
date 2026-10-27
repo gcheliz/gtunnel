@@ -58,8 +58,42 @@ pub struct Config {
     // `accounts` because toml writes a value before a table.
     #[serde(default)]
     pub log_level: LogLevel,
+    #[serde(default, skip_serializing_if = "NotifyConfig::is_default")]
+    pub notifications: NotifyConfig,
     #[serde(default)]
     pub accounts: Vec<Account>,
+}
+
+/// Which lifecycle edges are worth a desktop notification.
+///
+/// Four switches rather than one per edge: the edges a person thinks in are
+/// "it broke", "it is struggling", "it got better" and "it started", and a
+/// finer table is a config nobody reads. `up` is off because the person who
+/// ran `start` is looking at it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NotifyConfig {
+    pub up: bool,
+    pub degraded: bool,
+    pub recovered: bool,
+    pub failed: bool,
+}
+
+impl Default for NotifyConfig {
+    fn default() -> Self {
+        Self {
+            up: false,
+            degraded: true,
+            recovered: true,
+            failed: true,
+        }
+    }
+}
+
+impl NotifyConfig {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// The part of the precedence that cannot change while the process runs: the
@@ -266,6 +300,40 @@ pub mod testing {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_absent_notifications_section_is_the_defaults() {
+        let config: Config = toml::from_str("selected_account = \"dev\"\n").expect("parse");
+        assert_eq!(config.notifications, NotifyConfig::default());
+        assert!(!config.notifications.up, "a start is not worth a banner");
+        assert!(config.notifications.degraded);
+        assert!(config.notifications.recovered);
+        assert!(config.notifications.failed);
+    }
+
+    #[test]
+    fn a_partial_notifications_section_keeps_the_other_defaults() {
+        let config: Config =
+            toml::from_str("[notifications]\nup = true\nrecovered = false\n").expect("parse");
+        assert!(config.notifications.up);
+        assert!(!config.notifications.recovered);
+        assert!(config.notifications.failed);
+    }
+
+    #[test]
+    fn default_notifications_are_not_written_back_to_config_toml() {
+        let text = toml::to_string_pretty(&Config::default()).expect("serialize");
+        assert!(!text.contains("notifications"), "{text}");
+        let custom = Config {
+            notifications: NotifyConfig {
+                up: true,
+                ..NotifyConfig::default()
+            },
+            ..Config::default()
+        };
+        let text = toml::to_string_pretty(&custom).expect("serialize");
+        assert!(text.contains("[notifications]"), "{text}");
+    }
+
     use super::*;
 
     fn account(name: &str) -> Account {
