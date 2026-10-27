@@ -341,3 +341,24 @@ The costs: a clean release build takes about 166 s where it took 57 s (fat LTO a
 codegen unit), and a client built without `crate::http::client_builder` panics, which under
 abort ends the process. `clippy.toml` forbids `reqwest::Client::new`, `Client::builder` and
 `ClientBuilder::new`, so CI rejects that door.
+
+## 18. A run is stopped like a service and known by its start time
+
+**Status:** Accepted, 2026-10-27
+
+The run record named gcloud by pid alone, `run` ended it with a lone SIGKILL that could orphan
+ssh and the IAP proxy, and its TTL slept on the monotonic clock, which stops while the machine
+is suspended. After a reboot a recycled pid read as a live run and could be sent a signal
+(#114). `run` also accepted a name or local port already in use (#115).
+
+| Change | Why |
+|---|---|
+| The supervisor's group stop is shared as `crate::proc::stop_group`, and it also sweeps a group that outlives its leader | One way to end gcloud for the daemon and for `run`: SIGTERM to the group, a 2 s grace, then SIGKILL; an ssh that ignores TERM after gcloud exits is still killed |
+| The TTL compares the wall clock with `expires_at` every second | Time asleep counts, so a laptop that wakes past the stop time ends the run within a second |
+| The record carries a start token read from the kernel; a pid whose token differs is dead and is never signalled | A pid alone is a number the kernel hands out again. macOS reads the fork time with `proc_pidinfo`, Linux reads `/proc/<pid>/stat` field 22 with the boot id, neither from the wall clock |
+| Name, ports, spawn and record are claimed under `tunnels.lock` | Two launches cannot pick one port or one name. A public run therefore creates its route after gcloud starts |
+
+The costs: gcloud's reverse forward is up for a few seconds before the hostname resolves,
+which serves nothing; a record written by 0.1.42 or older has no token and is judged by its
+pid alone until it ends; and the TTL lives in the run process, so a run process killed by
+SIGKILL still leaves gcloud with nothing to end it.

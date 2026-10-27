@@ -617,6 +617,7 @@ mod tests {
             },
             started_at: 1_700_000_000,
             ttl_secs: None,
+            pid_start: None,
         }
     }
 

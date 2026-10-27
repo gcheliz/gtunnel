@@ -9,9 +9,9 @@ use crate::expose::routes;
 use crate::gcp::{compute, GcpClient};
 use crate::lifecycle::{self, Cause, State};
 use crate::state::{
-    allocate_port, local_port_is_free, validate_host, validate_instance_name, validate_tunnel_name,
-    validate_zone, AccessTarget, PersistentTunnel, TunnelSpec, TunnelState, TunnelStatus,
-    ACCESS_PORT_BASE, ACCESS_PORT_SPAN,
+    allocate_port, check_local_port, local_port_is_free, validate_host, validate_instance_name,
+    validate_tunnel_name, validate_zone, AccessTarget, PersistentTunnel, TunnelSpec, TunnelState,
+    TunnelStatus, ACCESS_PORT_BASE, ACCESS_PORT_SPAN,
 };
 use crate::tunnel::diagnose_log_line;
 
@@ -167,12 +167,7 @@ async fn save_tunnel(account: Option<&str>, req: &AddRequest<'_>) -> Result<Adde
     let tunnel = TunnelState::update(|state| {
         let local_port = match local_port {
             Some(port) => {
-                if state.used_local_ports().contains(&port) {
-                    bail!("Local port {port} is already used by another gtunnel tunnel");
-                }
-                if !local_port_is_free(port) {
-                    bail!("Local port {port} is already in use on this machine");
-                }
+                check_local_port(port, &state.used_local_ports(), local_port_is_free)?;
                 port
             }
             None => allocate_port(

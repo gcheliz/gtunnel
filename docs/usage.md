@@ -609,6 +609,13 @@ gtunnel run --public 3000              # https://gt-<random>.<domain>
 gtunnel run my-vm:5432 --ttl 30m       # stops itself after 30 minutes
 ```
 
+| | |
+|---|---|
+| Name | Refused when a live run or a managed tunnel in the account has it: `Error: A run named 'db' is already live for account 'dev'` |
+| `--local-port` | The checks `add` makes, plus every live run of every account: refused when a tunnel or run already owns the port, when something on the machine listens on it, and for `0` |
+| `--ttl` | Counted on the wall clock, so time asleep counts: a laptop that wakes past the stop time ends the run within a second |
+| Stopping | Ctrl+C, SIGTERM, SIGHUP, the TTL and gcloud exiting all end the same way: SIGTERM to gcloud and its children, up to 2 seconds, then SIGKILL |
+
 <p align="center">
   <img src="demo-run.gif" alt="gtunnel run --ttl 30m db my-vm:5432 prints the local port and its stop time, gtunnel list shows the run with its stop time, Ctrl+C closes it, and the list is empty again" width="720">
 </p>
@@ -1247,6 +1254,7 @@ server and its only owner is the TTL, and it answers once the run has published 
 | `ttl_minutes` is required, 1 to 480 | An agent may never come back to close what it opened, so the lifetime is part of the request and has a ceiling. Longer-lived access is `gtunnel_add_tunnel`, which the user can see and delete |
 | Access mode only; `public` is refused | Publishing a hostname is something a person asks for, never a side effect of an agent's call |
 | `name` is optional | A `gt-xxxxxx` name is generated, as for `gtunnel run` without one |
+| A `name` already live, or held by a managed tunnel in the account, is refused | The run would replace the live run's record and leave it running with nothing able to stop it |
 | Output goes to `logs/run-<account>-<name>.log` | A start that fails returns that log's tail as the tool error |
 | `gtunnel_stop_tunnel` closes it early | A persistent tunnel of the same name wins; without one, the name means the live run |
 
