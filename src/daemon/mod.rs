@@ -956,6 +956,67 @@ mod tests {
     }
 
     #[test]
+    fn a_job_loaded_from_the_config_dir_but_outside_its_agents_dir_is_not_ours() {
+        let cfg = std::path::Path::new("/tmp/cfg-a");
+        for path in [
+            "/tmp/cfg-a/com.gtunnel.dev.db.plist",
+            "/tmp/cfg-a/Library/LaunchAgents/com.gtunnel.dev.db.plist",
+        ] {
+            let print = print_loaded_from(path);
+            assert!(!launchd::loaded_job_is_ours(&print, cfg, None), "{path}");
+        }
+    }
+
+    #[test]
+    fn a_label_that_is_not_loaded_has_nothing_to_boot_out() {
+        let cfg = std::path::Path::new("/tmp/cfg-a");
+        assert_eq!(
+            launchd::boot_out_decision(None, cfg, None),
+            launchd::BootOut::NotLoaded
+        );
+    }
+
+    #[test]
+    fn a_loaded_job_of_this_config_is_booted_out() {
+        let cfg = std::path::Path::new("/tmp/cfg-a");
+        let print = print_loaded_from("/tmp/cfg-a/agents/com.gtunnel.dev.db.plist");
+        assert_eq!(
+            launchd::boot_out_decision(Some(&print), cfg, None),
+            launchd::BootOut::Bootout
+        );
+    }
+
+    #[test]
+    fn a_loaded_job_of_another_config_is_foreign_and_names_its_path() {
+        let cfg = std::path::Path::new("/tmp/cfg-a");
+        let path = "/tmp/cfg-b/agents/com.gtunnel.dev.db.plist";
+        let print = print_loaded_from(path);
+        assert_eq!(
+            launchd::boot_out_decision(Some(&print), cfg, None),
+            launchd::BootOut::Foreign(path.to_string())
+        );
+    }
+
+    #[test]
+    fn a_loaded_job_that_names_no_plist_is_foreign() {
+        let cfg = std::path::Path::new("/tmp/cfg-a");
+        assert!(matches!(
+            launchd::boot_out_decision(Some("state = running\n"), cfg, None),
+            launchd::BootOut::Foreign(_)
+        ));
+    }
+
+    #[test]
+    fn only_a_missing_service_is_not_loaded() {
+        assert!(launchd::print_failure_is_not_loaded(
+            "Could not find service \"com.gtunnel.dev.db\" in domain for user gui: 501\n"
+        ));
+        assert!(!launchd::print_failure_is_not_loaded(
+            "Operation not permitted\n"
+        ));
+    }
+
+    #[test]
     fn a_print_with_no_path_line_is_not_ours() {
         let cfg = std::path::Path::new("/tmp/cfg-a");
         assert!(!launchd::loaded_job_is_ours("state = running\n", cfg, None));

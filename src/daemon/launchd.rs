@@ -74,7 +74,51 @@ pub fn loaded_job_is_ours(
         return false;
     };
     let path = std::path::Path::new(path.trim());
-    super::is_within(path, config_dir) || owned_agent == Some(path)
+    // `agents/` and nothing wider: a config dir can be `$HOME`, which holds
+    // `Library/LaunchAgents` and every other config dir's copies
+    super::is_within(path, &config_dir.join("agents")) || owned_agent == Some(path)
+}
+
+/// What to do about the job launchd has loaded under an orphan's label.
+#[derive(Debug, PartialEq, Eq)]
+pub enum BootOut {
+    Bootout,
+    NotLoaded,
+    /// Loaded from a plist that is not this config's; carries that path (or a
+    /// note that `launchctl print` named none) for the error message.
+    Foreign(String),
+}
+
+/// `print` is `launchctl print`'s output, or None when the label is not loaded.
+///
+/// Kept apart from the call so that skipping a boot-out is a value the caller
+/// must handle: a skipped boot-out that reads as success would delete the
+/// plist and leave the job running with nothing for the next scan to find.
+pub fn boot_out_decision(
+    print: Option<&str>,
+    config_dir: &std::path::Path,
+    owned_agent: Option<&std::path::Path>,
+) -> BootOut {
+    let Some(print) = print else {
+        return BootOut::NotLoaded;
+    };
+    if loaded_job_is_ours(print, config_dir, owned_agent) {
+        return BootOut::Bootout;
+    }
+    let path = print
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("path = "))
+        .map_or_else(
+            || "(no path reported)".to_string(),
+            |p| p.trim().to_string(),
+        );
+    BootOut::Foreign(path)
+}
+
+/// `launchctl print` of a label nothing loaded. Any other failure is not
+/// evidence that the job is absent.
+pub fn print_failure_is_not_loaded(stderr: &str) -> bool {
+    stderr.contains("Could not find service") || stderr.contains("No such process")
 }
 
 /// Remove an orphan without reaching a job that belongs to another config dir.
@@ -83,13 +127,32 @@ pub fn loaded_job_is_ours(
 /// the LaunchAgents copy; the config dir's own plist is always this config's.
 pub async fn uninstall_orphan(label: &str, config_dir: &std::path::Path) -> Result<()> {
     let agent = agent_path(label)?;
+    let logs = config_dir.join("logs");
     let owned_agent = std::fs::read_to_string(&agent)
         .ok()
-        .filter(|text| plist_log_path(text).is_some_and(|log| super::is_within(&log, config_dir)))
+        .filter(|text| plist_log_path(text).is_some_and(|log| super::is_within(&log, &logs)))
         .map(|_| agent.clone());
-    let loaded = print_service(label).await;
-    if loaded.is_some_and(|p| loaded_job_is_ours(&p, config_dir, owned_agent.as_deref())) {
-        let _ = launchctl(&["bootout", &format!("{}/{}", domain_target(), label)]).await;
+    let target = format!("{}/{}", domain_target(), label);
+    let out = launchctl(&["print", &target]).await?;
+    let print = if out.status.success() {
+        Some(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else if print_failure_is_not_loaded(&String::from_utf8_lossy(&out.stderr)) {
+        None
+    } else {
+        anyhow::bail!(
+            "launchctl print {target} failed, so whether it is loaded is unknown: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    };
+    match boot_out_decision(print.as_deref(), config_dir, owned_agent.as_deref()) {
+        BootOut::Bootout => {
+            let _ = launchctl(&["bootout", &target]).await;
+        }
+        BootOut::NotLoaded => {}
+        // Files stay, so the next scan still sees the orphan
+        BootOut::Foreign(path) => anyhow::bail!(
+            "{label} is loaded from {path}, which is not this config directory's, so it was left running and its files kept"
+        ),
     }
     for path in std::iter::once(plist_path(label)?).chain(owned_agent) {
         if path.exists() {

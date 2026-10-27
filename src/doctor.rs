@@ -345,7 +345,9 @@ pub fn find_orphan_services(
         let Ok(entries) = std::fs::read_dir(dir) else {
             continue;
         };
-        let ours_by_location = crate::daemon::is_within(dir, config_dir);
+        // Exactly `agents/`, never the config dir as a whole: it can be `$HOME`,
+        // which contains the shared LaunchAgents directory
+        let ours_by_location = dir == &config_dir.join("agents");
         for entry in entries.flatten() {
             let Some(label) = entry
                 .file_name()
@@ -1761,6 +1763,46 @@ mod tests {
 
         let found = find_orphan_services(&[installed.path().to_path_buf()], &[], temp.path());
         assert_eq!(found, vec![label]);
+    }
+
+    #[test]
+    fn a_config_dir_that_contains_the_service_dir_does_not_make_it_ours() {
+        // GTUNNEL_CONFIG_DIR=$HOME: LaunchAgents is inside it, and shared
+        let home = tempfile::tempdir().expect("tempdir");
+        let other = tempfile::tempdir().expect("tempdir");
+        let agents = home.path().join("Library/LaunchAgents");
+        std::fs::create_dir_all(&agents).expect("mkdir");
+        let label = crate::daemon::platform_label("prod", "k8s");
+        std::fs::write(
+            agents.join(service_file_name(&label)),
+            service_text(&label, &other.path().join("logs/prod-k8s.log")),
+        )
+        .expect("write");
+
+        let found = find_orphan_services(&[agents], &[], home.path());
+        assert!(found.is_empty(), "{found:?}");
+    }
+
+    #[test]
+    fn a_relative_config_dir_does_not_make_a_service_dir_ours() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let other = tempfile::tempdir().expect("tempdir");
+        let agents = home.path().join("Library/LaunchAgents");
+        std::fs::create_dir_all(&agents).expect("mkdir");
+        let label = crate::daemon::platform_label("prod", "k8s");
+        std::fs::write(
+            agents.join(service_file_name(&label)),
+            service_text(&label, &other.path().join("logs/prod-k8s.log")),
+        )
+        .expect("write");
+
+        let relative = std::path::Path::new("Library");
+        let found = find_orphan_services(&[agents], &[], relative);
+        assert!(found.is_empty(), "{found:?}");
+        // A relative path is judged as written: its own logs dir still counts
+        let text = service_text(&label, std::path::Path::new("rel-cfg/logs/prod-k8s.log"));
+        assert!(owned_by(&text, std::path::Path::new("rel-cfg")));
+        assert!(!owned_by(&text, std::path::Path::new("other-cfg")));
     }
 
     #[test]
