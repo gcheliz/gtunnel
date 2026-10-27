@@ -947,11 +947,13 @@ mod tests {
         }
         assert!(grandchild > 0, "the grandchild never reported its pid");
         assert!(run.terminate());
-        let status = tokio::time::timeout(Duration::from_secs(5), leader.wait())
+        // The leader would wait 30 s for its sleep, so exiting within 5 s is the
+        // signal. Its status proves nothing: a bare `wait` returns 0 whatever
+        // ended the children, so a shell that outlives the instant exits 0
+        tokio::time::timeout(Duration::from_secs(5), leader.wait())
             .await
             .expect("the leader exits")
             .unwrap();
-        assert!(!status.success(), "ended by SIGTERM: {status:?}");
         let mut gone = false;
         for _ in 0..40 {
             // SAFETY: signal 0 sends nothing; the pid is positive
