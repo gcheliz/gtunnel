@@ -5,6 +5,7 @@ pub mod dns;
 pub mod gcloud;
 pub mod iap;
 pub mod monitoring;
+pub mod projects;
 
 // Re-exported for the resource APIs and commands in Tasks 7-14
 #[allow(unused_imports)]

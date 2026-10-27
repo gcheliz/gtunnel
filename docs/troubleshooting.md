@@ -331,6 +331,23 @@ account in the TUI does not check again, so an account that is logged out surfac
 error in that tunnel's log. `doctor`, `account`, `init`, `reset`, `demo` and `update` skip
 the check.
 
+## Could not list projects
+
+```
+Could not list projects: GCP API error 403: ...
+```
+
+`init` and the TUI's account edit dialog list projects before asking for one. A failure
+never blocks the account: the prompt falls back to a typed project id.
+
+| Cause | Fix |
+|---|---|
+| The list is empty, or `403`, and the account lacks `resourcemanager.projects.get` | The search returns only projects the caller holds that permission on. Ask for a role that carries it (`roles/browser` does), or type the project id: the list is a convenience, and the project id is all gtunnel stores |
+| `403` naming the Cloud Resource Manager API as disabled | `gcloud services enable cloudresourcemanager.googleapis.com --project <project>`, where `<project>` is the one the error names, then run `init` again |
+| The login expired | `gcloud auth login`, see [above](#gtunnel-needs-a-logged-in-google-account) |
+| No network | The line names the connection error; the typed field still works once the project id is known |
+| The list is empty | The account sees no active project; type the id of one it can use |
+
 ## IAP firewall
 
 IAP connects from `35.235.240.0/20`, and that range must be allowed to the exact port you

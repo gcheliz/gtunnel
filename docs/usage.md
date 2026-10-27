@@ -356,6 +356,13 @@ paths for `Config` (`~/.gtunnel/config.toml`), `Tunnels` (`~/.gtunnel/tunnels.to
 are one key twice. The page lists every account, and adds, edits, selects and removes them;
 its removal obeys the same refusal the CLI does, so an account holding tunnels stays.
 
+Editing an account asks for its project first. The text field opens pre-filled with the
+current project while the list is fetched; when the list arrives it becomes a picker that
+filters by id or name as you type, with the current project selected so Enter keeps it. A
+filter that matches nothing is taken as the project you typed. If the list is empty, denied
+or fails, the text field stays and the line `Could not list projects: <cause>` says why.
+Starting to type before the list arrives keeps the field.
+
 `e` opens a chooser rather than a prompt, because there are now three things to edit:
 
 | Key | What it edits |

@@ -138,6 +138,21 @@ pub async fn load_instances(account: &str) -> Result<Vec<super::app::InstanceCho
     Ok(out)
 }
 
+// Every project the account can see, for the edit dialog's picker. The account
+// is the one being edited, which need not be the one on screen.
+pub async fn load_projects(account: &str) -> Result<Vec<super::app::ProjectChoice>> {
+    let (_, acct) = resolve(Some(account))?;
+    let client = GcpClient::for_account(&acct);
+    Ok(crate::gcp::projects::list_projects(&client)
+        .await?
+        .into_iter()
+        .map(|p| super::app::ProjectChoice {
+            project_id: p.project_id,
+            name: p.name,
+        })
+        .collect())
+}
+
 pub fn read_logs(tunnel: &PersistentTunnel, lines: usize) -> Vec<String> {
     let Ok(path) = tunnel.log_path() else {
         return Vec::new();

@@ -322,6 +322,9 @@ pub enum InputMode {
     AccountConfiguration,
     AccountName,
     AccountProject,
+    // The project step once the list has arrived: the text field stays the
+    // state until then, and whenever the list cannot be had
+    AccountProjectPick,
     AccountZone,
     // The accounts page's own confirmation. `Confirm` answers for the list,
     // where `y` deletes the selected tunnel, and one mode cannot mean both
@@ -362,6 +365,7 @@ impl InputMode {
             InputMode::AccountConfiguration => "gcloud configuration:",
             InputMode::AccountName => "Account name:",
             InputMode::AccountProject => "Project (Enter keeps it):",
+            InputMode::AccountProjectPick => "Project (type to filter):",
             InputMode::AccountZone => "Default zone (Enter keeps it):",
             InputMode::AddName => "Name:",
             InputMode::AddInstance => "Instance (type to filter):",
@@ -456,6 +460,13 @@ pub struct HelpExtent {
 pub struct InstanceChoice {
     pub name: String,
     pub zone: String,
+}
+
+// A project the picker offers, as list_projects reports it
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectChoice {
+    pub project_id: String,
+    pub name: String,
 }
 
 // Braille dots, shown while an Op is in flight
@@ -565,9 +576,10 @@ impl Drop for Pause {
 }
 
 const LIST_FAILURE: &str = "Could not list instances: ";
+const PROJECT_LIST_FAILURE: &str = "Could not list projects: ";
 
 fn is_list_failure(status: &str) -> bool {
-    status.starts_with(LIST_FAILURE)
+    status.starts_with(LIST_FAILURE) || status.starts_with(PROJECT_LIST_FAILURE)
 }
 
 pub struct App {
@@ -636,6 +648,9 @@ pub struct App {
     pub last_draft: Option<(NewTunnel, InputMode)>,
     pub instances: Vec<InstanceChoice>,
     pub instance_selected: usize,
+    // The projects the account being edited can see, and the cursor in them
+    pub projects_list: Vec<ProjectChoice>,
+    pub project_selected: usize,
     pub domains: Vec<String>,
     pub domain_selected: usize,
     pub confirm_message: Option<String>,
@@ -657,6 +672,8 @@ pub struct App {
     pub has_relay: bool,
     // Set when the instance picker opens, so the loop knows to fetch the list
     pub want_instances: bool,
+    // Set when the edit dialog reaches the project, so the loop fetches the list
+    pub want_projects: bool,
     // Set by `r`, cleared once the event loop has rescheduled every timer
     pub force_refresh: bool,
     // When the one extra discovery round owed after a reload falls due
@@ -724,6 +741,8 @@ impl App {
             last_draft: None,
             instances: Vec::new(),
             instance_selected: 0,
+            projects_list: Vec::new(),
+            project_selected: 0,
             domains: Vec::new(),
             domain_selected: 0,
             confirm_message: None,
@@ -734,6 +753,7 @@ impl App {
             account_notice: None,
             has_relay: false,
             want_instances: false,
+            want_projects: false,
             force_refresh: false,
             follow_up_at: None,
             health_stale: false,
@@ -800,6 +820,62 @@ impl App {
         if self.input_mode == InputMode::AddInstance {
             self.draft_error = Some(format!("{message}. Type the instance name instead"));
         }
+        self.set_status(message);
+        self.status_error = true;
+    }
+
+    // The list is for the account being edited, so a result for any other, or
+    // for a dialog since closed, is dropped: it would land in the wrong field
+    fn awaiting_projects_for(&self, account: &str) -> bool {
+        self.input_mode == InputMode::AccountProject && self.account_draft.name == account
+    }
+
+    // A list that arrives while the person is already typing a project is
+    // not allowed to take the field from them
+    pub fn projects_arrived(&mut self, account: &str, list: Vec<ProjectChoice>) {
+        if !self.awaiting_projects_for(account) {
+            return;
+        }
+        if list.is_empty() {
+            self.projects_failed(account, "no project is visible to this account");
+            return;
+        }
+        let current = self.projects.get(account).cloned().unwrap_or_default();
+        if self.input != current {
+            return;
+        }
+        let mut list = list;
+        let at = list.iter().position(|p| p.project_id == current);
+        self.project_selected = match at {
+            Some(i) => i,
+            // Enter must keep the project the account has, listed or not
+            None if !current.is_empty() => {
+                list.insert(
+                    0,
+                    ProjectChoice {
+                        project_id: current,
+                        name: String::new(),
+                    },
+                );
+                0
+            }
+            None => 0,
+        };
+        self.projects_list = list;
+        self.input.clear();
+        self.draft_error = None;
+        self.input_mode = InputMode::AccountProjectPick;
+    }
+
+    // The text field stays, pre-filled, so a denied or unreachable list never
+    // blocks an edit. The dialog covers the status line, so the reason is also
+    // said inside it.
+    pub fn projects_failed(&mut self, account: &str, reason: &str) {
+        if !self.awaiting_projects_for(account) {
+            return;
+        }
+        let message = format!("{PROJECT_LIST_FAILURE}{reason}");
+        self.draft_error = Some(format!("{message}. Type the project instead"));
         self.set_status(message);
         self.status_error = true;
     }
@@ -1004,6 +1080,8 @@ impl App {
         self.input = self.projects.get(&name).cloned().unwrap_or_default();
         self.draft_error = None;
         self.account_notice = None;
+        self.want_projects = true;
+        self.projects_list.clear();
         self.input_mode = InputMode::AccountProject;
     }
 
@@ -1066,6 +1144,7 @@ impl App {
             InputMode::ChooseEdit => return self.choose_edit(key.code),
             InputMode::Confirm => return self.confirm(key.code),
             InputMode::AddInstance => return self.pick_instance(key.code),
+            InputMode::AccountProjectPick => return self.pick_project(key.code),
             InputMode::MoveTo => return self.pick_move_account(key.code),
             InputMode::AddDomain => return self.pick_domain(key.code),
             mode if mode.is_text() => return self.type_line(key.code),
@@ -1925,6 +2004,7 @@ impl App {
             }
             InputMode::AccountProject => {
                 self.account_draft.project = value.trim().to_string();
+                self.clear_list_failure();
                 self.input = self
                     .zones
                     .get(&self.account_draft.name)
@@ -2154,15 +2234,79 @@ impl App {
                 self.draft.instance = instance;
                 self.draft.zone = zone;
                 self.draft_error = None;
-                // Typing a name worked around a failed list, so the list's
-                // error no longer describes anything the person must act on
-                // other errors on the line are not the list's to clear
-                if self.status_error && self.status.as_deref().is_some_and(is_list_failure) {
-                    self.status = None;
-                    self.status_error = false;
-                }
+                self.clear_list_failure();
                 self.input.clear();
                 self.input_mode = InputMode::AddJumpHost;
+            }
+            _ => {}
+        }
+        None
+    }
+
+    // Typing a name worked around a failed list, so the list's error no
+    // longer describes anything the person must act on. Other errors on the
+    // line are not the list's to clear.
+    fn clear_list_failure(&mut self) {
+        if self.status_error && self.status.as_deref().is_some_and(is_list_failure) {
+            self.status = None;
+            self.status_error = false;
+        }
+    }
+
+    // Filters as you type, like the instance picker; the id and the display
+    // name both match, since people remember either
+    pub fn filtered_projects(&self) -> Vec<&ProjectChoice> {
+        let needle = self.input.to_lowercase();
+        self.projects_list
+            .iter()
+            .filter(|p| {
+                needle.is_empty()
+                    || p.project_id.to_lowercase().contains(&needle)
+                    || p.name.to_lowercase().contains(&needle)
+            })
+            .collect()
+    }
+
+    fn pick_project(&mut self, code: KeyCode) -> Option<Op> {
+        match code {
+            KeyCode::Esc => {
+                self.cancel_dialog();
+                self.input_mode = InputMode::Accounts;
+            }
+            KeyCode::Backspace => {
+                self.input.pop();
+                self.project_selected = 0;
+            }
+            KeyCode::Char(c) => {
+                self.input.push(c);
+                self.project_selected = 0;
+            }
+            KeyCode::Down => {
+                let last = self.filtered_projects().len().saturating_sub(1);
+                self.project_selected = (self.project_selected + 1).min(last);
+            }
+            KeyCode::Up => self.project_selected = self.project_selected.saturating_sub(1),
+            KeyCode::Enter => {
+                let chosen = self
+                    .filtered_projects()
+                    .get(self.project_selected)
+                    .map(|p| p.project_id.clone());
+                let project = match chosen {
+                    Some(id) => id,
+                    // A filter that matches nothing is the person naming a
+                    // project the list lacks: take it
+                    None if !self.input.trim().is_empty() => self.input.trim().to_string(),
+                    None => return None,
+                };
+                self.account_draft.project = project;
+                self.clear_list_failure();
+                self.input = self
+                    .zones
+                    .get(&self.account_draft.name)
+                    .cloned()
+                    .unwrap_or_default();
+                self.draft_error = None;
+                self.input_mode = InputMode::AccountZone;
             }
             _ => {}
         }
