@@ -273,10 +273,6 @@ pub fn update_or_init_config<T>(f: impl FnOnce(&mut Config) -> Result<T>) -> Res
 /// loses the trail, so a typo inside a tunnel's `spec` goes unreported. The
 /// second pass reads the file into `T`, writes `T` back out, and reports what
 /// the file had that the copy does not.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "first caller lands with the editor check")
-)]
 pub fn unknown_keys<T: serde::de::DeserializeOwned + Serialize>(text: &str) -> Result<Vec<String>> {
     let mut found = Vec::new();
     let de = toml::Deserializer::parse(text).map_err(|e| anyhow!("{e}"))?;
@@ -292,10 +288,6 @@ pub fn unknown_keys<T: serde::de::DeserializeOwned + Serialize>(text: &str) -> R
 // compared: its keys are never inside a buffered enum, so the first pass has
 // them all, and a root table omitted on purpose (`[notifications]` at its
 // defaults is not written back) would read as unknown here.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "first caller lands with the editor check")
-)]
 fn missing_from(original: &toml::Value, echoed: &toml::Value, path: &str, out: &mut Vec<String>) {
     match (original, echoed) {
         (toml::Value::Table(o), toml::Value::Table(e)) => {
@@ -324,10 +316,6 @@ fn missing_from(original: &toml::Value, echoed: &toml::Value, path: &str, out: &
 
 // serde_ignored's own Display writes array indices as `.0`; the editor and
 // doctor show `[0]`, which reads as an index and not as a key named "0"
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "first caller lands with the editor check")
-)]
 fn dotted(path: &serde_ignored::Path<'_>) -> String {
     use serde_ignored::Path;
     match path {

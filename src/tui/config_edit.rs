@@ -101,7 +101,27 @@ pub fn validate_config(text: &str) -> Result<Config> {
             config.selected_account
         );
     }
+    refuse_unknown_keys::<Config>(text)?;
     Ok(config)
+}
+
+/// Refuses a key the structs would drop in silence.
+///
+/// Last in each validator so a parse error or a missing account is still the
+/// first thing said: those block the file outright, this one only tells the
+/// editor that part of what was typed will not take effect. Loading stays
+/// lenient, so a file with a stray key that is already on disk keeps working;
+/// it is the save of a new one that is refused. Names the first key and counts
+/// the rest, because one line is all the page has to spare.
+fn refuse_unknown_keys<T: serde::de::DeserializeOwned + serde::Serialize>(
+    text: &str,
+) -> Result<()> {
+    let keys = crate::config::unknown_keys::<T>(text)?;
+    match keys.as_slice() {
+        [] => Ok(()),
+        [only] => bail!("unknown key {only}"),
+        [first, rest @ ..] => bail!("unknown key {first} and {} more", rest.len()),
+    }
 }
 
 /// `tunnels.toml` text, parsed and held to the rules `gtunnel add` enforces.
@@ -204,6 +224,7 @@ pub fn validate_tunnels(
             );
         }
     }
+    refuse_unknown_keys::<TunnelState>(text)?;
     Ok(state)
 }
 
