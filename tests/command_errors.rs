@@ -26,6 +26,20 @@ esac
 exit 0
 "#;
 
+// Login must still pass, or `start` stops at the login check before it ever
+// starts a job; only the tunnel itself fails
+#[cfg(target_os = "macos")]
+const FAILING_STUB: &str = r#"#!/bin/sh
+case "$1 $2" in
+  "auth print-access-token")
+    echo stub-token
+    exit 0
+    ;;
+esac
+echo "ERROR: boom" >&2
+exit 1
+"#;
+
 const CONFIG: &str = r#"selected_account = "demo"
 
 [[accounts]]
@@ -58,6 +72,13 @@ impl Harness {
 
     fn new() -> Self {
         Self::with_stub(STUB)
+    }
+
+    // A gcloud that dies at once, so a started tunnel's job exits inside the
+    // settle window and its status reads as an error
+    #[cfg(target_os = "macos")]
+    fn failing_gcloud() -> Self {
+        Self::with_stub(FAILING_STUB)
     }
 
     fn with_stub(stub: &str) -> Self {
@@ -100,6 +121,11 @@ impl Harness {
             .output()
             .expect("run gtunnel")
     }
+}
+
+#[cfg(target_os = "macos")]
+fn stdout(out: &Output) -> String {
+    String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
 fn stderr(out: &Output) -> String {
@@ -198,4 +224,26 @@ fn delete_does_not_require_gcp_login() {
         !err.contains("needs a logged-in Google account"),
         "stderr: {err}"
     );
+}
+
+// The job is a launchd one, so the test needs a macOS user session. The
+// launchd domain is shared by every test in this binary, and the others run
+// `delete db` and `rename db` in parallel, so this one starts a tunnel no
+// other test names
+#[cfg(target_os = "macos")]
+#[test]
+fn start_exits_non_zero_when_the_tunnel_failed_to_start() {
+    let h = Harness::failing_gcloud();
+    let add = h.run(&["add", "failstart", "10.0.0.10:5432", "--via", "bastion"]);
+    assert!(add.status.success(), "stderr: {}", stderr(&add));
+    let out = h.run(&["start", "failstart"]);
+    // The job stays loaded in the user's launchd domain after the test
+    h.run(&["stop", "failstart"]);
+    let (so, se) = (stdout(&out), stderr(&out));
+    let both = format!("stdout: {so}\nstderr: {se}");
+    assert_eq!(out.status.code(), Some(1), "{both}");
+    // The lines a failed start always printed, where scripts already read them
+    assert!(so.contains("✗ failstart failed to start"), "{both}");
+    assert!(so.contains("Logs: gtunnel logs failstart"), "{both}");
+    assert!(!se.contains("failed to start"), "printed twice: {both}");
 }

@@ -225,5 +225,12 @@ async fn main() -> Result<()> {
     if !quiet {
         update::maybe_print_update_hint();
     }
+    // The command already printed this failure; returning it would print it
+    // a second time on stderr
+    if let Err(e) = &result
+        && e.downcast_ref::<commands::access::Printed>().is_some()
+    {
+        std::process::exit(1);
+    }
     result
 }

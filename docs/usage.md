@@ -601,6 +601,22 @@ bring the service manager to it, which is the same thing `A` does in the TUI. Wh
 disagree — a plist left at login by an older gtunnel, say — `gtunnel doctor` reports the
 drift and `doctor --fix` reconciles the service manager to the record.
 
+A start is judged three seconds after it is asked for. A tunnel whose service has failed by
+then is a failed start: the command prints the same lines it always did on stdout, exits 1,
+and the record stays. The hint line appears when the log holds a line gtunnel recognises, and
+the TUI status line carries the same text.
+
+```
+$ gtunnel start db
+✗ db failed to start
+  Logs: gtunnel logs db
+$ echo $?
+1
+```
+
+`add -s` and `restart` start the tunnel the same way, so a tunnel `add -s` could not start is
+still added and the command exits 1.
+
 `logs -f` follows. `restart` rewrites the service file before starting, so it also picks up
 an edited target. Starting a tunnel empties its log first, so what the pane shows belongs to
 the run in front of you; `L` in the TUI clears the selected tunnel's log without restarting it. `delete` removes the relay route first, then the service, then the record and the log.
@@ -992,6 +1008,12 @@ and 2 live resources without requiring an external runtime.
 | `gtunnel_list_accounts` | none | Lists accounts and shows active selection |
 | `gtunnel_doctor` | `account?`, `all?` | Runs diagnostic checks on GCP resources and local config |
 
+A tool that fails returns a normal result with `isError: true` and the whole cause as its
+text, such as `db failed to start` and the hint under it. A start that fails is such a failure:
+`gtunnel_add_tunnel` with `start: true` reports it and the tunnel stays in `tunnels.toml`, as
+`gtunnel add -s` leaves it. Only a call with missing or mistyped parameters is a JSON-RPC
+error. Nothing but JSON-RPC frames is ever written to stdout.
+
 #### Live Resources
 
 | URI | What it returns |
@@ -1219,8 +1241,9 @@ gtunnel never calls `exit` with a code of its own, so there are only two:
 | Code | Meaning |
 |---|---|
 | `0` | The command did what it said |
-| `1` | It did not, and the reason is on stderr |
+| `1` | It did not, and the reason is on stderr, or on stdout for a failed start |
 
 A failure is one line on stderr beginning `Error:`, so a script can branch on the status
-and show the line. Do not branch on which error it was: the text is written for a person
+and show the line. A start that did not come up is the exception: it keeps the `✗` lines it
+always printed on stdout, with no `Error:` line after them. Do not branch on which error it was: the text is written for a person
 and is not a stable interface.

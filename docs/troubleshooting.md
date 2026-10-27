@@ -122,6 +122,15 @@ emptied when its tunnel starts, so a line in it was written by the process runni
 | `Too many open files` | The tunnel ran out of file descriptors | `gtunnel doctor` names the process holding them, see below |
 | `numpy` | gcloud's Python has no NumPy | See NumPy below |
 
+### A start that says `failed to start`
+
+`gtunnel start`, `restart` and `add -s` wait three seconds and then read the service's state.
+`<name> failed to start` means the service had already exited with an error by then, so the
+command exits 1 and the TUI status line, or an MCP client's `isError` result, says the same.
+The line under it is the hint for the newest log line gtunnel recognises, from the table above;
+`gtunnel logs <name>` shows the rest. A tunnel that is still connecting after three seconds
+reads as running, so `gtunnel list` is the check for one that fails later.
+
 ### One level, two scales
 
 How much a tunnel says is one setting, `info` by default. gcloud and ssh scale verbosity

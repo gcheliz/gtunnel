@@ -13,7 +13,7 @@ Key capabilities:
 - Persistent background access tunnels to GCP VMs, destination groups, and bastion jump hosts.
 - Multi-account scoping with independent daemon management per account.
 - Active TCP health probing and automated daemon supervision.
-- Local service exposure via Cloudflare tunnels or Google Cloud Run.
+- Local service exposure through a GCP relay VM behind a global HTTPS load balancer.
 - Native Model Context Protocol (MCP) tool integration and machine-readable CLI commands.
 
 ## Hybrid Tool Routing
@@ -139,7 +139,7 @@ If `--port` is omitted during tunnel creation, gtunnel automatically assigns an 
 Never assume a tunnel is operational. Before reporting completion of tunnel creation or startup, produce live verification evidence across three steps:
 
 ### Step 1: Daemon State Verification
-Check that the daemon status reports `running`:
+Read `isError` on every mutating MCP result before anything else: `true` means the call failed, whatever the text says, and a start that did not come up is one. Then check that the daemon status reports `running`:
 - MCP: Call `gtunnel_get_status` and verify `"status": "running"` and non-zero PID.
 - CLI: Run `gtunnel list` or `gtunnel status <name>` and verify state is `running`.
 
