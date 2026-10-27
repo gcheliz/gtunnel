@@ -24,6 +24,11 @@ pub enum Finding {
     StaleState {
         tunnel: String,
     },
+    // A service on this machine that no record in tunnels.toml owns: the mirror of
+    // StaleState. Machine-wide, so it carries a label and no account.
+    OrphanService {
+        label: String,
+    },
     MissingInstance {
         tunnel: String,
     },
@@ -96,6 +101,7 @@ impl Finding {
         matches!(
             self,
             Finding::StaleState { .. }
+                | Finding::OrphanService { .. }
                 | Finding::AutoStartDrift { .. }
                 | Finding::DeadEphemeral { .. }
                 | Finding::OrphanDns { .. }
@@ -122,6 +128,10 @@ impl Finding {
             Finding::StaleState { tunnel } => {
                 format!("Tunnel '{tunnel}' is in tunnels.toml but has no service installed")
             }
+            Finding::OrphanService { label } => format!(
+                "Service {label} is installed but no tunnel in tunnels.toml owns it, so it may \
+                 still hold a local port at login"
+            ),
             Finding::MissingInstance { tunnel } => {
                 format!("Tunnel '{tunnel}' points at an instance that no longer exists")
             }
@@ -242,6 +252,84 @@ pub fn reserved_accounts(config: &Config) -> Vec<String> {
 // a fresh install with nothing in tunnels.toml is not missing anything.
 pub fn watchdog_finding(installed: bool, tunnels: usize) -> Option<Finding> {
     (!installed && tunnels > 0).then_some(Finding::WatchdogMissing)
+}
+
+/// Services installed on this machine that no record in `tunnels.toml` owns.
+///
+/// The comparison is against the labels the records produce, never against a
+/// label taken apart: an account or a tunnel name may itself hold a dot or a
+/// dash, so splitting a label back into the two is a guess. The watchdog is
+/// one job for the machine and owns no record, so it is never an orphan.
+pub fn orphan_services(installed: &[String], expected: &HashSet<String>) -> Vec<String> {
+    let watchdog = crate::daemon::watchdog_label();
+    let watchdog_unit = format!("{watchdog}.service");
+    let mut orphans: Vec<String> = installed
+        .iter()
+        .filter(|label| {
+            !expected.contains(*label) && *label != watchdog && **label != watchdog_unit
+        })
+        .cloned()
+        .collect();
+    // The two macOS directories hold the same definition twice
+    orphans.sort();
+    orphans.dedup();
+    orphans
+}
+
+// The label a definition file stands for, or None for a file that is not a
+// gtunnel job. The prefix is what keeps another tool's plist from being read
+// as an orphan and then removed.
+#[cfg(target_os = "macos")]
+fn label_of_file(file_name: &str) -> Option<String> {
+    let label = file_name.strip_suffix(".plist")?;
+    label.starts_with("com.gtunnel.").then(|| label.to_string())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn label_of_file(file_name: &str) -> Option<String> {
+    (file_name.starts_with("gtunnel-") && file_name.ends_with(".service"))
+        .then(|| file_name.to_string())
+}
+
+// Only these directories are ever listed, and so only these are ever removed
+// from: `uninstall` deletes by label from the same two places.
+fn service_dirs() -> Vec<std::path::PathBuf> {
+    let mut dirs = Vec::new();
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(dir) = crate::daemon::launchd::agents_dir() {
+            dirs.push(dir);
+        }
+        if let Ok(dir) = crate::config::config_dir() {
+            dirs.push(dir.join("agents"));
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    if let Some(home) = dirs::home_dir() {
+        dirs.push(home.join(".config/systemd/user"));
+    }
+    dirs
+}
+
+/// The thin caller over [`orphan_services`]: lists `dirs` and builds the
+/// expected labels from every record in every account. A directory that cannot
+/// be read holds nothing to report.
+pub fn find_orphan_services(
+    dirs: &[std::path::PathBuf],
+    tunnels: &[crate::state::PersistentTunnel],
+) -> Vec<String> {
+    let expected: HashSet<String> = tunnels
+        .iter()
+        .map(|t| crate::daemon::platform_label(&t.account_name, &t.name))
+        .collect();
+    let installed: Vec<String> = dirs
+        .iter()
+        .filter_map(|dir| std::fs::read_dir(dir).ok())
+        .flatten()
+        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+        .filter_map(|name| label_of_file(&name))
+        .collect();
+    orphan_services(&installed, &expected)
 }
 
 // The exact command that makes an Access tunnel's port reachable through IAP
@@ -482,6 +570,12 @@ pub async fn run_doctor(
 
     for account in reserved_accounts(cfg) {
         out.push((account.clone(), Finding::ReservedAccountName { account }));
+    }
+
+    // Machine-wide like the watchdog: a service has no account the scan could
+    // file it under, since the record that would name it is the thing missing
+    for label in find_orphan_services(&service_dirs(), &state.tunnels) {
+        out.push((String::new(), Finding::OrphanService { label }));
     }
 
     for (record, alive) in list_ephemeral().unwrap_or_default() {
@@ -885,6 +979,14 @@ async fn apply_fix(
             state.remove_for_account(tunnel, account_name);
             Ok(())
         }),
+        // Re-checked against the record set just loaded: a tunnel added since the
+        // scan may own this label, and uninstalling it would take that tunnel down
+        Finding::OrphanService { label } => {
+            if !find_orphan_services(&service_dirs(), &state.tunnels).contains(label) {
+                anyhow::bail!("a tunnel claimed it since the scan");
+            }
+            crate::daemon::uninstall(label).await
+        }
         // tunnels.toml is what the user edits, so the record is the truth the
         // service manager is brought back to
         Finding::AutoStartDrift { tunnel, .. } => {
@@ -1433,5 +1535,95 @@ mod tests {
         // No tunnels, nothing to watch: an install with nothing in it yet is
         // not a machine missing its watchdog
         assert_eq!(watchdog_finding(false, 0), None);
+    }
+
+    fn expected(labels: &[&str]) -> HashSet<String> {
+        labels.iter().map(|l| l.to_string()).collect()
+    }
+
+    #[test]
+    fn a_service_no_record_owns_is_an_orphan() {
+        let owned = crate::daemon::platform_label("dev", "db");
+        let gone = crate::daemon::platform_label("dev", "gone");
+        let found = orphan_services(&[owned.clone(), gone.clone()], &expected(&[&owned]));
+        assert_eq!(found, vec![gone]);
+    }
+
+    #[test]
+    fn the_same_tunnel_name_in_another_account_is_not_the_orphan() {
+        // `db` exists in prod only; dev's service for it has no record
+        let prod = crate::daemon::platform_label("prod", "db");
+        let dev = crate::daemon::platform_label("dev", "db");
+        let found = orphan_services(&[prod.clone(), dev.clone()], &expected(&[&prod]));
+        assert_eq!(found, vec![dev]);
+    }
+
+    #[test]
+    fn the_watchdog_is_never_an_orphan() {
+        let watchdog = crate::daemon::watchdog_label().to_string();
+        let found = orphan_services(&[watchdog], &expected(&[]));
+        assert!(found.is_empty(), "the watchdog is not a tunnel: {found:?}");
+    }
+
+    #[test]
+    fn a_service_listed_in_two_directories_is_reported_once() {
+        let gone = crate::daemon::platform_label("dev", "gone");
+        let found = orphan_services(&[gone.clone(), gone.clone()], &expected(&[]));
+        assert_eq!(found, vec![gone]);
+    }
+
+    #[test]
+    fn an_orphan_is_fixable_and_describes_itself() {
+        let finding = Finding::OrphanService {
+            label: "com.gtunnel.dev.gone".to_string(),
+        };
+        assert!(finding.fixable());
+        assert!(finding.describe().contains("com.gtunnel.dev.gone"));
+    }
+
+    #[cfg(target_os = "macos")]
+    fn persistent(account: &str, name: &str) -> crate::state::PersistentTunnel {
+        crate::state::PersistentTunnel {
+            name: name.to_string(),
+            account_name: account.to_string(),
+            auto_start: false,
+            spec: TunnelSpec::Access {
+                target: AccessTarget::Instance {
+                    instance: "bastion".to_string(),
+                    zone: "europe-west1-b".to_string(),
+                },
+                remote_port: 5432,
+                local_port: 15432,
+            },
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_orphan_plist_in_the_config_dir_is_found_and_the_watchdog_plist_is_not() {
+        let temp = crate::config::testing::TempConfigDir::new();
+        let agents = temp.path().join("agents");
+        std::fs::create_dir_all(&agents).expect("mkdir");
+        for label in [
+            "com.gtunnel.dev.db",
+            "com.gtunnel.dev.gone",
+            crate::daemon::launchd::WATCHDOG_LABEL,
+        ] {
+            std::fs::write(agents.join(format!("{label}.plist")), "<plist/>").expect("write");
+        }
+        // Not ours: files that merely live beside the others
+        std::fs::write(agents.join("com.example.other.plist"), "<plist/>").expect("write");
+        std::fs::write(agents.join("notes.txt"), "x").expect("write");
+
+        let found = find_orphan_services(&[agents], &[persistent("dev", "db")]);
+        assert_eq!(found, vec!["com.gtunnel.dev.gone".to_string()]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_directory_that_does_not_exist_holds_no_orphans() {
+        let temp = crate::config::testing::TempConfigDir::new();
+        let found = find_orphan_services(&[temp.path().join("absent")], &[]);
+        assert!(found.is_empty());
     }
 }

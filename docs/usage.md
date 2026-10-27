@@ -1091,6 +1091,16 @@ account dev:
   - gcloud has no usable credentials for account 'dev'. Run `gcloud auth login`
 ```
 
+A service with no record is machine-wide, so it is filed under `gtunnel:` like the watchdog.
+It is a `com.gtunnel.*` plist (macOS) or `gtunnel-*.service` unit (Linux) whose label no
+record in any account produces; the watchdog is never reported:
+
+```
+$ gtunnel doctor
+gtunnel:
+  - Service com.gtunnel.dev.old-tunnel is installed but no tunnel in tunnels.toml owns it, so it may still hold a local port at login
+```
+
 | Flag | Effect |
 |---|---|
 | `--fix` | Fix what can be fixed safely |
@@ -1098,8 +1108,9 @@ account dev:
 | `-a`, `--all` | Check every account, not only the selected one |
 | `--json` | Print the findings as a JSON array of `account`, `description` and `fixable` |
 
-`--fix` removes stale local records, dead ephemeral records and per-tunnel relay leftovers
-no live tunnel claims, reconciles auto-start to what `tunnels.toml` says, and installs a
+`--fix` removes stale local records, services no record owns (a plist or unit left behind by
+a removed tunnel, which would otherwise keep its port at login), dead ephemeral records and
+per-tunnel relay leftovers no live tunnel claims, reconciles auto-start to what `tunnels.toml` says, and installs a
 missing watchdog; [troubleshooting.md](troubleshooting.md#leftovers) lists each finding. It
 re-checks the claim immediately before each removal, so a tunnel started during the scan is
 left alone. Findings it cannot fix, such as a missing firewall rule, are printed with the
