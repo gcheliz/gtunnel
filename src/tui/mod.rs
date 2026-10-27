@@ -407,16 +407,6 @@ fn apply_polled(app: &mut App, timers: &mut Timers, msg: Msg) {
             }
             for (name, m) in metrics {
                 if let Some(entry) = app.entries.iter_mut().find(|e| e.name() == name) {
-                    // A process gtunnel does not manage owns no log here,
-                    // so there is nothing of ours to append to
-                    if entry.kind != TunnelKind::External {
-                        let was = entry.metrics.as_ref().map(|p| p.active_connections);
-                        if let Some(line) = connection_change(was, m.active_connections)
-                            && let Ok(path) = entry.tunnel.log_path()
-                        {
-                            let _ = crate::daemon::log_event(&path, &line);
-                        }
-                    }
                     // Microseconds: a fast hop is a real measurement, and
                     // whole milliseconds would record it as nothing
                     if let Some(d) = m.latency {
@@ -439,23 +429,6 @@ fn apply_polled(app: &mut App, timers: &mut Timers, msg: Msg) {
             }
         }
         _ => {}
-    }
-}
-
-// gtunnel measures the connection count every 5s and, until now, kept it to
-// the Metrics pane. The count itself belongs on screen; what belongs in the
-// log is a change, because a line per poll is 17,280 a day that say nothing.
-// The line carries no tunnel name: it lands in that tunnel's own log, like
-// every other line `log_event` writes.
-fn connection_change(was: Option<u64>, now: u64) -> Option<String> {
-    match was {
-        // First sight: there is no earlier count to point away from, so a
-        // tunnel already carrying traffic reports it without an arrow, and
-        // an idle one says nothing rather than a line on every TUI start
-        None if now == 0 => None,
-        None => Some(format!("connections: {now}")),
-        Some(before) if before == now => None,
-        Some(before) => Some(format!("connections: {before} -> {now}")),
     }
 }
 
@@ -483,9 +456,9 @@ fn transition_line(was: HealthStatus, now: HealthStatus) -> Option<String> {
 }
 
 // A tunnel that just went bad, or just recovered, is worth interrupting for.
-// It also goes in the log: a notification is gone once dismissed, and one
-// raised while the laptop slept was never seen, but the log is what the user
-// still has afterwards.
+// Not written to the tunnel's log: the TUI is a viewer that may be open twice
+// or not at all, and a line it wrote would be doubled or missing. The log is the
+// supervisor's alone.
 fn announce(entry: &TunnelEntry, now: HealthStatus) {
     if entry.status != TunnelStatus::Running {
         return;
@@ -494,11 +467,6 @@ fn announce(entry: &TunnelEntry, now: HealthStatus) {
         return;
     };
     crate::notify::notify("gtunnel", &format!("{} is {what}", entry.name()));
-    if entry.kind != TunnelKind::External
-        && let Ok(path) = entry.tunnel.log_path()
-    {
-        let _ = crate::daemon::log_event(&path, &what);
-    }
 }
 
 fn schedule(app: &mut App, timers: &mut Timers, tx: &mpsc::UnboundedSender<Msg>) {
@@ -685,24 +653,6 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
-    // The count itself is on screen every 5s; what the log wants is a change
-    #[test]
-    fn only_a_change_in_the_connection_count_is_worth_a_line() {
-        assert_eq!(
-            connection_change(Some(0), 2),
-            Some("connections: 0 -> 2".to_string())
-        );
-        assert_eq!(
-            connection_change(Some(2), 0),
-            Some("connections: 2 -> 0".to_string())
-        );
-        assert_eq!(
-            connection_change(Some(2), 2),
-            None,
-            "a line per poll is 17,280 a day that say nothing"
-        );
-    }
-
     #[test]
     fn a_poller_in_flight_is_not_due() {
         let mut p = Poller::due_now();
@@ -847,21 +797,6 @@ mod tests {
         app.entries[0].health = HealthStatus::Healthy;
         // announce returns early for stopped tunnels
         announce(&app.entries[0], HealthStatus::Unhealthy);
-    }
-
-    // The first metrics of a session have nothing to compare against
-    #[test]
-    fn the_first_count_seen_reports_traffic_but_never_silence() {
-        assert_eq!(
-            connection_change(None, 3),
-            Some("connections: 3".to_string()),
-            "a tunnel already carrying traffic before anyone looked"
-        );
-        assert_eq!(
-            connection_change(None, 0),
-            None,
-            "every idle tunnel would otherwise write a line on every TUI start"
-        );
     }
 
     // Starting a tunnel empties its log, but the count measured during the
