@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.60](https://github.com/gcheliz/gtunnel/compare/v0.1.59...v0.1.60) - 2026-10-27
+
+### Documentation
+
+- *(architecture)* retitle the public-mode diagram as expose mode ([#156](https://github.com/gcheliz/gtunnel/pull/156))
+
 ## [0.1.59](https://github.com/gcheliz/gtunnel/compare/v0.1.58...v0.1.59) - 2026-10-27
 
 ### Added
