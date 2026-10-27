@@ -373,6 +373,9 @@ pub async fn cmd_move(
         config,
         acct: dst_acct.clone(),
     };
+    // The old name is about to stop on purpose; left in the ledger as Up, the
+    // watchdog's next pass would announce a crash that was a move
+    crate::lifecycle::forget(&src_acct.name, name);
     run_relocate(
         &src,
         &dst,
@@ -399,6 +402,8 @@ pub async fn cmd_rename(account: Option<&str>, old: &str, new: &str) -> Result<(
         config,
         acct: acct.clone(),
     };
+    // Same reason as in `cmd_move`: the old name stops on purpose
+    crate::lifecycle::forget(&acct.name, old);
     run_relocate(&ops, &ops, &mut state, &acct.name, &acct.name, old, new).await?;
     println!("Renamed {old} to {new}");
     Ok(())

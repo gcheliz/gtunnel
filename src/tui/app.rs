@@ -2223,7 +2223,15 @@ impl App {
                 match carried.iter().find(|o| o.name() == entry.name()) {
                     Some(old) => {
                         entry.history = old.history.clone();
-                        entry.health = old.health;
+                        // A row that is not running has nothing to be healthy
+                        // about: carrying the last run's verdict across a stop
+                        // made the next start's first poll read as a recovery
+                        // or a repeat, by how the previous run happened to end
+                        entry.health = if entry.status == TunnelStatus::Running {
+                            old.health
+                        } else {
+                            HealthStatus::Unknown
+                        };
                         entry.metrics = old.metrics.clone();
                         // The first round after the op shows what it did, so
                         // it is the one that ends the pending state
