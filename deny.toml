@@ -1,0 +1,48 @@
+# cargo-deny: what may enter the dependency graph. CI runs `cargo deny check`
+# in the `audit` job; run the same command locally before adding a crate.
+
+[graph]
+# Every target a release is built for, so a platform-only crate is checked too
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+]
+
+[advisories]
+# Unmaintained and unsound notices fail the check like vulnerabilities do: a
+# binary `gtunnel update` installs should not ship either.
+unmaintained = "all"
+yanked = "deny"
+
+[licenses]
+# Permissive licences only. A crate offering a choice (MIT OR Apache-2.0) passes
+# on any allowed option.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 0.9
+
+[bans]
+# Two versions of one crate are reported, not refused: they come from upstream
+# version ranges this repository cannot change
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

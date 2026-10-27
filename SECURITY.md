@@ -43,5 +43,5 @@ knowing on a shared host.
 
 ## Dependencies
 
-`cargo audit --deny warnings` runs on every pull request and on every release, and
+`cargo deny check` (advisories, licences and sources, per `deny.toml`) runs on every pull request and on every release, and
 Dependabot opens updates for the crate and action dependencies.

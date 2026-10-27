@@ -37,7 +37,7 @@ you push and you will not be surprised:
 | `cargo fmt --check` | any formatting drift |
 | `cargo clippy --all-targets -- -D warnings` | every clippy warning, including the lints declared in `Cargo.toml` |
 | `cargo test` | the suite, on ubuntu and macos separately |
-| `cargo audit --deny warnings` | a dependency with an advisory |
+| `cargo deny --locked check` | a dependency with an advisory, a licence outside `deny.toml`, or a crate from an unknown source |
 | `cargo check --locked --all-targets` on 1.89 | anything that needs a newer compiler than declared |
 | `zizmor --offline .github/workflows` | an unpinned action or a template injection |
 | Verify documentation versions (Linux test job) | an install snippet, `--version` sample or landing-page marker that does not quote the version in `Cargo.toml` |

@@ -275,7 +275,7 @@ still holds a tagged backend, host rule or named port for the same tunnel.
 
 Every pull request, and every merge to main before it is released, runs
 [CI](.github/workflows/ci.yml): rustfmt, clippy with `-D warnings`, the test suite,
-`cargo audit --deny warnings`, a `cargo check` on the declared 1.89 floor, zizmor over the
+`cargo deny check` (advisories, licences, sources), a `cargo check` on the declared 1.89 floor, zizmor over the
 workflows, and a check that the docs quote the current version.
 
 ## License
