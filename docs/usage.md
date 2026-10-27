@@ -606,7 +606,7 @@ gtunnel run my-vm:5432 --ttl 30m       # stops itself after 30 minutes
 ```
 
 <p align="center">
-  <img src="demo-run.gif" alt="gtunnel run db my-vm:5432 prints the local port, Ctrl+C closes the tunnel, and gtunnel list shows nothing left behind" width="720">
+  <img src="demo-run.gif" alt="gtunnel run --ttl 30m db my-vm:5432 prints the local port and its stop time, gtunnel list shows the run with its stop time, Ctrl+C closes it, and the list is empty again" width="720">
 </p>
 
 ## start, stop, restart, autostart, logs, list, delete
@@ -622,6 +622,9 @@ STATUS     NAME             MODE    URL                              TARGET
 A live `gtunnel run` is listed with the mode it really is, `access` or `public`, and a marker
 after the target: `[run, stops at 14:32]` (local time) when it has a TTL, `[run]` when it does
 not. A run whose process is gone is not listed; `doctor` reports its leftover record.
+
+The TUI tags the same row `[run, stops at 14:32]`, or `[ephemeral]` without a TTL, and its
+details pane counts down: `stops at  14:32 (in 25m)`.
 
 Add `--json` for machine-readable output:
 
@@ -1205,6 +1208,10 @@ guides AI agents (Claude Code, Gemini CLI, etc.) on:
 
 `gtunnel mcp` runs a newline-delimited JSON-RPC 2.0 stdio server in pure Rust. It exposes 11 tools
 and 2 live resources without requiring an external runtime.
+
+<p align="center">
+  <img src="demo-mcp.gif" alt="Real MCP calls to gtunnel mcp: the 11 tools, gtunnel_run_tunnel opening db on my-vm:5432 for 30 minutes, gtunnel list showing the run and its stop time, gtunnel_stop_tunnel closing it" width="720">
+</p>
 
 #### Exposed Tools
 

@@ -1,5 +1,7 @@
 # The gtunnel TUI, filled with the synthetic data `gtunnel demo` provides.
 # It touches no GCP project and no configuration file.
+# `target/release` goes first on PATH, so the recording shows the binary this
+# checkout builds (`cargo build --release`), never an older installed one.
 #
 #   vhs docs/tapes/demo-tui.tape
 #
@@ -14,6 +16,8 @@ Set Padding 24
 Set TypingSpeed 70ms
 
 Hide
+Type `export PATH="$PWD/target/release:$PATH"`
+Enter
 Type "clear"
 Enter
 Show
@@ -25,19 +29,24 @@ Enter
 Sleep 3s
 
 # Walk the tunnel list; the detail, log and metric panes follow the selection.
-# The second row is an IAP process gtunnel did not start, the third a public URL
-# with load-balancer traffic, the fourth an ephemeral URL behind IAP sign-in
+# Rows: an Access tunnel, a jump through `bastion`, a destination group, a run an
+# agent opened (its tag and detail pane show when it stops), an IAP process
+# gtunnel did not start, a public URL with load-balancer traffic, and an
+# ephemeral URL behind IAP sign-in. The header rule shows an available update
+Sleep 1500ms
+Down
+Sleep 2000ms
+Down
+Sleep 2000ms
+Down
+Sleep 3500ms
 Down
 Sleep 1500ms
 Down
 Sleep 2500ms
 Down
-Sleep 2500ms
-Up
-Sleep 1000ms
-Up
-Sleep 1000ms
-Up
+Sleep 2000ms
+Up 6
 Sleep 1500ms
 
 # `e` chooses between editing the target and ports, renaming, and moving

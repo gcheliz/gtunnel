@@ -1307,7 +1307,7 @@ fn the_demo_peak_reads_in_the_same_unit_as_its_latency() {
 #[test]
 fn the_demo_needs_no_config_and_shows_every_kind_of_tunnel() {
     let app = App::new_demo();
-    assert_eq!(app.entries.len(), 4);
+    assert_eq!(app.entries.len(), 7);
     assert_eq!(
         app.entries
             .iter()
@@ -1321,6 +1321,60 @@ fn the_demo_needs_no_config_and_shows_every_kind_of_tunnel() {
     );
     assert!(!app.logs.is_empty());
     assert!(app.entries.iter().any(|e| e.metrics.is_some()));
+}
+
+#[test]
+fn the_demo_shows_a_jump_a_dest_group_and_a_run_with_a_stop_time() {
+    use crate::state::AccessTarget;
+    let app = App::new_demo();
+    let target = |name: &str| {
+        let e = app.entries.iter().find(|e| e.name() == name).unwrap();
+        match &e.tunnel.spec {
+            TunnelSpec::Access { target, .. } => target.clone(),
+            other => panic!("{name} is not an Access tunnel: {other:?}"),
+        }
+    };
+    assert!(matches!(target("redis"), AccessTarget::Jump { .. }));
+    assert!(matches!(target("pg-hosts"), AccessTarget::DestGroup { .. }));
+    let run = app
+        .entries
+        .iter()
+        .find(|e| e.name() == "gt-3b2c10")
+        .unwrap();
+    assert_eq!(run.kind, TunnelKind::Ephemeral);
+    assert!(run.tag().unwrap().starts_with("[run, stops at "));
+    let ports: Vec<u16> = app
+        .used_ports
+        .iter()
+        .copied()
+        .filter(|p| (15000..16000).contains(p))
+        .collect();
+    assert_eq!(
+        ports.len(),
+        app.used_ports.len(),
+        "a port outside 15000-15999"
+    );
+    assert!(app.update.is_some(), "the header shows no update");
+}
+
+#[test]
+fn the_demo_log_is_in_the_normalised_connection_format() {
+    let app = App::new_demo();
+    let conn: Vec<&String> = app
+        .logs
+        .iter()
+        .filter(|l| l.contains("gtunnel: conn"))
+        .collect();
+    assert!(!conn.is_empty());
+    for line in &app.logs {
+        // RFC 3339 stamp to the second, as format_line writes it
+        assert_eq!(line.as_bytes()[4], b'-', "{line}");
+        assert_eq!(&line[19..21], "Z ", "{line}");
+    }
+    for line in conn {
+        assert!(line.contains(" from 127.0.0.1:"), "{line}");
+    }
+    assert!(app.logs.iter().any(|l| l.contains(" closed after ")));
 }
 
 #[test]

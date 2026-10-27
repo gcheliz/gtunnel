@@ -1187,6 +1187,21 @@ fn render_right(f: &mut Frame, app: &App, area: Rect) {
 /// pane's height is derived from this count: a fixed height was sized for an Access tunnel and clipped `started by`
 /// off every public one, and a `name` row would have clipped one more.
 fn detail_lines(entry: &TunnelEntry, project: &str, width: usize) -> Vec<Line<'static>> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    detail_lines_at(entry, project, width, now)
+}
+
+/// `detail_lines` with the clock passed in, so the countdown is a value a test
+/// can set and not whatever minute the suite happens to run in.
+fn detail_lines_at(
+    entry: &TunnelEntry,
+    project: &str,
+    width: usize,
+    now: u64,
+) -> Vec<Line<'static>> {
     let mut rows: Vec<(&'static str, String)> = vec![
         // The list cuts long names and drops the account suffix; this row is
         // where the stored name, the one every command takes, can be read
@@ -1225,6 +1240,12 @@ fn detail_lines(entry: &TunnelEntry, project: &str, width: usize) -> Vec<Line<'s
         }
     }
 
+    // A run that ends by itself says when: the row's tag has the clock time,
+    // and this adds how long is left, which the tag has no room for
+    if let Some(at) = entry.expires_at {
+        rows.push(("stops at", stops_at(at, now)));
+    }
+
     // Status says a tunnel is running; these two say since when, and whether
     // anything brought it up without being asked
     let metrics = entry.metrics.clone().unwrap_or_default();
@@ -1251,6 +1272,20 @@ fn detail_lines(entry: &TunnelEntry, project: &str, width: usize) -> Vec<Line<'s
     rows.iter()
         .flat_map(|(label, value)| wrap_detail(label, value, width))
         .collect()
+}
+
+/// `14:32 (in 23m)`. The minutes round up so a run with seconds left never
+/// reads as already over, and one past its time says so instead of counting
+/// negative.
+fn stops_at(expires_at: u64, now: u64) -> String {
+    let clock = crate::commands::local_hhmm(expires_at).unwrap_or_else(|| "-".to_string());
+    match expires_at.checked_sub(now).filter(|left| *left > 0) {
+        Some(left) => {
+            let left = std::time::Duration::from_secs(left.div_ceil(60) * 60);
+            format!("{clock} (in {})", format_uptime(left))
+        }
+        None => format!("{clock} (ending)"),
+    }
 }
 
 /// Rows of border and title around the detail rows

@@ -16,6 +16,7 @@ on:
       - docs/demo-tui.gif
       - docs/demo-access.gif
       - docs/demo-run.gif
+      - docs/demo-mcp.gif
       - docs/images/architecture/gtunnel-overview.png
       - .github/workflows/pages.yml
   workflow_dispatch:
@@ -52,7 +53,7 @@ jobs:
             exit 1
           fi
           mkdir _site
-          cp site/index.html docs/logo.svg docs/demo-tui.gif docs/demo-access.gif docs/demo-run.gif _site/
+          cp site/index.html docs/logo.svg docs/demo-tui.gif docs/demo-access.gif docs/demo-run.gif docs/demo-mcp.gif _site/
           cp "$png" _site/architecture.png
           ls -l _site
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
