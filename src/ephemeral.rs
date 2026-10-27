@@ -587,13 +587,14 @@ pub async fn cmd_run(
     // here; the name and the ports are decided under the lock, in
     // `claim_and_start`
     let (shape, expose_config) = if public {
-        let expose = acct.expose.clone().with_context(|| {
-            format!(
+        let expose = acct.expose.clone().ok_or_else(|| {
+            GtunnelError::usage(format!(
                 "No relay for account '{}'. Run `gtunnel relay up`",
                 acct.name
-            )
+            ))
         })?;
         let domain = expose.domain(domain)?.clone();
+        crate::tunnel::normalize_local_target(&target)?;
         (
             RunShape::Public {
                 local_target: target.clone(),

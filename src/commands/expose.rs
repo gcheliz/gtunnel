@@ -262,6 +262,9 @@ pub async fn expose_tunnel(account: Option<&str>, req: &ExposeRequest<'_>) -> Re
     })?;
     let domain = expose.domain(req.domain)?.clone();
 
+    // Before any GCP call: the argv builder checks it too, but only at start
+    crate::tunnel::normalize_local_target(req.target)?;
+
     // Read to choose a relay port before the route is created; the locked
     // update below re-checks both the name and the port
     let state = TunnelState::load()?;
