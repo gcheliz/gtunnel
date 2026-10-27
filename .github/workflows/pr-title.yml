@@ -1,0 +1,38 @@
+name: PR title
+
+# The repository merges by squash only, and a squash of more than one commit takes
+# the pull request's title as its message. release-plz decides from that message
+# whether the merge cuts a release, so a title outside the conventional shape
+# skips the release with no error anywhere. This check is required on main.
+#
+# A workflow of its own, not a job in ci.yml, because a title edit has to re-run
+# it and `edited` there would rebuild everything on every description change.
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions: {}
+
+concurrency:
+  group: pr-title-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  pr-title:
+    name: pr-title
+    runs-on: ubuntu-24.04
+    steps:
+      # The title reaches the script through the environment, never through
+      # template expansion, so a crafted title cannot become shell
+      - name: Check the title is a conventional commit
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+          if printf '%s\n' "$TITLE" \
+            | grep -qE '^(feat|fix|perf|refactor|docs|ci|chore|test|build|style|revert)(\([a-z0-9._-]+\))?!?: [^ ]'; then
+            echo "ok: $TITLE"
+          else
+            echo "::error::PR title is not a conventional commit: '$TITLE'. The squash merge uses it as the commit message, and release-plz only releases feat, fix, perf, refactor and docs."
+            exit 1
+          fi
