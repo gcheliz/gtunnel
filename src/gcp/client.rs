@@ -33,6 +33,7 @@ pub struct Endpoints {
     pub certmanager: String,
     pub iap: String,
     pub monitoring: String,
+    pub resource_manager: String,
 }
 
 impl Endpoints {
@@ -43,6 +44,7 @@ impl Endpoints {
             certmanager: "https://certificatemanager.googleapis.com/v1".to_string(),
             iap: "https://iap.googleapis.com/v1".to_string(),
             monitoring: "https://monitoring.googleapis.com/v3".to_string(),
+            resource_manager: "https://cloudresourcemanager.googleapis.com/v3".to_string(),
         }
     }
 
@@ -55,6 +57,7 @@ impl Endpoints {
             certmanager: base.to_string(),
             iap: base.to_string(),
             monitoring: base.to_string(),
+            resource_manager: base.to_string(),
         }
     }
 }
