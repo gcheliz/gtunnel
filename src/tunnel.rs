@@ -251,6 +251,16 @@ pub fn diagnose_log_line(line: &str) -> Option<&'static str> {
             "numpy",
             "Install NumPy for gcloud to speed up IAP tunnels (see docs/troubleshooting.md).",
         ),
+        (
+            "4004",
+            "IAP asked gcloud to reauthenticate; gcloud resumes the session on its own. If it \
+             repeats, check the account's credentials (run: gtunnel doctor).",
+        ),
+        (
+            "Unable to reconnect within",
+            "gcloud gave up reconnecting to IAP after 15 minutes; clients on this tunnel were \
+             cut. See Limits in docs/architecture.md.",
+        ),
     ];
     TABLE
         .iter()
@@ -778,6 +788,8 @@ mod tests {
             // failure `Error:` and makes it fatal when that option is on
             ("Error: remote port forwarding failed for listen port 30123", "relay"),
             ("WARNING: Python 3.12 lacks numpy, falling back to a slower implementation", "NumPy"),
+            ("INFO: [3] Received WebSocket Close message [4004: 'reauthentication required'].", "resumes the session"),
+            ("WARNING: [3] Unable to reconnect within [900000] ms", "15 minutes"),
         ];
         for (line, expected) in cases {
             let hint = diagnose_log_line(line).unwrap_or_else(|| panic!("no hint for: {line}"));

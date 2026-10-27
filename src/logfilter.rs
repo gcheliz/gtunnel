@@ -187,6 +187,12 @@ fn classify_iap(id: &str, tail: &str) -> Line {
             None => Line::Drop,
         };
     }
+    // An ordinary close is `[9: 9]` and floods the log. IAP's own close codes
+    // are 4xxx and say why a session was cut (4004 is a reauthentication), so
+    // they stay: they are the only trace of a reconnect.
+    if tail.contains("Received WebSocket Close message [4") {
+        return Line::Keep(format!("INFO: [{id}] {tail}"));
+    }
     if tail.contains("Received WebSocket Close")
         || tail.contains("Error while receiving from WebSocket")
         || tail.contains("Bad file descriptor")
@@ -913,6 +919,23 @@ mod tests {
             line.chars().count(),
             "2026-10-27T01:50:00Z ".chars().count() + 25
         );
+    }
+
+    #[test]
+    fn an_iap_close_code_is_kept_and_an_ordinary_close_is_not() {
+        assert!(keep(
+            "INFO: [3] Received WebSocket Close message [4004: 'reauthentication required']."
+        ));
+        assert!(!keep("INFO: [0] Received WebSocket Close message [9: 9]."));
+    }
+
+    // Characterization: these are kept today, and the hint rows rely on it
+    #[test]
+    fn reconnect_lines_are_kept() {
+        assert!(keep(
+            "INFO: [3] Reconnecting with URL ['wss://tunnel.cloudproxy.app/v4/reconnect?sid=x']"
+        ));
+        assert!(keep("WARNING: [3] Unable to reconnect within [900000] ms"));
     }
 
     #[test]
