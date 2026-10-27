@@ -115,15 +115,16 @@ code { color: var(--text); }
 .numbers .label, .figures .label { font-size: 14px; color: var(--muted); }
 
 /* CLI */
-.modes { margin: 0; display: flex; flex-direction: column; gap: 14px; }
+.modes { margin: 0; display: flex; flex-direction: column; gap: 10px; }
 .modes div { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 10px; align-items: stretch; }
 .modes dt { grid-column: 1 / -1; font-family: var(--mono); font-size: 12px; letter-spacing: 1px; }
-.modes dd { margin: 0; min-width: 0; display: flex; align-items: center; padding: 10px 14px; background: var(--raised); border: 1px solid var(--line); border-radius: 10px; overflow-wrap: anywhere; font-family: var(--mono); font-size: 14px; }
+.modes dd { margin: 0; min-width: 0; display: flex; align-items: center; padding: 6px 12px; background: var(--raised); border: 1px solid var(--line); border-radius: 10px; overflow-wrap: anywhere; font-family: var(--mono); font-size: 13px; }
+.modes + .body { font-size: 15px; }
 .modes dd::before { content: "$"; margin-right: 10px; color: var(--cyan); }
 
 /* MCP band */
 .band { margin-top: 72px; background: var(--surface); border-top: 1px solid var(--line-soft); border-bottom: 1px solid var(--line-soft); }
-.band .wrap { padding-top: 56px; padding-bottom: 56px; display: flex; flex-direction: column; gap: 40px; }
+.band .wrap { padding-top: 44px; padding-bottom: 44px; display: flex; flex-direction: column; gap: 28px; }
 .band .row { align-items: stretch; }
 .band .code { display: flex; flex-direction: column; justify-content: center; }
 .figures { display: flex; gap: 32px; padding-top: 8px; }
@@ -136,16 +137,18 @@ code { color: var(--text); }
 
 /* code panels */
 .snippet { position: relative; min-width: 0; display: flex; }
-.snippet > .code { flex: 1; min-width: 0; padding-right: 96px; }
-.copy-sm { display: none; align-items: center; justify-content: center; min-width: 72px; min-height: 44px; padding: 0 14px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--raised); color: var(--muted); font-family: var(--sans); font-weight: 600; font-size: 13px; cursor: pointer; }
+.snippet > .code { flex: 1; min-width: 0; padding-right: 80px; }
+.copy-sm { display: none; align-items: center; justify-content: center; position: relative; min-width: 56px; min-height: 32px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--raised); color: var(--muted); font-family: var(--sans); font-weight: 600; font-size: 12px; cursor: pointer; }
+/* the visible button is 32px tall; the pseudo-element brings its hit area to 44px */
+.copy-sm::after { content: ""; position: absolute; inset: -6px; }
 .copy-sm:hover { color: var(--text); border-color: var(--dim); }
 .js .copy-sm { display: inline-flex; }
-.snippet .copy-sm { position: absolute; top: 12px; right: 12px; }
-.code { margin: 0; min-width: 0; overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; padding: 24px; font-size: 14px; line-height: 1.8; color: var(--text); background: var(--surface); }
+.snippet .copy-sm { position: absolute; top: 10px; right: 10px; }
+.code { margin: 0; min-width: 0; overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; font-size: 14px; line-height: 1.65; color: var(--text); background: var(--surface); }
 .band .code { background: var(--ground); }
 .code .c { color: var(--dim); }
 .code .s { color: var(--green); }
-.code.start { line-height: 1.9; }
+.code.start { line-height: 1.75; }
 
 /* why */
 .three { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 40px; }
@@ -182,7 +185,9 @@ footer a:hover { color: var(--text); }
 @media (max-width: 520px) {
   .numbers .wrap { grid-template-columns: minmax(0, 1fr); }
   .actions .button { flex: 1 1 100%; justify-content: center; }
-  .code { padding: 18px; }
+  .code { padding: 14px; padding-right: 72px; font-size: 13px; }
+  .modes dd { font-size: 12px; }
+  .modes dd::before { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
