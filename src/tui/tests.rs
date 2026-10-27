@@ -1828,3 +1828,48 @@ fn restarting_a_run_is_refused_and_says_to_import_it() {
     assert!(app.status_error);
     assert!(app.entries[0].pending.is_none());
 }
+
+#[tokio::test]
+async fn a_stalled_tunnel_does_not_hold_back_the_metrics_of_the_others() {
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::Notify;
+
+    // The first target cannot answer until the second one has started, so the
+    // round can only finish if both are in flight together. No clock decides
+    // the outcome; the timeout only turns a serial round into a failure
+    // instead of a hang.
+    let signal = Arc::new(Notify::new());
+    let targets = vec![
+        ("waits".to_string(), 0u8),
+        ("signals".to_string(), 1),
+        ("gone".to_string(), 2),
+        ("also".to_string(), 3),
+    ];
+    let round = collect_round(targets, move |which| {
+        let signal = signal.clone();
+        async move {
+            match which {
+                0 => {
+                    signal.notified().await;
+                    Some(which)
+                }
+                1 => {
+                    signal.notify_one();
+                    Some(which)
+                }
+                2 => None,
+                _ => Some(which),
+            }
+        }
+    });
+    let out = tokio::time::timeout(Duration::from_secs(5), round)
+        .await
+        .expect("the round never finished: the targets ran one after another");
+    let names: Vec<_> = out.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(
+        names,
+        ["waits", "signals", "also"],
+        "target order, with the empty one dropped"
+    );
+}

@@ -670,13 +670,17 @@ fn schedule(app: &mut App, timers: &mut Timers, tx: &mpsc::UnboundedSender<Msg>)
     if let Some(round) = metrics_round(app, timers) {
         let tx = tx.clone();
         tokio::spawn(async move {
-            let mut out = Vec::new();
-            for target in round.targets {
-                let name = target.tunnel.name.clone();
-                if let Some(m) = ops::collect(&target, round.include_lb, Some(&round.peaks)).await {
-                    out.push((name, m));
-                }
-            }
+            let include_lb = round.include_lb;
+            let peaks = std::sync::Arc::new(round.peaks);
+            let targets = round
+                .targets
+                .into_iter()
+                .map(|t| (t.tunnel.name.clone(), t));
+            let out = collect_round(targets, move |target| {
+                let peaks = peaks.clone();
+                async move { ops::collect(&target, include_lb, Some(&peaks)).await }
+            })
+            .await;
             let _ = tx.send(Msg::Metrics(round.generation, out));
         });
     }
@@ -778,6 +782,28 @@ fn health_round(
         timers.health.last = Instant::now();
     }
     targets
+}
+
+/// One metrics round: every target measured at once, in target order, with a
+/// target that yields nothing left out.
+///
+/// The round is as slow as its slowest tunnel, not the sum of them. Measured
+/// one after another, a single tunnel whose probe stalled held back the
+/// numbers of every other row for as long as it took to time out.
+async fn collect_round<T, R, F, Fut>(
+    targets: impl IntoIterator<Item = (String, T)>,
+    collect: F,
+) -> Vec<(String, R)>
+where
+    F: Fn(T) -> Fut,
+    Fut: std::future::Future<Output = Option<R>> + Send + 'static,
+    R: Send + 'static,
+{
+    let measured = targets.into_iter().map(|(name, target)| {
+        let measuring = collect(target);
+        async move { measuring.await.map(|m| (name, m)) }
+    });
+    futures_join(measured).await.into_iter().flatten().collect()
 }
 
 // All probes in flight together, without pulling in a futures crate
