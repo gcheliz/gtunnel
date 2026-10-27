@@ -88,7 +88,7 @@ Pick your machine and release version:
 | Linux, arm64 | `gtunnel-linux-arm64-v<version>.tar.gz` |
 
 ```
-VERSION="v0.1.23"
+VERSION="v0.1.24"
 F="gtunnel-macos-arm64-${VERSION}.tar.gz"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F.sha256"

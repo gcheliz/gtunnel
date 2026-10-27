@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.24](https://github.com/gcheliz/gtunnel/compare/v0.1.23...v0.1.24) - 2026-10-27
+
+### Fixed
+
+- *(daemon)* treat a systemd unit that is not loaded as already stopped
+
 ## [0.1.23](https://github.com/gcheliz/gtunnel/compare/v0.1.22...v0.1.23) - 2026-10-27
 
 ### Documentation
