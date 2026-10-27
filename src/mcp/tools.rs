@@ -135,7 +135,7 @@ fn expose_tunnel_schema() -> Value {
             "certificate_state": {"type": "string"},
             "started": {"type": "boolean"}
         }),
-        &["name", "account", "url", "public"],
+        &["name", "account", "url", "public", "started"],
     )
 }
 
@@ -1266,8 +1266,15 @@ mod expose_tests {
             .find(|t| t.name == "gtunnel_expose_tunnel")
             .and_then(|t| t.output_schema)
             .expect("the tool declares an outputSchema");
+        let required = schema["anyOf"][0]["required"].as_array().unwrap();
+        assert!(required.contains(&json!("started")), "{required:?}");
         let validator = jsonschema::validator_for(&schema).unwrap();
         let ok = expose_result(&exposed(), None).structured_content.unwrap();
         assert!(validator.is_valid(&ok), "{ok}");
+        let started = expose_result(&exposed(), Some(Ok(())))
+            .structured_content
+            .unwrap();
+        assert!(validator.is_valid(&started), "{started}");
+        assert_eq!(started["started"], true);
     }
 }
