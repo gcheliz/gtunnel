@@ -1,4 +1,5 @@
 use anyhow::{bail, Context, Result};
+use serde::Serialize;
 
 use super::{confirm, prompt, resolve};
 use crate::config::{update_config, DomainConfig};
@@ -224,14 +225,32 @@ fn new_expose_tunnel(
     }
 }
 
-pub async fn cmd_expose(
-    account: Option<&str>,
-    name: &str,
-    target: &str,
-    domain: Option<&str>,
-    private: bool,
-    start: bool,
-) -> Result<()> {
+/// What to publish. `private` is the whole of the access decision, so each
+/// front end states it itself: the CLI defaults to public, MCP to private.
+pub struct ExposeRequest<'a> {
+    pub name: &'a str,
+    pub target: &'a str,
+    pub domain: Option<&'a str>,
+    pub private: bool,
+}
+
+/// The outcome of an expose, shaped for a machine reader; the CLI prints two
+/// lines from it and MCP returns it as structured content.
+#[derive(Debug, Serialize)]
+pub struct Exposed {
+    pub name: String,
+    pub account: String,
+    pub url: String,
+    pub target: String,
+    pub domain: String,
+    pub public: bool,
+    pub certificate_state: String,
+}
+
+/// Everything `expose` does except print and start, so a caller that owns
+/// stdout (the MCP server) can reuse it without corrupting a frame.
+pub async fn expose_tunnel(account: Option<&str>, req: &ExposeRequest<'_>) -> Result<Exposed> {
+    let name = req.name;
     validate_tunnel_name(name)?;
     let (config, acct) = resolve(account)?;
     let expose = acct.expose.clone().with_context(|| {
@@ -240,7 +259,7 @@ pub async fn cmd_expose(
             acct.name
         )
     })?;
-    let domain = expose.domain(domain)?.clone();
+    let domain = expose.domain(req.domain)?.clone();
 
     // Read to choose a relay port before the route is created; the locked
     // update below re-checks both the name and the port
@@ -263,10 +282,10 @@ pub async fn cmd_expose(
     let tunnel = new_expose_tunnel(
         name,
         &acct.name,
-        target,
+        req.target,
         &domain.domain,
         relay_port,
-        private,
+        req.private,
     );
 
     let client = GcpClient::for_account(&acct);
@@ -282,23 +301,51 @@ pub async fn cmd_expose(
     let spec = daemon::service_spec(&config, &tunnel)?;
     daemon::install(&spec).await?;
 
-    println!(
-        "{} {name}  {} -> {}",
-        TunnelStatus::Stopped.symbol(),
-        tunnel.display_url(),
-        tunnel.display_target()
-    );
-
     // A certificate that is still provisioning is the usual reason the first
     // request fails, so say so instead of letting the browser explain it
     let names = Names::new(&acct.name);
-    let cert_state =
+    let certificate_state =
         certmanager::certificate_state(&client, &acct.project, &names.certificate(&domain.domain))
             .await
             .unwrap_or_else(|_| "UNKNOWN".to_string());
-    if cert_state != "ACTIVE" {
+
+    Ok(Exposed {
+        name: name.to_string(),
+        account: acct.name.clone(),
+        url: tunnel.display_url(),
+        target: tunnel.display_target(),
+        domain: domain.domain.clone(),
+        public: !req.private,
+        certificate_state,
+    })
+}
+
+pub async fn cmd_expose(
+    account: Option<&str>,
+    name: &str,
+    target: &str,
+    domain: Option<&str>,
+    private: bool,
+    start: bool,
+) -> Result<()> {
+    let req = ExposeRequest {
+        name,
+        target,
+        domain,
+        private,
+    };
+    let exposed = expose_tunnel(account, &req).await?;
+
+    println!(
+        "{} {name}  {} -> {}",
+        TunnelStatus::Stopped.symbol(),
+        exposed.url,
+        exposed.target
+    );
+    if exposed.certificate_state != "ACTIVE" {
         println!(
-            "  certificate {cert_state}: HTTPS works once it is ACTIVE (usually under 15 minutes)"
+            "  certificate {}: HTTPS works once it is ACTIVE (usually under 15 minutes)",
+            exposed.certificate_state
         );
     }
 
@@ -353,6 +400,27 @@ mod tests {
         let err = cmd_expose(None, "api", "3000", None, false, false)
             .await
             .expect_err("should refuse");
+        let message = format!("{err:#}");
+        assert!(message.contains("gtunnel relay up"), "{message}");
+        assert!(message.contains("dev"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn the_core_without_a_relay_points_at_relay_up() {
+        let _temp = TempConfigDir::new();
+        let mut config = Config::default();
+        config
+            .add_account(account_without_relay())
+            .expect("add account");
+        save_config(&config).expect("save");
+
+        let req = ExposeRequest {
+            name: "api",
+            target: "3000",
+            domain: None,
+            private: true,
+        };
+        let err = expose_tunnel(None, &req).await.expect_err("should refuse");
         let message = format!("{err:#}");
         assert!(message.contains("gtunnel relay up"), "{message}");
         assert!(message.contains("dev"), "{message}");

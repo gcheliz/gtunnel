@@ -553,7 +553,7 @@ guides AI agents (Claude Code, Gemini CLI, etc.) on:
 
 ### The native MCP Server
 
-`gtunnel mcp` runs a newline-delimited JSON-RPC 2.0 stdio server in pure Rust. It exposes 13 tools
+`gtunnel mcp` runs a newline-delimited JSON-RPC 2.0 stdio server in pure Rust. It exposes 14 tools
 and 2 live resources without requiring an external runtime.
 
 <p align="center">
@@ -574,6 +574,7 @@ and 2 live resources without requiring an external runtime.
 | `gtunnel_run_tunnel` | `target`, `ttl_minutes`, `name?`, `zone?`, `local_port?`, `account?` | Opens a short-lived Access tunnel that closes by itself after `ttl_minutes` |
 | `gtunnel_delete_tunnel` | `name`, `account?` | Deletes a persistent tunnel and removes its service |
 | `gtunnel_rename_tunnel` | `name`, `new_name`, `account?` | Renames a tunnel on its account, moving its service and log; a running tunnel restarts under the new name. Answers `Renamed <old> to <new>`, the line `gtunnel rename` prints. A name the account already uses is refused and nothing changes |
+| `gtunnel_expose_tunnel` | `name`, `target`, `domain?`, `public?`, `start?`, `account?` | Publishes a local service at `https://<name>.<domain>` through the account's relay. Private by default (visitors sign in with Google); `public: true` opens it to anyone, the reverse of the CLI, which is public unless `--private`. Publishes only a service on this machine (a port, `localhost` or a loopback address; other hosts need the CLI). Never creates a relay: an account without one fails with `gtunnel relay up`. Returns `name`, `account`, `url`, `target`, `domain`, `public`, `certificate_state` and `started`; a failed start is an error that names the tunnel it created |
 | `gtunnel_move_tunnel` | `name`, `to`, `rename?`, `account?` | Moves an Access tunnel to another configured account after checking its target there; `rename` gives it a new name when the destination already uses this one. Answers like `gtunnel move`. A destination that is not logged in fails with kind `auth`: MCP never prompts |
 | `gtunnel_list_accounts` | none | `selected_account` and every account, each with a `selected` flag |
 | `gtunnel_doctor` | `account?`, `all?` | Runs diagnostic checks on GCP resources and local config |
@@ -604,8 +605,8 @@ something the user keeps.
 | Part | Behaviour |
 |---|---|
 | Revisions | `initialize` answers the `protocolVersion` the client sent when it is `2025-11-25`, `2025-06-18` or `2024-11-05`; a missing, unknown or newer one gets `2025-11-25` |
-| Titles and annotations | Every tool has a `title` and all four hints. `readOnlyHint` is true for `gtunnel_list_tunnels`, `gtunnel_get_status`, `gtunnel_get_logs`, `gtunnel_list_accounts` and `gtunnel_doctor`; `destructiveHint` is true for `gtunnel_stop_tunnel`, `gtunnel_restart_tunnel`, `gtunnel_delete_tunnel`, `gtunnel_rename_tunnel` and `gtunnel_move_tunnel` |
-| Structured output | `gtunnel_list_tunnels`, `gtunnel_get_status`, `gtunnel_run_tunnel`, `gtunnel_list_accounts` and `gtunnel_doctor` return `structuredContent` and declare an `outputSchema`. The list and the doctor wrap their array as `{"tunnels": [...]}` and `{"findings": [...]}`; the `content[0].text` of every tool is unchanged |
+| Titles and annotations | Every tool has a `title` and all four hints. `readOnlyHint` is true for `gtunnel_list_tunnels`, `gtunnel_get_status`, `gtunnel_get_logs`, `gtunnel_list_accounts` and `gtunnel_doctor`; `destructiveHint` is true for `gtunnel_stop_tunnel`, `gtunnel_restart_tunnel`, `gtunnel_delete_tunnel`, `gtunnel_rename_tunnel`, `gtunnel_move_tunnel` and `gtunnel_expose_tunnel` |
+| Structured output | `gtunnel_list_tunnels`, `gtunnel_get_status`, `gtunnel_run_tunnel`, `gtunnel_expose_tunnel`, `gtunnel_list_accounts` and `gtunnel_doctor` return `structuredContent` and declare an `outputSchema`. The list and the doctor wrap their array as `{"tunnels": [...]}` and `{"findings": [...]}`; the `content[0].text` of every tool is unchanged |
 | Failures | A failed call under an `outputSchema` returns the `{"error": {"kind", "message"}}` object, which each schema also admits |
 
 A tool that fails returns a normal result with `isError: true` and the whole cause as its
@@ -662,7 +663,7 @@ To verify tool definitions and JSON schemas non-interactively:
 
 ```
 $ gtunnel mcp --validate
-Validated 13 tools and 2 resources successfully.
+Validated 14 tools and 2 resources successfully.
 ```
 
 To inspect tools, schemas, and test calls interactively using the official MCP Inspector:

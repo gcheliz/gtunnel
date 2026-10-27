@@ -32,6 +32,7 @@ If `gtunnel_*` MCP tools are available in the current environment, prioritize th
 - `gtunnel_run_tunnel`: Open a short-lived access tunnel that closes by itself after `ttl_minutes` (1 to 480, required). Never public. `gtunnel_stop_tunnel` closes it early.
 - `gtunnel_delete_tunnel`: Delete a tunnel and remove its daemon configuration.
 - `gtunnel_rename_tunnel`: Rename a tunnel (`name`, `new_name`); its service and log follow, and a running tunnel restarts under the new name. A name already in use is refused.
+- `gtunnel_expose_tunnel`: Publish a local service at `https://<name>.<domain>` through the account's relay (`name`, `target`, optional `domain`, `public`, `start`). Private by default, behind Google sign-in; this is the reverse of the CLI. Pass `public: true` only when the user asked for anyone on the internet to reach it, and confirm first. It publishes only a service on this machine, so refuse any other host and point at the CLI. It never creates a relay: an account without one fails, and `gtunnel relay up` is CLI only.
 - `gtunnel_move_tunnel`: Move an Access tunnel to another configured account (`name`, `to`, optional `rename` when the destination already uses the name). The destination must already be logged in; a failure of kind `auth` means the user must run `gcloud auth login` for that account, since MCP cannot prompt. Confirm with the user first.
 - `gtunnel_list_accounts`: List configured GCP accounts and the active selection (`selected_account`, and `selected` on each account). The `gtunnel://accounts` resource returns the same object.
 - `gtunnel_doctor`: Run diagnostic checks on prerequisites, permissions, and daemon configurations.
@@ -200,7 +201,7 @@ npx @modelcontextprotocol/inspector gtunnel mcp
 
 ## Safety Rules
 
-- Confirmation Required: Always obtain confirmation before deleting a tunnel or modifying configuration (`gtunnel delete <name>` or `gtunnel_delete_tunnel`), and before renaming or moving one (`gtunnel_rename_tunnel`, `gtunnel_move_tunnel`).
+- Confirmation Required: Always obtain confirmation before deleting a tunnel or modifying configuration (`gtunnel delete <name>` or `gtunnel_delete_tunnel`), and before renaming, moving or exposing one (`gtunnel_rename_tunnel`, `gtunnel_move_tunnel`, `gtunnel_expose_tunnel`).
 - Data Protection: Never leak real GCP project IDs, internal IP addresses, personal email addresses, or proprietary tokens in generated documentation, logs, or commit messages. Always use placeholders (`example-dev-1a2b`, `you@example.com`, `bastion`, `10.0.0.10`).
 - No Emojis: Plain text only across all commands, documents, and tool responses.
 - Idempotent Modifications: To rename a tunnel use `gtunnel rename <old> <new>`, and to move an Access tunnel to another account `gtunnel move <name> --to <account>`; both carry the service and log along. To change other tunnel parameters, delete the existing tunnel first to avoid orphaned launchd/systemd agent configurations, then add the new configuration.
