@@ -150,18 +150,46 @@ fn mcp_validate_flag_exits_successfully() {
 #[test]
 fn mcp_stdio_initialize_handshake() {
     let h = Harness::new();
-    let req = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}"#;
+    for version in ["2024-11-05", "2025-06-18", "2025-11-25"] {
+        let req = format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"protocolVersion":"{version}"}}}}"#
+        );
+        let (stdout, stderr, success) = h.run_mcp_pipe(&format!("{req}\n"));
+        assert!(success, "stderr: {stderr}");
+
+        let line = stdout.lines().next().expect("response line");
+        let resp: serde_json::Value = serde_json::from_str(line).expect("valid json response");
+        assert_eq!(resp["jsonrpc"], "2.0");
+        assert_eq!(resp["id"], 1);
+        assert_eq!(resp["result"]["protocolVersion"], version);
+        assert_eq!(resp["result"]["serverInfo"]["name"], "gtunnel");
+        assert!(resp["result"]["capabilities"]["tools"].is_object());
+        assert!(resp["result"]["capabilities"]["resources"].is_object());
+    }
+}
+
+#[test]
+fn initialize_without_params_answers_the_latest() {
+    let h = Harness::new();
+    let req = r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#;
     let (stdout, stderr, success) = h.run_mcp_pipe(&format!("{req}\n"));
     assert!(success, "stderr: {stderr}");
 
     let line = stdout.lines().next().expect("response line");
     let resp: serde_json::Value = serde_json::from_str(line).expect("valid json response");
-    assert_eq!(resp["jsonrpc"], "2.0");
-    assert_eq!(resp["id"], 1);
-    assert_eq!(resp["result"]["protocolVersion"], "2024-11-05");
-    assert_eq!(resp["result"]["serverInfo"]["name"], "gtunnel");
-    assert!(resp["result"]["capabilities"]["tools"].is_object());
-    assert!(resp["result"]["capabilities"]["resources"].is_object());
+    assert_eq!(resp["result"]["protocolVersion"], "2025-11-25");
+}
+
+#[test]
+fn initialize_from_a_newer_client_answers_the_latest() {
+    let h = Harness::new();
+    let req = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2026-07-28"}}"#;
+    let (stdout, stderr, success) = h.run_mcp_pipe(&format!("{req}\n"));
+    assert!(success, "stderr: {stderr}");
+
+    let line = stdout.lines().next().expect("response line");
+    let resp: serde_json::Value = serde_json::from_str(line).expect("valid json response");
+    assert_eq!(resp["result"]["protocolVersion"], "2025-11-25");
 }
 
 #[test]

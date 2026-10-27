@@ -7,7 +7,21 @@ pub const METHOD_NOT_FOUND: i32 = -32601;
 pub const INVALID_PARAMS: i32 = -32602;
 pub const INTERNAL_ERROR: i32 = -32603;
 
-pub const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
+/// Newest first, so `[0]` is what an unknown or missing request falls back to.
+/// A client newer than this list gets the latest we speak rather than an
+/// error: a client that also knows the stateless era then stays on the
+/// handshake path instead of guessing at one we do not serve (#149).
+pub const SUPPORTED_PROTOCOL_VERSIONS: [&str; 3] = ["2025-11-25", "2025-06-18", "2024-11-05"];
+
+/// Echo the requested revision when we speak it, otherwise offer our latest.
+/// The spec lets the server counter-offer, and the client decides whether to
+/// continue, so this never fails on a missing or odd `protocolVersion`.
+pub fn negotiate_version(requested: Option<&str>) -> &'static str {
+    requested
+        .and_then(|r| SUPPORTED_PROTOCOL_VERSIONS.iter().find(|v| **v == r))
+        .copied()
+        .unwrap_or(SUPPORTED_PROTOCOL_VERSIONS[0])
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonRpcRequest {
@@ -196,6 +210,25 @@ pub struct ResourceContent {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ResourceReadResult {
     pub contents: Vec<ResourceContent>,
+}
+
+#[cfg(test)]
+mod negotiation_tests {
+    use super::*;
+
+    #[test]
+    fn a_supported_version_is_echoed() {
+        for v in ["2025-11-25", "2025-06-18", "2024-11-05"] {
+            assert_eq!(negotiate_version(Some(v)), v);
+        }
+    }
+
+    #[test]
+    fn anything_else_gets_the_latest() {
+        for v in [None, Some(""), Some("1900-01-01"), Some("2026-07-28")] {
+            assert_eq!(negotiate_version(v), "2025-11-25");
+        }
+    }
 }
 
 #[cfg(test)]

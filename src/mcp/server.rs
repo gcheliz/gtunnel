@@ -31,8 +31,13 @@ pub async fn handle_message(line: &str) -> Option<JsonRpcResponse> {
 
     match req.method.as_str() {
         "initialize" => {
+            let requested = req
+                .params
+                .as_ref()
+                .and_then(|p| p.get("protocolVersion"))
+                .and_then(serde_json::Value::as_str);
             let result = InitializeResult {
-                protocol_version: super::protocol::MCP_PROTOCOL_VERSION.to_string(),
+                protocol_version: super::protocol::negotiate_version(requested).to_string(),
                 capabilities: ServerCapabilities {
                     tools: Some(ToolsCapability {
                         list_changed: Some(false),
