@@ -108,7 +108,13 @@ async fn demo_loop(
                         reload: false,
                         from_create: matches!(op, Op::Create(_)),
                         from_account: false,
+                        name: None,
                     });
+                    // No runtime sits behind the demo, so no round will come
+                    // to end the pending state the key put on the row
+                    for entry in &mut app.entries {
+                        entry.pending = None;
+                    }
                 }
                 if app.should_quit {
                     break;
@@ -372,9 +378,22 @@ async fn event_loop(
                 {
                     app.reload_config(&config);
                 }
+                // A round begun before the op describes the tunnel as it was,
+                // so it is dropped and the next one is begun at once. The
+                // generation is what makes the drop certain: `force` alone
+                // would leave the old round free to land after the op.
+                let acted_on_a_row = result.name.is_some();
+                if acted_on_a_row {
+                    timers.entries.invalidate();
+                    timers.entries.force();
+                }
                 app.apply(result);
-                // The CLI commands this ran print to the same terminal
-                terminal.clear()?;
+                // The ops that mark a row print nothing, and a full clear
+                // after each one flashes the screen. The others run CLI
+                // commands that write to this terminal.
+                if !acted_on_a_row {
+                    terminal.clear()?;
+                }
             }
         }
         terminal.draw(|f| ui::render(f, app))?;
@@ -1114,6 +1133,7 @@ mod tests {
             reload: false,
             from_create: false,
             from_account: false,
+            name: None,
         });
         assert_eq!(app.status.as_deref(), Some("permission denied"));
         assert!(app.status_error, "a failure must be marked");
@@ -1124,6 +1144,7 @@ mod tests {
             reload: true,
             from_create: false,
             from_account: false,
+            name: None,
         });
         assert!(!app.status_error, "success must clear the mark");
     }
@@ -4190,6 +4211,7 @@ mod tests {
             reload: false,
             from_create: true,
             from_account: false,
+            name: None,
         }
     }
 
@@ -4200,7 +4222,89 @@ mod tests {
             reload: false,
             from_create: false,
             from_account: false,
+            name: None,
         }
+    }
+
+    fn a_stopped_app() -> App {
+        let mut app = app_with_two();
+        app.entries[0].status = TunnelStatus::Stopped;
+        app
+    }
+
+    #[test]
+    fn the_frame_after_s_shows_the_row_starting() {
+        let mut app = a_stopped_app();
+        let op = app.handle_key(key(KeyCode::Char('s')));
+        assert_eq!(op, Some(Op::Start("db".to_string())));
+        let text = render_to_string(&app, 120, 30);
+        assert!(text.contains("starting"), "{text}");
+    }
+
+    #[test]
+    fn a_second_start_on_a_pending_row_is_refused() {
+        let mut app = a_stopped_app();
+        assert!(app.handle_key(key(KeyCode::Char('s'))).is_some());
+        for k in ['s', 'S', 'R', 'A', 'd'] {
+            assert_eq!(app.handle_key(key(KeyCode::Char(k))), None, "{k}");
+            assert_eq!(
+                app.status.as_deref(),
+                Some("db: start already in progress"),
+                "{k}"
+            );
+        }
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn a_round_begun_before_an_op_finished_is_not_applied() {
+        let mut app = a_stopped_app();
+        let mut timers = Timers::due();
+        let begun_before = timers.entries.begin();
+        // What `OpDone` does before it applies the result
+        timers.entries.invalidate();
+        timers.entries.force();
+        let stale = vec![TunnelEntry::new(
+            access("db", 15432),
+            TunnelStatus::Running,
+            TunnelKind::Managed,
+        )];
+        apply_polled(
+            &mut app,
+            &mut timers,
+            Msg::Entries(begun_before, stale, HashSet::new()),
+        );
+        assert_eq!(app.entries.len(), 2, "the stale round must not replace");
+        assert_eq!(app.entries[0].status, TunnelStatus::Stopped);
+        assert!(timers.entries.due(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn pending_clears_on_the_first_round_after_the_op() {
+        let mut app = a_stopped_app();
+        app.handle_key(key(KeyCode::Char('s')));
+        let fresh = |status| {
+            vec![TunnelEntry::new(
+                access("db", 15432),
+                status,
+                TunnelKind::Managed,
+            )]
+        };
+        // A round that lands while the op still runs keeps the row pending
+        app.replace_entries(fresh(TunnelStatus::Stopped), HashSet::new());
+        assert!(app.entries[0].pending.is_some());
+        app.apply(OpResult {
+            message: "db running".to_string(),
+            ok: true,
+            reload: true,
+            from_create: false,
+            from_account: false,
+            name: Some("db".to_string()),
+        });
+        assert!(app.entries[0].pending.is_some(), "not until a round lands");
+        app.replace_entries(fresh(TunnelStatus::Running), HashSet::new());
+        assert!(app.entries[0].pending.is_none());
+        assert!(!app.entries[0].pending_settle);
     }
 
     fn submitted_access_draft() -> App {
@@ -4237,6 +4341,7 @@ mod tests {
             reload: true,
             from_create: true,
             from_account: false,
+            name: None,
         });
         assert_eq!(app.input_mode, InputMode::Normal);
         app.apply(failed("some later failure"));

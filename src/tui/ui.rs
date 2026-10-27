@@ -950,6 +950,9 @@ fn fit(text: &str, width: usize) -> String {
     }
 }
 
+/// A row with an op running. One cell, like the status symbols it replaces.
+const PENDING_GLYPH: char = '\u{25d0}';
+
 fn render_tunnels(f: &mut Frame, app: &App, area: Rect) {
     let title = format!("Tunnels ({})", app.entries.len());
     let inner = pane(f, area, &title, None);
@@ -1008,10 +1011,18 @@ fn render_tunnels(f: &mut Frame, app: &App, area: Rect) {
         .enumerate()
         .map(|(i, entry)| {
             let mut spans = vec![
-                Span::styled(
-                    format!("{} ", entry.status.symbol()),
-                    status_style(entry.status, entry.health),
-                ),
+                match entry.pending {
+                    // Whatever the status was, the row is mid-change and its
+                    // old glyph would be a claim about a state that is ending
+                    Some(_) => Span::styled(
+                        format!("{PENDING_GLYPH} "),
+                        Style::default().fg(theme::WARN),
+                    ),
+                    None => Span::styled(
+                        format!("{} ", entry.status.symbol()),
+                        status_style(entry.status, entry.health),
+                    ),
+                },
                 Span::styled(
                     format!(
                         "{:<width$} ",
@@ -1050,8 +1061,20 @@ fn render_tunnels(f: &mut Frame, app: &App, area: Rect) {
                     Style::default().fg(theme::WARN),
                 ),
             ];
+            // What the row is doing takes the tag's place and is the last
+            // thing a narrow pane clips: the glyph in front already says
+            // that something is under way
+            if let Some(pending) = entry.pending {
+                spans.push(Span::styled(
+                    format!(
+                        " {}\u{2026} {}s",
+                        pending.gerund(),
+                        pending.since.elapsed().as_secs()
+                    ),
+                    Style::default().fg(theme::WARN),
+                ));
             // An unmanaged row already says so in the URL column
-            if let Some(tag) = entry
+            } else if let Some(tag) = entry
                 .tag()
                 .filter(|_| entry.kind != crate::tui::TunnelKind::External)
             {

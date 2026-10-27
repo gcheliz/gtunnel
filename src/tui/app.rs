@@ -63,6 +63,27 @@ pub enum TunnelKind {
     External,
 }
 
+/// An op running on one row. The row says so from the frame of the key press,
+/// because the op itself returns seconds later and a row that stays as it was
+/// reads as a key that did nothing, which is what invites the second press.
+#[derive(Debug, Clone, Copy)]
+pub struct PendingOp {
+    pub verb: &'static str,
+    pub since: std::time::Instant,
+}
+
+impl PendingOp {
+    /// The verb as the row spells it. `stop` doubles its consonant and the
+    /// rest only take `ing`, so the one exception is named here and not
+    /// guessed by suffix.
+    pub fn gerund(&self) -> String {
+        match self.verb {
+            "stop" => "stopping".to_string(),
+            verb => format!("{verb}ing"),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TunnelEntry {
     pub tunnel: PersistentTunnel,
@@ -72,6 +93,10 @@ pub struct TunnelEntry {
     pub history: MetricsHistory,
     pub health: HealthStatus,
     pub external: Option<ExternalTunnel>,
+    pub pending: Option<PendingOp>,
+    // Set when the op has returned: the first entries round begun after that
+    // is the one that shows what the op did, and only then does `pending` go
+    pub pending_settle: bool,
 }
 
 const NOT_MANAGED: &str = "[not managed by gtunnel]";
@@ -86,6 +111,8 @@ impl TunnelEntry {
             history: MetricsHistory::new(SPARKLINE_SAMPLES),
             health: HealthStatus::Unknown,
             external: None,
+            pending: None,
+            pending_settle: false,
         }
     }
 
@@ -246,6 +273,8 @@ pub struct OpResult {
     // stale as well, and the page is where the result has to be read: a
     // refusal goes to a status line the page is covering
     pub from_account: bool,
+    // The tunnel the op acted on, for the ops that mark a row pending
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -811,13 +840,38 @@ impl App {
         self.status_error = true;
     }
 
-    fn op_for(&mut self, action: &str, build: fn(String) -> Op) -> Option<Op> {
+    /// True, with the reason on the status line, when the selected row already
+    /// has an op running. A second key on it would start a second op.
+    fn refuse_pending(&mut self) -> bool {
+        let Some(entry) = self.selected_entry() else {
+            return false;
+        };
+        let Some(pending) = entry.pending else {
+            return false;
+        };
+        let message = format!("{}: {} already in progress", entry.name(), pending.verb);
+        self.set_status(message);
+        self.status_error = true;
+        true
+    }
+
+    fn op_for(&mut self, action: &'static str, build: fn(String) -> Op) -> Option<Op> {
         let entry = self.selected_entry()?;
         if entry.kind == TunnelKind::External {
             self.refuse_external(action);
             return None;
         }
         let name = entry.name().to_string();
+        if self.refuse_pending() {
+            return None;
+        }
+        if let Some(entry) = self.entries.get_mut(self.selected) {
+            entry.pending = Some(PendingOp {
+                verb: action,
+                since: std::time::Instant::now(),
+            });
+            entry.pending_settle = false;
+        }
         self.spinner.start(&format!("{action} {name}"));
         Some(build(name))
     }
@@ -1012,6 +1066,9 @@ impl App {
                 self.set_status("refreshing");
             }
             KeyCode::Char('s') => {
+                if self.refuse_pending() {
+                    return None;
+                }
                 if let Some(entry) = self.selected_entry() {
                     if entry.kind == TunnelKind::External {
                         self.refuse_external("start");
@@ -1028,6 +1085,9 @@ impl App {
                 return self.op_for("start", Op::Start);
             }
             KeyCode::Char('S') => {
+                if self.refuse_pending() {
+                    return None;
+                }
                 if let Some(entry) = self.selected_entry() {
                     if entry.kind == TunnelKind::External {
                         self.refuse_external("stop");
@@ -1044,13 +1104,18 @@ impl App {
                 return self.op_for("stop", Op::Stop);
             }
             KeyCode::Char('R') => {
+                if self.refuse_pending() {
+                    return None;
+                }
                 if let Some(entry) = self.entries.get_mut(self.selected) {
                     entry.health = HealthStatus::Checking;
                 }
                 return self.op_for("restart", Op::Restart);
             }
             KeyCode::Char('d') => self.ask_delete(),
-            KeyCode::Char('A') => return self.op_for("auto-start", Op::ToggleAutoStart),
+            KeyCode::Char('A') => {
+                return self.op_for("auto-start", Op::ToggleAutoStart);
+            }
             KeyCode::Char('m') => return self.import_op(),
             KeyCode::Char('c') => self.copy_url(),
             KeyCode::Char('l') => self.copy_logs(),
@@ -1559,7 +1624,11 @@ impl App {
             self.refuse_external("delete");
             return;
         }
-        self.confirm_message = Some(format!("Delete {}? (y/n)", entry.name()));
+        let name = entry.name().to_string();
+        if self.refuse_pending() {
+            return;
+        }
+        self.confirm_message = Some(format!("Delete {name}? (y/n)"));
         self.input_mode = InputMode::Confirm;
     }
 
@@ -2109,6 +2178,11 @@ impl App {
         {
             self.reopen(draft, step, &result.message);
         }
+        if let Some(name) = &result.name
+            && let Some(entry) = self.entries.iter_mut().find(|e| e.name() == name)
+        {
+            entry.pending_settle = true;
+        }
         if result.reload {
             self.force_refresh = true;
             self.follow_up_at = Some(std::time::Instant::now() + START_FOLLOWUP);
@@ -2151,6 +2225,11 @@ impl App {
                         entry.history = old.history.clone();
                         entry.health = old.health;
                         entry.metrics = old.metrics.clone();
+                        // The first round after the op shows what it did, so
+                        // it is the one that ends the pending state
+                        if !old.pending_settle {
+                            entry.pending = old.pending;
+                        }
                     }
                     // Nothing to carry: this row has never been probed, and
                     // waiting out the period would leave it reading `?`
@@ -2573,6 +2652,7 @@ mod follow_up_tests {
             reload: true,
             from_create: false,
             from_account: false,
+            name: None,
         });
         assert!(!app.take_follow_up(), "not before START_FOLLOWUP");
         app.follow_up_at = Some(Instant::now() - Duration::from_millis(1));
@@ -2589,6 +2669,7 @@ mod follow_up_tests {
             reload: false,
             from_create: false,
             from_account: false,
+            name: None,
         });
         assert!(app.follow_up_at.is_none());
     }

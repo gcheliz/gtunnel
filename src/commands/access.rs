@@ -12,8 +12,16 @@ use crate::state::{
 };
 use crate::tunnel::diagnose_log_line;
 
-// How long a freshly started tunnel is given before its status is believed
-const START_SETTLE: Duration = Duration::from_secs(3);
+// A tunnel with nothing to listen for, a public one, has no readiness signal
+// to wait on, so it is given this long before its status is believed
+const EXPOSE_SETTLE: Duration = Duration::from_secs(3);
+// 20s because an ssh jump tunnel took 7s to listen in a real log, and a
+// deadline that close to the slowest start seen would fail a healthy one
+const START_DEADLINE: Duration = Duration::from_secs(20);
+const READY_POLL: Duration = Duration::from_millis(100);
+// A service that crashed is read from the manager, which is a subprocess, so
+// it is asked a few times a second and not on every poll
+const STATUS_EVERY: u32 = 5;
 const FOLLOW_INTERVAL: Duration = Duration::from_millis(500);
 
 // Auto-start is off for a new tunnel: `-s` starts it now, and `A` in the TUI
@@ -293,9 +301,92 @@ fn print_failed(e: anyhow::Error) -> anyhow::Error {
     }
 }
 
-/// Returns only once the job has had `START_SETTLE` to fail, because a job that
-/// was handed to the service manager has not yet started anything: an `Ok` here
-/// means the tunnel was running when looked at, not that the request was sent.
+/// How long a start waits for readiness before it fails.
+/// `GTUNNEL_START_DEADLINE_MS` overrides it, as `GTUNNEL_SERVICE_BOUND_MS` does
+/// for the service manager's bound, so a test or a slow link can move it.
+pub fn start_deadline() -> Duration {
+    deadline_from(std::env::var("GTUNNEL_START_DEADLINE_MS").ok().as_deref())
+}
+
+fn deadline_from(value: Option<&str>) -> Duration {
+    value
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(START_DEADLINE)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum Readiness {
+    Ready,
+    // The service manager reports the job as failed
+    Failed,
+    TimedOut,
+}
+
+/// Waits for the tunnel to be listening, not for a fixed time to pass.
+///
+/// The supervisor writes `ready_file` when the tunnel's own log says it is
+/// listening. `port` is the second witness and is passed only when that file
+/// cannot be relied on: at log level `quiet` ssh prints no listener line, so a
+/// jump tunnel never gets one. It is a bare connect and not `probe::tcp_probe`,
+/// which registers into the probe ledger and does a round trip through the far
+/// end; readiness asks only whether something is listening here.
+pub async fn wait_ready(
+    label: &str,
+    ready_file: Option<&std::path::Path>,
+    port: Option<u16>,
+    deadline: Duration,
+) -> Readiness {
+    let started = std::time::Instant::now();
+    let mut polls: u32 = 0;
+    loop {
+        if ready_file.is_some_and(|p| p.exists()) {
+            return Readiness::Ready;
+        }
+        if let Some(port) = port
+            && listening(port).await
+        {
+            return Readiness::Ready;
+        }
+        if polls.is_multiple_of(STATUS_EVERY) && daemon::status(label).await == TunnelStatus::Error
+        {
+            return Readiness::Failed;
+        }
+        polls = polls.wrapping_add(1);
+        if started.elapsed() >= deadline {
+            return Readiness::TimedOut;
+        }
+        tokio::time::sleep(READY_POLL).await;
+    }
+}
+
+async fn listening(port: u16) -> bool {
+    matches!(
+        tokio::time::timeout(
+            Duration::from_millis(200),
+            tokio::net::TcpStream::connect(("127.0.0.1", port)),
+        )
+        .await,
+        Ok(Ok(_))
+    )
+}
+
+// The ready file `service_spec` handed the supervisor, read back from the
+// argv it built so the two cannot name different paths
+fn ready_file_of(spec: &daemon::ServiceSpec) -> Option<std::path::PathBuf> {
+    let at = spec.args.iter().position(|a| a == "--ready-file")?;
+    spec.args.get(at + 1).map(std::path::PathBuf::from)
+}
+
+fn is_quiet(spec: &daemon::ServiceSpec) -> bool {
+    spec.args
+        .windows(2)
+        .any(|w| w[0] == "--log-level" && w[1] == "quiet")
+}
+
+/// Returns once the tunnel is listening, the job has failed, or the deadline
+/// passes: an `Ok` means the tunnel was ready when looked at, not that the
+/// request was sent.
 pub async fn start_tunnel(account: Option<&str>, name: &str) -> Result<Started> {
     let (config, acct) = resolve(account)?;
     let state = TunnelState::load()?;
@@ -316,13 +407,42 @@ pub async fn start_tunnel(account: Option<&str>, name: &str) -> Result<Started> 
         &spec.log_path,
         &format!("starting {name} on {}", tunnel.display_url()),
     );
+    // A file left by the previous run would read as ready before this one
+    // has listened. The supervisor clears it too, but not before launchd has
+    // started it, and this is the one place that is certain to run first.
+    let ready_file = ready_file_of(&spec);
+    if let Some(path) = &ready_file {
+        let _ = std::fs::remove_file(path);
+    }
     daemon::start(&spec.label).await?;
 
-    tokio::time::sleep(START_SETTLE).await;
-    if daemon::status(&spec.label).await == TunnelStatus::Error {
+    let deadline = start_deadline();
+    let readiness = match (&ready_file, &tunnel.spec) {
+        (Some(path), TunnelSpec::Access { local_port, .. }) => {
+            let port = (is_quiet(&spec) && *local_port != 0).then_some(*local_port);
+            wait_ready(&spec.label, Some(path), port, deadline).await
+        }
+        _ => {
+            tokio::time::sleep(EXPOSE_SETTLE).await;
+            if daemon::status(&spec.label).await == TunnelStatus::Error {
+                Readiness::Failed
+            } else {
+                Readiness::Ready
+            }
+        }
+    };
+    if readiness != Readiness::Ready {
+        let hint = match (last_hint(&tunnel)?, readiness) {
+            (Some(hint), _) => Some(hint),
+            (None, Readiness::TimedOut) => Some(format!(
+                "not listening after {}s",
+                deadline.as_secs().max(1)
+            )),
+            (None, _) => None,
+        };
         return Err(StartFailed {
             name: name.to_string(),
-            hint: last_hint(&tunnel)?,
+            hint,
         }
         .into());
     }
@@ -657,6 +777,78 @@ mod new_tunnel_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn wait_ready_returns_as_soon_as_the_ready_file_appears() {
+        let dir = std::env::temp_dir().join(format!("gtunnel-ready-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("t.ready");
+        let _ = std::fs::remove_file(&file);
+        let writer = file.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            std::fs::write(writer, "").unwrap();
+        });
+        let began = std::time::Instant::now();
+        let got = wait_ready(
+            "com.gtunnel.test.ready-file",
+            Some(&file),
+            None,
+            Duration::from_secs(10),
+        )
+        .await;
+        let took = began.elapsed();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(got, Readiness::Ready);
+        assert!(took >= Duration::from_millis(300), "{took:?}");
+        assert!(took < Duration::from_secs(1), "{took:?}");
+    }
+
+    #[tokio::test]
+    async fn wait_ready_accepts_a_listening_port_when_no_file_will_come() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let got = wait_ready(
+            "com.gtunnel.test.port",
+            None,
+            Some(port),
+            Duration::from_secs(5),
+        )
+        .await;
+        assert_eq!(got, Readiness::Ready);
+    }
+
+    #[tokio::test]
+    async fn wait_ready_fails_at_the_deadline_with_the_hint() {
+        // The deadline an operator would set, read the way `start` reads it
+        let deadline = deadline_from(Some("200"));
+        assert_eq!(deadline, Duration::from_millis(200));
+        let dir = std::env::temp_dir().join(format!("gtunnel-never-{}", std::process::id()));
+        let began = std::time::Instant::now();
+        let got = wait_ready(
+            "com.gtunnel.test.never",
+            Some(&dir.join("never.ready")),
+            None,
+            deadline,
+        )
+        .await;
+        assert_eq!(got, Readiness::TimedOut);
+        assert!(began.elapsed() < Duration::from_secs(2));
+        // `start_tunnel` turns that into the hint the log gives, or this one
+        let hint = format!("not listening after {}s", deadline.as_secs().max(1));
+        let failed = StartFailed {
+            name: "db".into(),
+            hint: Some(hint),
+        };
+        assert!(failed.to_string().contains("not listening after 1s"));
+        assert!(failed.to_string().contains("Logs: gtunnel logs db"));
+    }
+
+    #[test]
+    fn the_start_deadline_defaults_to_twenty_seconds() {
+        assert_eq!(deadline_from(None), Duration::from_secs(20));
+        assert_eq!(deadline_from(Some("soon")), Duration::from_secs(20));
+    }
 
     #[test]
     fn a_failed_start_renders_the_hint_and_the_logs_line() {
