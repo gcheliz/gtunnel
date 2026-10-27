@@ -153,6 +153,29 @@ pub async fn load_projects(account: &str) -> Result<Vec<super::app::ProjectChoic
         .collect())
 }
 
+// The zones of the project the edit dialog chose, for its zone picker, sorted
+// so a region's zones sit together
+pub async fn load_zones(account: &str, project: &str) -> Result<Vec<String>> {
+    let (_, acct) = resolve(Some(account))?;
+    let client = GcpClient::for_account(&acct);
+    let mut zones = crate::gcp::compute::list_zones(&client, project).await?;
+    zones.sort();
+    Ok(zones)
+}
+
+// Every gcloud configuration on this machine, for the add dialog's picker
+pub async fn load_configurations() -> Result<Vec<super::app::ConfigurationChoice>> {
+    Ok(crate::gcp::gcloud::list_configurations()
+        .await?
+        .into_iter()
+        .map(|c| super::app::ConfigurationChoice {
+            name: c.name,
+            project: c.project,
+            is_active: c.is_active,
+        })
+        .collect())
+}
+
 pub fn read_logs(tunnel: &PersistentTunnel, lines: usize) -> Vec<String> {
     let Ok(path) = tunnel.log_path() else {
         return Vec::new();

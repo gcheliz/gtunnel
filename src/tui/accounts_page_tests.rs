@@ -271,3 +271,259 @@ async fn deleting_an_account_with_tunnels_says_why_it_cannot() {
     let config = crate::config::load_config().expect("loads");
     assert!(config.get_account(Some("dev")).is_ok(), "the account stays");
 }
+
+#[test]
+fn the_account_form_title_counts_its_steps_and_says_what_a_configuration_is() {
+    let mut app = page_app();
+    app.handle_key(key(KeyCode::Char('a')));
+    let page = rows(&app, 100, 30).join("\n");
+    assert!(page.contains("New account 1/2"), "{page}");
+    assert!(page.contains("gcloud config configurations list"), "{page}");
+}
+
+fn configuration(name: &str, project: Option<&str>, is_active: bool) -> ConfigurationChoice {
+    ConfigurationChoice {
+        name: name.to_string(),
+        project: project.map(str::to_string),
+        is_active,
+    }
+}
+
+fn add_dialog_with(list: Vec<ConfigurationChoice>) -> App {
+    let mut app = page_app();
+    app.handle_key(key(KeyCode::Char('a')));
+    assert!(
+        app.want_configurations,
+        "opening the dialog asks for the list"
+    );
+    app.configurations_arrived(list);
+    app
+}
+
+// The active configuration is the one `gcloud` itself would use, so it is
+// the likeliest answer and Enter alone takes it
+#[test]
+fn the_configuration_picker_preselects_the_active_one() {
+    let app = add_dialog_with(vec![
+        configuration("ci", Some("example-dev-1a2b"), false),
+        configuration("work", Some("example-prod-3c4d"), true),
+    ]);
+    assert_eq!(app.input_mode, InputMode::AccountConfigurationPick);
+    let chosen = &app.filtered_configurations()[app.configuration_selected];
+    assert_eq!(chosen.name, "work");
+    let page = rows(&app, 100, 30).join("\n");
+    assert!(page.contains("New account 1/2"), "{page}");
+    assert!(page.contains("(active)"), "{page}");
+}
+
+// `account add` reads the project from the configuration, so one without a
+// project would fail after a gcloud call; the dialog says the fix instead
+#[test]
+fn a_configuration_without_a_project_is_refused_with_the_fix() {
+    let mut app = add_dialog_with(vec![configuration("bare", None, true)]);
+    assert_eq!(app.handle_key(key(KeyCode::Enter)), None);
+    assert_eq!(app.input_mode, InputMode::AccountConfigurationPick);
+    let said = app.draft_error.clone().expect("a reason beside the list");
+    assert!(
+        said.contains("gcloud config set project <id> --configuration=bare"),
+        "{said}"
+    );
+}
+
+#[test]
+fn a_typed_configuration_the_list_lacks_is_taken() {
+    let mut app = add_dialog_with(vec![configuration("work", Some("example-dev-1a2b"), true)]);
+    retype(&mut app, "ci");
+    assert!(app.filtered_configurations().is_empty());
+    assert_eq!(app.handle_key(key(KeyCode::Enter)), None);
+    assert_eq!(app.account_draft.configuration, "ci");
+    assert_eq!(app.input_mode, InputMode::AccountName);
+}
+
+#[test]
+fn a_late_list_does_not_take_a_field_being_typed() {
+    let mut app = page_app();
+    app.handle_key(key(KeyCode::Char('a')));
+    retype(&mut app, "de");
+    app.configurations_arrived(vec![configuration("work", Some("example-dev-1a2b"), true)]);
+    assert_eq!(app.input_mode, InputMode::AccountConfiguration);
+    assert_eq!(app.input, "de");
+}
+
+#[test]
+fn a_list_for_a_closed_dialog_is_dropped() {
+    let mut app = page_app();
+    app.handle_key(key(KeyCode::Char('a')));
+    app.handle_key(key(KeyCode::Esc));
+    assert_eq!(app.input_mode, InputMode::Accounts);
+    app.configurations_arrived(vec![configuration("work", Some("example-dev-1a2b"), true)]);
+    assert_eq!(app.input_mode, InputMode::Accounts);
+}
+
+#[test]
+fn no_configurations_leaves_the_text_field_with_the_reason() {
+    let app = add_dialog_with(Vec::new());
+    assert_eq!(app.input_mode, InputMode::AccountConfiguration);
+    let said = app.draft_error.clone().expect("a reason beside the field");
+    assert!(said.contains("gcloud init"), "{said}");
+}
+
+fn zones() -> Vec<String> {
+    ["europe-west1-c", "europe-west4-a", "us-central1-a"]
+        .map(str::to_string)
+        .to_vec()
+}
+
+// Opens the edit dialog on dev and keeps its project, which is where the
+// zone step asks for the project's zones
+fn zone_step() -> App {
+    let mut app = page_app();
+    app.handle_key(key(KeyCode::Char('e')));
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(app.input_mode, InputMode::AccountZone);
+    assert!(app.want_zones, "reaching the zone asks for the list");
+    app
+}
+
+// dev's zone is europe-west1-b, which the list lacks: Enter must still keep it
+#[test]
+fn the_zone_picker_preselects_the_current_zone_even_when_unlisted() {
+    let mut app = zone_step();
+    app.zones_arrived("dev", "example-dev-1a2b", zones());
+    assert_eq!(app.input_mode, InputMode::AccountZonePick);
+    assert_eq!(app.filtered_zones()[app.zone_selected], "europe-west1-b");
+    let page = rows(&app, 100, 30).join("\n");
+    assert!(page.contains("Edit account 2/2"), "{page}");
+    assert_eq!(app.handle_key(key(KeyCode::Enter)), None, "nothing changed");
+    assert_eq!(app.input_mode, InputMode::Accounts);
+}
+
+#[test]
+fn typing_narrows_the_zones_and_enter_sends_the_pick() {
+    let mut app = zone_step();
+    app.zones_arrived("dev", "example-dev-1a2b", zones());
+    retype(&mut app, "europe-w");
+    assert_eq!(
+        app.filtered_zones(),
+        vec!["europe-west1-b", "europe-west1-c", "europe-west4-a"]
+    );
+    app.handle_key(key(KeyCode::Down));
+    app.handle_key(key(KeyCode::Down));
+    assert_eq!(
+        app.handle_key(key(KeyCode::Enter)),
+        Some(Op::AccountEdit(AccountEdit {
+            name: "dev".to_string(),
+            project: None,
+            zone: Some("europe-west4-a".to_string()),
+        }))
+    );
+}
+
+#[test]
+// Unlike a project list, which permissions or the 5,000 cap can cut short, a
+// zone list is the project's whole set: a zone it lacks is a typo, and
+// `account edit` would save it unchecked. `init` refuses the same input.
+fn a_typed_zone_the_list_lacks_is_refused() {
+    let mut app = zone_step();
+    app.zones_arrived("dev", "example-dev-1a2b", zones());
+    retype(&mut app, "eurpoe-west1-b");
+    assert_eq!(app.handle_key(key(KeyCode::Enter)), None);
+    assert_eq!(
+        app.input_mode,
+        InputMode::AccountZonePick,
+        "the dialog stays"
+    );
+    let said = app.draft_error.clone().expect("a reason beside the list");
+    assert!(
+        said.contains("'eurpoe-west1-b' is not a zone of example-dev-1a2b"),
+        "{said}"
+    );
+}
+
+// The saved zone is offered first only while the project is the saved one;
+// a project chosen in step 1 may not have it, and Enter would save that pair
+#[test]
+fn a_new_project_does_not_inherit_a_zone_it_lacks() {
+    let mut app = page_app();
+    app.handle_key(key(KeyCode::Char('e')));
+    retype(&mut app, "example-prod-3c4d");
+    app.handle_key(key(KeyCode::Enter));
+    app.zones_arrived("dev", "example-prod-3c4d", zones());
+    assert_eq!(app.input_mode, InputMode::AccountZonePick);
+    assert!(
+        !app.zones_list.iter().any(|z| z == "europe-west1-b"),
+        "{:?}",
+        app.zones_list
+    );
+    assert_eq!(app.filtered_zones()[app.zone_selected], "europe-west1-c");
+}
+
+// The zones belong to the project chosen one step back, so a list fetched
+// for any other project would offer zones the account cannot use
+#[test]
+fn a_zone_list_for_another_project_is_dropped() {
+    let mut app = zone_step();
+    app.zones_arrived("dev", "example-prod-3c4d", zones());
+    assert_eq!(app.input_mode, InputMode::AccountZone);
+    app.zones_failed("dev", "example-prod-3c4d", "denied");
+    assert_eq!(app.draft_error, None);
+}
+
+#[test]
+fn a_failed_zone_list_keeps_the_text_field() {
+    let mut app = zone_step();
+    app.zones_failed("dev", "example-dev-1a2b", "permission denied");
+    assert_eq!(app.input_mode, InputMode::AccountZone);
+    assert_eq!(app.input, "europe-west1-b", "still pre-filled");
+    let said = app.draft_error.clone().expect("a reason beside the field");
+    assert!(said.contains("Type the zone instead"), "{said}");
+}
+
+// A field whose list is on its way says so, so the person neither waits on a
+// blank field nor is surprised when it turns into a picker under the cursor
+#[test]
+fn a_field_says_its_list_is_loading_until_the_list_answers() {
+    let mut app = page_app();
+    app.handle_key(key(KeyCode::Char('a')));
+    let page = rows(&app, 100, 30).join("\n");
+    assert!(page.contains("loading configurations"), "{page}");
+    app.configurations_failed("gcloud is not installed");
+    let page = rows(&app, 100, 30).join("\n");
+    assert!(!page.contains("loading configurations"), "{page}");
+
+    let mut app = page_app();
+    app.handle_key(key(KeyCode::Char('e')));
+    let page = rows(&app, 100, 30).join("\n");
+    assert!(page.contains("loading projects"), "{page}");
+    app.handle_key(key(KeyCode::Enter));
+    let page = rows(&app, 100, 30).join("\n");
+    assert!(page.contains("loading zones"), "{page}");
+    app.zones_arrived("dev", "example-dev-1a2b", zones());
+    let page = rows(&app, 100, 30).join("\n");
+    assert!(!page.contains("loading zones"), "{page}");
+}
+
+// Esc ends the wait with the dialog, so the next dialog starts with no
+// leftover loading line
+#[test]
+fn closing_a_dialog_ends_its_loading_line() {
+    let mut app = page_app();
+    app.handle_key(key(KeyCode::Char('a')));
+    app.handle_key(key(KeyCode::Esc));
+    assert_eq!(app.list_loading, None);
+}
+
+// The spinner runs in the logs pane title, behind the page; the page itself
+// says what is running until the notice replaces it
+#[test]
+fn the_accounts_page_shows_the_operation_it_is_running() {
+    let mut app = page_app();
+    app.handle_key(key(KeyCode::Char('a')));
+    retype(&mut app, "work");
+    app.handle_key(key(KeyCode::Enter));
+    retype(&mut app, "sandbox");
+    assert!(app.handle_key(key(KeyCode::Enter)).is_some());
+    assert_eq!(app.input_mode, InputMode::Accounts);
+    let page = rows(&app, 100, 30).join("\n");
+    assert!(page.contains("add sandbox"), "{page}");
+}

@@ -751,12 +751,29 @@ fn the_footer_offers_only_what_the_selection_can_do() {
     );
 }
 
-// Review Focus 4: no tunnels at all, so there is no selection to derive a
-// contextual group from. The footer still has to offer a way forward.
+// No tunnels at all, so there is no selection to derive a contextual group
+// from. The way forward is `a add`, in the program group; `m import` acts on a
+// selected run and did nothing here, so it is not offered.
+// `m import` acts on a selected run, so that is where the footer offers it,
+// and nothing a run refuses (stop, restart, clear log) is offered beside it
+#[test]
+fn a_selected_run_offers_import() {
+    let (ctx, _) = ui::footer_groups(Some((TunnelStatus::Running, TunnelKind::Ephemeral)), true);
+    assert_eq!(
+        ctx.iter().map(|a| a.key).collect::<Vec<_>>(),
+        ["m", "c", "o"]
+    );
+}
+
 #[test]
 fn an_empty_account_offers_a_way_to_fill_it() {
-    let (ctx, _) = ui::footer_groups(None, false);
-    assert_eq!(ctx.iter().map(|a| a.key).collect::<Vec<_>>(), ["m"]);
+    let (ctx, program) = ui::footer_groups(None, false);
+    assert!(
+        ctx.is_empty(),
+        "{:?}",
+        ctx.iter().map(|a| a.key).collect::<Vec<_>>()
+    );
+    assert!(program.iter().any(|a| a.key == "a"));
 }
 
 // `a` sat in the two sets that least needed it: an empty account and a
@@ -2931,7 +2948,7 @@ fn dialog_cases() -> Vec<(&'static str, App, Vec<&'static str>)> {
         prompt(
             InputMode::EditTarget,
             "10.0.0.10:443",
-            vec!["New value:", "10.0.0.10:443_", hint],
+            vec!["Ports (remote:local):", "10.0.0.10:443_", hint],
         ),
     );
     let mut app = base();
@@ -3002,6 +3019,38 @@ fn dialog_cases() -> Vec<(&'static str, App, Vec<&'static str>)> {
         (
             app,
             vec!["Project (type to filter):", "6/12", "sample-project-05"],
+        ),
+    );
+    let mut app = base();
+    app.input_mode = InputMode::AccountConfigurationPick;
+    app.configurations_list = (0..12)
+        .map(|i| ConfigurationChoice {
+            name: format!("sample-conf-{i:02}"),
+            project: Some(format!("sample-project-{i:02}")),
+            is_active: i == 5,
+        })
+        .collect();
+    app.configuration_selected = 5;
+    add(
+        "configurations",
+        (
+            app,
+            vec![
+                "gcloud configuration (type to filter):",
+                "6/12",
+                "sample-conf-05",
+            ],
+        ),
+    );
+    let mut app = base();
+    app.input_mode = InputMode::AccountZonePick;
+    app.zones_list = (0..12).map(|i| format!("sample-zone{i:02}-a")).collect();
+    app.zone_selected = 5;
+    add(
+        "zones",
+        (
+            app,
+            vec!["Default zone (type to filter):", "6/12", "sample-zone05-a"],
         ),
     );
     let mut app = base();

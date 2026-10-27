@@ -566,6 +566,45 @@ fn the_demo_is_always_loaded() {
     assert!(app.loaded, "the demo carries its own data across accounts");
 }
 
+// The demo has no gcloud behind it, so every list a form asks for is answered
+// from placeholder data; otherwise its pickers never open and a recording of
+// the forms shows only the text fields they fall back to
+#[test]
+fn the_demo_answers_every_list_a_form_asks_for() {
+    let mut app = App::new_demo();
+    app.handle_key(key(KeyCode::Char(':')));
+    app.handle_key(key(KeyCode::Char('a')));
+    app.answer_demo_lists();
+    assert_eq!(app.input_mode, InputMode::AccountConfigurationPick);
+    assert!(!app.want_configurations, "the request is answered once");
+    let active = &app.filtered_configurations()[app.configuration_selected];
+    assert_eq!(active.name, "demo");
+    assert!(
+        app.configurations_list.iter().any(|c| c.project.is_none()),
+        "one row shows the refusal"
+    );
+
+    app.handle_key(key(KeyCode::Esc));
+    app.handle_key(key(KeyCode::Char('e')));
+    app.answer_demo_lists();
+    assert_eq!(app.input_mode, InputMode::AccountProjectPick);
+    app.handle_key(key(KeyCode::Enter));
+    app.answer_demo_lists();
+    assert_eq!(app.input_mode, InputMode::AccountZonePick);
+    assert_eq!(app.filtered_zones()[app.zone_selected], "europe-west1-b");
+
+    let mut app = App::new_demo();
+    app.handle_key(key(KeyCode::Char('a')));
+    app.handle_key(key(KeyCode::Char('1')));
+    for c in "postgres".chars() {
+        app.handle_key(key(KeyCode::Char(c)));
+    }
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(app.input_mode, InputMode::AddInstance);
+    app.answer_demo_lists();
+    assert!(!app.instances.is_empty(), "the instance picker has rows");
+}
+
 #[test]
 fn a_failed_load_reaches_the_status_line_and_leaves_the_list_loading() {
     let mut app = App::new("dev");
@@ -1639,4 +1678,127 @@ fn a_two_millisecond_tunnel_still_draws_a_chart() {
     let (drawn, top) = ui::chart_scale(&samples);
     assert_eq!(top, 10_000);
     assert!(drawn.iter().max() > drawn.iter().min());
+}
+
+#[test]
+fn every_form_field_has_a_description() {
+    for mode in [
+        InputMode::AccountConfiguration,
+        InputMode::AccountConfigurationPick,
+        InputMode::AccountName,
+        InputMode::AccountProject,
+        InputMode::AccountProjectPick,
+        InputMode::AccountZone,
+        InputMode::AccountZonePick,
+        InputMode::AddName,
+        InputMode::AddInstance,
+        InputMode::AddJumpHost,
+        InputMode::AddRemotePort,
+        InputMode::AddLocalPort,
+        InputMode::AddLocalTarget,
+        InputMode::AddDomain,
+        InputMode::EditTarget,
+    ] {
+        assert!(!mode.describe().is_empty(), "{mode:?} has no description");
+    }
+}
+
+#[test]
+fn the_add_form_counts_its_steps_per_mode() {
+    assert_eq!(InputMode::AddName.step(TunnelMode::Access), Some((1, 5)));
+    assert_eq!(
+        InputMode::AddLocalPort.step(TunnelMode::Access),
+        Some((5, 5))
+    );
+    assert_eq!(InputMode::AddName.step(TunnelMode::Public), Some((1, 3)));
+    assert_eq!(InputMode::AddDomain.step(TunnelMode::Public), Some((3, 3)));
+    assert_eq!(InputMode::RenameTo.step(TunnelMode::Access), None);
+}
+
+#[test]
+fn the_name_prompt_shows_its_step_and_what_a_name_is() {
+    let app = at_the_name_prompt();
+    let text = rows_text(&screen(&app, 100, 30));
+    assert!(text.contains("New access tunnel 1/5"), "{text}");
+    assert!(text.contains("never the account"), "{text}");
+}
+
+#[test]
+fn a_short_terminal_sheds_the_description_before_the_field() {
+    let mut app = at_the_name_prompt();
+    keys(&mut app, "zz");
+    let text = rows_text(&screen(&app, 80, 7));
+    assert!(text.contains("zz"), "the field is gone:\n{text}");
+    assert!(!text.contains("never the account"), "{text}");
+}
+
+#[test]
+fn the_edit_dialog_names_the_value_it_edits() {
+    let mut app = app_with_two();
+    keys(&mut app, "e1");
+    let text = rows_text(&screen(&app, 100, 30));
+    assert!(text.contains("Ports (remote:local):"), "{text}");
+
+    let mut app = app_with_two();
+    keys(&mut app, "\u{2193}e1");
+    let text = rows_text(&screen(&app, 100, 30));
+    assert!(text.contains("Local target:"), "{text}");
+    assert!(!text.contains("Ports (remote:local)"), "{text}");
+}
+
+fn rows_text(buffer: &ratatui::buffer::Buffer) -> String {
+    (0..buffer.area.height)
+        .map(|y| {
+            (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn frame(app: &App, width: u16, height: u16) -> String {
+    let backend = ratatui::backend::TestBackend::new(width, height);
+    let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+    terminal.draw(|f| ui::render(f, app)).expect("draw");
+    rows_text(terminal.backend().buffer())
+}
+
+// An empty list, whether still loading after `;` or loaded and empty, has no
+// row for `m import` to act on, so the footer never offers it there: it was a
+// dead key in an empty account and flashed on every account switch
+#[test]
+fn an_empty_list_never_offers_import_loading_or_loaded() {
+    let mut app = App::new("dev");
+    assert!(!app.loaded);
+    let waiting = frame(&app, 120, 30);
+    assert!(waiting.contains("loading"), "{waiting}");
+    assert!(!waiting.contains("m import"), "{waiting}");
+
+    app.loaded = true;
+    let empty = frame(&app, 120, 30);
+    assert!(empty.contains("no tunnels in this account"), "{empty}");
+    assert!(!empty.contains("m import"), "{empty}");
+    assert!(empty.contains("a add"), "{empty}");
+}
+
+// Before the instances arrive the picker is waiting, not empty: `nothing
+// matches` read as a project with no instances
+#[test]
+fn the_instance_picker_says_loading_before_the_list_and_nothing_matches_after() {
+    let mut app = App::new("dev");
+    app.handle_key(key(KeyCode::Char('a')));
+    app.handle_key(key(KeyCode::Char('1')));
+    for c in "postgres".chars() {
+        app.handle_key(key(KeyCode::Char(c)));
+    }
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(app.input_mode, InputMode::AddInstance);
+    let waiting = frame(&app, 120, 30);
+    assert!(waiting.contains("loading instances"), "{waiting}");
+    assert!(!waiting.contains("nothing matches"), "{waiting}");
+    app.instances_arrived(Vec::new());
+    let answered = frame(&app, 120, 30);
+    assert!(answered.contains("nothing matches"), "{answered}");
+    assert!(!answered.contains("loading instances"), "{answered}");
 }

@@ -30,6 +30,11 @@ enum Msg {
     // The leading string is the account the list was fetched for
     Projects(String, Vec<app::ProjectChoice>),
     ProjectsFailed(String, String),
+    Configurations(Vec<app::ConfigurationChoice>),
+    ConfigurationsFailed(String),
+    // The account and the project the zones were fetched for
+    Zones(String, String, Vec<String>),
+    ZonesFailed(String, String, String),
     Tick,
     // The leading number is the generation the round was begun under; a result
     // whose generation is no longer the poller's current one is dropped
@@ -61,6 +66,24 @@ fn projects_msg(account: &str, result: Result<Vec<app::ProjectChoice>>) -> Msg {
     match result {
         Ok(projects) => Msg::Projects(account.to_string(), projects),
         Err(e) => Msg::ProjectsFailed(account.to_string(), format!("{e:#}")),
+    }
+}
+
+// Same seam as `instances_msg`
+fn configurations_msg(result: Result<Vec<app::ConfigurationChoice>>) -> Msg {
+    match result {
+        Ok(list) => Msg::Configurations(list),
+        Err(e) => Msg::ConfigurationsFailed(format!("{e:#}")),
+    }
+}
+
+// Same seam as `projects_msg`, and the project rides along too: it is the one
+// the dialog chose, which a step back can change before the list lands
+fn zones_msg(account: &str, project: &str, result: Result<Vec<String>>) -> Msg {
+    let (account, project) = (account.to_string(), project.to_string());
+    match result {
+        Ok(zones) => Msg::Zones(account, project, zones),
+        Err(e) => Msg::ZonesFailed(account, project, format!("{e:#}")),
     }
 }
 
@@ -143,13 +166,15 @@ async fn demo_loop(
                         entry.pending = None;
                     }
                 }
+                app.answer_demo_lists();
                 if app.should_quit {
                     break;
                 }
             }
             Msg::Tick => {
                 app.force_refresh = false;
-                if app.spinner.is_running() {
+                // A list being waited on draws a spinner frame too, so it must advance
+                if app.spinner.is_running() || app.list_loading.is_some() {
                     app.spinner.tick();
                 }
             }
@@ -338,7 +363,8 @@ async fn event_loop(
                 }
             }
             Msg::Tick => {
-                if app.spinner.is_running() {
+                // A list being waited on draws a spinner frame too, so it must advance
+                if app.spinner.is_running() || app.list_loading.is_some() {
                     app.spinner.tick();
                 }
                 if app.force_refresh {
@@ -355,6 +381,23 @@ async fn event_loop(
                     let tx = tx.clone();
                     tokio::spawn(async move {
                         let _ = tx.send(instances_msg(ops::load_instances(&account).await));
+                    });
+                }
+                if app.want_configurations {
+                    app.want_configurations = false;
+                    let tx = tx.clone();
+                    tokio::spawn(async move {
+                        let _ = tx.send(configurations_msg(ops::load_configurations().await));
+                    });
+                }
+                if app.want_zones {
+                    app.want_zones = false;
+                    let account = app.account_draft.name.clone();
+                    let project = app.account_draft.project.clone();
+                    let tx = tx.clone();
+                    tokio::spawn(async move {
+                        let result = ops::load_zones(&account, &project).await;
+                        let _ = tx.send(zones_msg(&account, &project, result));
                     });
                 }
                 if app.want_projects {
@@ -397,13 +440,16 @@ async fn event_loop(
                     app.logs = lines;
                 }
             }
-            Msg::Instances(instances) => {
-                app.instances = instances;
-                app.instance_selected = 0;
-            }
+            Msg::Instances(instances) => app.instances_arrived(instances),
             Msg::InstancesFailed(reason) => app.instances_failed(&reason),
             Msg::Projects(account, projects) => app.projects_arrived(&account, projects),
             Msg::ProjectsFailed(account, reason) => app.projects_failed(&account, &reason),
+            Msg::Configurations(list) => app.configurations_arrived(list),
+            Msg::ConfigurationsFailed(reason) => app.configurations_failed(&reason),
+            Msg::Zones(account, project, zones) => app.zones_arrived(&account, &project, zones),
+            Msg::ZonesFailed(account, project, reason) => {
+                app.zones_failed(&account, &project, &reason)
+            }
             Msg::OpDone(result) => {
                 // Rounds begun for the previous account must not land in the
                 // new one's list

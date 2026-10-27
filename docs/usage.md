@@ -330,7 +330,9 @@ gtunnel v9.9.9 is available (current: v0.2.7). Run `gtunnel update`.
 ## The TUI
 
 `gtunnel` with no subcommand opens the TUI. `gtunnel demo` opens it filled with synthetic
-data and never touches GCP or a config file.
+data and never touches GCP or a config file. It needs no login, and its forms open the same
+pickers as the real TUI, filled with placeholder configurations, projects, zones and
+instances, so a form can be shown without an account behind it.
 
 `?` opens the full keymap, in the same four groups:
 
@@ -375,6 +377,29 @@ filter that matches nothing is taken as the project you typed. If the list is em
 or fails, the text field stays and the line `Could not list projects: <cause>` says why.
 Starting to type before the list arrives keeps the field.
 
+The zone step works the same way, with the zones of the project chosen in step 1, which may
+not be the saved one. While the project is unchanged, the current zone is selected even when
+the project does not list it, so Enter keeps it. Unlike projects, a typed zone the list lacks
+is refused, `'<zone>' is not a zone of <project>`, because the zone list is the project's whole
+set. A failure says `Could not list zones: <cause>` and keeps the text field.
+
+Adding an account starts from a picker of the machine's gcloud configurations, one row each
+as `<name>  <project>  (active)`, with the active one selected. A configuration with no
+project is refused with the command that sets one,
+`gcloud config set project <id> --configuration=<name>`. A typed name the list lacks is taken,
+and the text field stays when there is no configuration or gcloud cannot list them.
+
+While a list is on its way, the field or picker says so with a spinner, e.g.
+`loading configurations...`, and the instance picker says `nothing matches` only once the
+list has answered. The accounts page shows the operation it is running, e.g. `add sandbox`,
+until the result replaces it.
+
+Every form field has a line under its label saying what the value is for, and the dialog
+title counts the steps: `New account 1/2`, `Edit account 2/2`, `New access tunnel 3/5`,
+`New public URL 2/3`. On a short terminal the description goes first, so the field always
+fits. The tunnel edit dialog labels its value: `Ports (remote:local):` for an Access tunnel,
+`Local target:` for an Expose one.
+
 `e` opens a chooser rather than a prompt, because there are now three things to edit:
 
 | Key | What it edits |
@@ -393,9 +418,11 @@ Case matters in three pairs: `s`/`S` start and stop, `a`/`A` add and auto-start,
 refresh and restart. The footer shows only what the selected tunnel can do, so it never has
 both halves of a pair on screen; the keymap page states the difference. When the selected
 tunnel has failed, `R restart` leads the footer in the warning colour. An account with no
-tunnels shows `no tunnels in this account` under the list header, and the footer offers `a`
-and `m`; until the first load has answered, and after `;` until the new account's has, the
-row says `loading` instead. A first load that fails puts its error on the status line and
+tunnels shows `no tunnels in this account` under the list header, and the footer offers
+`a add`; until the first load has answered, and after `;` until the new account's has, the
+row says `loading` instead. `m import` appears only on a selected ephemeral run, a
+`gtunnel run` started in a terminal: it turns that run into a managed tunnel with its own
+service, so it outlives the terminal. A first load that fails puts its error on the status line and
 replaces `loading` with `could not load tunnels`, until a load succeeds. The
 keymap page is two columns from 92 cells inside its frame and one below that. On a
 terminal too short for it, the page scrolls: `j` `k` and the arrows move a row, `PgUp` and

@@ -668,6 +668,11 @@ const ACTIONS_RUNNING: &[Action] = &[
     Action::of("L"),
 ];
 
+// A run started with `gtunnel run`: it has no service to stop, restart or log
+// to, so the footer offers what does work on it, led by the key that gives
+// it one
+const ACTIONS_EPHEMERAL: &[Action] = &[Action::of("m"), Action::of("c"), Action::of("o")];
+
 const ACTIONS_STOPPED: &[Action] = &[
     Action::of("s"),
     Action::of("e"),
@@ -681,8 +686,6 @@ const ACTIONS_ERROR: &[Action] = &[
     Action::of("d"),
     Action::of("L"),
 ];
-
-const ACTIONS_EMPTY: &[Action] = &[Action::of("m")];
 
 /// Someone else's `gcloud` process. Every tunnel action refuses on it, and the
 /// running set offered five of them, so the footer named five keys that did
@@ -720,7 +723,7 @@ pub fn footer_most() -> usize {
         ACTIONS_RUNNING,
         ACTIONS_STOPPED,
         ACTIONS_ERROR,
-        ACTIONS_EMPTY,
+        ACTIONS_EPHEMERAL,
         ACTIONS_UNMANAGED,
     ]
     .iter()
@@ -886,7 +889,9 @@ pub fn render(f: &mut Frame, app: &App) {
         }
         InputMode::ChooseEdit => render_choose_edit(f),
         InputMode::AddInstance => render_instance_picker(f, app),
+        InputMode::AccountConfigurationPick => render_configuration_picker(f, app),
         InputMode::AccountProjectPick => render_project_picker(f, app),
+        InputMode::AccountZonePick => render_zone_picker(f, app),
         InputMode::AddDomain => render_domain_picker(f, app),
         InputMode::MoveTo => render_account_picker(f, app),
         mode => render_prompt(f, app, mode),
@@ -1755,13 +1760,16 @@ pub fn footer_groups(
         // A stranger's process answers to whoever started it, whatever state
         // it is in, so its kind decides the footer before its status does
         (Some((_, TunnelKind::External)), _) => ACTIONS_UNMANAGED,
+        (Some((_, TunnelKind::Ephemeral)), _) => ACTIONS_EPHEMERAL,
         (Some((TunnelStatus::Running, _)), _) => ACTIONS_RUNNING,
         (Some((TunnelStatus::Stopped, _)), _) => ACTIONS_STOPPED,
         (Some((TunnelStatus::Error, _)), _) => ACTIONS_ERROR,
-        // No tunnels at all: the only useful actions are the ones that make one
-        (None, false) => ACTIONS_EMPTY,
-        // Tunnels exist but nothing is selected, so nothing is contextual
-        (None, true) => &[],
+        // Nothing selected, so nothing is contextual. An empty account once
+        // offered `m import`, but import acts on a selected ephemeral run and
+        // an empty account has none, so the key did nothing; the way to fill
+        // one is `a add`, which the program group carries in every state.
+        // While a load is pending after `;`, that offer also flashed.
+        (None, _) => &[],
     };
     (contextual, ACTIONS_PROGRAM)
 }
@@ -2803,14 +2811,25 @@ fn render_accounts(f: &mut Frame, app: &App) {
         dialog_width(widest, "Accounts"),
         |w, room| {
             let keys = account_key_rows(w);
-            let notice: Vec<Line<'static>> = app
-                .account_notice
-                .iter()
-                .flat_map(|n| {
-                    let colour = if n.ok { theme::OK } else { theme::BAD };
-                    wrapped_indent(&n.text, 2, w, Style::default().fg(colour))
-                })
-                .collect();
+            // The spinner's own place is the logs title, behind this page, so
+            // the page says what is running until the notice replaces it
+            let running = app
+                .spinner
+                .message
+                .as_ref()
+                .filter(|_| app.spinner.is_running())
+                .map(|m| format!("{} {m}", app.spinner.frame()));
+            let notice: Vec<Line<'static>> = match running {
+                Some(running) => wrapped_indent(&running, 2, w, Style::default().fg(theme::MUTED)),
+                None => app
+                    .account_notice
+                    .iter()
+                    .flat_map(|n| {
+                        let colour = if n.ok { theme::OK } else { theme::BAD };
+                        wrapped_indent(&n.text, 2, w, Style::default().fg(colour))
+                    })
+                    .collect(),
+            };
             // The rows have the first claim on the frame, as the picker's do: a
             // page that shows its keys and no accounts has stopped being a list
             let visible = room.saturating_sub(keys.len() + notice.len()).max(1);
@@ -2855,6 +2874,23 @@ fn render_confirm(f: &mut Frame, message: &str) {
 
 const PROMPT_HINT: &str = "Enter to continue, Esc to cancel";
 
+/// How wide a description may make a dialog before it wraps instead: wide
+/// enough that most fit on one or two rows, narrow enough that the dialog
+/// stays a dialog on an 80-column terminal.
+const DESCRIPTION_WIDTH: usize = 60;
+
+/// The list rows a picker keeps before it gives any to a description.
+const PICKER_ROWS_KEPT: usize = 3;
+
+/// A form's title with the step its field is, `New account 1/2`; a title
+/// alone for a dialog that is not one step of a form.
+fn step_title(title: &str, mode: InputMode, app: &App) -> String {
+    match mode.step(app.draft.mode) {
+        Some((n, of)) => format!("{title} {n}/{of}"),
+        None => title.to_string(),
+    }
+}
+
 fn render_prompt(f: &mut Frame, app: &App, mode: InputMode) {
     let title = match app.draft.mode {
         TunnelMode::Access => "New access tunnel",
@@ -2864,16 +2900,26 @@ fn render_prompt(f: &mut Frame, app: &App, mode: InputMode) {
         InputMode::EditTarget => "Edit",
         InputMode::RenameTo => "Rename",
         InputMode::MoveRename => "Move",
-        InputMode::AccountConfiguration | InputMode::AccountName => "New account",
+        InputMode::AccountConfiguration
+        | InputMode::AccountConfigurationPick
+        | InputMode::AccountName => "New account",
         InputMode::AccountProject | InputMode::AccountZone => "Edit account",
         _ => title,
     };
-    let prompt = mode.prompt();
+    let title = step_title(title, mode, app);
+    let (prompt, description) = match mode {
+        InputMode::EditTarget if app.edit_is_expose => {
+            ("Local target:", InputMode::AddLocalTarget.describe())
+        }
+        _ => (mode.prompt(), mode.describe()),
+    };
     let widest = cells(prompt)
         .max(cells(&app.input) + 3)
-        .max(cells(PROMPT_HINT) + 2);
-    render_dialog(f, title, dialog_width(widest, title), |width, rows| {
+        .max(cells(PROMPT_HINT) + 2)
+        .max(cells(description).min(DESCRIPTION_WIDTH));
+    render_dialog(f, &title, dialog_width(widest, &title), |width, rows| {
         let ask = wrapped_indent(prompt, 0, width, Style::default().fg(theme::WARN));
+        let told = wrapped_indent(description, 0, width, Style::default().fg(theme::MUTED));
         let mut field = vec![input_row(&app.input, width)];
         if let Some(error) = &app.draft_error {
             field.extend(wrapped_indent(
@@ -2883,11 +2929,23 @@ fn render_prompt(f: &mut Frame, app: &App, mode: InputMode) {
                 Style::default().fg(theme::BAD),
             ));
         }
+        // Kept with the field, not shed with the description: it says the
+        // field is about to change under the cursor
+        if let Some(loading) = loading_line(app, mode) {
+            field.extend(wrapped_indent(
+                &loading,
+                0,
+                width,
+                Style::default().fg(theme::MUTED),
+            ));
+        }
         let hint = wrapped_indent(PROMPT_HINT, 2, width, Style::default().fg(theme::MUTED));
         // What goes first when the terminal is short: the blank rows, then the
-        // hint, then the end of a prompt that wraps. The field is never shed,
-        // since the keys a user types must land somewhere they can see.
-        stacked(&[ask.clone(), field.clone(), hint], rows)
+        // description, then the hint, then the end of a prompt that wraps. The
+        // field is never shed, since the keys a user types must land somewhere
+        // they can see.
+        stacked(&[ask.clone(), told, field.clone(), hint.clone()], rows)
+            .or_else(|| stacked(&[ask.clone(), field.clone(), hint], rows))
             .or_else(|| stacked(&[ask.clone(), field.clone()], rows))
             .unwrap_or_else(|| {
                 let mut lines: Vec<Line<'static>> =
@@ -2896,6 +2954,20 @@ fn render_prompt(f: &mut Frame, app: &App, mode: InputMode) {
                 lines
             })
     });
+}
+
+/// What a field or picker says while its list is on the way, when the list
+/// being waited on is this field's. The frame advances with the spinner.
+fn loading_line(app: &App, mode: InputMode) -> Option<String> {
+    let what = app.list_loading?;
+    let mine = matches!(
+        (what, mode),
+        ("configurations", InputMode::AccountConfiguration)
+            | ("projects", InputMode::AccountProject)
+            | ("zones", InputMode::AccountZone)
+            | ("instances", InputMode::AddInstance)
+    );
+    mine.then(|| format!("{} loading {what}...", app.spinner.frame()))
 }
 
 fn picker_row(row: &str, selected: bool) -> Line<'static> {
@@ -2912,11 +2984,15 @@ fn picker_row(row: &str, selected: bool) -> Line<'static> {
 struct Picker<'a> {
     title: &'a str,
     prompt: &'a str,
+    // What the choice is for, under the prompt; empty for none
+    description: &'a str,
     filter: &'a str,
     rows: Vec<String>,
     selected: usize,
     // Why the dialog came back, drawn where the dialog covers the status line
     error: Option<&'a str>,
+    // Said in place of `nothing matches` while the rows are still on their way
+    loading: Option<String>,
 }
 
 /// A dialog whose row list is taller than the dialog: the header is fixed and
@@ -2928,10 +3004,12 @@ fn render_picker(f: &mut Frame, p: Picker) {
     let Picker {
         title,
         prompt,
+        description,
         filter,
         rows,
         selected,
         error,
+        loading,
     } = p;
     let total = rows.len();
     let counter = if total > 0 {
@@ -2939,8 +3017,9 @@ fn render_picker(f: &mut Frame, p: Picker) {
     } else {
         String::new()
     };
-    let widest =
-        (cells(prompt) + cells(&counter)).max(rows.iter().map(|r| cells(r) + 2).max().unwrap_or(0));
+    let widest = (cells(prompt) + cells(&counter))
+        .max(rows.iter().map(|r| cells(r) + 2).max().unwrap_or(0))
+        .max(cells(description).min(DESCRIPTION_WIDTH));
     render_dialog(f, title, dialog_width(widest, title), |width, room| {
         let mut ask = wrapped_indent(prompt, 0, width, Style::default().fg(theme::WARN));
         // The counter rides on the prompt's last row, or takes one of its own
@@ -2959,6 +3038,13 @@ fn render_picker(f: &mut Frame, p: Picker) {
         let asked = ask.len().min(budget);
         budget -= asked;
         head.extend(ask.into_iter().take(asked));
+        // Shown only with room for a few rows of the list besides, which
+        // keeps its first claim on the frame
+        let told = wrapped_indent(description, 0, width, muted);
+        if !description.is_empty() && budget >= told.len() + PICKER_ROWS_KEPT {
+            budget -= told.len();
+            head.extend(told);
+        }
         if keep_filter {
             head.push(input_row(filter, width));
             if let Some(error) = error {
@@ -2975,7 +3061,8 @@ fn render_picker(f: &mut Frame, p: Picker) {
         let visible = room.saturating_sub(head.len());
         let mut lines = head;
         if total == 0 {
-            lines.push(Line::styled("  nothing matches", muted));
+            let said = loading.unwrap_or_else(|| "nothing matches".to_string());
+            lines.push(Line::styled(format!("  {said}"), muted));
         } else {
             let start = (selected.min(total - 1) + 1).saturating_sub(visible);
             lines.extend(
@@ -2999,12 +3086,14 @@ fn render_instance_picker(f: &mut Frame, app: &App) {
     render_picker(
         f,
         Picker {
-            title: "Instance",
+            title: &step_title("New access tunnel", InputMode::AddInstance, app),
             prompt: InputMode::AddInstance.prompt(),
+            description: InputMode::AddInstance.describe(),
             filter: &app.input,
             rows,
             selected: app.instance_selected,
             error: app.draft_error.as_deref(),
+            loading: loading_line(app, InputMode::AddInstance),
         },
     );
 }
@@ -3022,12 +3111,61 @@ fn render_project_picker(f: &mut Frame, app: &App) {
     render_picker(
         f,
         Picker {
-            title: "Edit account",
+            title: &step_title("Edit account", InputMode::AccountProjectPick, app),
             prompt: InputMode::AccountProjectPick.prompt(),
+            description: InputMode::AccountProjectPick.describe(),
             filter: &app.input,
             rows,
             selected: app.project_selected,
             error: app.draft_error.as_deref(),
+            loading: None,
+        },
+    );
+}
+
+fn render_zone_picker(f: &mut Frame, app: &App) {
+    let rows: Vec<String> = app.filtered_zones().iter().map(|z| z.to_string()).collect();
+    render_picker(
+        f,
+        Picker {
+            title: &step_title("Edit account", InputMode::AccountZonePick, app),
+            prompt: InputMode::AccountZonePick.prompt(),
+            description: InputMode::AccountZonePick.describe(),
+            filter: &app.input,
+            rows,
+            selected: app.zone_selected,
+            error: app.draft_error.as_deref(),
+            loading: None,
+        },
+    );
+}
+
+fn render_configuration_picker(f: &mut Frame, app: &App) {
+    let rows: Vec<String> = app
+        .filtered_configurations()
+        .iter()
+        .map(|c| {
+            format!(
+                "{:<20} {:<30} {}",
+                c.name,
+                c.project.as_deref().unwrap_or("no project"),
+                if c.is_active { "(active)" } else { "" }
+            )
+            .trim_end()
+            .to_string()
+        })
+        .collect();
+    render_picker(
+        f,
+        Picker {
+            title: &step_title("New account", InputMode::AccountConfigurationPick, app),
+            prompt: InputMode::AccountConfigurationPick.prompt(),
+            description: InputMode::AccountConfigurationPick.describe(),
+            filter: &app.input,
+            rows,
+            selected: app.configuration_selected,
+            error: app.draft_error.as_deref(),
+            loading: None,
         },
     );
 }
@@ -3041,10 +3179,12 @@ fn render_account_picker(f: &mut Frame, app: &App) {
         Picker {
             title: "Move",
             prompt: InputMode::MoveTo.prompt(),
+            description: "",
             filter: "",
             rows: app.other_accounts(),
             selected: app.move_selected,
             error: app.draft_error.as_deref(),
+            loading: None,
         },
     );
 }
@@ -3053,12 +3193,14 @@ fn render_domain_picker(f: &mut Frame, app: &App) {
     render_picker(
         f,
         Picker {
-            title: "Domain",
+            title: &step_title("New public URL", InputMode::AddDomain, app),
             prompt: InputMode::AddDomain.prompt(),
+            description: InputMode::AddDomain.describe(),
             filter: "",
             rows: app.domains.clone(),
             selected: app.domain_selected,
             error: app.draft_error.as_deref(),
+            loading: None,
         },
     );
 }
