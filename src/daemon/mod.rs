@@ -671,6 +671,59 @@ mod tests {
         assert_eq!(run, vec!["kickstart", "gui/501/com.gtunnel.dev.db"]);
     }
 
+    // Toggling auto-start is a file operation on the LaunchAgents copy. It used
+    // to go through install(), which bounced a running tunnel and left the TUI
+    // reporting a failed kickstart
+    #[test]
+    fn auto_start_on_writes_the_launch_agents_copy() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let agent = dir.path().join("LaunchAgents/com.gtunnel.dev.db.plist");
+        let mut s = spec();
+        s.auto_start = true;
+        launchd::sync_agent_copy(&agent, &s).expect("sync");
+        assert_eq!(
+            std::fs::read_to_string(&agent).expect("agent copy"),
+            launchd::render_plist(&s)
+        );
+    }
+
+    #[test]
+    fn auto_start_off_removes_the_launch_agents_copy_and_tolerates_none() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let agent = dir.path().join("com.gtunnel.dev.db.plist");
+        std::fs::write(&agent, "stale").expect("seed");
+        let s = spec();
+        launchd::sync_agent_copy(&agent, &s).expect("remove");
+        assert!(!agent.exists());
+        launchd::sync_agent_copy(&agent, &s).expect("already absent");
+    }
+
+    // The bootstrap that preceded a failed kickstart is the cause; kickstart
+    // only says the job is not loaded
+    #[test]
+    fn a_failed_kickstart_names_the_bootstrap_that_preceded_it() {
+        let msg = launchd::start_failure(
+            "Bootstrap failed: 5: Input/output error",
+            "Could not find service \"com.gtunnel.dev.db\" in domain for port",
+        );
+        assert!(
+            msg.contains("launchctl kickstart failed: Could not find service"),
+            "{msg}"
+        );
+        assert!(
+            msg.contains("launchctl bootstrap failed: Bootstrap failed: 5"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn a_silent_bootstrap_adds_nothing_to_a_kickstart_failure() {
+        assert_eq!(
+            launchd::start_failure("", "boom"),
+            "launchctl kickstart failed: boom"
+        );
+    }
+
     // With KeepAlive set, launchd runs a job the moment it is loaded, whatever
     // RunAtLoad or Disabled say, and it loads everything in LaunchAgents at
     // login. So a plist kept there is a tunnel that always runs: the loaded

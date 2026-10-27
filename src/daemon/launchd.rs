@@ -277,14 +277,7 @@ pub async fn install(spec: &ServiceSpec) -> Result<()> {
     // The tunnel about to run owns its log; the last run's errors are not its own
     super::write_log_header(spec)?;
     write_plist(&plist_path(&spec.label)?, spec)?;
-
-    let agent = agent_path(&spec.label)?;
-    if spec.auto_start {
-        write_plist(&agent, spec)?;
-    } else if agent.exists() {
-        std::fs::remove_file(&agent)
-            .with_context(|| format!("Failed to remove {}", agent.display()))?;
-    }
+    sync_agent_copy(&agent_path(&spec.label)?, spec)?;
 
     // A running tunnel is reloaded so the new argv takes effect
     if status(&spec.label).await == TunnelStatus::Running {
@@ -328,13 +321,28 @@ pub async fn start(label: &str) -> Result<()> {
     let path = plist_path(label)?;
     let (load, run) = start_args(&domain_target(), label, &path.to_string_lossy());
     // Already loaded is the common case and bootstrap says so; kickstart decides
-    let _ = launchctl(&load.iter().map(String::as_str).collect::<Vec<_>>()).await;
+    let loaded = launchctl(&load.iter().map(String::as_str).collect::<Vec<_>>()).await;
     let out = launchctl(&run.iter().map(String::as_str).collect::<Vec<_>>()).await?;
     if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        anyhow::bail!("launchctl kickstart failed: {}", stderr.trim());
+        let bootstrap = match &loaded {
+            Ok(o) => String::from_utf8_lossy(&o.stderr).into_owned(),
+            Err(e) => format!("{e:#}"),
+        };
+        anyhow::bail!(
+            "{}",
+            start_failure(&bootstrap, &String::from_utf8_lossy(&out.stderr))
+        );
     }
     Ok(())
+}
+
+// Kickstart only says the job is not loaded; the bootstrap before it is why
+pub fn start_failure(bootstrap_stderr: &str, kickstart_stderr: &str) -> String {
+    let kickstart = format!("launchctl kickstart failed: {}", kickstart_stderr.trim());
+    match bootstrap_stderr.trim() {
+        "" => kickstart,
+        b => format!("{kickstart}; launchctl bootstrap failed: {b}"),
+    }
 }
 
 pub async fn stop(label: &str) -> Result<()> {
@@ -350,10 +358,20 @@ pub async fn stop(label: &str) -> Result<()> {
     Ok(())
 }
 
-// Auto-start is the LaunchAgents copy, which install adds or removes. It does
-// not touch whether the tunnel is running now.
+// Auto-start is the LaunchAgents copy: written when on, removed when off
+pub fn sync_agent_copy(agent: &std::path::Path, spec: &ServiceSpec) -> Result<()> {
+    if spec.auto_start {
+        write_plist(agent, spec)
+    } else if agent.exists() {
+        std::fs::remove_file(agent).with_context(|| format!("Failed to remove {}", agent.display()))
+    } else {
+        Ok(())
+    }
+}
+
+// Touches only the LaunchAgents copy, never whether the tunnel is running now
 pub async fn set_auto_start(spec: &ServiceSpec) -> Result<()> {
-    install(spec).await
+    sync_agent_copy(&agent_path(&spec.label)?, spec)
 }
 
 async fn print_service(label: &str) -> Option<String> {

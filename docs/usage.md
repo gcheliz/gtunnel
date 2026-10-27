@@ -1291,10 +1291,12 @@ The level is global rather than per account or per tunnel: it answers how much y
 to see right now, which is a property of the moment. A running tunnel keeps the level it
 started under, because the level is written into the service's command line when the
 service is installed — so anything that reinstalls the service moves it: `start`,
-`restart`, `autostart on|off`, `doctor --fix` on an auto-start finding, and editing the
-tunnel or toggling its auto-start in the TUI. Worth knowing if you exported
-`GTUNNEL_LOG_LEVEL` to diagnose something and left it set: the next `autostart` puts
-that level on the tunnel for good.
+`restart`, and editing the tunnel in the TUI. Toggling auto-start (`autostart --on|--off`,
+`A` in the TUI, `doctor --fix` on an auto-start finding) never restarts a running tunnel:
+on macOS it writes or removes only the copy launchd loads at login, so that copy carries
+the level in force at the moment of the toggle. Worth knowing if you exported
+`GTUNNEL_LOG_LEVEL` to diagnose something and left it set: the next `autostart --on` puts
+that level on the tunnel's start at login.
 
 ### Environment
 
