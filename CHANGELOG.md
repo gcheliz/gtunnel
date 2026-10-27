@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.6](https://github.com/gcheliz/gtunnel/compare/v0.2.5...v0.2.6) - 2026-10-27
+
+### Documentation
+
+- *(readme)* open with the TUI, CLI and MCP, and re-record the TUI demo ([#180](https://github.com/gcheliz/gtunnel/pull/180))
+
 ## [0.2.5](https://github.com/gcheliz/gtunnel/compare/v0.2.4...v0.2.5) - 2026-10-27
 
 ### Documentation
