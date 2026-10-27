@@ -5,8 +5,9 @@
 use crate::state::{PersistentTunnel, TunnelSpec, TunnelStatus};
 use crate::tui::app::*;
 use crate::tui::tests::{
-    a_stopped_app, access, app_with_two, at_the_name_prompt, copy_ok, expose, failed, key,
-    keymap_fixture, keys, open_ok, screen, submitted_access_draft, with_a_second_account,
+    a_stopped_app, access, app_with_two, at_the_name_prompt, at_the_project_step, copy_ok, expose,
+    failed, key, keymap_fixture, keys, listed_projects, open_ok, screen, submitted_access_draft,
+    with_a_second_account,
 };
 use crate::tui::*;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -2670,6 +2671,28 @@ fn the_instance_picker_draws_the_error_set_for_it() {
 }
 
 #[test]
+fn the_project_picker_draws_the_error_set_for_it() {
+    let mut app = at_the_project_step();
+    app.projects_failed("dev", "GCP API error 403: denied");
+    let rendered = render_to_string(&app, 120, 40);
+    // The dialog wraps the line, so only a fragment that fits one row is stable
+    assert!(rendered.contains("Could not list projects"), "{rendered}");
+}
+
+#[test]
+fn the_project_picker_lists_the_ids_with_their_names() {
+    let mut app = at_the_project_step();
+    let mut list = listed_projects(&["example-dev-1a2b", "example-prod-3c4d"]);
+    list[1].name = "Production".to_string();
+    app.projects_arrived("dev", list);
+    let rendered = render_to_string(&app, 120, 40);
+    assert!(rendered.contains("Project (type to filter):"), "{rendered}");
+    assert!(rendered.contains("example-prod-3c4d"), "{rendered}");
+    assert!(rendered.contains("Production"), "{rendered}");
+    assert!(rendered.contains("1/2"), "{rendered}");
+}
+
+#[test]
 fn the_refusal_is_on_screen_at_80_by_24() {
     let mut app = at_the_name_prompt();
     keys(&mut app, "db\n");
@@ -2963,6 +2986,22 @@ fn dialog_cases() -> Vec<(&'static str, App, Vec<&'static str>)> {
         (
             app,
             vec!["Instance (type to filter):", "6/12", "sample-instance-05"],
+        ),
+    );
+    let mut app = base();
+    app.input_mode = InputMode::AccountProjectPick;
+    app.projects_list = (0..12)
+        .map(|i| ProjectChoice {
+            project_id: format!("sample-project-{i:02}"),
+            name: "Sample".to_string(),
+        })
+        .collect();
+    app.project_selected = 5;
+    add(
+        "projects",
+        (
+            app,
+            vec!["Project (type to filter):", "6/12", "sample-project-05"],
         ),
     );
     let mut app = base();

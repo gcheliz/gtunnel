@@ -886,6 +886,7 @@ pub fn render(f: &mut Frame, app: &App) {
         }
         InputMode::ChooseEdit => render_choose_edit(f),
         InputMode::AddInstance => render_instance_picker(f, app),
+        InputMode::AccountProjectPick => render_project_picker(f, app),
         InputMode::AddDomain => render_domain_picker(f, app),
         InputMode::MoveTo => render_account_picker(f, app),
         mode => render_prompt(f, app, mode),
@@ -2974,6 +2975,29 @@ fn render_instance_picker(f: &mut Frame, app: &App) {
             filter: &app.input,
             rows,
             selected: app.instance_selected,
+            error: app.draft_error.as_deref(),
+        },
+    );
+}
+
+fn render_project_picker(f: &mut Frame, app: &App) {
+    let rows: Vec<String> = app
+        .filtered_projects()
+        .iter()
+        .map(|p| {
+            format!("{:<30} {}", p.project_id, p.name)
+                .trim_end()
+                .to_string()
+        })
+        .collect();
+    render_picker(
+        f,
+        Picker {
+            title: "Edit account",
+            prompt: InputMode::AccountProjectPick.prompt(),
+            filter: &app.input,
+            rows,
+            selected: app.project_selected,
             error: app.draft_error.as_deref(),
         },
     );

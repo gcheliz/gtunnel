@@ -27,6 +27,9 @@ enum Msg {
     Key(crossterm::event::KeyEvent),
     Instances(Vec<app::InstanceChoice>),
     InstancesFailed(String),
+    // The leading string is the account the list was fetched for
+    Projects(String, Vec<app::ProjectChoice>),
+    ProjectsFailed(String, String),
     Tick,
     // The leading number is the generation the round was begun under; a result
     // whose generation is no longer the poller's current one is dropped
@@ -49,6 +52,15 @@ fn instances_msg(result: Result<Vec<app::InstanceChoice>>) -> Msg {
     match result {
         Ok(instances) => Msg::Instances(instances),
         Err(e) => Msg::InstancesFailed(format!("{e:#}")),
+    }
+}
+
+// Same seam as `instances_msg`, and the account rides along so a slow list
+// cannot land in a dialog opened for another one
+fn projects_msg(account: &str, result: Result<Vec<app::ProjectChoice>>) -> Msg {
+    match result {
+        Ok(projects) => Msg::Projects(account.to_string(), projects),
+        Err(e) => Msg::ProjectsFailed(account.to_string(), format!("{e:#}")),
     }
 }
 
@@ -345,6 +357,15 @@ async fn event_loop(
                         let _ = tx.send(instances_msg(ops::load_instances(&account).await));
                     });
                 }
+                if app.want_projects {
+                    app.want_projects = false;
+                    let account = app.account_draft.name.clone();
+                    let tx = tx.clone();
+                    tokio::spawn(async move {
+                        let result = ops::load_projects(&account).await;
+                        let _ = tx.send(projects_msg(&account, result));
+                    });
+                }
                 schedule(app, &mut timers, tx);
                 // The logs panel follows the selection, so it reloads with it
                 let selected = app.selected_entry().map(|e| e.tunnel.clone());
@@ -381,6 +402,8 @@ async fn event_loop(
                 app.instance_selected = 0;
             }
             Msg::InstancesFailed(reason) => app.instances_failed(&reason),
+            Msg::Projects(account, projects) => app.projects_arrived(&account, projects),
+            Msg::ProjectsFailed(account, reason) => app.projects_failed(&account, &reason),
             Msg::OpDone(result) => {
                 // Rounds begun for the previous account must not land in the
                 // new one's list

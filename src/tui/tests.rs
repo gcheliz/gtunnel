@@ -1460,3 +1460,152 @@ fn expired_credentials_outrank_a_crash_loop_and_both_count_as_failing() {
     assert!(HealthStatus::CrashLooping.is_failing());
     assert!(!HealthStatus::Checking.is_failing());
 }
+
+// The accounts page's edit dialog, at its first step with the cursor on dev
+pub(super) fn at_the_project_step() -> App {
+    let mut app = app_with_two();
+    app.accounts = vec!["dev".to_string(), "prod".to_string()];
+    app.projects = [
+        ("dev".to_string(), "example-dev-1a2b".to_string()),
+        ("prod".to_string(), "example-prod-3c4d".to_string()),
+    ]
+    .into();
+    app.zones = [("dev".to_string(), "europe-west1-b".to_string())].into();
+    keys(&mut app, ":e");
+    assert_eq!(app.input_mode, InputMode::AccountProject);
+    app
+}
+
+pub(super) fn listed_projects(ids: &[&str]) -> Vec<ProjectChoice> {
+    ids.iter()
+        .map(|id| ProjectChoice {
+            project_id: (*id).to_string(),
+            name: String::new(),
+        })
+        .collect()
+}
+
+#[test]
+fn the_project_step_opens_a_picker_once_the_list_arrives() {
+    let mut app = at_the_project_step();
+    assert!(app.want_projects, "the loop was never asked for the list");
+    app.projects_arrived(
+        "dev",
+        listed_projects(&["example-dev-1a2b", "example-prod-3c4d"]),
+    );
+    assert_eq!(app.input_mode, InputMode::AccountProjectPick);
+    assert_eq!(app.filtered_projects().len(), 2);
+}
+
+#[test]
+fn enter_keeps_the_current_project() {
+    let mut app = at_the_project_step();
+    app.projects_arrived(
+        "dev",
+        listed_projects(&["example-a-0000", "example-dev-1a2b", "example-prod-3c4d"]),
+    );
+    assert_eq!(app.project_selected, 1, "the current row is not selected");
+    keys(&mut app, "\n");
+    assert_eq!(app.account_draft.project, "example-dev-1a2b");
+    assert_eq!(app.input_mode, InputMode::AccountZone);
+    assert_eq!(app.input, "europe-west1-b");
+}
+
+#[test]
+fn a_current_project_the_list_lacks_is_still_kept_by_enter() {
+    let mut app = at_the_project_step();
+    app.projects_arrived("dev", listed_projects(&["example-prod-3c4d"]));
+    keys(&mut app, "\n");
+    assert_eq!(app.account_draft.project, "example-dev-1a2b");
+    assert_eq!(app.input_mode, InputMode::AccountZone);
+}
+
+#[test]
+fn a_row_chosen_with_the_arrows_replaces_the_current_project() {
+    let mut app = at_the_project_step();
+    app.projects_arrived(
+        "dev",
+        listed_projects(&["example-dev-1a2b", "example-prod-3c4d"]),
+    );
+    keys(&mut app, "\u{2193}\n");
+    assert_eq!(app.account_draft.project, "example-prod-3c4d");
+    assert_eq!(app.input_mode, InputMode::AccountZone);
+}
+
+#[test]
+fn a_filter_that_matches_nothing_is_taken_as_the_project() {
+    let mut app = at_the_project_step();
+    app.projects_arrived("dev", listed_projects(&["example-dev-1a2b"]));
+    keys(&mut app, "example-prod-3c4d\n");
+    assert_eq!(app.account_draft.project, "example-prod-3c4d");
+    assert_eq!(app.input_mode, InputMode::AccountZone);
+}
+
+#[test]
+fn a_failed_list_falls_back_to_the_text_field_prefilled_with_the_current_project() {
+    let mut app = at_the_project_step();
+    app.projects_failed("dev", "GCP API error 403: denied");
+    assert_eq!(app.input_mode, InputMode::AccountProject);
+    assert_eq!(app.input, "example-dev-1a2b");
+    assert!(app.status_error);
+    let status = app.status.as_deref().expect("no status");
+    assert!(status.starts_with("Could not list projects: "), "{status}");
+    assert!(status.contains("403"), "{status}");
+    keys(&mut app, "\n");
+    assert_eq!(app.input_mode, InputMode::AccountZone);
+    assert!(!app.status_error, "the list's error outlived the field");
+}
+
+#[test]
+fn an_empty_list_falls_back_to_the_text_field() {
+    let mut app = at_the_project_step();
+    app.projects_arrived("dev", Vec::new());
+    assert_eq!(app.input_mode, InputMode::AccountProject);
+    assert_eq!(app.input, "example-dev-1a2b");
+    let status = app.status.as_deref().expect("no status");
+    assert!(status.starts_with("Could not list projects: "), "{status}");
+}
+
+#[test]
+fn a_list_for_another_account_or_a_closed_dialog_is_ignored() {
+    let mut app = at_the_project_step();
+    app.projects_arrived("prod", listed_projects(&["example-prod-3c4d"]));
+    assert_eq!(app.input_mode, InputMode::AccountProject);
+    app.handle_key(key(KeyCode::Esc));
+    app.projects_arrived("dev", listed_projects(&["example-dev-1a2b"]));
+    assert_eq!(app.input_mode, InputMode::Accounts);
+    app.projects_failed("dev", "late");
+    assert!(app.status.is_none(), "a stale error reached the line");
+}
+
+#[test]
+fn a_list_does_not_replace_a_project_the_person_is_already_typing() {
+    let mut app = at_the_project_step();
+    keys(&mut app, "x");
+    app.projects_arrived("dev", listed_projects(&["example-dev-1a2b"]));
+    assert_eq!(app.input_mode, InputMode::AccountProject);
+    assert_eq!(app.input, "example-dev-1a2bx");
+}
+
+#[test]
+fn escape_in_the_project_picker_returns_to_the_accounts_page() {
+    let mut app = at_the_project_step();
+    app.projects_arrived("dev", listed_projects(&["example-dev-1a2b"]));
+    app.handle_key(key(KeyCode::Esc));
+    assert_eq!(app.input_mode, InputMode::Accounts);
+}
+
+#[test]
+fn a_failed_project_list_becomes_a_message_carrying_the_reason() {
+    match projects_msg("dev", Err(anyhow::anyhow!("denied"))) {
+        Msg::ProjectsFailed(account, reason) => {
+            assert_eq!(account, "dev");
+            assert_eq!(reason, "denied");
+        }
+        _ => panic!("the error was dropped"),
+    }
+    assert!(matches!(
+        projects_msg("dev", Ok(Vec::new())),
+        Msg::Projects(..)
+    ));
+}
