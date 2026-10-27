@@ -1421,3 +1421,104 @@ fn expose_tool_says_public_in_its_description() {
     assert!(description.contains("anyone"), "{description}");
     assert!(description.contains("Private by default"), "{description}");
 }
+
+const MODERN_META: &str = r#""_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}"#;
+
+fn one_frame(h: &Harness, req: &str) -> serde_json::Value {
+    let (stdout, stderr, ok) = h.run_mcp_pipe(&format!("{req}\n"));
+    assert!(ok, "stderr: {stderr}");
+    frames(&stdout).remove(0)
+}
+
+#[test]
+fn server_discover_returns_versions_capabilities_and_identity() {
+    let h = Harness::new();
+    let req = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{{{MODERN_META}}}}}"#
+    );
+    let f = one_frame(&h, &req);
+    let r = &f["result"];
+    assert_eq!(r["resultType"], "complete");
+    assert_eq!(r["supportedVersions"], serde_json::json!(["2026-07-28"]));
+    assert!(r["capabilities"]["tools"].is_object());
+    assert!(r["capabilities"]["resources"].is_object());
+    let info = &r["_meta"]["io.modelcontextprotocol/serverInfo"];
+    assert_eq!(info["name"], "gtunnel");
+    assert_eq!(info["version"], env!("CARGO_PKG_VERSION"));
+}
+
+#[test]
+fn a_modern_request_with_an_unknown_version_gets_32022_and_the_supported_list() {
+    let h = Harness::new();
+    let req = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2031-01-01","io.modelcontextprotocol/clientCapabilities":{}}}}"#;
+    let f = one_frame(&h, req);
+    assert_eq!(f["error"]["code"], -32022);
+    assert_eq!(f["error"]["message"], "Unsupported protocol version");
+    assert_eq!(
+        f["error"]["data"],
+        serde_json::json!({"supported":["2026-07-28"],"requested":"2031-01-01"})
+    );
+}
+
+#[test]
+fn a_modern_request_without_client_capabilities_is_invalid_params() {
+    let h = Harness::new();
+    let req = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}"#;
+    let f = one_frame(&h, req);
+    assert_eq!(f["error"]["code"], -32602);
+}
+
+#[test]
+fn a_modern_tools_list_and_tools_call_carry_result_type_complete() {
+    let h = Harness::new();
+    let list =
+        format!(r#"{{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{{{MODERN_META}}}}}"#);
+    let call = format!(
+        r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"gtunnel_list_tunnels","arguments":{{}},{MODERN_META}}}}}"#
+    );
+    let (stdout, stderr, ok) = h.run_mcp_pipe(&format!("{list}\n{call}\n"));
+    assert!(ok, "stderr: {stderr}");
+    let f = frames(&stdout);
+    for frame in &f {
+        assert_eq!(frame["result"]["resultType"], "complete", "{frame}");
+        assert_eq!(
+            frame["result"]["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
+            "gtunnel"
+        );
+    }
+    assert_eq!(f[0]["result"]["tools"].as_array().unwrap().len(), 14);
+    assert!(f[1]["result"]["content"][0]["text"].is_string());
+    assert!(f[1]["result"]["structuredContent"].is_object());
+}
+
+#[test]
+fn a_modern_read_of_an_unknown_resource_is_invalid_params() {
+    let h = Harness::new();
+    let req = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{{"uri":"gtunnel://nope",{MODERN_META}}}}}"#
+    );
+    let f = one_frame(&h, &req);
+    assert_eq!(f["error"]["code"], -32602);
+}
+
+#[test]
+fn server_discover_without_modern_meta_is_invalid_params() {
+    let h = Harness::new();
+    let f = one_frame(&h, r#"{"jsonrpc":"2.0","id":1,"method":"server/discover"}"#);
+    assert_eq!(f["error"]["code"], -32602);
+}
+
+#[test]
+fn a_legacy_initialize_session_is_unchanged() {
+    let h = Harness::new();
+    let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}"#;
+    let list = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#;
+    let (stdout, stderr, ok) = h.run_mcp_pipe(&format!("{init}\n{list}\n"));
+    assert!(ok, "stderr: {stderr}");
+    let f = frames(&stdout);
+    assert_eq!(f[0]["result"]["protocolVersion"], "2025-11-25");
+    for frame in &f {
+        assert!(frame["result"].get("resultType").is_none(), "{frame}");
+        assert!(frame["result"].get("_meta").is_none(), "{frame}");
+    }
+}
