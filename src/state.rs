@@ -234,7 +234,8 @@ impl TunnelState {
     }
 
     /// Tunnels on other accounts whose joined name equals this one's. They would
-    /// write the same log file and register the same launchd service.
+    /// write the same log file and, on Linux, the same systemd unit. The launchd
+    /// label is `com.gtunnel.<account>.<name>`, so macOS cannot collide here.
     pub fn label_holders(&self, account: &str, name: &str) -> Vec<&PersistentTunnel> {
         let label = label_of(account, name);
         self.tunnels

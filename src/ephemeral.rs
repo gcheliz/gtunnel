@@ -324,8 +324,9 @@ pub fn live_run_local_ports() -> Result<std::collections::HashMap<u16, String>> 
     Ok(used)
 }
 
-/// The record file of a run. One join, shared with the log names and the
-/// doctor, so a fix can never delete a path the writer did not use.
+/// The record file of a run. The name is built from `state::label_of`, the same
+/// join the log and service names use, so a fix can never delete a path the
+/// writer did not use.
 pub fn record_path(account: &str, name: &str) -> Result<PathBuf> {
     Ok(run_dir()?.join(format!("{}.json", crate::state::label_of(account, name))))
 }
