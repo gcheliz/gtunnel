@@ -1,6 +1,6 @@
 # How the TUI displays information
 
-The rules below were derived from decisions already shipped, and each one names the code that obeys it. `src/tui/theme.rs` is the authority on which colours exist and why they are ANSI; this document states only what each colour, row and pane is for. Citations are file paths and symbols, never line numbers, so a refactor moves the code without invalidating the sentence. A test (`the_design_doc_cites_only_files_that_exist` in `src/tui/mod.rs`) fails the build when a cited file disappears, and a second (`the_design_doc_names_every_colour_the_theme_exports`) fails it when a colour has no stated job.
+The rules below were derived from decisions already shipped, and each one names the code that obeys it. `src/tui/theme.rs` is the authority on which colours exist and why they are ANSI; this document states only what each colour, row and pane is for. Citations are file paths and symbols, never line numbers, so a refactor moves the code without invalidating the sentence. A test (`the_design_doc_cites_only_files_that_exist` in `src/tui/tests.rs`) fails the build when a cited file disappears, and a second (`the_design_doc_names_every_colour_the_theme_exports` in `src/tui/ui/tests.rs`) fails it when a colour has no stated job.
 
 Scope: the TUI. `gtunnel list` and the other CLI output obey `## Tables` and nothing else here.
 
@@ -81,7 +81,7 @@ The fallback has the matching trap. Quadrant blocks give two rows for the braill
 | | |
 |---|---|
 | Code | `src/tui/ui.rs` (`MARK_BRAILLE`, `MARK_FALLBACK`, `NAME_ROW`, `mark_dots`) |
-| The cells are pinned by | `the_mark_is_the_one_drawn_for_the_design_and_never_another` in `src/tui/mod.rs` |
+| The cells are pinned by | `the_mark_is_the_one_drawn_for_the_design_and_never_another` in `src/tui/ui/tests.rs` |
 | The banner is pinned to them by | `the_readme_banner_is_the_mark_dot_for_dot`, which reads every circle out of `docs/logo.svg` and compares it to `mark_dots()` |
 | The fallback is pinned by | `the_fallback_is_the_one_the_code_draws_not_the_canvas` |
 
