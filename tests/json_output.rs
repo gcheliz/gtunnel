@@ -160,6 +160,10 @@ fn doctor_json_outputs_valid_array_of_findings() {
 // A run record as `gtunnel run` writes it. The pid decides whether the run
 // counts as live, so the caller picks one that is or is not.
 fn write_run_record(h: &Harness, name: &str, pid: u32, ttl_secs: Option<u64>) {
+    write_run_record_on(h, name, pid, ttl_secs, 15999);
+}
+
+fn write_run_record_on(h: &Harness, name: &str, pid: u32, ttl_secs: Option<u64>, port: u16) {
     let dir = h.dir.path().join("config/run");
     fs::create_dir_all(&dir).unwrap();
     let ttl = ttl_secs
@@ -169,7 +173,7 @@ fn write_run_record(h: &Harness, name: &str, pid: u32, ttl_secs: Option<u64>) {
         dir.join(format!("demo-{name}.json")),
         format!(
             r#"{{"name":"{name}","account_name":"demo","pid":{pid},"started_at":1700000000,
-"spec":{{"mode":"access","target":{{"kind":"instance","instance":"my-vm","zone":"europe-west1-b"}},"remote_port":5432,"local_port":15999}}{ttl}}}"#
+"spec":{{"mode":"access","target":{{"kind":"instance","instance":"my-vm","zone":"europe-west1-b"}},"remote_port":5432,"local_port":{port}}}{ttl}}}"#
         ),
     )
     .unwrap();
@@ -396,4 +400,53 @@ fn a_successful_json_command_still_exits_0_with_no_error_object() {
     let out = h.run(&["list", "--json"]);
     assert_eq!(out.status.code(), Some(0));
     assert!(!stdout(&out).contains("\"error\""));
+}
+
+/// A local port that answers every connection with a byte, the way a tunnel
+/// with a live service behind it does, so a probe of it succeeds without a
+/// real `start-iap-tunnel` on the machine.
+fn answering_port() -> u16 {
+    use std::io::Write;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            let _ = stream.write_all(b"x");
+        }
+    });
+    port
+}
+
+#[test]
+fn a_running_run_carries_its_local_port_and_the_probes_health() {
+    let h = Harness::new();
+    let port = answering_port();
+    let (mut sleeper, pid) = live_pid();
+    write_run_record_on(&h, "scratch", pid, None, port);
+    let out = h.run(&["list", "--json"]);
+    let _ = sleeper.kill();
+    let _ = sleeper.wait();
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+
+    let val: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("json");
+    let run = val
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["name"] == "scratch")
+        .expect("the run");
+    assert_eq!(run["local_port"], port, "{run}");
+    assert_eq!(run["health"], "healthy", "{run}");
+}
+
+#[test]
+fn a_stopped_tunnel_carries_its_local_port_and_unknown_health() {
+    let h = Harness::new();
+    let out = h.run(&["list", "--json"]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let val: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("json");
+    let db = &val.as_array().unwrap()[0];
+    assert_eq!(db["status"], "stopped", "{db}");
+    assert_eq!(db["local_port"], 15432, "{db}");
+    assert_eq!(db["health"], "unknown", "{db}");
 }

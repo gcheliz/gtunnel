@@ -742,64 +742,170 @@ pub struct ListRowJson {
     /// Unix seconds at which the run's TTL ends it; absent without a TTL.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<u64>,
+    /// The port to connect to. Null on a public tunnel, which has none, and
+    /// always present, so a reader never has to parse it out of `url`.
+    pub local_port: Option<u16>,
+    /// One of `health_word`'s words. Only a running row with a local port is
+    /// probed; every other row is `unknown`, which claims nothing either way.
+    pub health: &'static str,
+}
+
+impl ListRowJson {
+    fn declared(tunnel: &PersistentTunnel, status: TunnelStatus) -> Self {
+        Self {
+            status: status_word(status).to_string(),
+            name: tunnel.name.clone(),
+            mode: tunnel.display_kind().to_string(),
+            url: tunnel.display_url(),
+            target: tunnel.display_target(),
+            account: tunnel.account_name.clone(),
+            auto_start: tunnel.auto_start,
+            unmanaged: false,
+            run: false,
+            expires_at: None,
+            local_port: access_port(&tunnel.spec),
+            health: "unknown",
+        }
+    }
+
+    fn from_run(run: &crate::ephemeral::EphemeralRecord) -> Self {
+        Self {
+            auto_start: false,
+            run: true,
+            expires_at: run.expires_at(),
+            ..Self::declared(&run.as_tunnel(), TunnelStatus::Running)
+        }
+    }
+
+    // gtunnel does not own the process, so it is not probed: a failure would
+    // be a finding about somebody else's tunnel
+    fn unmanaged(ext: &crate::discovery::ExternalTunnel, account: &str) -> Self {
+        let row = external_row(ext);
+        Self {
+            status: status_word(row.status).to_string(),
+            name: row.name,
+            mode: row.mode.to_string(),
+            url: row.url,
+            target: row.target,
+            account: account.to_string(),
+            auto_start: false,
+            unmanaged: true,
+            run: false,
+            expires_at: None,
+            local_port: ext.local_port,
+            health: "unknown",
+        }
+    }
+}
+
+fn access_port(spec: &TunnelSpec) -> Option<u16> {
+    match spec {
+        TunnelSpec::Access { local_port, .. } => Some(*local_port),
+        TunnelSpec::Expose { .. } => None,
+    }
+}
+
+/// The wait for one probe to connect and to read an answer. `list` runs its
+/// probes at once, so it waits one probe's worth however many tunnels are
+/// running; a silent close adds the probe's settle time to read the log.
+pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// The round trip of a probe of a local tunnel port, or `None` without an
+/// answer. `log` is read to tell a refusal from a silent close; no log to read
+/// means a silent close is taken as an answer.
+pub(crate) async fn probe_local(local_port: u16, log: &std::path::Path) -> Option<u128> {
+    crate::probe::probe_tunnel(&format!("127.0.0.1:{local_port}"), PROBE_TIMEOUT, log)
+        .await
+        .map(|d| d.as_millis())
+}
+
+/// A probe that got no answer is named by the log: expired credentials are
+/// `auth_expired`, not just `unhealthy`. A crash loop needs restarts over
+/// time, which one call cannot see.
+pub(crate) fn health_word(
+    running: bool,
+    probe_latency_ms: Option<u128>,
+    access: bool,
+    log: &std::path::Path,
+) -> &'static str {
+    match (running, probe_latency_ms) {
+        (true, Some(_)) => "healthy",
+        (true, None) if access => match crate::probe::failed_health(log) {
+            crate::probe::HealthStatus::AuthExpired => "auth_expired",
+            _ => "unhealthy",
+        },
+        _ => "unknown",
+    }
+}
+
+/// The rows of `list --json` and of `gtunnel_list_tunnels`, built in one place
+/// because two copies of the schema drifted: a field added to one never
+/// reached the other. `include_unmanaged` adds the `pid N` rows discovery
+/// finds, which the CLI has always listed and MCP never has.
+pub async fn list_rows_json(acct: &Account, include_unmanaged: bool) -> Result<Vec<ListRowJson>> {
+    let state = TunnelState::load()?;
+    let mut rows = Vec::new();
+    // (row index, local port, log) of every running row that has a port
+    let mut probes = Vec::new();
+    for tunnel in state.tunnels_for_account(&acct.name) {
+        let status = tunnel_status(tunnel).await;
+        let row = ListRowJson::declared(tunnel, status);
+        if let (TunnelStatus::Running, Some(port)) = (status, row.local_port) {
+            probes.push((rows.len(), port, tunnel.log_path().unwrap_or_default()));
+        }
+        rows.push(row);
+    }
+    for run in crate::ephemeral::live_runs(&acct.name).unwrap_or_default() {
+        let row = ListRowJson::from_run(&run);
+        if let Some(port) = row.local_port {
+            let log = crate::mcp::run::run_log_path(&run.account_name, &run.name);
+            probes.push((rows.len(), port, log.unwrap_or_default()));
+        }
+        rows.push(row);
+    }
+    if include_unmanaged {
+        for ext in discovered(&state).await {
+            rows.push(ListRowJson::unmanaged(&ext, &acct.name));
+        }
+    }
+
+    let mut set = tokio::task::JoinSet::new();
+    for (index, port, log) in probes {
+        set.spawn(async move {
+            let latency = probe_local(port, &log).await;
+            (index, health_word(true, latency, true, &log))
+        });
+    }
+    fill_health(&mut rows, set).await;
+    Ok(rows)
+}
+
+/// Drained one task at a time, not with `join_all`, which re-raises a task's
+/// panic: one probe that dies would take the whole list with it. Its row keeps
+/// `unknown`, which is the truth about a probe that never reported.
+async fn fill_health(
+    rows: &mut [ListRowJson],
+    mut set: tokio::task::JoinSet<(usize, &'static str)>,
+) {
+    while let Some(joined) = set.join_next().await {
+        if let Ok((index, health)) = joined {
+            rows[index].health = health;
+        }
+    }
 }
 
 pub async fn cmd_list(account: Option<&str>, json: bool) -> Result<()> {
     let (_, acct) = resolve(account)?;
+    if json {
+        let rows = list_rows_json(&acct, true).await?;
+        println!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(());
+    }
+
     let state = TunnelState::load()?;
     let tunnels = state.tunnels_for_account(&acct.name);
     let external = external_rows().await;
     let runs = crate::ephemeral::live_runs(&acct.name).unwrap_or_default();
-
-    if json {
-        let mut json_rows = Vec::new();
-        for tunnel in tunnels {
-            let status = tunnel_status(tunnel).await;
-            json_rows.push(ListRowJson {
-                status: status_word(status).to_string(),
-                name: tunnel.name.clone(),
-                mode: tunnel.display_kind().to_string(),
-                url: tunnel.display_url(),
-                target: tunnel.display_target(),
-                account: tunnel.account_name.clone(),
-                auto_start: tunnel.auto_start,
-                unmanaged: false,
-                run: false,
-                expires_at: None,
-            });
-        }
-        for run in &runs {
-            let t = run.as_tunnel();
-            json_rows.push(ListRowJson {
-                status: "running".to_string(),
-                name: t.name.clone(),
-                mode: t.display_kind().to_string(),
-                url: t.display_url(),
-                target: t.display_target(),
-                account: t.account_name.clone(),
-                auto_start: false,
-                unmanaged: false,
-                run: true,
-                expires_at: run.expires_at(),
-            });
-        }
-        for ext in external {
-            json_rows.push(ListRowJson {
-                status: status_word(ext.status).to_string(),
-                name: ext.name,
-                mode: ext.mode.to_string(),
-                url: ext.url,
-                target: ext.target,
-                account: acct.name.clone(),
-                auto_start: false,
-                unmanaged: true,
-                run: false,
-                expires_at: None,
-            });
-        }
-        println!("{}", serde_json::to_string_pretty(&json_rows)?);
-        return Ok(());
-    }
 
     if tunnels.is_empty() && runs.is_empty() {
         println!("No tunnels for account '{}'", acct.name);
@@ -829,24 +935,28 @@ async fn external_rows() -> Vec<ListRow> {
     let Ok(state) = crate::state::TunnelState::load() else {
         return Vec::new();
     };
-    crate::discovery::classify(&crate::discovery::snapshot(), &state)
-        .await
-        .into_iter()
-        .map(|external| ListRow {
-            status: TunnelStatus::Running,
-            name: format!("pid {}", external.pid),
-            mode: "access",
-            url: match external.local_port {
-                Some(port) => format!("localhost:{port}"),
-                None => "-".to_string(),
-            },
-            target: match &external.zone {
-                Some(zone) => format!("{}:{} ({zone})", external.target, external.remote_port),
-                None => format!("{}:{}", external.target, external.remote_port),
-            },
-            note: Some("  [not managed by gtunnel]".to_string()),
-        })
-        .collect()
+    discovered(&state).await.iter().map(external_row).collect()
+}
+
+async fn discovered(state: &TunnelState) -> Vec<crate::discovery::ExternalTunnel> {
+    crate::discovery::classify(&crate::discovery::snapshot(), state).await
+}
+
+fn external_row(external: &crate::discovery::ExternalTunnel) -> ListRow {
+    ListRow {
+        status: TunnelStatus::Running,
+        name: format!("pid {}", external.pid),
+        mode: "access",
+        url: match external.local_port {
+            Some(port) => format!("localhost:{port}"),
+            None => "-".to_string(),
+        },
+        target: match &external.zone {
+            Some(zone) => format!("{}:{} ({zone})", external.target, external.remote_port),
+            None => format!("{}:{}", external.target, external.remote_port),
+        },
+        note: Some("  [not managed by gtunnel]".to_string()),
+    }
 }
 
 pub async fn cmd_zones(account: Option<&str>, default: Option<&str>) -> Result<()> {
@@ -919,6 +1029,87 @@ mod tests {
             ttl_secs: None,
             pid_start: None,
         }
+    }
+
+    fn public_tunnel() -> PersistentTunnel {
+        PersistentTunnel {
+            name: "app".to_string(),
+            account_name: "dev".to_string(),
+            auto_start: false,
+            spec: TunnelSpec::Expose {
+                local_target: "localhost:8080".to_string(),
+                domain: "example.com".to_string(),
+                hostname: "app.example.com".to_string(),
+                relay_port: 9000,
+                private: false,
+            },
+        }
+    }
+
+    const NO_LOG: &str = "/nonexistent/gtunnel-test.log";
+
+    #[test]
+    fn a_running_tunnel_that_answered_the_probe_is_healthy() {
+        assert_eq!(health_word(true, Some(3), true, NO_LOG.as_ref()), "healthy");
+    }
+
+    #[test]
+    fn a_running_access_tunnel_without_an_answer_is_unhealthy() {
+        assert_eq!(health_word(true, None, true, NO_LOG.as_ref()), "unhealthy");
+    }
+
+    #[test]
+    fn a_fresh_credential_failure_in_the_log_makes_a_silent_tunnel_auth_expired() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("db.log");
+        std::fs::write(&log, "ERROR: Reauthentication required.\n").unwrap();
+        assert_eq!(health_word(true, None, true, &log), "auth_expired");
+    }
+
+    #[test]
+    fn a_stopped_tunnel_is_unknown_whatever_a_probe_said() {
+        assert_eq!(health_word(false, None, true, NO_LOG.as_ref()), "unknown");
+        assert_eq!(
+            health_word(false, Some(3), true, NO_LOG.as_ref()),
+            "unknown"
+        );
+    }
+
+    #[test]
+    fn a_running_public_tunnel_is_unknown_because_it_has_no_port_to_probe() {
+        assert_eq!(health_word(true, None, false, NO_LOG.as_ref()), "unknown");
+    }
+
+    #[test]
+    fn an_access_row_carries_its_local_port_and_starts_unknown() {
+        let run = live_run("scratch", "dev", 15999);
+        let row = ListRowJson::from_run(&run);
+        assert_eq!(row.local_port, Some(15999));
+        assert_eq!(row.health, "unknown");
+        assert!(row.run);
+    }
+
+    #[tokio::test]
+    async fn a_probe_task_that_fails_leaves_its_row_unknown_and_the_rest_filled() {
+        let mut rows = vec![
+            ListRowJson::from_run(&live_run("scratch", "dev", 15999)),
+            ListRowJson::from_run(&live_run("broken", "dev", 16000)),
+        ];
+        let mut set = tokio::task::JoinSet::new();
+        set.spawn(async { (0, "healthy") });
+        set.spawn(async { panic!("a probe task that dies") });
+        fill_health(&mut rows, set).await;
+        assert_eq!(rows[0].health, "healthy");
+        assert_eq!(rows[1].health, "unknown");
+    }
+
+    #[test]
+    fn a_public_row_serialises_local_port_as_null() {
+        let row = ListRowJson::declared(&public_tunnel(), TunnelStatus::Running);
+        let json = serde_json::to_value(&row).unwrap();
+        assert!(json["local_port"].is_null(), "{json}");
+        assert!(json.as_object().unwrap().contains_key("local_port"));
+        assert_eq!(json["health"], "unknown");
     }
 
     fn first_choice(name: &str) -> u16 {

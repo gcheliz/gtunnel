@@ -1,25 +1,24 @@
 use serde_json::{json, Value};
-use std::time::Duration;
 
 use super::protocol::{
     JsonRpcError, ResourceContent, ResourceDefinition, ResourceReadResult, ToolCallResult,
     ToolDefinition, INTERNAL_ERROR, INVALID_PARAMS,
 };
 use crate::commands::access::{
-    add_tunnel, delete_tunnel, restart_tunnel, start_tunnel, stop_by_name, AddRequest, Stopped,
+    add_tunnel, delete_tunnel, health_word, list_rows_json, probe_local, restart_tunnel,
+    start_tunnel, stop_by_name, AddRequest, Stopped,
 };
 use crate::commands::{find_tunnel, resolve};
 use crate::config::load_config;
 use crate::daemon;
 use crate::doctor::run_doctor;
-use crate::probe;
 use crate::state::{TunnelSpec, TunnelState, TunnelStatus};
 
 pub fn all_tools() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
             name: "gtunnel_list_tunnels".to_string(),
-            description: "List all configured tunnels and live short-lived runs (run: true, with expires_at when they have a TTL) and their statuses for the given or default account".to_string(),
+            description: "List all configured tunnels and live short-lived runs (run: true, with expires_at when they have a TTL) for the given or default account, each with its status, local_port (null on a public tunnel) and probed health (healthy, unhealthy, auth_expired or unknown)".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -302,25 +301,6 @@ fn not_found(state: &TunnelState, name: &str, account: &str) -> ToolCallResult {
     }
 }
 
-/// A probe that got no answer is named by the log: expired credentials are
-/// `auth_expired`, not just `unhealthy`. A crash loop needs restarts over
-/// time, which one call cannot see.
-fn health_word(
-    running: bool,
-    probe_latency_ms: Option<u128>,
-    access: bool,
-    log: &std::path::Path,
-) -> &'static str {
-    match (running, probe_latency_ms) {
-        (true, Some(_)) => "healthy",
-        (true, None) if access => match probe::failed_health(log) {
-            probe::HealthStatus::AuthExpired => "auth_expired",
-            _ => "unhealthy",
-        },
-        _ => "unknown",
-    }
-}
-
 /// The last `n` lines of `text`, oldest first.
 fn last_lines(text: &str, n: usize) -> String {
     let mut tail: Vec<&str> = text.lines().rev().take(n).collect();
@@ -335,16 +315,9 @@ async fn run_status(run: &crate::ephemeral::EphemeralRecord) -> ToolCallResult {
     let tunnel = run.as_tunnel();
     let log = super::run::run_log_path(&run.account_name, &run.name).unwrap_or_default();
     let (local_port, probe_latency_ms) = match &run.spec {
-        TunnelSpec::Access { local_port, .. } => (
-            Some(*local_port),
-            probe::probe_tunnel(
-                &format!("127.0.0.1:{local_port}"),
-                Duration::from_millis(500),
-                &log,
-            )
-            .await
-            .map(|d| d.as_millis()),
-        ),
+        TunnelSpec::Access { local_port, .. } => {
+            (Some(*local_port), probe_local(*local_port, &log).await)
+        }
         TunnelSpec::Expose { .. } => (None, None),
     };
     let health = health_word(
@@ -387,48 +360,14 @@ pub async fn execute_tool(
                 Ok(r) => r,
                 Err(fail) => return Ok(fail),
             };
-            let state = TunnelState::load()
+            // The rows `list --json` prints, less the unmanaged ones: an agent
+            // cannot start, stop or read the log of a process gtunnel does
+            // not own, so naming it would offer an action that fails
+            let rows = list_rows_json(&acct, false)
+                .await
                 .map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
-            let tunnels = state.tunnels_for_account(&acct.name);
-
-            let mut results = Vec::new();
-            for t in tunnels {
-                let label = daemon::platform_label(&t.account_name, &t.name);
-                let status = daemon::status(&label).await;
-                results.push(json!({
-                    "name": t.name,
-                    "account": t.account_name,
-                    "status": match status {
-                        TunnelStatus::Running => "running",
-                        TunnelStatus::Stopped => "stopped",
-                        TunnelStatus::Error => "error",
-                    },
-                    "mode": t.display_kind(),
-                    "url": t.display_url(),
-                    "target": t.display_target(),
-                    "auto_start": t.auto_start,
-                    "run": false,
-                }));
-            }
-            for run in crate::ephemeral::live_runs(&acct.name).unwrap_or_default() {
-                let t = run.as_tunnel();
-                let mut row = json!({
-                    "name": t.name,
-                    "account": t.account_name,
-                    "status": "running",
-                    "mode": t.display_kind(),
-                    "url": t.display_url(),
-                    "target": t.display_target(),
-                    "auto_start": false,
-                    "run": true,
-                });
-                if let Some(expires_at) = run.expires_at() {
-                    row["expires_at"] = json!(expires_at);
-                }
-                results.push(row);
-            }
             Ok(ToolCallResult::text(
-                serde_json::to_string_pretty(&results).unwrap_or_default(),
+                serde_json::to_string_pretty(&rows).unwrap_or_default(),
             ))
         }
         "gtunnel_start_tunnel" => {
@@ -492,14 +431,7 @@ pub async fn execute_tool(
             let probe_latency_ms = if status == TunnelStatus::Running {
                 if let TunnelSpec::Access { local_port, .. } = &t.spec {
                     // No log to read means a silent close is taken as an answer
-                    let log = t.log_path().unwrap_or_default();
-                    probe::probe_tunnel(
-                        &format!("127.0.0.1:{local_port}"),
-                        Duration::from_millis(500),
-                        &log,
-                    )
-                    .await
-                    .map(|d| d.as_millis())
+                    probe_local(*local_port, &t.log_path().unwrap_or_default()).await
                 } else {
                     None
                 }
