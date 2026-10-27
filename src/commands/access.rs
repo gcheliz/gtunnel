@@ -165,19 +165,7 @@ async fn save_tunnel(account: Option<&str>, req: &AddRequest<'_>) -> Result<Adde
     // The port choice reads the saved ports, so it belongs under the same lock
     // as the save; the gcloud checks above are outside it
     let tunnel = TunnelState::update(|state| {
-        let local_port = match local_port {
-            Some(port) => {
-                check_local_port(port, &state.used_local_ports(), local_port_is_free)?;
-                port
-            }
-            None => allocate_port(
-                name,
-                ACCESS_PORT_BASE,
-                ACCESS_PORT_SPAN,
-                &state.used_local_ports(),
-                local_port_is_free,
-            )?,
-        };
+        let local_port = pick_local_port(state, name, local_port)?;
 
         let tunnel = new_access_tunnel(name, &acct.name, access_target, remote_port, local_port);
         state.add(tunnel.clone())?;
@@ -192,6 +180,36 @@ async fn save_tunnel(account: Option<&str>, req: &AddRequest<'_>) -> Result<Adde
         display_target: tunnel.display_target(),
         started: None,
     })
+}
+
+/// Vets an explicit port or allocates one, against everything that holds a
+/// local port on this machine and is recorded: saved tunnels and the live runs
+/// of every account. Called under the `tunnels.lock` the save holds, so a run
+/// that claims a port is seen here and an `add` that claims one is seen by the
+/// run.
+fn pick_local_port(state: &TunnelState, name: &str, requested: Option<u16>) -> Result<u16> {
+    let runs = crate::ephemeral::live_run_local_ports()?;
+    let saved = state.used_local_ports();
+    let mut used = saved.clone();
+    used.extend(runs.keys().copied());
+    match requested {
+        Some(port) => {
+            // A saved tunnel is named first when both hold the port: it is the
+            // one `check_local_port` words, and the one a user can delete
+            if let Some(run) = runs.get(&port).filter(|_| !saved.contains(&port)) {
+                bail!("Local port {port} is already used by the run '{run}'");
+            }
+            check_local_port(port, &used, local_port_is_free)?;
+            Ok(port)
+        }
+        None => allocate_port(
+            name,
+            ACCESS_PORT_BASE,
+            ACCESS_PORT_SPAN,
+            &used,
+            local_port_is_free,
+        ),
+    }
 }
 
 /// The record is saved before the start is tried and stays when it fails, so a
@@ -883,6 +901,72 @@ mod new_tunnel_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A live run: this test process is the pid, so `is_alive` holds.
+    fn live_run(name: &str, account: &str, local_port: u16) -> crate::ephemeral::EphemeralRecord {
+        crate::ephemeral::EphemeralRecord {
+            name: name.to_string(),
+            account_name: account.to_string(),
+            pid: std::process::id(),
+            spec: TunnelSpec::Access {
+                target: AccessTarget::Instance {
+                    instance: "my-vm".to_string(),
+                    zone: "europe-west1-b".to_string(),
+                },
+                remote_port: 5432,
+                local_port,
+            },
+            started_at: 1_700_000_000,
+            ttl_secs: None,
+            pid_start: None,
+        }
+    }
+
+    fn first_choice(name: &str) -> u16 {
+        allocate_port(
+            name,
+            ACCESS_PORT_BASE,
+            ACCESS_PORT_SPAN,
+            &Default::default(),
+            local_port_is_free,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn an_explicit_port_a_live_run_of_another_account_holds_is_refused() {
+        let _temp = crate::config::testing::TempConfigDir::new();
+        let port = first_choice("db");
+        live_run("scratch", "prod", port).save().unwrap();
+        let err = pick_local_port(&TunnelState::default(), "db", Some(port)).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!("Local port {port} is already used by the run 'scratch'")
+        );
+    }
+
+    #[test]
+    fn the_automatic_port_skips_one_a_live_run_holds() {
+        let _temp = crate::config::testing::TempConfigDir::new();
+        let wanted = first_choice("db");
+        live_run("scratch", "dev", wanted).save().unwrap();
+        let got = pick_local_port(&TunnelState::default(), "db", None).unwrap();
+        assert_ne!(got, wanted);
+        assert!((ACCESS_PORT_BASE..ACCESS_PORT_BASE + ACCESS_PORT_SPAN).contains(&got));
+    }
+
+    #[test]
+    fn a_dead_run_record_does_not_hold_its_port() {
+        let _temp = crate::config::testing::TempConfigDir::new();
+        let port = first_choice("db");
+        let mut dead = live_run("gone", "dev", port);
+        dead.pid = 999_999;
+        dead.save().unwrap();
+        assert_eq!(
+            pick_local_port(&TunnelState::default(), "db", Some(port)).unwrap(),
+            port
+        );
+    }
 
     #[tokio::test]
     async fn wait_ready_returns_as_soon_as_the_ready_file_appears() {

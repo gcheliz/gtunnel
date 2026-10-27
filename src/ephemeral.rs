@@ -310,6 +310,20 @@ fn run_local_ports() -> Result<std::collections::HashSet<u16>> {
     Ok(used)
 }
 
+/// The local ports held by runs whose process is still there, with the run's
+/// name for the message. `add` reads this and not `run_local_ports`: a dead
+/// record holds nothing a bind probe cannot see, and refusing a port for a
+/// crashed run's leftover would name a run that is not running.
+pub fn live_run_local_ports() -> Result<std::collections::HashMap<u16, String>> {
+    let mut used = std::collections::HashMap::new();
+    for (record, alive) in list_ephemeral()? {
+        if let (true, TunnelSpec::Access { local_port, .. }) = (alive, &record.spec) {
+            used.insert(*local_port, record.name.clone());
+        }
+    }
+    Ok(used)
+}
+
 /// The refusal both `gtunnel run` and the MCP launch give. A second run of a
 /// name would overwrite the first one's record file, leaving a process nothing
 /// can see or stop, and the first to exit would delete the other's record; a
