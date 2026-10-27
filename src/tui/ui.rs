@@ -2855,6 +2855,23 @@ fn render_confirm(f: &mut Frame, message: &str) {
 
 const PROMPT_HINT: &str = "Enter to continue, Esc to cancel";
 
+/// How wide a description may make a dialog before it wraps instead: wide
+/// enough that most fit on one or two rows, narrow enough that the dialog
+/// stays a dialog on an 80-column terminal.
+const DESCRIPTION_WIDTH: usize = 60;
+
+/// The list rows a picker keeps before it gives any to a description.
+const PICKER_ROWS_KEPT: usize = 3;
+
+/// A form's title with the step its field is, `New account 1/2`; a title
+/// alone for a dialog that is not one step of a form.
+fn step_title(title: &str, mode: InputMode, app: &App) -> String {
+    match mode.step(app.draft.mode) {
+        Some((n, of)) => format!("{title} {n}/{of}"),
+        None => title.to_string(),
+    }
+}
+
 fn render_prompt(f: &mut Frame, app: &App, mode: InputMode) {
     let title = match app.draft.mode {
         TunnelMode::Access => "New access tunnel",
@@ -2868,12 +2885,20 @@ fn render_prompt(f: &mut Frame, app: &App, mode: InputMode) {
         InputMode::AccountProject | InputMode::AccountZone => "Edit account",
         _ => title,
     };
-    let prompt = mode.prompt();
+    let title = step_title(title, mode, app);
+    let (prompt, description) = match mode {
+        InputMode::EditTarget if app.edit_is_expose => {
+            ("Local target:", InputMode::AddLocalTarget.describe())
+        }
+        _ => (mode.prompt(), mode.describe()),
+    };
     let widest = cells(prompt)
         .max(cells(&app.input) + 3)
-        .max(cells(PROMPT_HINT) + 2);
-    render_dialog(f, title, dialog_width(widest, title), |width, rows| {
+        .max(cells(PROMPT_HINT) + 2)
+        .max(cells(description).min(DESCRIPTION_WIDTH));
+    render_dialog(f, &title, dialog_width(widest, &title), |width, rows| {
         let ask = wrapped_indent(prompt, 0, width, Style::default().fg(theme::WARN));
+        let told = wrapped_indent(description, 0, width, Style::default().fg(theme::MUTED));
         let mut field = vec![input_row(&app.input, width)];
         if let Some(error) = &app.draft_error {
             field.extend(wrapped_indent(
@@ -2885,9 +2910,11 @@ fn render_prompt(f: &mut Frame, app: &App, mode: InputMode) {
         }
         let hint = wrapped_indent(PROMPT_HINT, 2, width, Style::default().fg(theme::MUTED));
         // What goes first when the terminal is short: the blank rows, then the
-        // hint, then the end of a prompt that wraps. The field is never shed,
-        // since the keys a user types must land somewhere they can see.
-        stacked(&[ask.clone(), field.clone(), hint], rows)
+        // description, then the hint, then the end of a prompt that wraps. The
+        // field is never shed, since the keys a user types must land somewhere
+        // they can see.
+        stacked(&[ask.clone(), told, field.clone(), hint.clone()], rows)
+            .or_else(|| stacked(&[ask.clone(), field.clone(), hint], rows))
             .or_else(|| stacked(&[ask.clone(), field.clone()], rows))
             .unwrap_or_else(|| {
                 let mut lines: Vec<Line<'static>> =
@@ -2912,6 +2939,8 @@ fn picker_row(row: &str, selected: bool) -> Line<'static> {
 struct Picker<'a> {
     title: &'a str,
     prompt: &'a str,
+    // What the choice is for, under the prompt; empty for none
+    description: &'a str,
     filter: &'a str,
     rows: Vec<String>,
     selected: usize,
@@ -2928,6 +2957,7 @@ fn render_picker(f: &mut Frame, p: Picker) {
     let Picker {
         title,
         prompt,
+        description,
         filter,
         rows,
         selected,
@@ -2939,8 +2969,9 @@ fn render_picker(f: &mut Frame, p: Picker) {
     } else {
         String::new()
     };
-    let widest =
-        (cells(prompt) + cells(&counter)).max(rows.iter().map(|r| cells(r) + 2).max().unwrap_or(0));
+    let widest = (cells(prompt) + cells(&counter))
+        .max(rows.iter().map(|r| cells(r) + 2).max().unwrap_or(0))
+        .max(cells(description).min(DESCRIPTION_WIDTH));
     render_dialog(f, title, dialog_width(widest, title), |width, room| {
         let mut ask = wrapped_indent(prompt, 0, width, Style::default().fg(theme::WARN));
         // The counter rides on the prompt's last row, or takes one of its own
@@ -2959,6 +2990,13 @@ fn render_picker(f: &mut Frame, p: Picker) {
         let asked = ask.len().min(budget);
         budget -= asked;
         head.extend(ask.into_iter().take(asked));
+        // Shown only with room for a few rows of the list besides, which
+        // keeps its first claim on the frame
+        let told = wrapped_indent(description, 0, width, muted);
+        if !description.is_empty() && budget >= told.len() + PICKER_ROWS_KEPT {
+            budget -= told.len();
+            head.extend(told);
+        }
         if keep_filter {
             head.push(input_row(filter, width));
             if let Some(error) = error {
@@ -2999,8 +3037,9 @@ fn render_instance_picker(f: &mut Frame, app: &App) {
     render_picker(
         f,
         Picker {
-            title: "Instance",
+            title: &step_title("New access tunnel", InputMode::AddInstance, app),
             prompt: InputMode::AddInstance.prompt(),
+            description: InputMode::AddInstance.describe(),
             filter: &app.input,
             rows,
             selected: app.instance_selected,
@@ -3022,8 +3061,9 @@ fn render_project_picker(f: &mut Frame, app: &App) {
     render_picker(
         f,
         Picker {
-            title: "Edit account",
+            title: &step_title("Edit account", InputMode::AccountProjectPick, app),
             prompt: InputMode::AccountProjectPick.prompt(),
+            description: InputMode::AccountProjectPick.describe(),
             filter: &app.input,
             rows,
             selected: app.project_selected,
@@ -3041,6 +3081,7 @@ fn render_account_picker(f: &mut Frame, app: &App) {
         Picker {
             title: "Move",
             prompt: InputMode::MoveTo.prompt(),
+            description: "",
             filter: "",
             rows: app.other_accounts(),
             selected: app.move_selected,
@@ -3053,8 +3094,9 @@ fn render_domain_picker(f: &mut Frame, app: &App) {
     render_picker(
         f,
         Picker {
-            title: "Domain",
+            title: &step_title("New public URL", InputMode::AddDomain, app),
             prompt: InputMode::AddDomain.prompt(),
+            description: InputMode::AddDomain.describe(),
             filter: "",
             rows: app.domains.clone(),
             selected: app.domain_selected,

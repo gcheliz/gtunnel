@@ -374,11 +374,75 @@ impl InputMode {
             InputMode::AddLocalPort => "Local port (Enter keeps the suggestion):",
             InputMode::AddLocalTarget => "Local target (e.g. localhost:3000):",
             InputMode::AddDomain => "Domain:",
-            InputMode::EditTarget => "New value:",
+            InputMode::EditTarget => "Ports (remote:local):",
             InputMode::RenameTo => "New name:",
             InputMode::MoveTo => "Move it to which account:",
             InputMode::MoveRename => "New name on the destination account:",
             _ => "",
+        }
+    }
+
+    /// One line under the prompt saying what the value is for and what shape
+    /// it takes. A form is used rarely, so its reader cannot be expected to
+    /// know what a bare label means. `EditTarget` describes an Access tunnel;
+    /// the dialog swaps in the Expose wording for an Expose one.
+    pub fn describe(&self) -> &'static str {
+        match self {
+            InputMode::AccountConfiguration => {
+                "The gcloud configuration whose login, project and zone this account uses. \
+                 List them: `gcloud config configurations list`"
+            }
+            InputMode::AccountName => {
+                "What you pass to `--account`. Lower case, digits and dashes, e.g. `dev`"
+            }
+            InputMode::AccountProject | InputMode::AccountProjectPick => {
+                "The GCP project every tunnel and API call of this account targets"
+            }
+            InputMode::AccountZone => "Used when a tunnel names an instance without a zone",
+            InputMode::AddName => {
+                "What it connects to, never the account: `postgres`, `k8s`. \
+                 Up to 40 of a-z 0-9 -"
+            }
+            InputMode::AddInstance => {
+                "The VM IAP connects to. Its port, or a host behind it, becomes local"
+            }
+            InputMode::AddJumpHost => {
+                "A host the VM can reach, tunnelled through it over ssh. Empty: the VM itself"
+            }
+            InputMode::AddRemotePort => "The port on that VM or host",
+            InputMode::AddLocalPort => {
+                "The port on localhost you connect to. The suggestion is derived from the name"
+            }
+            InputMode::AddDomain => {
+                "A domain registered with `gtunnel domains add`; the URL is `<name>.<domain>`"
+            }
+            InputMode::AddLocalTarget => "The service on this machine to publish",
+            InputMode::EditTarget => {
+                "The port on the VM or host, then the localhost port, e.g. 5432:15432"
+            }
+            _ => "",
+        }
+    }
+
+    /// Where this field sits in its form, for the dialog's title. The add
+    /// form's length depends on the mode: an Access tunnel asks five things,
+    /// a public URL three.
+    pub fn step(&self, mode: TunnelMode) -> Option<(u8, u8)> {
+        let access = mode == TunnelMode::Access;
+        match self {
+            InputMode::AccountConfiguration => Some((1, 2)),
+            InputMode::AccountName => Some((2, 2)),
+            InputMode::AccountProject | InputMode::AccountProjectPick => Some((1, 2)),
+            InputMode::AccountZone => Some((2, 2)),
+            InputMode::AddName if access => Some((1, 5)),
+            InputMode::AddInstance => Some((2, 5)),
+            InputMode::AddJumpHost => Some((3, 5)),
+            InputMode::AddRemotePort => Some((4, 5)),
+            InputMode::AddLocalPort => Some((5, 5)),
+            InputMode::AddName => Some((1, 3)),
+            InputMode::AddLocalTarget => Some((2, 3)),
+            InputMode::AddDomain => Some((3, 3)),
+            _ => None,
         }
     }
 }
@@ -674,6 +738,9 @@ pub struct App {
     pub want_instances: bool,
     // Set when the edit dialog reaches the project, so the loop fetches the list
     pub want_projects: bool,
+    // Which wording the edit dialog uses: an Expose tunnel edits its local
+    // target, an Access one its `remote:local` ports
+    pub edit_is_expose: bool,
     // Set by `r`, cleared once the event loop has rescheduled every timer
     pub force_refresh: bool,
     // When the one extra discovery round owed after a reload falls due
@@ -754,6 +821,7 @@ impl App {
             has_relay: false,
             want_instances: false,
             want_projects: false,
+            edit_is_expose: false,
             force_refresh: false,
             follow_up_at: None,
             health_stale: false,
@@ -1801,6 +1869,7 @@ impl App {
         let Some(entry) = self.selected_entry() else {
             return;
         };
+        let is_expose = matches!(entry.tunnel.spec, TunnelSpec::Expose { .. });
         self.input = match &entry.tunnel.spec {
             TunnelSpec::Access {
                 remote_port,
@@ -1809,6 +1878,7 @@ impl App {
             } => format!("{remote_port}:{local_port}"),
             TunnelSpec::Expose { local_target, .. } => local_target.clone(),
         };
+        self.edit_is_expose = is_expose;
         self.input_mode = InputMode::EditTarget;
     }
 

@@ -1640,3 +1640,78 @@ fn a_two_millisecond_tunnel_still_draws_a_chart() {
     assert_eq!(top, 10_000);
     assert!(drawn.iter().max() > drawn.iter().min());
 }
+
+#[test]
+fn every_form_field_has_a_description() {
+    for mode in [
+        InputMode::AccountConfiguration,
+        InputMode::AccountName,
+        InputMode::AccountProject,
+        InputMode::AccountProjectPick,
+        InputMode::AccountZone,
+        InputMode::AddName,
+        InputMode::AddInstance,
+        InputMode::AddJumpHost,
+        InputMode::AddRemotePort,
+        InputMode::AddLocalPort,
+        InputMode::AddLocalTarget,
+        InputMode::AddDomain,
+        InputMode::EditTarget,
+    ] {
+        assert!(!mode.describe().is_empty(), "{mode:?} has no description");
+    }
+}
+
+#[test]
+fn the_add_form_counts_its_steps_per_mode() {
+    assert_eq!(InputMode::AddName.step(TunnelMode::Access), Some((1, 5)));
+    assert_eq!(
+        InputMode::AddLocalPort.step(TunnelMode::Access),
+        Some((5, 5))
+    );
+    assert_eq!(InputMode::AddName.step(TunnelMode::Public), Some((1, 3)));
+    assert_eq!(InputMode::AddDomain.step(TunnelMode::Public), Some((3, 3)));
+    assert_eq!(InputMode::RenameTo.step(TunnelMode::Access), None);
+}
+
+#[test]
+fn the_name_prompt_shows_its_step_and_what_a_name_is() {
+    let app = at_the_name_prompt();
+    let text = rows_text(&screen(&app, 100, 30));
+    assert!(text.contains("New access tunnel 1/5"), "{text}");
+    assert!(text.contains("never the account"), "{text}");
+}
+
+#[test]
+fn a_short_terminal_sheds_the_description_before_the_field() {
+    let mut app = at_the_name_prompt();
+    keys(&mut app, "zz");
+    let text = rows_text(&screen(&app, 80, 7));
+    assert!(text.contains("zz"), "the field is gone:\n{text}");
+    assert!(!text.contains("never the account"), "{text}");
+}
+
+#[test]
+fn the_edit_dialog_names_the_value_it_edits() {
+    let mut app = app_with_two();
+    keys(&mut app, "e1");
+    let text = rows_text(&screen(&app, 100, 30));
+    assert!(text.contains("Ports (remote:local):"), "{text}");
+
+    let mut app = app_with_two();
+    keys(&mut app, "\u{2193}e1");
+    let text = rows_text(&screen(&app, 100, 30));
+    assert!(text.contains("Local target:"), "{text}");
+    assert!(!text.contains("Ports (remote:local)"), "{text}");
+}
+
+fn rows_text(buffer: &ratatui::buffer::Buffer) -> String {
+    (0..buffer.area.height)
+        .map(|y| {
+            (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}

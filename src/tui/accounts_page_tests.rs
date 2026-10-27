@@ -271,3 +271,12 @@ async fn deleting_an_account_with_tunnels_says_why_it_cannot() {
     let config = crate::config::load_config().expect("loads");
     assert!(config.get_account(Some("dev")).is_ok(), "the account stays");
 }
+
+#[test]
+fn the_account_form_title_counts_its_steps_and_says_what_a_configuration_is() {
+    let mut app = page_app();
+    app.handle_key(key(KeyCode::Char('a')));
+    let page = rows(&app, 100, 30).join("\n");
+    assert!(page.contains("New account 1/2"), "{page}");
+    assert!(page.contains("gcloud config configurations list"), "{page}");
+}

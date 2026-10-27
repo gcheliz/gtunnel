@@ -2931,7 +2931,7 @@ fn dialog_cases() -> Vec<(&'static str, App, Vec<&'static str>)> {
         prompt(
             InputMode::EditTarget,
             "10.0.0.10:443",
-            vec!["New value:", "10.0.0.10:443_", hint],
+            vec!["Ports (remote:local):", "10.0.0.10:443_", hint],
         ),
     );
     let mut app = base();
