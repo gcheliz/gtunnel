@@ -6,7 +6,7 @@
 # Each call starts `gtunnel mcp`, performs the initialize handshake, sends one
 # request and prints the server's answer through jq. Nothing is rewritten.
 agent() {
-  init='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"agent","version":"0"}}}'
+  init='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"agent","version":"0"}}}'
   ready='{"jsonrpc":"2.0","method":"notifications/initialized"}'
   if [ "$1" = tools ]; then
     printf '%s\n%s\n%s\n' "$init" "$ready" \
