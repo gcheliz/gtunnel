@@ -53,6 +53,7 @@ Each entry in `accounts`:
 | `project` | string | yes | The GCP project every API call targets. Picked or typed: `init` and the TUI's edit dialog list the projects the account can see and accept a typed id as well, with the gcloud configuration's project as the default |
 | `default_zone` | string | yes | The zone assumed when `add` is given an instance and no `--zone`. Typed |
 | `impersonate_service_account` | string | no | A service account to impersonate; omitted entirely when unset. The logged-in user needs `roles/iam.serviceAccountTokenCreator` on it |
+| `credential_file` | string | no | Absolute path of a service-account key or a workload identity federation file. gtunnel passes it to gcloud on every call as `--credential-file-override=<path>` and never reads, copies or stores it. Omitted entirely when unset; a relative path or `~` stops the config from loading. See [Running in CI](usage.md#running-in-ci) |
 | `expose` | table | no | The account's relay, written by `relay up` and removed by `relay down` |
 
 `expose`, when present:

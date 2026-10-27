@@ -250,6 +250,91 @@ These two choices combine with either mode.
 | Lifetime | Persistent: recorded in `tunnels.toml`, run as a supervised service. Ephemeral: nothing recorded, Ctrl+C or `--ttl` ends it | `add` and `expose`, or [`run`](commands.md#run) |
 | Visibility, Expose only | Public, or gated: `--private` puts IAP sign-in in front of the URL | `expose --private`, or `run --public` for an ephemeral Expose |
 
+## Running in CI
+
+A CI step runs gtunnel with no terminal and no person to log in. It needs a Google identity
+that is already there, and it needs no service manager: [`gtunnel run`](commands.md#run) is a
+foreground process that tears its tunnel down when it exits.
+
+| Where the step runs | Identity to use | Key to keep |
+|---|---|---|
+| Cloud Build, a GCE or GKE runner | The service account attached to the runner. gcloud reads it from the metadata server | none |
+| Another CI or a shared host | A workload identity federation file named by `credential_file` | none: the file holds no secret |
+| Anything else | A service-account key named by `credential_file` | the key itself |
+
+Google advises against service-account keys, and organisations created on or after
+2024-05-03 block creating them by default (Google Cloud, "Best practices for managing
+service account keys" and the `iam.disableServiceAccountKeyCreation` organisation policy).
+Reach for a key last.
+
+### What the identity needs
+
+| Need | Value | Where it is set |
+|---|---|---|
+| Role | `roles/iap.tunnelResourceAccessor` on the project or the instance | [IAM](troubleshooting.md#iam) |
+| Firewall | Ingress from `35.235.240.0/20` to the target port | [IAP firewall](troubleshooting.md#iap-firewall) |
+
+### Declare the account from flags
+
+On a runner there is no gcloud configuration to read a project from. Pass the project and the
+zone, and gtunnel builds the account with no gcloud call. `GTUNNEL_CONFIG_DIR` keeps the
+runner's files in a directory of its own.
+
+```
+$ export GTUNNEL_CONFIG_DIR=/workspace/gtunnel
+$ gtunnel account add ci --configuration ci --project example-dev-1a2b --zone europe-west1-b
+Account 'ci' saved to /workspace/gtunnel
+```
+
+The name after `--configuration` need not exist: gcloud accepts a configuration it has not
+seen (checked with gcloud 590, `gcloud --configuration=ci config list` exits 0).
+
+### Name a credential file
+
+Outside GCP, point the account at the file. gtunnel stores the path and passes it to gcloud on
+every call as `--credential-file-override=<path>`; it never reads, copies or stores the
+file ([decision 1](decisions.md#1-gtunnel-stores-no-credential)).
+
+```
+$ gtunnel account add ci --configuration ci --project example-dev-1a2b \
+    --zone europe-west1-b --credential-file /secrets/ci-key.json
+```
+
+| Rule | Why |
+|---|---|
+| The path is absolute | A service runs from another directory with no shell, so `~` and a relative path resolve against nothing. `gtunnel` refuses both |
+| The path may hold spaces | It travels as one argument, never through a shell |
+| The account never opens a browser login | A login would sign in a person, not the key. A failed token names the file instead |
+| `impersonate_service_account` still applies | The file's identity impersonates it, as the logged-in user would |
+
+`gtunnel doctor` checks the file before it asks for a token and names what is wrong: it does
+not exist, is not JSON, has a `type` other than `service_account` or `external_account`, or is
+a key readable by group or others. It reads the `type` field and the mode, nothing else.
+
+### A Cloud Build step
+
+The step runs a tunnel in the background for the length of the job and stops it with `--ttl`
+when the job overruns. `bastion` and `10.0.0.10` are placeholders.
+
+```
+steps:
+  - name: gcr.io/google.com/cloudsdktool/google-cloud-cli
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        export GTUNNEL_CONFIG_DIR=/workspace/gtunnel
+        gtunnel account add ci --configuration ci \
+          --project example-dev-1a2b --zone europe-west1-b
+        gtunnel --account ci run db bastion:5432 --local-port 15432 --ttl 20m &
+        for i in $(seq 30); do nc -z localhost 15432 && break; sleep 2; done
+        psql -h localhost -p 15432 -c 'select 1'
+```
+
+The step needs the `gtunnel` binary on its `PATH`; [Getting set up](#getting-set-up) installs
+it. A tunnel through a VM, or one connection per query, behaves differently under load: read
+[Limits](architecture.md#limits) before pointing a connection pool at one.
+
 ## Command map
 
 | Command | Purpose | Touches GCP |

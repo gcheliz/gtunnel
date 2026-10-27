@@ -478,14 +478,41 @@ $ gtunnel account list
 `account select <name>` sets the default. The star marks it.
 
 ```
-gtunnel account add <name> --configuration <gcloud-configuration>
-gtunnel account edit <name> [--project P] [--zone Z]
+gtunnel account add <name> --configuration <gcloud-configuration> [--project P] [--zone Z] [--credential-file PATH]
+gtunnel account edit <name> [--project P] [--zone Z] [--credential-file PATH]
 gtunnel account remove <name>
 ```
 
 `add` reads the project and default zone from an existing gcloud configuration, so an account
-is never a second place to type what gcloud already knows. An account name is 1-16 characters
-of `a-z`, `0-9` and `-`, starting with a letter:
+is never a second place to type what gcloud already knows. Given `--project`, it reads
+nothing: the account is built from the flags, and the configuration name need not exist. That
+is the form for a CI runner ([Running in CI](usage.md#running-in-ci)).
+
+```
+$ gtunnel account add ci --configuration ci --project example-dev-1a2b --zone europe-west1-b --credential-file /secrets/ci-key.json
+Account 'ci' saved to /workspace/gtunnel
+$ cat /workspace/gtunnel/config.toml
+selected_account = "ci"
+log_level = "info"
+
+[[accounts]]
+name = "ci"
+gcloud_configuration = "ci"
+project = "example-dev-1a2b"
+default_zone = "europe-west1-b"
+credential_file = "/secrets/ci-key.json"
+```
+
+`--credential-file` takes an absolute path to a service-account key or a workload identity
+federation file; a relative path is refused, and on `edit` an empty value (`--credential-file ""`)
+clears it. With a file set, a missing token is named after the file, never `gcloud auth login`:
+
+```
+$ gtunnel --account ci run bastion:22 --ttl 2m
+Error: gtunnel could not get a token for 'ci'. The credential file /secrets/ci-key.json gave no token. Check that it exists, is a service-account key or a workload identity federation file, and that its identity is not disabled
+```
+
+An account name is 1-16 characters of `a-z`, `0-9` and `-`, starting with a letter:
 
 | Name | Allowed | Why |
 |---|---|---|

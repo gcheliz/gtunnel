@@ -102,6 +102,7 @@ gtunnel expose web 3000 -s                   # https://web.example.com -> localh
 | Understand Access, Expose and the target kinds | [Concepts](docs/usage.md#concepts) |
 | Find a command, its flags and its output | [docs/commands.md](docs/commands.md) |
 | Name a tunnel | [Naming a tunnel](docs/commands.md#naming-a-tunnel) |
+| Run gtunnel in CI | [Running in CI](docs/usage.md#running-in-ci) |
 | Use the TUI | [The TUI](docs/usage.md#the-tui) |
 | Connect an AI agent | [MCP and agent integration](docs/usage.md#model-context-protocol-mcp-and-ai-agent-integration) |
 | Edit `config.toml` or `tunnels.toml` | [docs/configuration.md](docs/configuration.md) |
