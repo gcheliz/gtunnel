@@ -60,7 +60,7 @@ code { color: var(--text); }
 .nav { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
 .nav a { display: inline-flex; align-items: center; min-height: 44px; padding: 0 12px; color: var(--muted); text-decoration: none; font-size: 15px; }
 .nav a:hover { color: var(--text); }
-.nav a.github { margin-left: 8px; padding: 0 16px; gap: 8px; border-radius: 8px; background: var(--text); color: var(--ground); font-weight: 600; }
+.nav a.github { padding: 0 16px; gap: 8px; border-radius: 8px; background: var(--text); color: var(--ground); font-weight: 600; }
 .nav a.github:hover { background: #fff; color: var(--ground); }
 
 /* two-column rows: text 5fr, media 7fr; .flip swaps the sides on wide screens */
@@ -100,6 +100,10 @@ code { color: var(--text); }
 .frame .bar2 i { width: 10px; height: 10px; border-radius: 50%; background: var(--line-strong); }
 .frame .bar2 span { margin-left: 8px; font-family: var(--mono); font-size: 12px; color: var(--dim); }
 .frame img { display: block; width: 100%; height: auto; }
+/* a media frame that matches the height of its text column; the image fills it from the top left */
+.fill { align-items: stretch; }
+.fill .frame { display: flex; flex-direction: column; }
+.fill .frame img { flex: 1; min-height: 0; height: 100%; object-fit: cover; object-position: left top; }
 
 /* numbers strip */
 .numbers { margin-top: 0; border-top: 1px solid var(--line-soft); border-bottom: 1px solid var(--line-soft); background: var(--surface); }
@@ -111,24 +115,32 @@ code { color: var(--text); }
 .numbers .label, .figures .label { font-size: 14px; color: var(--muted); }
 
 /* CLI */
-.modes { margin: 0; border-top: 1px solid var(--line); }
-.modes div { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 16px; align-items: center; padding: 14px 0; border-bottom: 1px solid var(--line); }
-.modes dt { font-family: var(--mono); font-size: 12px; letter-spacing: 1px; }
-.modes dd { margin: 0; min-width: 0; overflow-x: auto; white-space: nowrap; font-family: var(--mono); font-size: 14px; }
+.modes { margin: 0; display: flex; flex-direction: column; gap: 14px; }
+.modes div { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 10px; align-items: stretch; }
+.modes dt { grid-column: 1 / -1; font-family: var(--mono); font-size: 12px; letter-spacing: 1px; }
+.modes dd { margin: 0; min-width: 0; display: flex; align-items: center; padding: 10px 14px; background: var(--raised); border: 1px solid var(--line); border-radius: 10px; overflow-wrap: anywhere; font-family: var(--mono); font-size: 14px; }
+.modes dd::before { content: "$"; margin-right: 10px; color: var(--cyan); }
 
 /* MCP band */
 .band { margin-top: 72px; background: var(--surface); border-top: 1px solid var(--line-soft); border-bottom: 1px solid var(--line-soft); }
 .band .wrap { padding-top: 56px; padding-bottom: 56px; display: flex; flex-direction: column; gap: 40px; }
-.band .row { align-items: start; }
+.band .row { align-items: stretch; }
+.band .code { display: flex; flex-direction: column; justify-content: center; }
 .figures { display: flex; gap: 32px; padding-top: 8px; }
 .figures > div { display: flex; flex-direction: column; gap: 2px; }
 .figures .rule { width: 1px; background: var(--line); }
 .pairs { border-top: 1px solid var(--line); }
-.pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px 32px; align-items: center; padding: 14px 0; border-bottom: 1px solid var(--line); }
+.pair { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 8px 40px; align-items: center; padding: 14px 0; border-bottom: 1px solid var(--line); }
 .pair q { font-size: 17px; font-weight: 500; }
 .pair code { font-size: 13px; color: var(--blue); overflow-wrap: anywhere; }
 
 /* code panels */
+.snippet { position: relative; min-width: 0; display: flex; }
+.snippet > .code { flex: 1; min-width: 0; padding-right: 96px; }
+.copy-sm { display: none; align-items: center; justify-content: center; min-width: 72px; min-height: 44px; padding: 0 14px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--raised); color: var(--muted); font-family: var(--sans); font-weight: 600; font-size: 13px; cursor: pointer; }
+.copy-sm:hover { color: var(--text); border-color: var(--dim); }
+.js .copy-sm { display: inline-flex; }
+.snippet .copy-sm { position: absolute; top: 12px; right: 12px; }
 .code { margin: 0; min-width: 0; overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; padding: 24px; font-size: 14px; line-height: 1.8; color: var(--text); background: var(--surface); }
 .band .code { background: var(--ground); }
 .code .c { color: var(--dim); }
@@ -159,6 +171,7 @@ footer a:hover { color: var(--text); }
 
 @media (max-width: 960px) {
   .row { grid-template-columns: minmax(0, 1fr); gap: 32px; }
+  .fill .frame img { flex: none; height: auto; }
   .section { padding-top: clamp(56px, 10vw, 72px); }
   .band { margin-top: clamp(56px, 10vw, 72px); }
   .three { grid-template-columns: minmax(0, 1fr); gap: 32px; }
@@ -169,7 +182,6 @@ footer a:hover { color: var(--text); }
 @media (max-width: 520px) {
   .numbers .wrap { grid-template-columns: minmax(0, 1fr); }
   .actions .button { flex: 1 1 100%; justify-content: center; }
-  .modes div { grid-template-columns: minmax(0, 1fr); gap: 4px; }
   .code { padding: 18px; }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -181,11 +193,7 @@ footer a:hover { color: var(--text); }
 
 <header class="wrap bar">
 <a class="brand" href="#top" aria-label="gtunnel home"><img src="logo.svg" alt="gtunnel" width="588" height="246"></a>
-<nav class="nav" aria-label="Sections">
-<a href="#tui">TUI</a>
-<a href="#cli">CLI</a>
-<a href="#mcp">MCP</a>
-<a href="#start">Start</a>
+<nav class="nav" aria-label="Project">
 <a class="github" href="https://github.com/gcheliz/gtunnel">
 <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.1 8.3 22 9.3 17 14.1 18.2 21 12 17.8 5.8 21 7 14.1 2 9.3 8.9 8.3 12 2"></polygon></svg>
 GitHub</a>
@@ -234,15 +242,15 @@ GitHub</a>
 </div>
 </section>
 
-<section class="wrap section row flip" id="cli" aria-labelledby="cli-title">
+<section class="wrap section row flip fill" id="cli" aria-labelledby="cli-title">
 <div class="col">
 <span class="kicker c-amber">CLI</span>
 <h2 class="h2" id="cli-title">One command per <span class="c-amber">tunnel.</span></h2>
 <p class="body">Declare it, share it, or run it on the fly. Ctrl+C or a TTL closes it.</p>
 <dl class="modes">
-<div><dt class="c-blue">ACCESS</dt><dd>gtunnel add db my-vm:5432 -s</dd></div>
-<div><dt class="c-green">PUBLIC</dt><dd>gtunnel expose web 3000 -s</dd></div>
-<div><dt class="c-amber">ON THE FLY</dt><dd>gtunnel run my-vm:5432 --ttl 30m</dd></div>
+<div><dt class="c-blue">ACCESS</dt><dd>gtunnel add db my-vm:5432 -s</dd><button type="button" class="copy-sm" data-copy-for="gtunnel add db my-vm:5432 -s">Copy</button></div>
+<div><dt class="c-green">PUBLIC</dt><dd>gtunnel expose web 3000 -s</dd><button type="button" class="copy-sm" data-copy-for="gtunnel expose web 3000 -s">Copy</button></div>
+<div><dt class="c-amber">ON THE FLY</dt><dd>gtunnel run my-vm:5432 --ttl 30m</dd><button type="button" class="copy-sm" data-copy-for="gtunnel run my-vm:5432 --ttl 30m">Copy</button></div>
 </dl>
 <p class="body">Public mode needs a relay once per account: <code>gtunnel relay up --managed-zone my-dns-zone</code>.</p>
 </div>
@@ -265,7 +273,8 @@ GitHub</a>
 <div><span class="big c-blue">2</span><span class="label">live resources</span></div>
 </div>
 </div>
-<pre class="code"><span class="c"># .mcp.json</span>
+<div class="snippet">
+<pre class="code"><code><span class="c"># .mcp.json</span>
 {
   "mcpServers": {
     "gtunnel": {
@@ -273,7 +282,9 @@ GitHub</a>
       "args": [<span class="s">"mcp"</span>]
     }
   }
-}</pre>
+}</code></pre>
+<button type="button" class="copy-sm" data-copy-for="the MCP configuration">Copy</button>
+</div>
 </div>
 <div class="pairs">
 <div class="pair"><q>Why is the db tunnel failing?</q><code>→ gtunnel_get_status · gtunnel_get_logs · gtunnel_doctor</code></div>
@@ -288,6 +299,7 @@ GitHub</a>
 <h2 class="h2" id="start-title">Install, check, <span class="c-cyan">connect.</span></h2>
 <p class="body">Needs the Google Cloud SDK.</p>
 </div>
+<div class="snippet">
 <pre class="code start"><span class="c"># 1 · install</span>
 <span class="prompt">$</span> cargo install --git https://github.com/gcheliz/gtunnel
 
@@ -298,6 +310,8 @@ GitHub</a>
 <span class="c"># 3 · connect</span>
 <span class="prompt">$</span> gtunnel add db my-vm:5432 --local-port 15432 -s
 <span class="prompt">$</span> psql -h localhost -p 15432</pre>
+<button type="button" class="copy-sm" data-copy-for="the quick start commands">Copy</button>
+</div>
 </section>
 
 <section class="wrap section" id="why" aria-labelledby="why-title">
@@ -390,6 +404,29 @@ function tablist(list, onPick) {
     if (navigator.clipboard) {
       navigator.clipboard.writeText(cmd.textContent).then(done, function () {});
     }
+  });
+})();
+
+// Copy buttons: a code block copies its commands (comments and the "$ " prompt
+// left out), a command row copies its command
+(function () {
+  function text(btn) {
+    var box = btn.parentNode;
+    var pre = box.querySelector('pre');
+    if (!pre) { return box.querySelector('dd').textContent; }
+    var clone = pre.cloneNode(true);
+    Array.prototype.forEach.call(clone.querySelectorAll('.c'), function (n) { n.remove(); });
+    return clone.textContent.replace(/^\$ /gm, '').replace(/\n{2,}/g, '\n').trim();
+  }
+  Array.prototype.forEach.call(document.querySelectorAll('.copy-sm'), function (btn) {
+    btn.setAttribute('aria-label', 'Copy ' + btn.dataset.copyFor);
+    btn.addEventListener('click', function () {
+      if (!navigator.clipboard) { return; }
+      navigator.clipboard.writeText(text(btn)).then(function () {
+        btn.textContent = 'Copied';
+        setTimeout(function () { btn.textContent = 'Copy'; }, 1600);
+      }, function () {});
+    });
   });
 })();
 </script>
