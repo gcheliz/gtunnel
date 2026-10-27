@@ -107,15 +107,47 @@ pub fn service_spec(cfg: &Config, t: &PersistentTunnel) -> Result<ServiceSpec> {
         }
     };
     let program = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("gtunnel"));
+    let label = platform_label(&t.account_name, &t.name);
+    // The level the gcloud argv above was built for, so the supervisor decides
+    // about connection lines from the same answer instead of re-reading a
+    // config that may have changed since this file was written
     let mut args = vec![
         "__supervise".to_string(),
-        "--".to_string(),
-        gcloud.to_string_lossy().to_string(),
+        "--log-level".to_string(),
+        level.to_string(),
     ];
+    // Only an access tunnel has a local port to probe and to wait for
+    if let TunnelSpec::Access {
+        local_port, target, ..
+    } = &t.spec
+    {
+        // A jump tunnel's stderr also carries the IAP transport ssh rides on,
+        // which is one long connection and not a client
+        args.push("--conns".to_string());
+        args.push(
+            match target {
+                crate::state::AccessTarget::Jump { .. } => "ssh",
+                _ => "iap",
+            }
+            .to_string(),
+        );
+        args.push("--port".to_string());
+        args.push(local_port.to_string());
+        args.push("--ready-file".to_string());
+        args.push(
+            crate::config::config_dir()?
+                .join("run")
+                .join(format!("{label}.ready"))
+                .to_string_lossy()
+                .to_string(),
+        );
+    }
+    args.push("--".to_string());
+    args.push(gcloud.to_string_lossy().to_string());
     args.extend(gcloud_args);
 
     Ok(ServiceSpec {
-        label: platform_label(&t.account_name, &t.name),
+        label,
         program,
         args,
         log_path: t.log_path()?,
@@ -354,11 +386,78 @@ mod tests {
                     impersonate_service_account: None,
                     expose: None,
                 }],
+                ..Config::default()
             };
             let got = service_spec(&cfg, &tunnel).expect("spec");
             let want = format!("--verbosity={}", level.gcloud_verbosity());
             assert!(got.args.contains(&want), "{level}: {:?}", got.args);
         }
+    }
+
+    // The supervisor decides about connection lines and its ready file from
+    // these flags; an access tunnel carries its port, an expose tunnel has none
+    #[test]
+    fn a_service_spec_hands_the_supervisor_its_level_port_and_ready_file() {
+        if crate::gcp::gcloud::require_gcloud().is_err() {
+            eprintln!("no gcloud on this machine; skipping");
+            return;
+        }
+        let tunnel = crate::state::PersistentTunnel {
+            name: "db".to_string(),
+            account_name: "dev".to_string(),
+            auto_start: false,
+            spec: TunnelSpec::Access {
+                target: crate::state::AccessTarget::Instance {
+                    instance: "my-vm".to_string(),
+                    zone: "europe-west1-b".to_string(),
+                },
+                remote_port: 5432,
+                local_port: 15432,
+            },
+        };
+        let cfg = Config {
+            selected_account: "dev".to_string(),
+            log_level: crate::loglevel::LogLevel::Debug,
+            accounts: vec![crate::config::Account {
+                name: "dev".to_string(),
+                gcloud_configuration: "work".to_string(),
+                project: "proj-1".to_string(),
+                default_zone: "europe-west1-b".to_string(),
+                impersonate_service_account: None,
+                expose: None,
+            }],
+            ..Config::default()
+        };
+        let got = service_spec(&cfg, &tunnel).expect("spec");
+        let a = &got.args;
+        assert_eq!(a[0], "__supervise");
+        let flag = |name: &str| a.iter().position(|x| x == name).map(|i| a[i + 1].clone());
+        assert_eq!(flag("--log-level").as_deref(), Some("debug"));
+        assert_eq!(flag("--port").as_deref(), Some("15432"));
+        assert_eq!(flag("--conns").as_deref(), Some("iap"));
+        let ready = flag("--ready-file").expect("ready file");
+        assert!(
+            ready.ends_with(&format!("run/{}.ready", got.label)),
+            "{ready}"
+        );
+        let dashes = a.iter().position(|x| x == "--").expect("separator");
+        assert!(dashes > a.iter().position(|x| x == "--ready-file").unwrap());
+
+        let jump = crate::state::PersistentTunnel {
+            spec: TunnelSpec::Access {
+                target: crate::state::AccessTarget::Jump {
+                    instance: "bastion".to_string(),
+                    zone: "europe-west1-b".to_string(),
+                    host: "db.internal".to_string(),
+                },
+                remote_port: 5432,
+                local_port: 15433,
+            },
+            ..tunnel
+        };
+        let got = service_spec(&cfg, &jump).expect("jump spec");
+        let i = got.args.iter().position(|x| x == "--conns").expect("conns");
+        assert_eq!(got.args[i + 1], "ssh");
     }
 
     fn spec() -> ServiceSpec {

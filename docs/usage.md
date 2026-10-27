@@ -71,7 +71,7 @@ Specify the release version and substitute your machine's file: `gtunnel-macos-a
 `gtunnel-macos-intel`, `gtunnel-linux-amd64` or `gtunnel-linux-arm64`.
 
 ```
-VERSION="v0.1.30"
+VERSION="v0.1.33"
 F="gtunnel-macos-arm64-${VERSION}.tar.gz"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F.sha256"
@@ -83,7 +83,7 @@ so they run on any glibc.
 
 ```
 $ gtunnel --version
-gtunnel 0.1.30
+gtunnel 0.1.33
 ```
 
 #### Proving where the binary came from
@@ -210,7 +210,7 @@ account: [domains](#zones-and-domains), [relay](#relay), then [expose](#expose).
 | `zones` / `domains` | Defaults for new tunnels | read |
 | `relay up` / `down` / `status` | The shared relay for an account | write |
 | `account` | Accounts: `list`, `select`, `add`, `edit`, `remove` | read, for `add` |
-| `watch` | Restart tunnels that are running but refusing connections | no |
+| `watch` | Restart tunnels that are running but refusing connections, and announce state changes | no |
 | `doctor` | Report, and optionally remove, leftovers | read, write with `--fix` |
 | `reset` | Remove all local configuration | no |
 | `demo` | TUI with synthetic data | no |
@@ -357,7 +357,8 @@ Metrics redraws every 5 seconds, and its `active` is the most client connections
 port carried since the last redraw, not the number open at the instant it drew. The count is
 sampled twice a second: a `kubectl` call holds its socket for a few hundred milliseconds, so
 a figure read once every 5 seconds landed between requests and reported 0 under real
-traffic. The tunnel's log records the same number, and only when it changes.
+traffic. The count is for the screen only: the tunnel's log records each connection itself,
+with its source port (see [Connections in the log](#connections-in-the-log)).
 
 ### The config page
 
@@ -641,6 +642,26 @@ own for every start, stop and clear. A tunnel reached through a jump host prints
 else while it is healthy, so without those lines its log was empty whether it had just
 started, failed, or never existed at all.
 
+#### Connections in the log
+
+At log level `info` or `debug` the supervisor writes one line when a client connects and one
+when it leaves, in the same shape for an IAP tunnel and a jump tunnel. The source port is the
+client's local port, so it names the process: `lsof -nP -iTCP:54321` finds it while it is open.
+
+```
+2026-10-27T10:15:02Z gtunnel: conn iap-7 open
+2026-10-27T10:15:14Z gtunnel: conn iap-7 from 127.0.0.1:54321 closed after 12.0s
+```
+
+| Rule | Why |
+|---|---|
+| The open is written after two seconds, or with the close if that comes first | gtunnel's own health probe connects and closes in milliseconds; its source port is only known at the close |
+| A probe by gtunnel writes no line | `tcp_probe` records its source port in `run/probes/<port>` before it closes, and the supervisor drops the matching close. A probe by anything else, `nc -z` included, is a connection |
+| At most 60 connection lines a minute | a client that reconnects in a loop would bury the lines that explain a failure; the rest become `gtunnel: conn ... N more in the last minute` |
+| A jump tunnel counts only ssh channels, an instance tunnel only IAP connections | a jump tunnel's ssh rides on gcloud's own IAP connection to the bastion, which is the tunnel and never closes |
+| `quiet` writes none | and ssh and gcloud print none at that level either |
+| Only the supervisor writes them | the TUI never appends to a tunnel's log, so two open TUIs, or none, give the same log |
+
 Starting a public tunnel re-creates its backend, host rule, named port and DNS record if any
 of them went missing, so `gtunnel restart <name>` is the fix for a tunnel that comes up
 serving a 503. Starting an Access tunnel makes no API call.
@@ -843,7 +864,7 @@ question. Both kinds of line appear only under `-v`.
 | `gtunnel watch -v` | Say what each pass saw, rather than only what it did |
 | `gtunnel watch install` | Install the agent, so the loop runs with no terminal open |
 | `gtunnel watch uninstall` | Remove the agent |
-| `gtunnel watch status` | Whether the agent is installed, and where its log is |
+| `gtunnel watch status` | Whether the agent is installed, where its log is, and when its last pass finished |
 
 `watch` needs no Google credentials, and asks for none: it runs from an agent with no
 terminal, where a login prompt would hang forever rather than fail.
@@ -898,6 +919,48 @@ every tunnel passed writes nothing.
 
 `gtunnel doctor` reports a machine that has tunnels but no watchdog, and `--fix` installs
 it.
+
+### Notifications
+
+Every pass also asks of each tunnel of every account whether its state changed since anyone
+last looked, and says so with one desktop notification. The states are stopped, starting,
+up, degraded (running but failing its probe for two checks in a row, the breaker's own
+count) and failed. Which changes are worth a banner:
+
+| Change | Default | Switch |
+|---|---|---|
+| Up to degraded, or a start that comes up not answering | on | `degraded` |
+| Degraded or failed back to up | on | `recovered` |
+| Up to failed, a tunnel that died, a start that failed | on | `failed` |
+| A start that works | off | `up` |
+| Anything you did yourself: `start`, `stop`, `restart`, `delete`, `rename`, `move` | never | none |
+
+The edges one pass finds become one notification, so a laptop waking from sleep is one
+alert (`3 tunnels: 2 unhealthy, 1 recovered`), not one per tunnel.
+
+```toml
+[notifications]
+up = false
+degraded = true
+recovered = true
+failed = true
+```
+
+An absent section is the defaults above, and a section with some keys keeps the defaults
+for the rest.
+
+Every observer shares one ledger, `lifecycle.json` in the configuration directory, so a
+change is announced by whoever stores it first and never twice. The watchdog writes
+`run/watchdog.heartbeat` at the end of each pass. While that file is under 90 seconds old
+the TUI stays quiet and leaves notifying to the watchdog; without a fresh heartbeat the
+TUI announces the changes it sees itself, for the account on screen only. The first time
+the TUI opens on a machine with no watchdog installed it says
+`notifications need the watchdog when the TUI is closed: gtunnel watch install` in the
+status line, once, and installs nothing. `gtunnel watch status` shows when the last pass
+finished.
+
+A tunnel gtunnel has never seen before is recorded without a notification, so the first pass
+after installing the watchdog does not announce every tunnel's current state as news.
 
 ## doctor
 
@@ -981,7 +1044,7 @@ Every other command prints a one-line hint when a cached check found a newer ver
 
 ```
 $ gtunnel list
-gtunnel v9.9.9 is available (current: v0.1.30). Run `gtunnel update`.
+gtunnel v9.9.9 is available (current: v0.1.33). Run `gtunnel update`.
 ```
 
 The check runs at most once a day, in the background, and never blocks a command. An install
@@ -1128,6 +1191,7 @@ in the configuration directory (see [Environment](#environment) below).
 |---|---|---|---|
 | `selected_account` | string | yes | The account used when no `--account` is given |
 | `log_level` | string | no | `quiet`, `info` or `debug`; `info` when absent. See [The log level](#the-log-level) |
+| `notifications` | table | no | Which lifecycle changes raise a desktop notification: `up`, `degraded`, `recovered`, `failed`, all booleans. See [Notifications](#notifications) |
 | `accounts` | array of tables | yes | One entry per account; may be empty |
 
 Each entry in `accounts`:
@@ -1236,7 +1300,7 @@ that level on the tunnel for good.
 
 | Variable | Read by | Effect |
 |---|---|---|
-| `GTUNNEL_CONFIG_DIR` | every command | Moves `config.toml`, `tunnels.toml`, `agents/` and `logs/` into that directory. The service label is still `com.gtunnel.<account>.<name>`, so give a throwaway configuration an account name of its own or `install` restarts the live job that shares the label |
+| `GTUNNEL_CONFIG_DIR` | every command | Moves `config.toml`, `tunnels.toml`, `lifecycle.json`, `run/` (including the watchdog heartbeat), `agents/` and `logs/` into that directory. The service label is still `com.gtunnel.<account>.<name>`, so give a throwaway configuration an account name of its own or `install` restarts the live job that shares the label |
 | `GTUNNEL_LOG_LEVEL` | every command | `quiet`, `info` or `debug`. Beaten by `--log-level`, beats `log_level` in `config.toml`. An empty value counts as unset; anything else that is not a level is an error naming the variable. See [The log level](#the-log-level) |
 | `GTUNNEL_SERVICE_BOUND_MS` | every command | A test and diagnostics knob: milliseconds to wait for one `launchctl` or `systemctl` call before it is reported as `timed out after`. Default 10000; an empty, zero or non-numeric value counts as unset. Leave it alone unless you are testing the timeout path or diagnosing a slow service manager |
 | `VISUAL`, then `EDITOR` | the TUI's config page | Which editor `e` opens. `VISUAL` wins because it names the full-screen editor. An empty value counts as unset, since `EDITOR=` is how a shell clears one, and neither set falls back to the platform default |

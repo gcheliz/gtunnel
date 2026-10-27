@@ -42,7 +42,93 @@ pub async fn tcp_probe(addr: &str, timeout: Duration) -> Option<Duration> {
         Ok(Ok(stream)) => stream,
         _ => return None,
     };
+    if let Ok(local) = stream.local_addr() {
+        register_probe(addr, local.port());
+    }
     close_politely(&mut stream, timeout).await
+}
+
+/// How long a probe's source port stays in the ledger. A probe is over in
+/// seconds; a minute covers a slow close without letting a recycled port
+/// excuse a real client for long.
+const PROBE_TTL_SECS: u64 = 60;
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Where probes of local ports announce themselves: one file per target port,
+/// next to the supervisors' ready files.
+pub fn probes_dir() -> Option<std::path::PathBuf> {
+    Some(crate::config::config_dir().ok()?.join("run").join("probes"))
+}
+
+/// The supervisor opens its port's ledger for business. A probe registers only
+/// where this exists, so a probe of a port no supervisor watches (every test,
+/// a tunnel gtunnel does not run) writes nothing anywhere.
+pub fn watch_probes(dir: &std::path::Path, target_port: u16) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    std::fs::write(dir.join(target_port.to_string()), "")
+}
+
+pub fn unwatch_probes(dir: &std::path::Path, target_port: u16) {
+    let _ = std::fs::remove_file(dir.join(target_port.to_string()));
+}
+
+// The connection's source port is only in the tunnel's log at the close, after
+// the probe is long gone, so the probe leaves its own port where the
+// supervisor can find it. Written before the half-close, so the entry exists
+// before any close line can.
+fn register_probe(addr: &str, src_port: u16) {
+    let Ok(sock) = addr.parse::<std::net::SocketAddr>() else {
+        return;
+    };
+    if sock.ip() != std::net::Ipv4Addr::LOCALHOST {
+        return;
+    }
+    if let Some(dir) = probes_dir() {
+        register_probe_in(&dir, sock.port(), src_port);
+    }
+}
+
+/// Append `src_port` to the ledger of `target_port`, dropping entries past
+/// their time to live. Read-modify-write without a lock: two probes landing in
+/// the same instant can lose one entry, which costs one extra `conn` line and
+/// nothing else.
+pub fn register_probe_in(dir: &std::path::Path, target_port: u16, src_port: u16) {
+    let file = dir.join(target_port.to_string());
+    let Ok(text) = std::fs::read_to_string(&file) else {
+        return;
+    };
+    let now = unix_now();
+    let mut kept: Vec<&str> = text
+        .lines()
+        .filter(|l| {
+            l.split_once(' ')
+                .and_then(|(_, t)| t.parse::<u64>().ok())
+                .is_some_and(|t| t + PROBE_TTL_SECS >= now)
+        })
+        .collect();
+    let entry = format!("{src_port} {now}");
+    kept.push(&entry);
+    let _ = crate::fsutil::write_atomic(&file, &(kept.join("\n") + "\n"));
+}
+
+/// Whether `src_port` is a recent probe of `target_port`.
+pub fn is_probe_in(dir: &std::path::Path, target_port: u16, src_port: u16) -> bool {
+    let Ok(text) = std::fs::read_to_string(dir.join(target_port.to_string())) else {
+        return false;
+    };
+    let now = unix_now();
+    text.lines().any(|l| {
+        l.split_once(' ').is_some_and(|(p, t)| {
+            p.parse::<u16>().ok() == Some(src_port)
+                && t.parse::<u64>().is_ok_and(|t| t + PROBE_TTL_SECS >= now)
+        })
+    })
 }
 
 // A socket dropped while the peer's greeting is still unread closes with RST,
@@ -856,6 +942,42 @@ ssh      2150     you    7u  IPv4 0x6              0t0  TCP 127.0.0.1:5432 (LIST
     // lsof exits 1 when nothing matched, and non-zero again when it merely
     // warns about something it could not stat while still printing the rows it
     // found. Gating on the status threw a real count away
+    #[test]
+    fn a_probe_registers_its_source_port_only_where_a_supervisor_is_watching() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        register_probe_in(dir.path(), 8443, 50001);
+        assert!(!dir.path().join("8443").exists(), "nobody was watching");
+
+        watch_probes(dir.path(), 8443).expect("watch");
+        register_probe_in(dir.path(), 8443, 50002);
+        assert!(is_probe_in(dir.path(), 8443, 50002));
+        assert!(!is_probe_in(dir.path(), 8443, 50003));
+        assert!(!is_probe_in(dir.path(), 9000, 50002));
+
+        unwatch_probes(dir.path(), 8443);
+        assert!(!is_probe_in(dir.path(), 8443, 50002));
+    }
+
+    #[test]
+    fn a_ledger_entry_expires_and_is_pruned_on_the_next_write() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        watch_probes(dir.path(), 8443).expect("watch");
+        let stale = unix_now() - PROBE_TTL_SECS - 5;
+        std::fs::write(dir.path().join("8443"), format!("40000 {stale}\n")).expect("seed");
+        assert!(!is_probe_in(dir.path(), 8443, 40000), "past its time");
+        register_probe_in(dir.path(), 8443, 40001);
+        let text = std::fs::read_to_string(dir.path().join("8443")).expect("read");
+        assert!(!text.contains("40000"), "{text}");
+        assert!(text.contains("40001"), "{text}");
+    }
+
+    #[test]
+    fn a_non_local_target_is_not_registered() {
+        // Parsing alone: the address is not the loopback the supervisor serves
+        register_probe("10.0.0.10:8443", 50000);
+        register_probe("localhost:8443", 50000);
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_listing_is_read_whatever_the_exit_status_was() {

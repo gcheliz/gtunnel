@@ -178,21 +178,19 @@ The shapes below are what each kind of line looks like, not a captured transcrip
 | Kind | Looks like | Written by |
 |---|---|---|
 | Access, listener up | `Listening on port [15432].` | gcloud |
-| Access, a client connects | `INFO: [0] Connecting with URL ['wss://tunnel.cloudproxy.app/v4/connect?project=...&port=5432&zone=...']` | gcloud |
-| Access, a client leaves | `INFO: Client closed connection from ...`, then `INFO: Terminating connection to ...` | gcloud |
-| Jump (`--via`), forward up | `debug1: Local forwarding listening on 127.0.0.1 port 8443.` | ssh |
-| Jump, a client connects | `debug1: Connection to port 8443 forwarding to 10.0.0.10 port 443 requested.` | ssh |
+| Jump (`--via`), forward up | `Local forwarding listening on 127.0.0.1 port 8443.` | ssh |
+| Access or jump, a client connects | `gtunnel: conn iap-4 open` (or `conn ssh-3 open from 127.0.0.1:54321` when the tool names the client at once) | gtunnel, from the tool's own line |
+| Access or jump, a client leaves | `gtunnel: conn iap-4 from 127.0.0.1:54321 closed after 12.4s` | gtunnel, from the tool's own line |
+| Access or jump, a burst | `gtunnel: conn ... 240 more in the last minute` | gtunnel |
 | Public, forward up | `debug1: Remote connections from 0.0.0.0:30001 forwarded to local address 127.0.0.1:3000` | ssh |
 | Public, a visitor arrives | `debug1: client_request_forwarded_tcpip: listen 0.0.0.0 port 30001, originator ...` | ssh |
-| Access or jump, count changed | `gtunnel: connections: 0 -> 2` | gtunnel |
-| Any kind, health changed | `gtunnel: unhealthy`, `gtunnel: healthy again` | gtunnel |
 
-Only Access and jump tunnels get the `connections:` line. The count is the number of
-established connections on the tunnel's local port, and a public tunnel has no local
-port of its own: it dials out to the service you exposed, on a port other things may
-also be using. There is nothing there that could be counted as the tunnel's, so gtunnel
-counts nothing and writes nothing. The `debug1:` lines above are what a public tunnel
-has instead.
+The `conn` lines are written by the tunnel's own supervisor, which reads gcloud's
+`[N] Connecting with URL` and `[N] Client closed connection from [...]` and ssh's
+`channel N: new` and `channel N: free: ... connect from H port P` and pairs them by id.
+They are there whether or not the TUI is open. A connection gtunnel itself makes to check
+the tunnel's health writes no line, at most 60 lines a minute are written per tunnel, and
+the `quiet` level writes none.
 
 A `--via` tunnel never prints `Listening on port`. It runs `gcloud compute ssh
 --tunnel-through-iap`, which is a different command from `start-iap-tunnel` rather than a
@@ -202,13 +200,11 @@ ssh's forwarding line.
 Every ssh line in the table above is a debug one, which is why the default level
 reaches ssh as `DEBUG`; see [One level, two scales](#one-level-two-scales).
 
-### A gap in the connection counts is not an idle tunnel
+### A connection is in the log with the port it came from
 
-gtunnel counts the established connections on a tunnel's local port every 5 seconds and
-writes a line only when that count changes. It can only do so while a gtunnel process is
-running. A log showing `connections: 0 -> 2` at 14:03 and nothing afterwards means nobody
-was watching after 14:03, not that the tunnel went idle. The lines the service's child
-writes have no such gap.
+Each `conn` close line names the client's address and source port, so `lsof -nP -iTCP:54321`
+while it is still open, or the time next to it afterwards, says which program it was.
+The connection count in the TUI's Metrics pane is sampled and is not written to the log.
 
 A tunnel gtunnel does not manage owns no log here, so it gets neither kind of line.
 

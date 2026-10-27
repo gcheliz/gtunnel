@@ -14,8 +14,11 @@ use tokio::sync::mpsc;
 pub use app::{App, EditTunnel, NewTunnel, Op, OpResult, TunnelEntry, TunnelKind};
 
 use crate::config::load_config;
+use crate::lifecycle;
 use crate::probe::HealthStatus;
-use crate::state::TunnelStatus;
+
+const WATCHDOG_OFFER: &str =
+    "notifications need the watchdog when the TUI is closed: gtunnel watch install";
 
 const TICK: Duration = Duration::from_millis(120);
 
@@ -34,6 +37,8 @@ enum Msg {
     // often than a metrics round, so a request shorter than a round is seen
     Samples(std::collections::HashMap<u16, u64>),
     Health(u64, Vec<(String, HealthStatus)>),
+    // Whether the watchdog is installed, asked once per session
+    Watchdog(bool),
     Logs(String, Vec<String>),
     OpDone(OpResult),
 }
@@ -68,6 +73,16 @@ pub async fn run_tui(initial_account: Option<&str>) -> Result<()> {
     // cache, so what is shown is what an earlier run already learned
     crate::update::spawn_check_if_due();
     app.update = crate::update::available_update();
+
+    // Once per session, off the event loop: the TUI only notifies while it is
+    // open and no watchdog is running, so someone without one is told how to
+    // get notifications that survive closing it. It never installs one unasked
+    {
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            let _ = tx.send(Msg::Watchdog(crate::daemon::watchdog_installed().await));
+        });
+    }
 
     // The first health check is due now, not after the first tick
     let mut timers = Timers::due();
@@ -108,7 +123,13 @@ async fn demo_loop(
                         reload: false,
                         from_create: matches!(op, Op::Create(_)),
                         from_account: false,
+                        name: None,
                     });
+                    // No runtime sits behind the demo, so no round will come
+                    // to end the pending state the key put on the row
+                    for entry in &mut app.entries {
+                        entry.pending = None;
+                    }
                 }
                 if app.should_quit {
                     break;
@@ -344,6 +365,12 @@ async fn event_loop(
             | Msg::Metrics(..)
             | Msg::Health(..)) => apply_polled(app, &mut timers, msg),
             Msg::Samples(samples) => app.record_samples(samples),
+            Msg::Watchdog(installed) => {
+                // Never over something the user is already reading
+                if !installed && app.status.is_none() {
+                    app.set_status(WATCHDOG_OFFER);
+                }
+            }
             Msg::Logs(name, lines) => {
                 if app.selected_entry().map(|e| e.name().to_string()) == Some(name) {
                     app.logs = lines;
@@ -372,9 +399,22 @@ async fn event_loop(
                 {
                     app.reload_config(&config);
                 }
+                // A round begun before the op describes the tunnel as it was,
+                // so it is dropped and the next one is begun at once. The
+                // generation is what makes the drop certain: `force` alone
+                // would leave the old round free to land after the op.
+                let acted_on_a_row = result.name.is_some();
+                if acted_on_a_row {
+                    timers.entries.invalidate();
+                    timers.entries.force();
+                }
                 app.apply(result);
-                // The CLI commands this ran print to the same terminal
-                terminal.clear()?;
+                // The ops that mark a row print nothing, and a full clear
+                // after each one flashes the screen. The others run CLI
+                // commands that write to this terminal.
+                if !acted_on_a_row {
+                    terminal.clear()?;
+                }
             }
         }
         terminal.draw(|f| ui::render(f, app))?;
@@ -394,6 +434,9 @@ fn apply_polled(app: &mut App, timers: &mut Timers, msg: Msg) {
         Msg::Entries(generation, entries, used_ports) => {
             if timers.entries.finish(generation) {
                 app.replace_entries(entries, used_ports);
+                // A tunnel that went from running to dead shows up here, and
+                // no health round will ever say so: it is not probed
+                announce_round(app);
             }
         }
         Msg::EntriesFailed(generation, error) => {
@@ -407,16 +450,6 @@ fn apply_polled(app: &mut App, timers: &mut Timers, msg: Msg) {
             }
             for (name, m) in metrics {
                 if let Some(entry) = app.entries.iter_mut().find(|e| e.name() == name) {
-                    // A process gtunnel does not manage owns no log here,
-                    // so there is nothing of ours to append to
-                    if entry.kind != TunnelKind::External {
-                        let was = entry.metrics.as_ref().map(|p| p.active_connections);
-                        if let Some(line) = connection_change(was, m.active_connections)
-                            && let Ok(path) = entry.tunnel.log_path()
-                        {
-                            let _ = crate::daemon::log_event(&path, &line);
-                        }
-                    }
                     // Microseconds: a fast hop is a real measurement, and
                     // whole milliseconds would record it as nothing
                     if let Some(d) = m.latency {
@@ -434,28 +467,11 @@ fn apply_polled(app: &mut App, timers: &mut Timers, msg: Msg) {
                 let Some(entry) = app.entries.iter_mut().find(|e| e.name() == name) else {
                     continue;
                 };
-                announce(entry, health);
                 entry.health = health;
             }
+            announce_round(app);
         }
         _ => {}
-    }
-}
-
-// gtunnel measures the connection count every 5s and, until now, kept it to
-// the Metrics pane. The count itself belongs on screen; what belongs in the
-// log is a change, because a line per poll is 17,280 a day that say nothing.
-// The line carries no tunnel name: it lands in that tunnel's own log, like
-// every other line `log_event` writes.
-fn connection_change(was: Option<u64>, now: u64) -> Option<String> {
-    match was {
-        // First sight: there is no earlier count to point away from, so a
-        // tunnel already carrying traffic reports it without an arrow, and
-        // an idle one says nothing rather than a line on every TUI start
-        None if now == 0 => None,
-        None => Some(format!("connections: {now}")),
-        Some(before) if before == now => None,
-        Some(before) => Some(format!("connections: {before} -> {now}")),
     }
 }
 
@@ -469,37 +485,80 @@ fn empties_the_log(op: &Op) -> Option<&str> {
     }
 }
 
-// Which transitions are worth saying anything about. Health is polled every
-// 30s and mostly does not change, and the first poll of a session arrives
-// against Unknown, which is not a recovery.
-fn transition_line(was: HealthStatus, now: HealthStatus) -> Option<String> {
-    match (was, now) {
-        (HealthStatus::Healthy, HealthStatus::Unhealthy) => Some("unhealthy".to_string()),
-        (HealthStatus::Unhealthy, HealthStatus::Healthy) => Some("healthy again".to_string()),
-        // The first probe after a start is a check, not a failure
-        (HealthStatus::Checking, HealthStatus::Unhealthy) => None,
-        _ => None,
-    }
+// What the TUI knows about notifications, in one place so a test can hand it
+// a directory and a recorder in place of the real ones.
+struct Observer<'a> {
+    dir: &'a std::path::Path,
+    notifier: &'a dyn crate::notify::Notifier,
+    cfg: crate::config::NotifyConfig,
+    // The watchdog notifies for every account, TUI open or not, so while it is
+    // alive the TUI saying the same thing would be the double alert the ledger
+    // exists to prevent
+    watchdog_fresh: bool,
 }
 
-// A tunnel that just went bad, or just recovered, is worth interrupting for.
-// It also goes in the log: a notification is gone once dismissed, and one
-// raised while the laptop slept was never seen, but the log is what the user
-// still has afterwards.
-fn announce(entry: &TunnelEntry, now: HealthStatus) {
-    if entry.status != TunnelStatus::Running {
+// A health round and a status change are the same question asked of one row:
+// what state is it in now? The answer goes through the shared ledger, so what
+// comes out is only what nobody has announced yet, for the account on screen,
+// as one notification. The threshold is one: this is the TUI's own poll, which
+// announced the first unhealthy reading before too.
+fn observe_lifecycle(obs: &Observer, account: &str, entries: &[TunnelEntry]) {
+    if obs.watchdog_fresh {
         return;
     }
-    let Some(what) = transition_line(entry.health, now) else {
+    let mut edges = Vec::new();
+    for entry in entries {
+        // Only rows gtunnel owns, and not one it is in the middle of changing:
+        // a start in flight reads as stopped until the job is loaded
+        if entry.kind != TunnelKind::Managed || entry.pending.is_some() {
+            continue;
+        }
+        let healthy = match entry.health {
+            HealthStatus::Healthy => Some(true),
+            HealthStatus::Unhealthy => Some(false),
+            HealthStatus::Unknown | HealthStatus::Checking => None,
+        };
+        let failures = u32::from(entry.health == HealthStatus::Unhealthy);
+        let Some(to) = lifecycle::observe(entry.status, healthy, failures, 1) else {
+            continue;
+        };
+        edges.extend(
+            lifecycle::transition_in(
+                obs.dir,
+                account,
+                entry.name(),
+                to,
+                lifecycle::Cause::Observed,
+            )
+            .ok()
+            .flatten(),
+        );
+    }
+    lifecycle::announce_with(obs.notifier, &edges, &obs.cfg);
+}
+
+#[cfg(not(test))]
+fn announce_round(app: &App) {
+    let Ok(dir) = crate::config::config_dir() else {
         return;
     };
-    crate::notify::notify("gtunnel", &format!("{} is {what}", entry.name()));
-    if entry.kind != TunnelKind::External
-        && let Ok(path) = entry.tunnel.log_path()
-    {
-        let _ = crate::daemon::log_event(&path, &what);
-    }
+    let cfg = load_config().map(|c| c.notifications).unwrap_or_default();
+    observe_lifecycle(
+        &Observer {
+            dir: &dir,
+            notifier: &crate::notify::Desktop,
+            cfg,
+            watchdog_fresh: crate::lifecycle::watchdog_is_fresh(),
+        },
+        &app.account,
+        &app.entries,
+    );
 }
+
+// Under test there is no config directory of its own and no desktop to
+// notify; `observe_lifecycle` is what is tested, with both supplied
+#[cfg(test)]
+fn announce_round(_: &App) {}
 
 fn schedule(app: &mut App, timers: &mut Timers, tx: &mpsc::UnboundedSender<Msg>) {
     let account = app.account.clone();
@@ -685,24 +744,6 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
-    // The count itself is on screen every 5s; what the log wants is a change
-    #[test]
-    fn only_a_change_in_the_connection_count_is_worth_a_line() {
-        assert_eq!(
-            connection_change(Some(0), 2),
-            Some("connections: 0 -> 2".to_string())
-        );
-        assert_eq!(
-            connection_change(Some(2), 0),
-            Some("connections: 2 -> 0".to_string())
-        );
-        assert_eq!(
-            connection_change(Some(2), 2),
-            None,
-            "a line per poll is 17,280 a day that say nothing"
-        );
-    }
-
     #[test]
     fn a_poller_in_flight_is_not_due() {
         let mut p = Poller::due_now();
@@ -816,54 +857,6 @@ mod tests {
         );
     }
 
-    // A notification is gone when it is dismissed, and one raised while the
-    // laptop slept was never seen at all. The log is the durable copy.
-    #[test]
-    fn a_health_transition_is_written_where_it_can_be_read_later() {
-        assert_eq!(
-            transition_line(HealthStatus::Healthy, HealthStatus::Unhealthy),
-            Some("unhealthy".to_string())
-        );
-        assert_eq!(
-            transition_line(HealthStatus::Unhealthy, HealthStatus::Healthy),
-            Some("healthy again".to_string())
-        );
-        assert_eq!(
-            transition_line(HealthStatus::Healthy, HealthStatus::Healthy),
-            None,
-            "health is polled every 30s and mostly does not change"
-        );
-        assert_eq!(
-            transition_line(HealthStatus::Unknown, HealthStatus::Healthy),
-            None,
-            "the first poll of a session is not a recovery"
-        );
-    }
-
-    #[test]
-    fn a_stopped_tunnel_does_not_announce_unhealthy() {
-        let mut app = app_with_two();
-        app.entries[0].status = TunnelStatus::Stopped;
-        app.entries[0].health = HealthStatus::Healthy;
-        // announce returns early for stopped tunnels
-        announce(&app.entries[0], HealthStatus::Unhealthy);
-    }
-
-    // The first metrics of a session have nothing to compare against
-    #[test]
-    fn the_first_count_seen_reports_traffic_but_never_silence() {
-        assert_eq!(
-            connection_change(None, 3),
-            Some("connections: 3".to_string()),
-            "a tunnel already carrying traffic before anyone looked"
-        );
-        assert_eq!(
-            connection_change(None, 0),
-            None,
-            "every idle tunnel would otherwise write a line on every TUI start"
-        );
-    }
-
     // Starting a tunnel empties its log, but the count measured during the
     // run before it survives in memory. Without this, a restart writes
     // `connections: 2 -> 0` into a fresh log, which reads as two clients
@@ -942,6 +935,126 @@ mod tests {
         app
     }
 
+    struct Said(std::cell::RefCell<Vec<String>>);
+
+    impl crate::notify::Notifier for Said {
+        fn send(&self, _title: &str, body: &str) {
+            self.0.borrow_mut().push(body.to_string());
+        }
+    }
+
+    // Both rows were last seen Up, then the world changed under them
+    fn seeded(dir: &std::path::Path) {
+        use crate::lifecycle::{transition_in, Cause, State};
+        for name in ["db", "api"] {
+            transition_in(dir, "dev", name, State::Up, Cause::Observed).expect("seed");
+        }
+    }
+
+    fn observe_with(dir: &std::path::Path, fresh: bool, app: &App) -> Vec<String> {
+        let said = Said(Default::default());
+        observe_lifecycle(
+            &Observer {
+                dir,
+                notifier: &said,
+                cfg: crate::config::NotifyConfig::default(),
+                watchdog_fresh: fresh,
+            },
+            &app.account,
+            &app.entries,
+        );
+        said.0.into_inner()
+    }
+
+    #[test]
+    fn the_tui_stays_quiet_while_the_watchdog_heartbeat_is_fresh() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        seeded(dir.path());
+        let mut app = app_with_two();
+        app.entries[0].status = TunnelStatus::Error;
+
+        assert!(observe_with(dir.path(), true, &app).is_empty());
+        assert_eq!(
+            crate::lifecycle::stored_in(dir.path(), "dev", "db"),
+            Some(crate::lifecycle::State::Up),
+            "the ledger is the watchdog's to move while it is watching"
+        );
+    }
+
+    #[test]
+    fn without_a_watchdog_the_tui_announces_a_tunnel_that_died() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        seeded(dir.path());
+        let mut app = app_with_two();
+        app.entries[0].status = TunnelStatus::Error;
+
+        let said = observe_with(dir.path(), false, &app);
+        assert_eq!(said, ["db (dev) failed"]);
+        assert!(
+            observe_with(dir.path(), false, &app).is_empty(),
+            "the next round finds the change already stored"
+        );
+    }
+
+    #[test]
+    fn a_tunnel_that_goes_unhealthy_while_running_is_announced_by_the_tui() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        seeded(dir.path());
+        let mut app = app_with_two();
+        app.entries[1].health = HealthStatus::Unhealthy;
+
+        assert_eq!(
+            observe_with(dir.path(), false, &app),
+            ["api (dev) is unhealthy"]
+        );
+    }
+
+    #[test]
+    fn two_changes_in_one_health_round_are_one_notification() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        seeded(dir.path());
+        let mut app = app_with_two();
+        app.entries[0].health = HealthStatus::Unhealthy;
+        app.entries[1].health = HealthStatus::Unhealthy;
+
+        assert_eq!(
+            observe_with(dir.path(), false, &app),
+            ["2 tunnels: 2 unhealthy"]
+        );
+    }
+
+    #[test]
+    fn a_row_with_an_operation_in_flight_is_not_judged() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        seeded(dir.path());
+        let mut app = app_with_two();
+        app.entries[0].status = TunnelStatus::Stopped;
+        app.entries[0].pending = Some(PendingOp {
+            verb: "start",
+            since: Instant::now(),
+        });
+
+        assert!(observe_with(dir.path(), false, &app).is_empty());
+    }
+
+    #[test]
+    fn a_tunnel_the_user_stopped_is_not_announced_by_the_tui() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        seeded(dir.path());
+        crate::lifecycle::transition_in(
+            dir.path(),
+            "dev",
+            "db",
+            crate::lifecycle::State::Stopped,
+            crate::lifecycle::Cause::User,
+        )
+        .expect("record");
+        let mut app = app_with_two();
+        app.entries[0].status = TunnelStatus::Stopped;
+
+        assert!(observe_with(dir.path(), false, &app).is_empty());
+    }
+
     // Every timer starts due, but entries arrive asynchronously, so the first
     // tick finds no entries at all. Spending the health slot there left every
     // row reading `?` for a full period, while latency — on a five-second
@@ -1013,6 +1126,38 @@ mod tests {
             1,
             "a name with no carried health is probed at once"
         );
+    }
+
+    // Health carried across a stop meant the next start read as "healthy
+    // again" or "still unhealthy" by how the last run happened to end, not by
+    // what this one did
+    #[test]
+    fn health_resets_when_a_tunnel_stops() {
+        let mut app = app_with_two();
+        app.entries[0].health = HealthStatus::Unhealthy;
+        app.entries[1].health = HealthStatus::Healthy;
+        let round = |status| {
+            vec![
+                TunnelEntry::new(access("db", 15432), status, TunnelKind::Managed),
+                TunnelEntry::new(
+                    expose("api", "api.example.com"),
+                    TunnelStatus::Running,
+                    TunnelKind::Managed,
+                ),
+            ]
+        };
+
+        app.replace_entries(round(TunnelStatus::Stopped), HashSet::new());
+        assert_eq!(app.entries[0].health, HealthStatus::Unknown);
+        assert_eq!(
+            app.entries[1].health,
+            HealthStatus::Healthy,
+            "a tunnel that is still running keeps what it was last measured as"
+        );
+
+        app.entries[0].health = HealthStatus::Healthy;
+        app.replace_entries(round(TunnelStatus::Error), HashSet::new());
+        assert_eq!(app.entries[0].health, HealthStatus::Unknown);
     }
 
     #[test]
@@ -1179,6 +1324,7 @@ mod tests {
             reload: false,
             from_create: false,
             from_account: false,
+            name: None,
         });
         assert_eq!(app.status.as_deref(), Some("permission denied"));
         assert!(app.status_error, "a failure must be marked");
@@ -1189,6 +1335,7 @@ mod tests {
             reload: true,
             from_create: false,
             from_account: false,
+            name: None,
         });
         assert!(!app.status_error, "success must clear the mark");
     }
@@ -4255,6 +4402,7 @@ mod tests {
             reload: false,
             from_create: true,
             from_account: false,
+            name: None,
         }
     }
 
@@ -4265,7 +4413,89 @@ mod tests {
             reload: false,
             from_create: false,
             from_account: false,
+            name: None,
         }
+    }
+
+    fn a_stopped_app() -> App {
+        let mut app = app_with_two();
+        app.entries[0].status = TunnelStatus::Stopped;
+        app
+    }
+
+    #[test]
+    fn the_frame_after_s_shows_the_row_starting() {
+        let mut app = a_stopped_app();
+        let op = app.handle_key(key(KeyCode::Char('s')));
+        assert_eq!(op, Some(Op::Start("db".to_string())));
+        let text = render_to_string(&app, 120, 30);
+        assert!(text.contains("starting"), "{text}");
+    }
+
+    #[test]
+    fn a_second_start_on_a_pending_row_is_refused() {
+        let mut app = a_stopped_app();
+        assert!(app.handle_key(key(KeyCode::Char('s'))).is_some());
+        for k in ['s', 'S', 'R', 'A', 'd'] {
+            assert_eq!(app.handle_key(key(KeyCode::Char(k))), None, "{k}");
+            assert_eq!(
+                app.status.as_deref(),
+                Some("db: start already in progress"),
+                "{k}"
+            );
+        }
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn a_round_begun_before_an_op_finished_is_not_applied() {
+        let mut app = a_stopped_app();
+        let mut timers = Timers::due();
+        let begun_before = timers.entries.begin();
+        // What `OpDone` does before it applies the result
+        timers.entries.invalidate();
+        timers.entries.force();
+        let stale = vec![TunnelEntry::new(
+            access("db", 15432),
+            TunnelStatus::Running,
+            TunnelKind::Managed,
+        )];
+        apply_polled(
+            &mut app,
+            &mut timers,
+            Msg::Entries(begun_before, stale, HashSet::new()),
+        );
+        assert_eq!(app.entries.len(), 2, "the stale round must not replace");
+        assert_eq!(app.entries[0].status, TunnelStatus::Stopped);
+        assert!(timers.entries.due(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn pending_clears_on_the_first_round_after_the_op() {
+        let mut app = a_stopped_app();
+        app.handle_key(key(KeyCode::Char('s')));
+        let fresh = |status| {
+            vec![TunnelEntry::new(
+                access("db", 15432),
+                status,
+                TunnelKind::Managed,
+            )]
+        };
+        // A round that lands while the op still runs keeps the row pending
+        app.replace_entries(fresh(TunnelStatus::Stopped), HashSet::new());
+        assert!(app.entries[0].pending.is_some());
+        app.apply(OpResult {
+            message: "db running".to_string(),
+            ok: true,
+            reload: true,
+            from_create: false,
+            from_account: false,
+            name: Some("db".to_string()),
+        });
+        assert!(app.entries[0].pending.is_some(), "not until a round lands");
+        app.replace_entries(fresh(TunnelStatus::Running), HashSet::new());
+        assert!(app.entries[0].pending.is_none());
+        assert!(!app.entries[0].pending_settle);
     }
 
     fn submitted_access_draft() -> App {
@@ -4302,6 +4532,7 @@ mod tests {
             reload: true,
             from_create: true,
             from_account: false,
+            name: None,
         });
         assert_eq!(app.input_mode, InputMode::Normal);
         app.apply(failed("some later failure"));

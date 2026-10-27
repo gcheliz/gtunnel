@@ -58,6 +58,20 @@ pub fn notify(title: &str, body: &str) {
     ]);
 }
 
+/// What lifecycle code talks to, so a test can assert on what would have been
+/// said instead of putting it on the desktop of whoever runs `cargo test`.
+pub trait Notifier {
+    fn send(&self, title: &str, body: &str);
+}
+
+pub struct Desktop;
+
+impl Notifier for Desktop {
+    fn send(&self, title: &str, body: &str) {
+        notify(title, body);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
