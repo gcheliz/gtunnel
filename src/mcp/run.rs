@@ -39,6 +39,9 @@ impl RunRequest {
             .get("target")
             .and_then(Value::as_str)
             .ok_or("Missing 'target'")?;
+        if target.starts_with('-') {
+            return Err(format!("Invalid 'target': '{target}' starts with a dash"));
+        }
         crate::commands::access::parse_access_target(target)
             .map_err(|e| format!("Invalid 'target': {e:#}"))?;
 
@@ -68,6 +71,17 @@ impl RunRequest {
             ),
         };
         let zone = args.get("zone").and_then(Value::as_str).map(str::to_string);
+        if let Some(zone) = &zone {
+            let ok = zone.starts_with(|c: char| c.is_ascii_lowercase())
+                && zone
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+            if !ok {
+                return Err(format!(
+                    "Invalid 'zone': '{zone}' is not a zone such as europe-west1-b"
+                ));
+            }
+        }
 
         Ok(Self {
             name,
@@ -80,11 +94,10 @@ impl RunRequest {
 
     /// The account goes before the subcommand because `--account` is a global
     /// flag of the CLI, and it is always passed so the child never falls back
-    /// to whichever account is selected when it starts.
+    /// to whichever account is selected when it starts. The positionals come
+    /// last, after `--`, so a value from the model is never parsed as a flag.
     pub fn argv(&self, account: &str) -> Vec<String> {
-        let mut argv: Vec<String> = ["--account", account, "run", &self.name, &self.target]
-            .map(String::from)
-            .into();
+        let mut argv: Vec<String> = ["--account", account, "run"].map(String::from).into();
         if let Some(zone) = &self.zone {
             argv.extend(["--zone".into(), zone.clone()]);
         }
@@ -92,6 +105,7 @@ impl RunRequest {
             argv.extend(["--local-port".into(), port.to_string()]);
         }
         argv.extend(["--ttl".into(), format!("{}m", self.ttl_minutes)]);
+        argv.extend(["--".into(), self.name.clone(), self.target.clone()]);
         argv
     }
 }
@@ -305,14 +319,15 @@ mod tests {
                 "--account",
                 "demo",
                 "run",
-                "db",
-                "my-vm:5432",
                 "--zone",
                 "europe-west1-b",
                 "--local-port",
                 "15432",
                 "--ttl",
-                "30m"
+                "30m",
+                "--",
+                "db",
+                "my-vm:5432"
             ]
         );
     }
@@ -329,11 +344,28 @@ mod tests {
                 "--account",
                 "demo",
                 "run",
-                "db",
-                "my-vm:5432",
                 "--ttl",
-                "1m"
+                "1m",
+                "--",
+                "db",
+                "my-vm:5432"
             ]
         );
+    }
+
+    #[test]
+    fn a_target_or_zone_that_reads_as_a_flag_is_refused() {
+        for bad in ["--public:22", "-zx:22"] {
+            let err =
+                RunRequest::parse(&args(json!({"target": bad, "ttl_minutes": 5}))).unwrap_err();
+            assert!(err.contains("target"), "{bad}: {err}");
+        }
+        for bad in ["--public", "-d", "Europe-West1", "a b"] {
+            let err = RunRequest::parse(&args(
+                json!({"target": "my-vm:5432", "zone": bad, "ttl_minutes": 5}),
+            ))
+            .unwrap_err();
+            assert!(err.contains("zone"), "{bad}: {err}");
+        }
     }
 }
