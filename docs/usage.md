@@ -113,6 +113,44 @@ github-hosted
 The workflow, the tag and the commit that produced the binary, on a GitHub-hosted runner.
 Attestations begin with v0.1.1; v0.1.0 predates them.
 
+#### Building from source
+
+The two cargo routes compile gtunnel on your machine, so they need Rust 1.88 or newer and
+a C compiler: the TLS stack builds C code. A published binary needs neither.
+
+| Machine | Rust | C compiler |
+|---|---|---|
+| macOS | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` | `xcode-select --install` |
+| Debian, Ubuntu | the same rustup line | `sudo apt install build-essential` |
+| Fedora, RHEL | the same rustup line | `sudo dnf install gcc` |
+
+rustup adds `~/.cargo/bin` to your shell's profile, which a shell that is already open has
+not read. Load it, then check both tools:
+
+```
+$ . "$HOME/.cargo/env"
+$ cargo --version
+cargo 1.88.0 (873a06493 2025-05-10)
+$ cc --version | head -1
+Apple clang version 21.0.0 (clang-2100.3.34.2)
+```
+
+Any `cargo` of 1.88 or later passes, and Linux prints its own compiler, such as
+`cc (Debian 12.2.0-14+deb12u1) 12.2.0`. Distribution packages of Rust often lag behind
+1.88, which is why rustup is the one route listed; `rustup update` moves to a newer
+toolchain later. No other build tool is needed. Without a C compiler the build stops in its
+first seconds:
+
+```
+error: linker `cc` not found
+  |
+  = note: No such file or directory (os error 2)
+```
+
+Install the compiler from the table and run the same `cargo install` again. If `gtunnel`
+is still not found once it is installed, see
+[troubleshooting.md](troubleshooting.md#gtunnel-command-not-found-right-after-installing).
+
 ### 5. Create the account
 
 Order matters: every other command needs an account, and says so until one exists.
