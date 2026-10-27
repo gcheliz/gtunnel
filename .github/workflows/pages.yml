@@ -1,0 +1,59 @@
+name: Pages
+
+# Publishes the landing page, site/index.html, to https://gcheliz.github.io/gtunnel/.
+#
+# The page's images stay where the README links them, in docs/, and are copied
+# into the artifact here, so a re-recorded GIF reaches the site with no second
+# edit. The release train's bump commit rewrites the page's version and is
+# pushed with RELEASE_TOKEN, which starts workflows, so a release redeploys the
+# page through the `site/**` path below.
+on:
+  push:
+    branches: [main]
+    paths:
+      - site/**
+      - docs/logo.svg
+      - docs/demo-tui.gif
+      - docs/demo-access.gif
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One deployment at a time, and a running one is never cut short: a cancelled
+# deploy can leave the previous artifact half replaced
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Assemble the site
+        run: |
+          set -euo pipefail
+          mkdir _site
+          cp site/index.html docs/logo.svg docs/demo-tui.gif docs/demo-access.gif _site/
+          ls -l _site
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

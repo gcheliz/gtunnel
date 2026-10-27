@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gtunnel — private GCP, one localhost away</title>
+<meta name="description" content="A TUI-first manager for GCP Identity-Aware Proxy tunnels: a private port to a VM in your VPC, or a public HTTPS URL in front of your laptop. No open ports, no stored credentials.">
+<meta property="og:title" content="gtunnel — private GCP, one localhost away">
+<meta property="og:description" content="A TUI-first manager for GCP Identity-Aware Proxy tunnels. No open ports, no stored credentials, one binary.">
+<meta property="og:image" content="https://gcheliz.github.io/gtunnel/demo-tui.gif">
+<meta property="og:url" content="https://gcheliz.github.io/gtunnel/">
+<meta name="theme-color" content="#0E0E10">
+<link rel="icon" href="logo.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500;700;800&amp;display=swap" rel="stylesheet">
+<style>
+:root {
+  --ground: #0E0E10;
+  --surface: #121215;
+  --raised: #16161A;
+  --line: #26262C;
+  --line-soft: #1E1E23;
+  --line-strong: #3F3F46;
+  --text: #F4F4F5;
+  --muted: #A1A1AA;
+  --dim: #8B8B94;
+  --cyan: #4DD0E1;
+  --blue: #4285F4;
+  --red: #EA4335;
+  --yellow: #FBBC04;
+  --green: #34A853;
+  --mono: 'JetBrains Mono', Menlo, monospace;
+  --sans: Inter, system-ui, sans-serif;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--ground); color: var(--text); font-family: var(--sans); font-size: 16px; line-height: 1.6; }
+a { color: var(--cyan); }
+a:hover { color: #B2EBF2; }
+img { max-width: 100%; }
+code, pre { font-family: var(--mono); }
+code { color: var(--text); }
+.wrap { max-width: 1160px; margin: 0 auto; padding-left: 24px; padding-right: 24px; }
+.mono { font-family: var(--mono); }
+.muted { color: var(--muted); margin: 0; }
+.eyebrow { font-family: var(--mono); font-size: 13px; letter-spacing: 2px; }
+.h2 { margin: 0; font-family: var(--mono); font-weight: 800; line-height: 1.1; letter-spacing: -1px; }
+.code {
+  margin: 0; background: var(--ground); border: 1px solid var(--line-soft); border-radius: 10px;
+  padding: 16px; font-size: 13px; line-height: 1.7; color: var(--text);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.prompt { color: var(--cyan); }
+.comment { color: var(--dim); }
+.figure { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 16px; }
+.caption { margin: 14px 0 0; text-align: center; font-size: 14px; color: var(--dim); }
+.caption code { color: var(--muted); }
+.panel { border: 1px solid var(--line); border-radius: 20px; padding: clamp(28px, 5vw, 56px); }
+.split { display: flex; flex-wrap: wrap; gap: 48px; align-items: flex-start; }
+.split > * { min-width: 0; display: flex; flex-direction: column; gap: 20px; }
+.points { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 24px; }
+.point { display: flex; flex-direction: column; gap: 6px; }
+.point h3 { margin: 0; font-size: 16px; font-weight: 600; }
+.point p { margin: 0; color: var(--muted); font-size: 15px; }
+
+/* header */
+.nav { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; padding-top: 24px; padding-bottom: 24px; }
+.nav a.home { display: flex; align-items: center; min-height: 44px; }
+.nav a.home img { display: block; height: 68px; width: auto; }
+.nav nav { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.nav nav a { color: var(--muted); text-decoration: none; padding: 10px 12px; font-size: 15px; }
+.nav nav a:hover { color: var(--text); }
+.nav nav a.star { display: inline-flex; align-items: center; gap: 8px; color: var(--ground); background: var(--text); border-radius: 8px; padding: 10px 16px; font-weight: 600; }
+
+/* hero */
+.hero { padding-top: 72px; padding-bottom: 40px; display: flex; flex-direction: column; align-items: center; text-align: center; gap: 28px; }
+.badge { display: inline-flex; align-items: center; gap: 10px; border: 1px solid var(--line); border-radius: 999px; padding: 6px 14px; font-family: var(--mono); font-size: 13px; color: var(--muted); text-decoration: none; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
+.hero h1 { margin: 0; font-family: var(--mono); font-weight: 800; font-size: clamp(40px, 7vw, 84px); line-height: 1.02; letter-spacing: -2px; max-width: 980px; }
+.hero .lead { margin: 0; max-width: 640px; font-size: clamp(17px, 2vw, 20px); color: var(--muted); }
+.install { width: 100%; max-width: 680px; display: flex; flex-direction: column; gap: 12px; }
+.tabs { display: flex; gap: 4px; align-self: center; background: var(--raised); border: 1px solid var(--line); border-radius: 10px; padding: 4px; }
+.tabs button { min-height: 36px; padding: 0 14px; border: 0; border-radius: 7px; cursor: pointer; font-family: var(--mono); font-size: 13px; background: transparent; color: var(--muted); }
+.tabs button[aria-selected="true"] { background: var(--line); color: var(--text); }
+.cmd { display: flex; align-items: center; gap: 12px; background: var(--raised); border: 1px solid var(--line); border-radius: 12px; padding: 8px 8px 8px 20px; text-align: left; }
+.cmd code { flex: 1 1 auto; min-width: 0; font-size: 15px; white-space: normal; overflow-wrap: anywhere; }
+.cmd button { flex: none; min-width: 88px; min-height: 44px; border: 0; border-radius: 8px; background: var(--text); color: var(--ground); font-family: var(--sans); font-weight: 600; font-size: 14px; cursor: pointer; }
+.install .hint { margin: 0; font-size: 14px; color: var(--dim); }
+.install .hint code { color: var(--muted); }
+
+/* principles */
+.principles { border-top: 1px solid var(--line-soft); border-bottom: 1px solid var(--line-soft); }
+.principles .wrap { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 0 32px; }
+.principles .item { padding: 48px 0; display: flex; flex-direction: column; gap: 10px; }
+.principles h2 { margin: 0; font-family: var(--mono); font-size: 22px; font-weight: 700; }
+
+/* modes */
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); gap: 24px; }
+.card { border: 1px solid var(--line); border-radius: 16px; padding: 32px; background: var(--surface); display: flex; flex-direction: column; gap: 24px; min-width: 0; }
+.card h3 { margin: 0 0 8px; font-family: var(--mono); font-size: 20px; }
+.flow { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-family: var(--mono); font-size: 13px; }
+.flow span { border: 1px solid var(--line-strong); border-radius: 8px; padding: 8px 12px; }
+.flow .arrow { border: 0; padding: 0; }
+
+/* features */
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 16px; overflow: hidden; }
+.grid > div { background: var(--ground); padding: 28px; display: flex; flex-direction: column; gap: 8px; }
+.grid h3 { margin: 0; font-size: 17px; font-weight: 600; }
+.grid p { margin: 0; color: var(--muted); font-size: 15px; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 8px; font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.chips span { border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; }
+
+.cta { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 32px; background: var(--surface); }
+.button { display: inline-flex; align-items: center; min-height: 48px; padding: 0 22px; border-radius: 10px; text-decoration: none; font-weight: 600; }
+.button.primary { background: var(--text); color: var(--ground); }
+.button.primary:hover { color: var(--ground); }
+.button.ghost { border: 1px solid var(--line-strong); color: var(--text); }
+
+footer { border-top: 1px solid var(--line-soft); }
+footer .wrap { padding-top: 32px; padding-bottom: 32px; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 16px; font-size: 14px; color: var(--dim); }
+footer nav { display: flex; flex-wrap: wrap; gap: 20px; }
+footer a { color: var(--muted); }
+
+section.block { padding-top: 112px; padding-bottom: 112px; display: flex; flex-direction: column; gap: 48px; }
+section.tail { padding-bottom: 112px; }
+</style>
+</head>
+<body>
+
+<header class="wrap nav">
+<a class="home" href="#top" aria-label="gtunnel home"><img src="logo.svg" alt="gtunnel" width="163" height="68"></a>
+<nav aria-label="Primary">
+<a href="https://github.com/gcheliz/gtunnel/blob/main/docs/usage.md">Docs</a>
+<a href="https://github.com/gcheliz/gtunnel/blob/main/docs/architecture.md">Architecture</a>
+<a href="https://github.com/gcheliz/gtunnel/releases/latest">Releases</a>
+<a class="star" href="https://github.com/gcheliz/gtunnel">
+<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.1 8.3 22 9.3 17 14.1 18.2 21 12 17.8 5.8 21 7 14.1 2 9.3 8.9 8.3 12 2"></polygon></svg>
+Star on GitHub</a>
+</nav>
+</header>
+
+<main id="top">
+
+<section class="wrap hero">
+<a class="badge" href="https://github.com/gcheliz/gtunnel/releases/latest"><span class="dot"></span>v<span data-gtunnel-version>0.1.21</span> · MIT · macOS + Linux</a>
+<h1>Private GCP,<br>one localhost away.</h1>
+<p class="lead">A TUI-first manager for Identity-Aware Proxy tunnels. Reach a VM inside your VPC, or put a public HTTPS URL in front of your laptop. No open ports, no stored credentials, one binary.</p>
+<div class="install">
+<div class="tabs" role="tablist" aria-label="Install method">
+<button type="button" role="tab" aria-selected="true" data-cmd="cargo install --git https://github.com/gcheliz/gtunnel">cargo</button>
+<button type="button" role="tab" aria-selected="false" data-cmd="gh release download -R gcheliz/gtunnel -p '*macos-arm64*'">release binary</button>
+</div>
+<div class="cmd">
+<code><span class="prompt">$ </span><span id="install-cmd">cargo install --git https://github.com/gcheliz/gtunnel</span></code>
+<button type="button" id="copy" aria-label="Copy install command">Copy</button>
+</div>
+<p class="hint">Needs the Google Cloud SDK on your <code>PATH</code>. Then <code>gtunnel init</code> and <code>gtunnel doctor</code>.</p>
+</div>
+</section>
+
+<section class="wrap" aria-label="The dashboard" style="padding-top: 40px; padding-bottom: 96px">
+<img class="figure" src="demo-tui.gif" alt="The real gtunnel TUI running gtunnel demo: tunnel list, edit and add choosers, accounts page, key map, animated" width="1500" height="880" style="max-width: 880px; margin: 0 auto; border-radius: 14px">
+<p class="caption">The real TUI, recorded from <code>gtunnel demo</code>. It shows whether a tunnel is carrying traffic, not just whether a process is alive.</p>
+</section>
+
+<section class="principles">
+<div class="wrap">
+<div class="item">
+<span class="mono" style="font-size: 13px; color: var(--red)">01</span>
+<h2>Nothing exposed</h2>
+<p class="muted">No inbound firewall rule, no public IP on the target, no agent on the VM. IAP authorises every connection against your own Google identity.</p>
+</div>
+<div class="item">
+<span class="mono" style="font-size: 13px; color: var(--yellow)">02</span>
+<h2>Nothing stored</h2>
+<p class="muted">gtunnel keeps no credential. Every token comes from <code>gcloud</code> at connect time, and access mode creates nothing in GCP.</p>
+</div>
+<div class="item">
+<span class="mono" style="font-size: 13px; color: var(--green)">03</span>
+<h2>Survives the terminal</h2>
+<p class="muted">Tunnels run as launchd or systemd <code>--user</code> services: restart on failure, optional start at login, one log each.</p>
+</div>
+</div>
+</section>
+
+<section class="wrap block">
+<div style="display: flex; flex-direction: column; gap: 12px; max-width: 640px">
+<span class="eyebrow" style="color: var(--cyan)">TWO MODES, ONE BINARY</span>
+<h2 class="h2" style="font-size: clamp(30px, 4vw, 44px)">In to your VPC. Out to the internet.</h2>
+</div>
+<div class="cards">
+<article class="card">
+<div>
+<h3>Access</h3>
+<p class="muted">A private port on localhost reaches a VM port through IAP. Add <code>--via</code> to jump to a host only that VM can see, like a private GKE control plane.</p>
+</div>
+<div class="flow">
+<span>localhost:15432</span>
+<span class="arrow" aria-hidden="true" style="color: var(--blue)">——▶</span>
+<span style="border-color: var(--blue); color: #8AB4F8">IAP</span>
+<span class="arrow" aria-hidden="true" style="color: var(--blue)">——▶</span>
+<span>my-vm:5432</span>
+</div>
+<pre class="code"><span class="prompt">$</span> gtunnel add db my-vm:5432 -s
+<span class="prompt">$</span> psql -h localhost -p 15432</pre>
+</article>
+<article class="card">
+<div>
+<h3>Public</h3>
+<p class="muted">A public HTTPS URL on your own domain in front of a service on your laptop, through a relay VM and a global HTTPS load balancer.</p>
+</div>
+<div class="flow">
+<span>api.example.com</span>
+<span class="arrow" aria-hidden="true" style="color: var(--green)">——▶</span>
+<span style="border-color: var(--green); color: #81C995">relay</span>
+<span class="arrow" aria-hidden="true" style="color: var(--green)">——▶</span>
+<span>localhost:3000</span>
+</div>
+<pre class="code"><span class="prompt">$</span> gtunnel relay up
+<span class="prompt">$</span> gtunnel expose web 3000</pre>
+</article>
+</div>
+
+<div class="panel split" style="margin-top: -8px">
+<div style="flex: 1 1 420px">
+<span class="eyebrow" style="color: var(--yellow)">ON THE FLY</span>
+<h2 class="h2" style="font-size: clamp(28px, 3.6vw, 40px)">Need it for five minutes?<br>Just run it.</h2>
+<p class="muted" style="max-width: 520px"><code>gtunnel run</code> opens a tunnel in the foreground and closes it with Ctrl+C. Nothing to declare first, nothing left behind after.</p>
+<pre class="code" style="background: var(--surface); padding: 18px; font-size: 14px"><span class="comment"># prints the local port</span>
+<span class="prompt">$</span> gtunnel run my-vm:5432
+
+<span class="comment"># the same, under a name</span>
+<span class="prompt">$</span> gtunnel run db my-vm:5432
+
+<span class="comment"># https://gt-&lt;random&gt;.&lt;domain&gt;</span>
+<span class="prompt">$</span> gtunnel run --public 3000</pre>
+</div>
+<div class="points" style="flex: 1 1 360px; gap: 28px">
+<div class="point">
+<h3>One command, no setup</h3>
+<p>Give it a target. The name is optional and a free local port is picked for you.</p>
+</div>
+<div class="point">
+<h3>Leaves nothing behind</h3>
+<p>No entry in your tunnel list, no service installed. Every route it opened is torn down on exit, Ctrl+C and crashes included.</p>
+</div>
+<div class="point">
+<h3>Still visible</h3>
+<p>While it runs, <code>list</code>, the TUI and <code>doctor</code> see it like any other tunnel.</p>
+</div>
+<div class="point">
+<h3>Share a URL in seconds</h3>
+<p><code>--public</code> puts a throwaway HTTPS address in front of localhost for a demo or a webhook.</p>
+</div>
+</div>
+</div>
+
+<figure style="margin: 0">
+<img class="figure" src="demo-access.gif" alt="A terminal recording of an access tunnel's life: gtunnel add, start, stop and delete, animated" width="1500" height="500">
+<figcaption class="caption">An access tunnel from <code>add</code> to <code>delete</code>, every line as gtunnel prints it.</figcaption>
+</figure>
+</section>
+
+<section class="wrap tail">
+<div class="panel split" style="background: var(--surface)">
+<div style="flex: 1 1 440px">
+<span class="eyebrow" style="color: var(--blue)">FOR AI AGENTS</span>
+<h2 class="h2" style="font-size: clamp(28px, 3.6vw, 40px)">Let your agent<br>open the tunnel.</h2>
+<p class="muted" style="max-width: 520px"><code>gtunnel mcp</code> is a Model Context Protocol server built into the binary. Claude Code, Gemini CLI, Cursor or Claude Desktop can list, start, stop and debug your tunnels without you leaving the chat.</p>
+<div class="points">
+<div class="point">
+<h3>10 tools, 2 live resources</h3>
+<p>Tunnels and accounts as resources, plus logs, status and doctor as tools.</p>
+</div>
+<div class="point">
+<h3>An agent skill</h3>
+<p>Naming rules, target routing and account scoping, in the open Agent Skills format.</p>
+</div>
+<div class="point">
+<h3>JSON everywhere</h3>
+<p><code>list</code>, <code>account list</code> and <code>doctor</code> take <code>--json</code> for scripts.</p>
+</div>
+</div>
+</div>
+<div style="flex: 1 1 340px; gap: 16px">
+<span class="mono" style="font-size: 13px; color: var(--dim)">.mcp.json</span>
+<pre class="code" style="padding: 18px; font-size: 14px">{
+  "mcpServers": {
+    "gtunnel": {
+      "command": <span style="color: var(--green)">"gtunnel"</span>,
+      "args": [<span style="color: var(--green)">"mcp"</span>]
+    }
+  }
+}</pre>
+<div class="chips">
+<span>list_tunnels</span><span>add_tunnel</span><span>start_tunnel</span><span>stop_tunnel</span><span>restart_tunnel</span><span>delete_tunnel</span><span>get_status</span><span>get_logs</span><span>list_accounts</span><span>doctor</span>
+</div>
+</div>
+</div>
+</section>
+
+<section class="wrap tail" style="display: flex; flex-direction: column; gap: 40px">
+<h2 class="h2" style="font-size: clamp(26px, 3vw, 34px)">Everything here ships today.</h2>
+<div class="grid">
+<div><h3>Access tunnels</h3><p>A local port reaches a VM port through IAP. Creates nothing in GCP.</p></div>
+<div><h3>Jump tunnels</h3><p>Reach a host only one instance can reach, through that instance.</p></div>
+<div><h3>Public tunnels</h3><p>An HTTPS URL on your Cloud DNS zone in front of localhost.</p></div>
+<div><h3>Live dashboard</h3><p>Status, latency, connections, load-balancer traffic and per-tunnel logs.</p></div>
+<div><h3>Managed services</h3><p>launchd and systemd <code>--user</code>, with restart and auto-start at login.</p></div>
+<div><h3>Multiple accounts</h3><p>One gcloud configuration, project and zone per account. Same tunnel names in each.</p></div>
+</div>
+</section>
+
+<section class="wrap tail">
+<div class="panel cta">
+<div style="flex: 1 1 420px; display: flex; flex-direction: column; gap: 12px">
+<h2 class="h2" style="font-size: clamp(28px, 4vw, 40px)">Stop opening ports.<br>Start tunnelling.</h2>
+<p class="muted">Signed release binaries for Apple Silicon, Intel, and static Linux amd64 and arm64, each with a checksum and a build attestation.</p>
+</div>
+<div style="display: flex; flex-wrap: wrap; gap: 12px">
+<a class="button primary" href="https://github.com/gcheliz/gtunnel/releases/latest">Download v<span data-gtunnel-version>0.1.21</span></a>
+<a class="button ghost" href="https://github.com/gcheliz/gtunnel/blob/main/docs/usage.md#getting-set-up">Read the guide</a>
+</div>
+</div>
+</section>
+
+</main>
+
+<footer>
+<div class="wrap">
+<span class="mono">gtunnel v<span data-gtunnel-version>0.1.21</span> · MIT licensed · written in Rust</span>
+<nav aria-label="Footer">
+<a href="https://github.com/gcheliz/gtunnel">GitHub</a>
+<a href="https://github.com/gcheliz/gtunnel/blob/main/docs/troubleshooting.md">Troubleshooting</a>
+<a href="https://github.com/gcheliz/gtunnel/blob/main/SECURITY.md">Security</a>
+</nav>
+</div>
+</footer>
+
+<script>
+(function () {
+  var cmd = document.getElementById('install-cmd');
+  var copy = document.getElementById('copy');
+  var tabs = document.querySelectorAll('.tabs button');
+  tabs.forEach(function (tab) {
+    tab.addEventListener('click', function () {
+      tabs.forEach(function (t) { t.setAttribute('aria-selected', t === tab ? 'true' : 'false'); });
+      cmd.textContent = tab.dataset.cmd;
+      copy.textContent = 'Copy';
+    });
+  });
+  copy.addEventListener('click', function () {
+    var done = function () { copy.textContent = 'Copied'; };
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(cmd.textContent).then(done, function () {});
+    }
+  });
+})();
+</script>
+</body>
+</html>

@@ -124,6 +124,7 @@ jobs:
             CHANGELOG.md
             README.md
             docs/usage.md
+            site/index.html
             notes.md
           if-no-files-found: error
 
@@ -226,6 +227,7 @@ jobs:
 
           cp bump/Cargo.toml bump/Cargo.lock bump/CHANGELOG.md bump/README.md .
           cp bump/docs/usage.md docs/usage.md
+          cp bump/site/index.html site/index.html
 
           # The commit is the token owner's, as a push from their laptop would be
           if ! user=$(GH_TOKEN="${RELEASE_TOKEN}" gh api user -q '"\(.id)+\(.login) \(.login)"'); then
@@ -236,7 +238,8 @@ jobs:
           git config user.name "${login}"
           git config user.email "${noreply}@users.noreply.github.com"
 
-          git add Cargo.toml Cargo.lock CHANGELOG.md README.md docs/usage.md
+          # The landing page rides in the same commit, so its push redeploys it
+          git add Cargo.toml Cargo.lock CHANGELOG.md README.md docs/usage.md site/index.html
           git commit --quiet -m "chore(release): ${TAG}"
           git tag -a "${TAG}" -m "${TAG}"
 

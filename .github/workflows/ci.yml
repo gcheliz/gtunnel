@@ -117,6 +117,9 @@ jobs:
           grep -q "VERSION=\"v${crate_version}\"" docs/usage.md
           grep -qx "gtunnel ${crate_version}" docs/usage.md
           grep -q "(current: v${crate_version})" docs/usage.md
+          # Every marker on the landing page, not only the first, must agree
+          test "$(grep -o 'data-gtunnel-version>[0-9.]*<' site/index.html | sort -u)" \
+            = "data-gtunnel-version>${crate_version}<"
       # Installed rather than wrapped in an action: one less third-party step
       # with a token in scope, and the version is pinned here
       - name: Audit dependencies
