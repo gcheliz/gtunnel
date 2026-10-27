@@ -457,9 +457,21 @@ mod tests {
 
         #[tokio::test]
         async fn a_child_that_exits_on_sigterm_is_not_sigkilled() {
-            let (mut child, pgid) = spawn_sh(r#"trap "sleep 0.3; exit 0" TERM; sleep 30 & wait"#);
-            // Let sh install its trap before the signal arrives
-            tokio::time::sleep(Duration::from_millis(300)).await;
+            let dir = tempfile::tempdir().unwrap();
+            let ready = dir.path().join("ready");
+            let (mut child, pgid) = spawn_sh(&format!(
+                r#"trap "sleep 0.1; exit 0" TERM; : > {}; sleep 30 & wait"#,
+                ready.display()
+            ));
+            // The file appears only once the trap is installed; a fixed sleep
+            // lost that race on a loaded machine
+            for _ in 0..100 {
+                if ready.exists() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            assert!(ready.exists(), "sh never installed its trap");
             let status = stop_group(&mut child, pgid, SHORT).await.expect("stop");
             assert_eq!(
                 status.signal(),
