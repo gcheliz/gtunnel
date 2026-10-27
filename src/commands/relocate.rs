@@ -1,3 +1,4 @@
+use crate::error::GtunnelError;
 use anyhow::{bail, Context, Result};
 use std::path::Path;
 
@@ -17,7 +18,10 @@ use crate::state::{
 fn check_relocate(state: &TunnelState, from: &str, to: &str, old: &str, new: &str) -> Result<()> {
     validate_tunnel_name(new)?;
     let Some(tunnel) = state.find_for_account(old, from) else {
-        bail!("Tunnel '{old}' not found for account '{from}'");
+        return Err(GtunnelError::not_found(format!(
+            "Tunnel '{old}' not found for account '{from}'"
+        ))
+        .into());
     };
     if from != to {
         if tunnel.is_expose() {
@@ -125,9 +129,9 @@ fn relocate_in_state(
     new: &str,
 ) -> Result<PersistentTunnel> {
     check_relocate(state, from, to, old, new)?;
-    let mut tunnel = state
-        .remove_for_account(old, from)
-        .with_context(|| format!("Tunnel '{old}' not found for account '{from}'"))?;
+    let mut tunnel = state.remove_for_account(old, from).ok_or_else(|| {
+        GtunnelError::not_found(format!("Tunnel '{old}' not found for account '{from}'"))
+    })?;
     rename_record(&mut tunnel, new);
     // The local port stays: ports are machine-wide, so it is free here too
     tunnel.account_name = to.to_string();
@@ -184,10 +188,9 @@ async fn run_relocate(
     new: &str,
 ) -> Result<()> {
     check_relocate(state, from, to, old, new)?;
-    let before = state
-        .find_for_account(old, from)
-        .cloned()
-        .with_context(|| format!("Tunnel '{old}' not found for account '{from}'"))?;
+    let before = state.find_for_account(old, from).cloned().ok_or_else(|| {
+        GtunnelError::not_found(format!("Tunnel '{old}' not found for account '{from}'"))
+    })?;
     let old_log = before.log_path()?;
     let mut renamed = before.clone();
     rename_record(&mut renamed, new);

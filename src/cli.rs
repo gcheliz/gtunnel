@@ -393,6 +393,19 @@ impl Cli {
     pub fn needs_gcp_auth(&self) -> bool {
         self.command.as_ref().is_none_or(Commands::needs_gcp_auth)
     }
+
+    // Whether a failure should leave as a JSON error object on stdout.
+    // Exhaustive over the commands that carry `--json`, so a new flag is
+    // decided here rather than silently printing prose to a script.
+    pub fn wants_json(&self) -> bool {
+        match &self.command {
+            Some(Commands::List { json }) | Some(Commands::Doctor { json, .. }) => *json,
+            Some(Commands::Account {
+                command: Some(AccountCommands::List { json }),
+            }) => *json,
+            _ => false,
+        }
+    }
 }
 
 impl Commands {

@@ -1,3 +1,4 @@
+use crate::error::GtunnelError;
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -112,7 +113,7 @@ pub fn resolve_log_override(flag: Option<LogLevel>, env: Option<&str>) -> Result
         Some(raw) => raw
             .parse()
             .map(Some)
-            .map_err(|e| anyhow!("GTUNNEL_LOG_LEVEL: {e}")),
+            .map_err(|e| GtunnelError::usage(format!("GTUNNEL_LOG_LEVEL: {e}")).into()),
         None => Ok(None),
     }
 }
@@ -124,7 +125,7 @@ impl Config {
         self.accounts
             .iter()
             .find(|a| a.name == wanted)
-            .ok_or_else(|| anyhow!("Account '{wanted}' not found"))
+            .ok_or_else(|| GtunnelError::not_found(format!("Account '{wanted}' not found")).into())
     }
 
     pub fn get_account_mut(&mut self, name: Option<&str>) -> Result<&mut Account> {
@@ -132,7 +133,7 @@ impl Config {
         self.accounts
             .iter_mut()
             .find(|a| a.name == wanted)
-            .ok_or_else(|| anyhow!("Account '{wanted}' not found"))
+            .ok_or_else(|| GtunnelError::not_found(format!("Account '{wanted}' not found")).into())
     }
 
     pub fn add_account(&mut self, account: Account) -> Result<()> {
@@ -152,7 +153,7 @@ impl Config {
             .accounts
             .iter()
             .position(|a| a.name == name)
-            .ok_or_else(|| anyhow!("Account '{name}' not found"))?;
+            .ok_or_else(|| GtunnelError::not_found(format!("Account '{name}' not found")))?;
         let removed = self.accounts.remove(idx);
         if self.selected_account == name {
             self.selected_account = self
@@ -166,7 +167,7 @@ impl Config {
 
     pub fn select_account(&mut self, name: &str) -> Result<()> {
         if !self.accounts.iter().any(|a| a.name == name) {
-            bail!("Account '{name}' not found");
+            return Err(GtunnelError::not_found(format!("Account '{name}' not found")).into());
         }
         self.selected_account = name.to_string();
         Ok(())

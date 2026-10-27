@@ -130,7 +130,7 @@ fn the_probe_carries_the_accounts_configuration_and_project() {
 fn a_logged_out_account_without_a_terminal_fails_and_never_starts_a_login() {
     let h = Harness::new(false);
     let out = h.run(&["list"]);
-    assert_eq!(out.status.code(), Some(1), "stderr: {}", stderr(&out));
+    assert_eq!(out.status.code(), Some(4), "stderr: {}", stderr(&out));
     let err = stderr(&out);
     assert!(
         err.contains("gtunnel needs a logged-in Google account"),

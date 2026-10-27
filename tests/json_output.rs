@@ -49,13 +49,17 @@ zone = "europe-west1-b"
 
 impl Harness {
     fn new() -> Self {
+        Self::with_stub(STUB)
+    }
+
+    fn with_stub(stub: &str) -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
         fs::create_dir_all(root.join("bin")).unwrap();
         fs::create_dir_all(root.join("config")).unwrap();
 
         let gcloud = root.join("bin/gcloud");
-        fs::write(&gcloud, STUB).unwrap();
+        fs::write(&gcloud, stub).unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -73,6 +77,10 @@ impl Harness {
     }
 
     fn run(&self, args: &[&str]) -> Output {
+        self.run_env(args, &[])
+    }
+
+    fn run_env(&self, args: &[&str], env: &[(&str, &str)]) -> Output {
         let root = self.dir.path();
         let path = format!(
             "{}:/usr/bin:/bin:/usr/sbin:/sbin",
@@ -84,6 +92,7 @@ impl Harness {
             .env("HOME", root)
             .env("GTUNNEL_CONFIG_DIR", root.join("config"))
             .env("GTUNNEL_NO_NOTIFY", "1")
+            .envs(env.iter().copied())
             .stdin(Stdio::null())
             .output()
             .expect("run gtunnel")
@@ -268,4 +277,122 @@ fn a_live_run_with_a_ttl_says_when_it_stops() {
     assert_eq!(tail.len(), 6, "HH:MM and the bracket: {tail:?}");
     assert!(bytes[0].is_ascii_digit() && bytes[1].is_ascii_digit() && bytes[2] == b':');
     assert!(bytes[3].is_ascii_digit() && bytes[4].is_ascii_digit() && bytes[5] == b']');
+}
+
+// A logged-out gcloud, and one whose every other call fails
+const STUB_LOGGED_OUT: &str = r#"#!/bin/sh
+echo "ERROR: you do not currently have an active account selected" >&2
+exit 1
+"#;
+
+const STUB_BROKEN: &str = r#"#!/bin/sh
+case "$1 $2" in
+  "auth print-access-token") echo stub-token; exit 0 ;;
+esac
+echo "ERROR: quota exceeded" >&2
+exit 1
+"#;
+
+// The JSON error object of a failed command, with its exit code
+fn json_error(out: &Output) -> (String, String, i32) {
+    let val: serde_json::Value = serde_json::from_str(&stdout(out))
+        .unwrap_or_else(|e| panic!("stdout should be json ({e}): {}", stdout(out)));
+    let err = val.get("error").expect("an error object");
+    assert_eq!(
+        err.as_object().unwrap().len(),
+        2,
+        "only kind and message: {err}"
+    );
+    (
+        err["kind"].as_str().expect("kind").to_string(),
+        err["message"].as_str().expect("message").to_string(),
+        out.status.code().expect("an exit code"),
+    )
+}
+
+#[test]
+fn an_unknown_account_under_json_is_not_found_with_exit_3() {
+    let h = Harness::new();
+    let out = h.run(&["--account", "nope", "list", "--json"]);
+    let (kind, message, code) = json_error(&out);
+    assert_eq!(kind, "not_found");
+    assert_eq!(message, "Account 'nope' not found");
+    assert_eq!(code, 3);
+    assert!(stderr(&out).is_empty(), "stderr: {}", stderr(&out));
+}
+
+#[test]
+fn account_list_and_doctor_json_report_an_unknown_account_the_same_way() {
+    let h = Harness::new();
+    let out = h.run(&["--account", "nope", "doctor", "--json"]);
+    let (kind, _, code) = json_error(&out);
+    assert_eq!((kind.as_str(), code), ("not_found", 3));
+}
+
+#[test]
+fn an_unknown_tunnel_without_json_is_prose_on_stderr_with_exit_3() {
+    let h = Harness::new();
+    for verb in ["start", "stop"] {
+        let out = h.run(&[verb, "ghost"]);
+        assert_eq!(out.status.code(), Some(3), "{verb}: {}", stderr(&out));
+        assert!(stdout(&out).is_empty(), "{verb}: {}", stdout(&out));
+        assert!(
+            stderr(&out).contains("Tunnel 'ghost' not found for account 'demo'"),
+            "{verb}: {}",
+            stderr(&out)
+        );
+    }
+}
+
+#[test]
+fn a_bad_log_level_under_json_is_a_usage_error_with_exit_2() {
+    let h = Harness::new();
+    let out = h.run_env(&["list", "--json"], &[("GTUNNEL_LOG_LEVEL", "loud")]);
+    let (kind, message, code) = json_error(&out);
+    assert_eq!(kind, "usage");
+    assert!(message.starts_with("GTUNNEL_LOG_LEVEL: "), "{message}");
+    assert_eq!(code, 2);
+}
+
+#[test]
+fn a_bad_target_is_a_usage_error_with_exit_2() {
+    let h = Harness::new();
+    let out = h.run(&["add", "x", "no-port"]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(stderr(&out).contains("expected INSTANCE:PORT"));
+}
+
+#[test]
+fn a_logged_out_gcloud_under_json_is_an_auth_error_with_exit_4() {
+    let h = Harness::with_stub(STUB_LOGGED_OUT);
+    let out = h.run(&["list", "--json"]);
+    let (kind, message, code) = json_error(&out);
+    assert_eq!(kind, "auth");
+    assert!(message.contains("gcloud auth login"), "{message}");
+    assert_eq!(code, 4);
+}
+
+#[test]
+fn a_failing_gcloud_call_is_a_gcloud_error_with_exit_5() {
+    let h = Harness::with_stub(STUB_BROKEN);
+    let out = h.run(&["init"]);
+    assert_eq!(out.status.code(), Some(5), "{}", stderr(&out));
+    assert!(stderr(&out).contains("quota exceeded"), "{}", stderr(&out));
+}
+
+#[test]
+fn an_unreadable_config_under_json_is_internal_with_exit_1() {
+    let h = Harness::new();
+    fs::write(h.dir.path().join("config/config.toml"), "not = [valid").unwrap();
+    let out = h.run(&["list", "--json"]);
+    let (kind, _, code) = json_error(&out);
+    assert_eq!((kind.as_str(), code), ("internal", 1));
+}
+
+#[test]
+fn a_successful_json_command_still_exits_0_with_no_error_object() {
+    let h = Harness::new();
+    let out = h.run(&["list", "--json"]);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(!stdout(&out).contains("\"error\""));
 }

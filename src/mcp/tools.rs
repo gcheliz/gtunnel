@@ -345,7 +345,7 @@ pub async fn execute_tool(
             // protocol fault: `{e:#}` keeps the whole cause chain
             Ok(match start_tunnel(account, tunnel_name).await {
                 Ok(_) => ToolCallResult::text(format!("Started tunnel '{tunnel_name}'")),
-                Err(e) => ToolCallResult::error(format!("{e:#}")),
+                Err(e) => ToolCallResult::failure(&e),
             })
         }
         "gtunnel_stop_tunnel" => {
@@ -371,7 +371,7 @@ pub async fn execute_tool(
             }
             Ok(match stop_tunnel(account, tunnel_name).await {
                 Ok(()) => ToolCallResult::text(format!("Stopped tunnel '{tunnel_name}'")),
-                Err(e) => ToolCallResult::error(format!("{e:#}")),
+                Err(e) => ToolCallResult::failure(&e),
             })
         }
         "gtunnel_restart_tunnel" => {
@@ -380,7 +380,7 @@ pub async fn execute_tool(
             let account = get_str("account");
             Ok(match restart_tunnel(account, tunnel_name).await {
                 Ok(_) => ToolCallResult::text(format!("Restarted tunnel '{tunnel_name}'")),
-                Err(e) => ToolCallResult::error(format!("{e:#}")),
+                Err(e) => ToolCallResult::failure(&e),
             })
         }
         "gtunnel_get_status" => {
@@ -517,7 +517,7 @@ pub async fn execute_tool(
                 Ok(_) => ToolCallResult::text(format!(
                     "Added tunnel '{tunnel_name}' for target '{target}'"
                 )),
-                Err(e) => ToolCallResult::error(format!("{e:#}")),
+                Err(e) => ToolCallResult::failure(&e),
             })
         }
         "gtunnel_run_tunnel" => {
@@ -540,7 +540,7 @@ pub async fn execute_tool(
             let account = get_str("account");
             Ok(match delete_tunnel(account, tunnel_name).await {
                 Ok(()) => ToolCallResult::text(format!("Deleted tunnel '{tunnel_name}'")),
-                Err(e) => ToolCallResult::error(format!("{e:#}")),
+                Err(e) => ToolCallResult::failure(&e),
             })
         }
         "gtunnel_list_accounts" => {

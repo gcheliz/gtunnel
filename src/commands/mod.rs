@@ -8,6 +8,8 @@ pub mod supervise;
 pub mod watch;
 
 use anyhow::{Context, Result};
+
+use crate::error::GtunnelError;
 use std::io::Write;
 
 use crate::config::{load_config, Account, Config};
@@ -193,7 +195,10 @@ pub fn find_tunnel(state: &TunnelState, name: &str, account: &str) -> Result<Per
     state
         .find_for_account(name, account)
         .cloned()
-        .with_context(|| format!("Tunnel '{name}' not found for account '{account}'"))
+        .ok_or_else(|| {
+            GtunnelError::not_found(format!("Tunnel '{name}' not found for account '{account}'"))
+                .into()
+        })
 }
 
 pub async fn tunnel_status(t: &PersistentTunnel) -> TunnelStatus {
