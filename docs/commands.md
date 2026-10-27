@@ -649,6 +649,21 @@ gtunnel:
   - Service com.gtunnel.dev.old-tunnel is installed but no tunnel in tunnels.toml owns it, so it may still hold a local port at login
 ```
 
+A key in `config.toml` or `tunnels.toml` that gtunnel does not read is machine-wide too, one
+finding per key with its path. Loading ignores such a key, so nothing else shows it; the
+usual cause is `log_level` typed below an `[[accounts]]` table, where TOML files it under that
+table. Nothing is removed for you: edit the file, or fix it in the config page, which refuses
+to save one. This is the output for that file, with `gcloud_configuration = "scratch-docs"`
+naming a gcloud configuration that does not exist:
+
+```
+$ gtunnel doctor
+gtunnel:
+  ! config.toml has a key gtunnel ignores: accounts[0].log_level. Edit the file and remove or move it
+account scratch-docs:
+  ! gcloud has no usable credentials for account 'scratch-docs'. Run `gcloud auth login`
+```
+
 | Flag | Effect |
 |---|---|
 | `--fix` | Fix what can be fixed safely |
