@@ -75,6 +75,12 @@ pub enum Finding {
     },
     // One job for the whole machine, so it carries no account or tunnel
     WatchdogMissing,
+    // An account made before `run` and `run-*` were reserved. It keeps
+    // working; only its log files can collide with a run's, so the person
+    // decides when to rename it
+    ReservedAccountName {
+        account: String,
+    },
     // The tunnel's own log says it ran out of descriptors, with whoever is
     // holding its connections now. None when lsof is not there to ask
     DescriptorsExhausted {
@@ -191,6 +197,12 @@ impl Finding {
                      then `gtunnel restart {tunnel}`"
                 )
             }
+            Finding::ReservedAccountName { account } => format!(
+                "Account '{account}' has a reserved name: run logs are written as \
+                 run-<account>-<name>.log, so its tunnel logs can share a file with a run. \
+                 Rename the account: add one under a new name, `gtunnel move` its tunnels, then \
+                 `gtunnel account remove {account}`"
+            ),
             Finding::WatchdogMissing => format!(
                 "No watchdog is installed, so a tunnel that wedges stays wedged until someone \
                  notices. Run `gtunnel watch install` to check every {}s",
@@ -212,6 +224,17 @@ pub fn descriptors_exhausted(tunnel: &str, log: &str, holders: &[Holder]) -> Opt
         tunnel: tunnel.to_string(),
         holder: holders.first().cloned(),
     })
+}
+
+/// Accounts the name rule would refuse today. Pure, because it reads only the
+/// config and needs neither gcloud nor the network.
+pub fn reserved_accounts(config: &Config) -> Vec<String> {
+    config
+        .accounts
+        .iter()
+        .filter(|a| crate::config::is_reserved_account_name(&a.name))
+        .map(|a| a.name.clone())
+        .collect()
 }
 
 // The watchdog is machine-wide, so doctor reports it once rather than once per
@@ -455,6 +478,10 @@ pub async fn run_doctor(
         state.tunnels.len(),
     ) {
         out.push((String::new(), finding));
+    }
+
+    for account in reserved_accounts(cfg) {
+        out.push((account.clone(), Finding::ReservedAccountName { account }));
     }
 
     for (record, alive) in list_ephemeral().unwrap_or_default() {
@@ -1376,6 +1403,23 @@ mod tests {
             .describe();
         assert!(unknown.contains("k8s"), "{unknown}");
         assert!(!unknown.contains("my-client"), "{unknown}");
+    }
+
+    #[test]
+    fn doctor_names_an_account_whose_name_is_now_reserved() {
+        let mut cfg = Config::default();
+        for name in ["run", "run-eu", "runner", "dev"] {
+            let mut a = account();
+            a.name = name.to_string();
+            // Pushed directly: add_account would refuse the reserved ones
+            cfg.accounts.push(a);
+        }
+        assert_eq!(reserved_accounts(&cfg), vec!["run", "run-eu"]);
+        let finding = Finding::ReservedAccountName {
+            account: "run".to_string(),
+        };
+        assert!(!finding.fixable());
+        assert!(finding.describe().contains("Rename the account"));
     }
 
     // The watchdog is what turns the breaker into something that acts while

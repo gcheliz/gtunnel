@@ -884,8 +884,16 @@ gtunnel account remove <name>
 ```
 
 `add` reads the project and default zone from an existing gcloud configuration, so an account
-is never a second place to type what gcloud already knows. `edit` changes only what it is
-given:
+is never a second place to type what gcloud already knows. An account name is 1-16 characters
+of `a-z`, `0-9` and `-`, starting with a letter:
+
+| Name | Allowed | Why |
+|---|---|---|
+| `run`, `run-eu` | no | `run` and `run-*` are reserved: a run logs to `run-<account>-<name>.log`, which an account of that name could share with a declared tunnel |
+| `runner`, `prod-run` | yes | only `run` itself and the `run-` prefix collide |
+
+An account made before the rule keeps loading and working; `gtunnel doctor` names it and says
+to rename it. `edit` changes only what it is given:
 
 ```
 $ gtunnel account edit dev --zone europe-west4-a
@@ -1076,6 +1084,9 @@ missing watchdog; [troubleshooting.md](troubleshooting.md#leftovers) lists each 
 re-checks the claim immediately before each removal, so a tunnel started during the scan is
 left alone. Findings it cannot fix, such as a missing firewall rule, are printed with the
 exact command that fixes them.
+
+A reserved account name (`run` or `run-*`, see `account add`) is reported the same way and is
+never fixed for you: renaming an account means adding one and moving its tunnels.
 
 The report comes first, then the question; a declined one changes nothing. The samples
 below are written from the format strings in `src/doctor.rs`, since a scan reaches GCP:
