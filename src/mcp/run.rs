@@ -168,6 +168,25 @@ pub(crate) fn live_run_log(
     }))
 }
 
+/// The stdout and stderr handles of a launch, on a log that holds nothing of
+/// an earlier one. A name is reused (the TTL ends a run and the agent launches
+/// it again), and a log that kept appending would hand the next reader the
+/// last run's errors as if they were this one's. Truncated once, here, and not
+/// through either handle: two descriptors each keep their own offset, so
+/// truncating on both opens would let the second overwrite the first's output.
+/// The file is left in place when the run ends, so `gtunnel logs` still reads
+/// it until the name is launched again.
+fn fresh_run_log(path: &std::path::Path) -> anyhow::Result<(std::fs::File, std::fs::File)> {
+    crate::daemon::reset_log(path)?;
+    let open = || {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+    };
+    Ok((open()?, open()?))
+}
+
 /// Start `gtunnel run` as a process that outlives this one, and answer only
 /// once it has published its record. The error carries its kind, so a failed
 /// launch reaches the caller through `ToolCallResult::failure` like every
@@ -184,15 +203,8 @@ pub async fn launch(account: &str, req: &RunRequest) -> anyhow::Result<Value> {
         std::fs::create_dir_all(logs)
             .map_err(|e| anyhow!("Cannot create {}: {e}", logs.display()))?;
     }
-    let open = || {
-        std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)
-    };
-    let (out, err) = open()
-        .and_then(|out| open().map(|err| (out, err)))
-        .map_err(|e| anyhow!("Cannot open {}: {e}", log_path.display()))?;
+    let (out, err) =
+        fresh_run_log(&log_path).map_err(|e| anyhow!("Cannot open {}: {e}", log_path.display()))?;
 
     // Its own process group, so a signal aimed at the MCP server's group (a
     // closed terminal, a client killing its tree) does not take the tunnel
@@ -303,6 +315,42 @@ mod tests {
 
     fn args(v: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
         v.as_object().cloned().expect("an object")
+    }
+
+    #[test]
+    fn launching_a_run_name_again_leaves_only_the_second_launchs_output() {
+        use std::io::Write;
+        let _dir = crate::config::testing::TempConfigDir::new();
+        let path = run_log_path("dev", "db").unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+
+        let (mut out, _err) = fresh_run_log(&path).unwrap();
+        writeln!(out, "first launch").unwrap();
+        drop(out);
+
+        let (mut out, mut err) = fresh_run_log(&path).unwrap();
+        writeln!(out, "second stdout").unwrap();
+        writeln!(err, "second stderr").unwrap();
+
+        let log = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(log, "second stdout\nsecond stderr\n");
+    }
+
+    #[test]
+    fn a_runs_log_is_still_there_once_its_handles_are_closed() {
+        use std::io::Write;
+        let _dir = crate::config::testing::TempConfigDir::new();
+        let path = run_log_path("dev", "db").unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+
+        let (mut out, err) = fresh_run_log(&path).unwrap();
+        writeln!(out, "gtunnel: ttl expired").unwrap();
+        drop((out, err));
+
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "gtunnel: ttl expired\n"
+        );
     }
 
     #[test]
