@@ -261,6 +261,9 @@ pub async fn expose_tunnel(account: Option<&str>, req: &ExposeRequest<'_>) -> Re
         ))
     })?;
     let domain = expose.domain(req.domain)?.clone();
+    // Before the route: the target is stored as typed, but a bad one must not
+    // leave a route and a record behind
+    crate::tunnel::normalize_local_target(req.target)?;
 
     // Read to choose a relay port before the route is created; the locked
     // update below re-checks both the name and the port
