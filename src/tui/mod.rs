@@ -32,6 +32,9 @@ enum Msg {
     ProjectsFailed(String, String),
     Configurations(Vec<app::ConfigurationChoice>),
     ConfigurationsFailed(String),
+    // The account and the project the zones were fetched for
+    Zones(String, String, Vec<String>),
+    ZonesFailed(String, String, String),
     Tick,
     // The leading number is the generation the round was begun under; a result
     // whose generation is no longer the poller's current one is dropped
@@ -71,6 +74,16 @@ fn configurations_msg(result: Result<Vec<app::ConfigurationChoice>>) -> Msg {
     match result {
         Ok(list) => Msg::Configurations(list),
         Err(e) => Msg::ConfigurationsFailed(format!("{e:#}")),
+    }
+}
+
+// Same seam as `projects_msg`, and the project rides along too: it is the one
+// the dialog chose, which a step back can change before the list lands
+fn zones_msg(account: &str, project: &str, result: Result<Vec<String>>) -> Msg {
+    let (account, project) = (account.to_string(), project.to_string());
+    match result {
+        Ok(zones) => Msg::Zones(account, project, zones),
+        Err(e) => Msg::ZonesFailed(account, project, format!("{e:#}")),
     }
 }
 
@@ -374,6 +387,16 @@ async fn event_loop(
                         let _ = tx.send(configurations_msg(ops::load_configurations().await));
                     });
                 }
+                if app.want_zones {
+                    app.want_zones = false;
+                    let account = app.account_draft.name.clone();
+                    let project = app.account_draft.project.clone();
+                    let tx = tx.clone();
+                    tokio::spawn(async move {
+                        let result = ops::load_zones(&account, &project).await;
+                        let _ = tx.send(zones_msg(&account, &project, result));
+                    });
+                }
                 if app.want_projects {
                     app.want_projects = false;
                     let account = app.account_draft.name.clone();
@@ -423,6 +446,10 @@ async fn event_loop(
             Msg::ProjectsFailed(account, reason) => app.projects_failed(&account, &reason),
             Msg::Configurations(list) => app.configurations_arrived(list),
             Msg::ConfigurationsFailed(reason) => app.configurations_failed(&reason),
+            Msg::Zones(account, project, zones) => app.zones_arrived(&account, &project, zones),
+            Msg::ZonesFailed(account, project, reason) => {
+                app.zones_failed(&account, &project, &reason)
+            }
             Msg::OpDone(result) => {
                 // Rounds begun for the previous account must not land in the
                 // new one's list

@@ -1650,6 +1650,7 @@ fn every_form_field_has_a_description() {
         InputMode::AccountProject,
         InputMode::AccountProjectPick,
         InputMode::AccountZone,
+        InputMode::AccountZonePick,
         InputMode::AddName,
         InputMode::AddInstance,
         InputMode::AddJumpHost,

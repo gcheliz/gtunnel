@@ -888,6 +888,7 @@ pub fn render(f: &mut Frame, app: &App) {
         InputMode::AddInstance => render_instance_picker(f, app),
         InputMode::AccountConfigurationPick => render_configuration_picker(f, app),
         InputMode::AccountProjectPick => render_project_picker(f, app),
+        InputMode::AccountZonePick => render_zone_picker(f, app),
         InputMode::AddDomain => render_domain_picker(f, app),
         InputMode::MoveTo => render_account_picker(f, app),
         mode => render_prompt(f, app, mode),
@@ -3070,6 +3071,22 @@ fn render_project_picker(f: &mut Frame, app: &App) {
             filter: &app.input,
             rows,
             selected: app.project_selected,
+            error: app.draft_error.as_deref(),
+        },
+    );
+}
+
+fn render_zone_picker(f: &mut Frame, app: &App) {
+    let rows: Vec<String> = app.filtered_zones().iter().map(|z| z.to_string()).collect();
+    render_picker(
+        f,
+        Picker {
+            title: &step_title("Edit account", InputMode::AccountZonePick, app),
+            prompt: InputMode::AccountZonePick.prompt(),
+            description: InputMode::AccountZonePick.describe(),
+            filter: &app.input,
+            rows,
+            selected: app.zone_selected,
             error: app.draft_error.as_deref(),
         },
     );

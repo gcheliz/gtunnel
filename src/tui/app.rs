@@ -328,6 +328,8 @@ pub enum InputMode {
     // state until then, and whenever the list cannot be had
     AccountProjectPick,
     AccountZone,
+    // The zone step once the project's zones have arrived
+    AccountZonePick,
     // The accounts page's own confirmation. `Confirm` answers for the list,
     // where `y` deletes the selected tunnel, and one mode cannot mean both
     AccountConfirm,
@@ -370,6 +372,7 @@ impl InputMode {
             InputMode::AccountProject => "Project (Enter keeps it):",
             InputMode::AccountProjectPick => "Project (type to filter):",
             InputMode::AccountZone => "Default zone (Enter keeps it):",
+            InputMode::AccountZonePick => "Default zone (type to filter):",
             InputMode::AddName => "Name:",
             InputMode::AddInstance => "Instance (type to filter):",
             InputMode::AddJumpHost => "Host it reaches (Enter for the instance itself):",
@@ -404,7 +407,9 @@ impl InputMode {
             InputMode::AccountProject | InputMode::AccountProjectPick => {
                 "The GCP project every tunnel and API call of this account targets"
             }
-            InputMode::AccountZone => "Used when a tunnel names an instance without a zone",
+            InputMode::AccountZone | InputMode::AccountZonePick => {
+                "Used when a tunnel names an instance without a zone"
+            }
             InputMode::AddName => {
                 "What it connects to, never the account: `postgres`, `k8s`. \
                  Up to 40 of a-z 0-9 -"
@@ -439,7 +444,7 @@ impl InputMode {
             InputMode::AccountConfiguration | InputMode::AccountConfigurationPick => Some((1, 2)),
             InputMode::AccountName => Some((2, 2)),
             InputMode::AccountProject | InputMode::AccountProjectPick => Some((1, 2)),
-            InputMode::AccountZone => Some((2, 2)),
+            InputMode::AccountZone | InputMode::AccountZonePick => Some((2, 2)),
             InputMode::AddName if access => Some((1, 5)),
             InputMode::AddInstance => Some((2, 5)),
             InputMode::AddJumpHost => Some((3, 5)),
@@ -657,11 +662,13 @@ impl Drop for Pause {
 const LIST_FAILURE: &str = "Could not list instances: ";
 const PROJECT_LIST_FAILURE: &str = "Could not list projects: ";
 const CONFIGURATION_LIST_FAILURE: &str = "Could not list gcloud configurations: ";
+const ZONE_LIST_FAILURE: &str = "Could not list zones: ";
 
 fn is_list_failure(status: &str) -> bool {
     status.starts_with(LIST_FAILURE)
         || status.starts_with(PROJECT_LIST_FAILURE)
         || status.starts_with(CONFIGURATION_LIST_FAILURE)
+        || status.starts_with(ZONE_LIST_FAILURE)
 }
 
 pub struct App {
@@ -736,6 +743,9 @@ pub struct App {
     // The gcloud configurations the add dialog offers, and the cursor in them
     pub configurations_list: Vec<ConfigurationChoice>,
     pub configuration_selected: usize,
+    // The zones of the project the edit dialog chose, and the cursor in them
+    pub zones_list: Vec<String>,
+    pub zone_selected: usize,
     pub domains: Vec<String>,
     pub domain_selected: usize,
     pub confirm_message: Option<String>,
@@ -761,6 +771,8 @@ pub struct App {
     pub want_projects: bool,
     // Set when the add dialog opens, so the loop fetches the configurations
     pub want_configurations: bool,
+    // Set when the edit dialog reaches the zone, so the loop fetches the zones
+    pub want_zones: bool,
     // Which wording the edit dialog uses: an Expose tunnel edits its local
     // target, an Access one its `remote:local` ports
     pub edit_is_expose: bool,
@@ -835,6 +847,8 @@ impl App {
             project_selected: 0,
             configurations_list: Vec::new(),
             configuration_selected: 0,
+            zones_list: Vec::new(),
+            zone_selected: 0,
             domains: Vec::new(),
             domain_selected: 0,
             confirm_message: None,
@@ -847,6 +861,7 @@ impl App {
             want_instances: false,
             want_projects: false,
             want_configurations: false,
+            want_zones: false,
             edit_is_expose: false,
             force_refresh: false,
             follow_up_at: None,
@@ -991,6 +1006,66 @@ impl App {
         self.configurations_list = list;
         self.draft_error = None;
         self.input_mode = InputMode::AccountConfigurationPick;
+    }
+
+    // The zones are the project's chosen one step back, which need not be the
+    // saved one; a list for any other project, account or closed dialog is
+    // dropped, and one that arrives mid-typing leaves the field to the person
+    fn awaiting_zones_for(&self, account: &str, project: &str) -> bool {
+        self.input_mode == InputMode::AccountZone
+            && self.account_draft.name == account
+            && self.account_draft.project == project
+    }
+
+    pub fn zones_arrived(&mut self, account: &str, project: &str, list: Vec<String>) {
+        if !self.awaiting_zones_for(account, project) {
+            return;
+        }
+        if list.is_empty() {
+            self.zones_failed(account, project, "the project has no zone");
+            return;
+        }
+        let current = self.zones.get(account).cloned().unwrap_or_default();
+        if self.input != current {
+            return;
+        }
+        let mut list = list;
+        self.zone_selected = match list.iter().position(|z| *z == current) {
+            Some(i) => i,
+            // Enter must keep the zone the account has, listed or not
+            None if !current.is_empty() => {
+                list.insert(0, current);
+                0
+            }
+            None => 0,
+        };
+        self.zones_list = list;
+        self.input.clear();
+        self.draft_error = None;
+        self.input_mode = InputMode::AccountZonePick;
+    }
+
+    // The text field stays, pre-filled, as it does for the project list
+    pub fn zones_failed(&mut self, account: &str, project: &str, reason: &str) {
+        if !self.awaiting_zones_for(account, project) {
+            return;
+        }
+        let message = format!("{ZONE_LIST_FAILURE}{reason}");
+        self.draft_error = Some(format!("{message}. Type the zone instead"));
+        self.set_status(message);
+        self.status_error = true;
+    }
+
+    // The text field, pre-filled with the saved zone, until the list arrives
+    fn open_zone_step(&mut self) {
+        self.input = self
+            .zones
+            .get(&self.account_draft.name)
+            .cloned()
+            .unwrap_or_default();
+        self.want_zones = true;
+        self.zones_list.clear();
+        self.input_mode = InputMode::AccountZone;
     }
 
     // The text field stays, so a gcloud that cannot list never blocks an add
@@ -1272,6 +1347,7 @@ impl App {
             InputMode::AddInstance => return self.pick_instance(key.code),
             InputMode::AccountConfigurationPick => return self.pick_configuration(key.code),
             InputMode::AccountProjectPick => return self.pick_project(key.code),
+            InputMode::AccountZonePick => return self.pick_zone(key.code),
             InputMode::MoveTo => return self.pick_move_account(key.code),
             InputMode::AddDomain => return self.pick_domain(key.code),
             mode if mode.is_text() => return self.type_line(key.code),
@@ -2134,12 +2210,7 @@ impl App {
             InputMode::AccountProject => {
                 self.account_draft.project = value.trim().to_string();
                 self.clear_list_failure();
-                self.input = self
-                    .zones
-                    .get(&self.account_draft.name)
-                    .cloned()
-                    .unwrap_or_default();
-                self.input_mode = InputMode::AccountZone;
+                self.open_zone_step();
                 None
             }
             InputMode::AccountZone => {
@@ -2429,13 +2500,59 @@ impl App {
                 };
                 self.account_draft.project = project;
                 self.clear_list_failure();
-                self.input = self
-                    .zones
-                    .get(&self.account_draft.name)
-                    .cloned()
-                    .unwrap_or_default();
                 self.draft_error = None;
+                self.open_zone_step();
+            }
+            _ => {}
+        }
+        None
+    }
+
+    pub fn filtered_zones(&self) -> Vec<&str> {
+        let needle = self.input.to_lowercase();
+        self.zones_list
+            .iter()
+            .filter(|z| needle.is_empty() || z.to_lowercase().contains(&needle))
+            .map(String::as_str)
+            .collect()
+    }
+
+    fn pick_zone(&mut self, code: KeyCode) -> Option<Op> {
+        match code {
+            KeyCode::Esc => {
+                self.cancel_dialog();
+                self.input_mode = InputMode::Accounts;
+            }
+            KeyCode::Backspace => {
+                self.input.pop();
+                self.zone_selected = 0;
+            }
+            KeyCode::Char(c) => {
+                self.input.push(c);
+                self.zone_selected = 0;
+            }
+            KeyCode::Down => {
+                let last = self.filtered_zones().len().saturating_sub(1);
+                self.zone_selected = (self.zone_selected + 1).min(last);
+            }
+            KeyCode::Up => self.zone_selected = self.zone_selected.saturating_sub(1),
+            KeyCode::Enter => {
+                let chosen = self
+                    .filtered_zones()
+                    .get(self.zone_selected)
+                    .map(|z| z.to_string());
+                let zone = match chosen {
+                    Some(z) => z,
+                    // A filter that matches nothing is the person naming a
+                    // zone the list lacks: take it
+                    None if !self.input.trim().is_empty() => self.input.trim().to_string(),
+                    None => return None,
+                };
+                self.clear_list_failure();
+                // The text step is what submits, so the picker hands it the zone
+                self.input = zone;
                 self.input_mode = InputMode::AccountZone;
+                return self.advance();
             }
             _ => {}
         }

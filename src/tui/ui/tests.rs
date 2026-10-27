@@ -3026,6 +3026,17 @@ fn dialog_cases() -> Vec<(&'static str, App, Vec<&'static str>)> {
         ),
     );
     let mut app = base();
+    app.input_mode = InputMode::AccountZonePick;
+    app.zones_list = (0..12).map(|i| format!("sample-zone{i:02}-a")).collect();
+    app.zone_selected = 5;
+    add(
+        "zones",
+        (
+            app,
+            vec!["Default zone (type to filter):", "6/12", "sample-zone05-a"],
+        ),
+    );
+    let mut app = base();
     app.input_mode = InputMode::AddDomain;
     app.domain_selected = 3;
     add(

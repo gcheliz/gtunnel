@@ -367,3 +367,90 @@ fn no_configurations_leaves_the_text_field_with_the_reason() {
     let said = app.draft_error.clone().expect("a reason beside the field");
     assert!(said.contains("gcloud init"), "{said}");
 }
+
+fn zones() -> Vec<String> {
+    ["europe-west1-c", "europe-west4-a", "us-central1-a"]
+        .map(str::to_string)
+        .to_vec()
+}
+
+// Opens the edit dialog on dev and keeps its project, which is where the
+// zone step asks for the project's zones
+fn zone_step() -> App {
+    let mut app = page_app();
+    app.handle_key(key(KeyCode::Char('e')));
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(app.input_mode, InputMode::AccountZone);
+    assert!(app.want_zones, "reaching the zone asks for the list");
+    app
+}
+
+// dev's zone is europe-west1-b, which the list lacks: Enter must still keep it
+#[test]
+fn the_zone_picker_preselects_the_current_zone_even_when_unlisted() {
+    let mut app = zone_step();
+    app.zones_arrived("dev", "example-dev-1a2b", zones());
+    assert_eq!(app.input_mode, InputMode::AccountZonePick);
+    assert_eq!(app.filtered_zones()[app.zone_selected], "europe-west1-b");
+    let page = rows(&app, 100, 30).join("\n");
+    assert!(page.contains("Edit account 2/2"), "{page}");
+    assert_eq!(app.handle_key(key(KeyCode::Enter)), None, "nothing changed");
+    assert_eq!(app.input_mode, InputMode::Accounts);
+}
+
+#[test]
+fn typing_narrows_the_zones_and_enter_sends_the_pick() {
+    let mut app = zone_step();
+    app.zones_arrived("dev", "example-dev-1a2b", zones());
+    retype(&mut app, "europe-w");
+    assert_eq!(
+        app.filtered_zones(),
+        vec!["europe-west1-b", "europe-west1-c", "europe-west4-a"]
+    );
+    app.handle_key(key(KeyCode::Down));
+    app.handle_key(key(KeyCode::Down));
+    assert_eq!(
+        app.handle_key(key(KeyCode::Enter)),
+        Some(Op::AccountEdit(AccountEdit {
+            name: "dev".to_string(),
+            project: None,
+            zone: Some("europe-west4-a".to_string()),
+        }))
+    );
+}
+
+#[test]
+fn a_typed_zone_the_list_lacks_is_taken() {
+    let mut app = zone_step();
+    app.zones_arrived("dev", "example-dev-1a2b", zones());
+    retype(&mut app, "asia-east1-a");
+    assert_eq!(
+        app.handle_key(key(KeyCode::Enter)),
+        Some(Op::AccountEdit(AccountEdit {
+            name: "dev".to_string(),
+            project: None,
+            zone: Some("asia-east1-a".to_string()),
+        }))
+    );
+}
+
+// The zones belong to the project chosen one step back, so a list fetched
+// for any other project would offer zones the account cannot use
+#[test]
+fn a_zone_list_for_another_project_is_dropped() {
+    let mut app = zone_step();
+    app.zones_arrived("dev", "example-prod-3c4d", zones());
+    assert_eq!(app.input_mode, InputMode::AccountZone);
+    app.zones_failed("dev", "example-prod-3c4d", "denied");
+    assert_eq!(app.draft_error, None);
+}
+
+#[test]
+fn a_failed_zone_list_keeps_the_text_field() {
+    let mut app = zone_step();
+    app.zones_failed("dev", "example-dev-1a2b", "permission denied");
+    assert_eq!(app.input_mode, InputMode::AccountZone);
+    assert_eq!(app.input, "europe-west1-b", "still pre-filled");
+    let said = app.draft_error.clone().expect("a reason beside the field");
+    assert!(said.contains("Type the zone instead"), "{said}");
+}
