@@ -1,10 +1,10 @@
 ---
 title: "Access and jump tunnels"
 subtitle: "One hop to a VM, two hops to a host only the VM can reach"
-date: "2026-10-24"
-team: "Platform Engineering"
+date: "2026-10-27"
+team: "gtunnel"
 audience: "Engineering"
-classification: "Internal"
+classification: "Public"
 tags: [architecture, gcp]
 ---
 

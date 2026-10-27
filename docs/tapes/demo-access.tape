@@ -1,4 +1,5 @@
-# The life of an Access tunnel: add, start, stop, delete.
+# The life of an Access tunnel: add, start, stop, delete, and the error a
+# mistyped name gets.
 #
 # The hidden preamble builds a throwaway account in a temporary directory and
 # puts a stand-in `gcloud` on PATH, so the recording needs no GCP project. Every
@@ -9,6 +10,9 @@
 # The preamble also wraps `ps` to drop foreign `start-iap-tunnel` processes, so
 # the listing shows this recording's tunnel rather than whatever else happens to
 # be tunnelling on the machine doing the recording.
+#
+# `target/release` goes first on PATH, so the recording shows the binary this
+# checkout builds (`cargo build --release`), never an older installed one.
 #
 #   vhs docs/tapes/demo-access.tape
 #
@@ -29,9 +33,9 @@ Type `printf '#!/bin/sh\ncase "$1" in auth) echo ya29.demo-token ;; *) exec slee
 Enter
 Type `printf '#!/bin/sh\n/bin/ps "$@" | grep -v start-iap-tunnel || true\n' > "$GT/bin/ps" && chmod +x "$GT/bin/ps"`
 Enter
-Type `printf 'selected_account = "demo"\n[[accounts]]\nname = "demo"\ngcloud_configuration = "demo"\nproject = "acme-dev"\ndefault_zone = "europe-west1-b"\n' > "$GT/cfg/config.toml"`
+Type `printf 'selected_account = "demo"\n[[accounts]]\nname = "demo"\ngcloud_configuration = "demo"\nproject = "example-dev-1a2b"\ndefault_zone = "europe-west1-b"\n' > "$GT/cfg/config.toml"`
 Enter
-Type `export PATH="$GT/bin:$PATH" GTUNNEL_CONFIG_DIR="$GT/cfg" PS1="$ "`
+Type `export PATH="$PWD/target/release:$GT/bin:$PATH" GTUNNEL_CONFIG_DIR="$GT/cfg" PS1="$ "`
 Enter
 Type "clear"
 Enter
@@ -44,6 +48,11 @@ Enter
 Sleep 2s
 
 Type "gtunnel list"
+Sleep 400ms
+Enter
+Sleep 2500ms
+
+Type "gtunnel start dv"
 Sleep 400ms
 Enter
 Sleep 2500ms
