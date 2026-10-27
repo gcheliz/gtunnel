@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.28](https://github.com/gcheliz/gtunnel/compare/v0.1.27...v0.1.28) - 2026-10-27
+
+### Fixed
+
+- *(tui)* run one poller round at a time and bound every subprocess ([#77](https://github.com/gcheliz/gtunnel/pull/77))
+
 ## [0.1.27](https://github.com/gcheliz/gtunnel/compare/v0.1.26...v0.1.27) - 2026-10-27
 
 ### Added
