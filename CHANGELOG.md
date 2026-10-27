@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.53](https://github.com/gcheliz/gtunnel/compare/v0.1.52...v0.1.53) - 2026-10-27
+
+### Fixed
+
+- *(config)* reserve the account names run and run-* ([#139](https://github.com/gcheliz/gtunnel/pull/139))
+
 ## [0.1.52](https://github.com/gcheliz/gtunnel/compare/v0.1.51...v0.1.52) - 2026-10-27
 
 ### Fixed
