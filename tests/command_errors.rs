@@ -162,10 +162,38 @@ fn logs_nonexistent_tunnel_fails_with_actionable_error() {
 fn move_same_account_fails_with_rename_suggestion() {
     let h = Harness::new();
     let out = h.run(&["move", "db", "--to", "demo"]);
-    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(out.status.code(), Some(2));
     assert!(stderr(&out).contains(
         "Error: Tunnel 'db' is already on account 'demo'; use `gtunnel rename` to change its name"
     ));
+}
+
+#[test]
+fn add_of_an_existing_name_exits_2() {
+    let h = Harness::new();
+    let out = h.run(&["add", "db", "10.0.0.10:5432", "--via", "bastion"]);
+    assert_eq!(out.status.code(), Some(2), "stderr: {}", stderr(&out));
+    assert!(stderr(&out).contains("Error: Tunnel 'db' already exists for account 'demo'"));
+}
+
+// A gcloud that lists one configuration, so `account add` reaches the
+// duplicate check instead of stopping at an unknown configuration
+const CONFIGURATIONS_STUB: &str = r#"#!/bin/sh
+case "$1 $2" in
+  "config configurations")
+    echo '[{"name":"work","is_active":true,"properties":{"core":{"project":"example-dev-1a2b"},"compute":{"zone":"europe-west1-b"}}}]'
+    exit 0
+    ;;
+esac
+exit 0
+"#;
+
+#[test]
+fn account_add_of_an_existing_account_exits_2() {
+    let h = Harness::with_stub(CONFIGURATIONS_STUB);
+    let out = h.run(&["account", "add", "demo", "--configuration", "work"]);
+    assert_eq!(out.status.code(), Some(2), "stderr: {}", stderr(&out));
+    assert!(stderr(&out).contains("Error: Account 'demo' already exists"));
 }
 
 #[test]

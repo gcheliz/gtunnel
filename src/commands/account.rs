@@ -1,3 +1,4 @@
+use crate::error::GtunnelError;
 use anyhow::{bail, Context, Result};
 
 use super::{confirm, prompt};
@@ -44,7 +45,7 @@ pub async fn cmd_init() -> Result<()> {
     let name = prompt("Account name", Some(&chosen.name))?;
     validate_account_name(&name)?;
     if config.accounts.iter().any(|a| a.name == name) {
-        bail!("Account '{name}' already exists");
+        return Err(GtunnelError::usage(format!("Account '{name}' already exists")).into());
     }
 
     // Provisional: the project list is fetched with this account's gcloud

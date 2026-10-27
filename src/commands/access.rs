@@ -126,7 +126,11 @@ async fn save_tunnel(account: Option<&str>, req: &AddRequest<'_>) -> Result<Adde
     // locked update below is the check that holds
     let early = TunnelState::load()?;
     if early.find_for_account(name, &acct.name).is_some() {
-        bail!("Tunnel '{name}' already exists for account '{}'", acct.name);
+        return Err(GtunnelError::usage(format!(
+            "Tunnel '{name}' already exists for account '{}'",
+            acct.name
+        ))
+        .into());
     }
     early.check_label(&acct.name, name)?;
 
@@ -196,7 +200,10 @@ fn pick_local_port(state: &TunnelState, name: &str, requested: Option<u16>) -> R
             // A saved tunnel is named first when both hold the port: it is the
             // one `check_local_port` words, and the one a user can delete
             if let Some(run) = runs.get(&port).filter(|_| !saved.contains(&port)) {
-                bail!("Local port {port} is already used by the run '{run}'");
+                return Err(GtunnelError::usage(format!(
+                    "Local port {port} is already used by the run '{run}'"
+                ))
+                .into());
             }
             check_local_port(port, &used, local_port_is_free)?;
             Ok(port)
