@@ -372,3 +372,94 @@ fn stop_of_a_name_that_is_neither_tunnel_nor_run_is_not_found() {
         stderr(&out)
     );
 }
+
+// A relay block with placeholder values: enough to get past the no-relay
+// refusal, so the checks after it are the ones under test
+const RELAY_CONFIG: &str = r#"selected_account = "demo"
+
+[[accounts]]
+name = "demo"
+gcloud_configuration = "work"
+project = "example-dev-1a2b"
+default_zone = "europe-west1-b"
+
+[accounts.expose]
+relay_instance = "gtunnel-relay"
+relay_zone = "europe-west1-b"
+network = "default"
+default_domain = "example.com"
+
+[[accounts.expose.domains]]
+domain = "example.com"
+managed_zone = "example-zone"
+"#;
+
+// Every gcloud call is appended to a log beside the stub, so a test can say
+// that none was made
+const RECORDING_STUB: &str = r#"#!/bin/sh
+echo "$@" >> "$(dirname "$0")/calls.log"
+case "$1 $2" in
+  "auth print-access-token")
+    echo stub-token
+    exit 0
+    ;;
+esac
+exit 0
+"#;
+
+impl Harness {
+    fn with_relay(&self) {
+        fs::write(self.dir.path().join("config/config.toml"), RELAY_CONFIG).unwrap();
+    }
+
+    fn tunnels_toml(&self) -> String {
+        fs::read_to_string(self.dir.path().join("config/tunnels.toml")).unwrap()
+    }
+
+    fn gcloud_calls(&self) -> String {
+        fs::read_to_string(self.dir.path().join("bin/calls.log")).unwrap_or_default()
+    }
+}
+
+// The login check asks gcloud for a token before any command body runs; what
+// the refusal must precede is everything that touches the project
+fn assert_only_login_calls(h: &Harness) {
+    for call in h.gcloud_calls().lines() {
+        assert!(
+            call.starts_with("auth print-access-token"),
+            "a GCP call before the refusal: {call}"
+        );
+    }
+}
+
+#[test]
+fn run_public_with_no_relay_exits_2_with_the_same_message() {
+    let h = Harness::new();
+    let out = h.run(&["run", "web", "3000", "--public"]);
+    assert_eq!(out.status.code(), Some(2), "stderr: {}", stderr(&out));
+    assert!(stderr(&out).contains("Error: No relay for account 'demo'. Run `gtunnel relay up`"));
+}
+
+#[test]
+fn expose_of_an_invalid_local_target_exits_2_before_any_gcp_call() {
+    let h = Harness::with_stub(RECORDING_STUB);
+    h.with_relay();
+    let before = h.tunnels_toml();
+    let out = h.run(&["expose", "web", "localhost:99999"]);
+    assert_eq!(out.status.code(), Some(2), "stderr: {}", stderr(&out));
+    assert!(stderr(&out).contains("Invalid local target 'localhost:99999'"));
+    assert_only_login_calls(&h);
+    assert_eq!(h.tunnels_toml(), before);
+}
+
+#[test]
+fn run_public_of_an_invalid_local_target_exits_2_before_any_gcp_call() {
+    let h = Harness::with_stub(RECORDING_STUB);
+    h.with_relay();
+    let before = h.tunnels_toml();
+    let out = h.run(&["run", "web", "localhost:99999", "--public"]);
+    assert_eq!(out.status.code(), Some(2), "stderr: {}", stderr(&out));
+    assert!(stderr(&out).contains("Invalid local target 'localhost:99999'"));
+    assert_only_login_calls(&h);
+    assert_eq!(h.tunnels_toml(), before);
+}

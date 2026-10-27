@@ -1,3 +1,4 @@
+use crate::error::GtunnelError;
 use anyhow::{bail, Result};
 
 use crate::config::{Account, ExposeConfig};
@@ -160,11 +161,16 @@ pub fn expose_argv(
     Ok(argv)
 }
 
-// Turn what a user types for a local service into host:port
+// Turn what a user types for a local service into host:port. A bad target is a
+// usage refusal, not an internal error, so `expose` and `run --public` can check
+// it before the first GCP call and exit 2
 pub fn normalize_local_target(target: &str) -> Result<String> {
     let trimmed = target.trim();
     if trimmed.is_empty() {
-        bail!("Empty local target: use a port (3000) or host:port (localhost:3000)");
+        return Err(GtunnelError::usage(
+            "Empty local target: use a port (3000) or host:port (localhost:3000)",
+        )
+        .into());
     }
     let without_scheme = trimmed
         .strip_prefix("http://")
@@ -177,20 +183,27 @@ pub fn normalize_local_target(target: &str) -> Result<String> {
 
     if let Ok(port) = without_path.parse::<u16>() {
         if port == 0 {
-            bail!("Invalid local target '{target}': port 0 is not a service");
+            return Err(GtunnelError::usage(format!(
+                "Invalid local target '{target}': port 0 is not a service"
+            ))
+            .into());
         }
         return Ok(format!("localhost:{port}"));
     }
     match without_path.rsplit_once(':') {
         Some((host, port)) if !host.is_empty() && port.parse::<u16>().is_ok() => {
             if port.parse::<u16>() == Ok(0) {
-                bail!("Invalid local target '{target}': port 0 is not a service");
+                return Err(GtunnelError::usage(format!(
+                    "Invalid local target '{target}': port 0 is not a service"
+                ))
+                .into());
             }
             Ok(format!("{host}:{port}"))
         }
-        _ => bail!(
+        _ => Err(GtunnelError::usage(format!(
             "Invalid local target '{target}': use a port (3000) or host:port (localhost:3000)"
-        ),
+        ))
+        .into()),
     }
 }
 
