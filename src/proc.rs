@@ -18,6 +18,15 @@ pub const GCLOUD_BOUND: Duration = Duration::from_secs(30);
 /// seconds without a reply means it is wedged, not slow.
 pub const SERVICE_BOUND: Duration = Duration::from_secs(10);
 
+/// `ps`, `lsof`, `ss`, the clipboard and the opener answer from the local
+/// machine in milliseconds; five seconds is wedged, and these run on the key
+/// handler or inside a poller round that must not stall.
+pub const LOCAL_TOOL_BOUND: Duration = Duration::from_secs(5);
+
+/// A notifier that has not returned in five seconds is not going to show
+/// anything useful; the next one in the chain gets its turn.
+pub const NOTIFY_BOUND: Duration = Duration::from_secs(5);
+
 const SERVICE_BOUND_ENV: &str = "GTUNNEL_SERVICE_BOUND_MS";
 
 /// `SERVICE_BOUND`, or the milliseconds in `GTUNNEL_SERVICE_BOUND_MS`. The
@@ -72,6 +81,93 @@ pub async fn output_within(
     }
 }
 
+/// Run `cmd` to completion on the calling thread, or fail after `bound`.
+///
+/// The sibling of `output_within` for the callers that are not async: the key
+/// handler and the blocking pool. Both used to call `.output()`, so a wedged
+/// `ps` or `pbcopy` froze a keypress or held a pool thread for ever.
+pub fn output_within_blocking(
+    cmd: std::process::Command,
+    bound: Duration,
+    what: &str,
+) -> Result<std::process::Output> {
+    output_within_blocking_with_input(cmd, None, bound, what)
+}
+
+/// As `output_within_blocking`, feeding `input` to the child's stdin.
+///
+/// Stdin, stdout and stderr are each served by a thread of their own. Waiting
+/// first and reading after deadlocks on a child whose output fills the pipe
+/// (`ps` on a busy machine does), and writing on the waiting thread would let a
+/// clipboard tool that never reads hold the bound hostage. On expiry the child
+/// is killed and reaped; the helper threads are left to finish on their own,
+/// because a grandchild holding a pipe open must not hold the caller with it.
+pub fn output_within_blocking_with_input(
+    mut cmd: std::process::Command,
+    input: Option<&[u8]>,
+    bound: Duration,
+    what: &str,
+) -> Result<std::process::Output> {
+    use std::io::{Read, Write};
+    use std::process::Stdio;
+
+    cmd.stdin(if input.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    })
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped());
+    let mut child = cmd.spawn()?;
+
+    if let (Some(mut stdin), Some(input)) = (child.stdin.take(), input) {
+        let input = input.to_vec();
+        // A write error is a child that stopped reading; its exit status says so
+        std::thread::spawn(move || {
+            let _ = stdin.write_all(&input);
+        });
+    }
+    fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> std::sync::mpsc::Receiver<Vec<u8>> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut buf);
+            }
+            let _ = tx.send(buf);
+        });
+        rx
+    }
+    let stdout = drain(child.stdout.take());
+    let stderr = drain(child.stderr.take());
+
+    let deadline = std::time::Instant::now() + bound;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(Timeout {
+                what: what.to_string(),
+                bound,
+            }
+            .into());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    // The child has exited, so its pipes close unless a grandchild kept them;
+    // that case is cut off at the same bound instead of waiting for it
+    let left = deadline.saturating_duration_since(std::time::Instant::now());
+    let left = left.max(Duration::from_millis(200));
+    Ok(std::process::Output {
+        status,
+        stdout: stdout.recv_timeout(left).unwrap_or_default(),
+        stderr: stderr.recv_timeout(left).unwrap_or_default(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,6 +200,54 @@ mod tests {
             .await
             .unwrap_err();
         assert!(!is_timeout(&err), "{err}");
+    }
+
+    #[test]
+    fn a_blocking_call_past_its_bound_is_a_timeout_and_leaves_no_child() {
+        let dir = std::env::temp_dir().join(format!("gtunnel-proc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pidfile = dir.join("pid");
+        // `exec` keeps the pid the shell reported: the sleep replaces the
+        // shell instead of becoming a child that outlives the kill
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c")
+            .arg(format!("echo $$ > {}; exec sleep 30", pidfile.display()));
+        let err = output_within_blocking(cmd, Duration::from_secs(1), "sleep 30").unwrap_err();
+        assert!(is_timeout(&err), "{err}");
+        let pid = std::fs::read_to_string(&pidfile).unwrap();
+        let alive = std::process::Command::new("kill")
+            .args(["-0", pid.trim()])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success();
+        assert!(!alive, "pid {} survived its timeout", pid.trim());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_blocking_call_within_its_bound_returns_its_output() {
+        let mut cmd = std::process::Command::new("echo");
+        cmd.arg("hi");
+        let out = output_within_blocking(cmd, Duration::from_secs(5), "echo").unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "hi");
+    }
+
+    #[test]
+    fn a_blocking_call_drains_output_larger_than_a_pipe_buffer() {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c").arg("yes | head -c 400000");
+        let out = output_within_blocking(cmd, Duration::from_secs(5), "yes").unwrap();
+        assert_eq!(out.stdout.len(), 400_000);
+    }
+
+    #[test]
+    fn a_blocking_call_feeds_its_input_to_the_child() {
+        let cmd = std::process::Command::new("cat");
+        let out =
+            output_within_blocking_with_input(cmd, Some(b"fed"), Duration::from_secs(5), "cat")
+                .unwrap();
+        assert_eq!(out.stdout, b"fed");
     }
 
     #[test]

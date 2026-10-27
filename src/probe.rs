@@ -244,12 +244,17 @@ pub fn established_by_port() -> HashMap<u16, u64> {
 // space in it is escaped, so COMMAND is still one whitespace-separated field.
 const LSOF_LISTING_ARGS: [&str; 5] = ["-nP", "+c", "0", "-iTCP", "-sTCP:ESTABLISHED"];
 
+// A local tool that is missing, fails to start or outlasts its bound reads the
+// same to every caller here: no answer, which each already treats as zero
+// or `None`. The distinction is not worth a variant.
+fn local_tool(cmd: std::process::Command, what: &str) -> Option<std::process::Output> {
+    crate::proc::output_within_blocking(cmd, crate::proc::LOCAL_TOOL_BOUND, what).ok()
+}
+
 fn lsof_listing() -> Option<String> {
-    let out = std::process::Command::new("lsof")
-        .args(LSOF_LISTING_ARGS)
-        .output()
-        .ok()?;
-    listing(&out)
+    let mut cmd = std::process::Command::new("lsof");
+    cmd.args(LSOF_LISTING_ARGS);
+    listing(&local_tool(cmd, "lsof")?)
 }
 
 // What a listing said, whatever it exited with. `lsof` exits 1 when nothing
@@ -271,16 +276,16 @@ pub fn parse_ss_established(text: &str) -> u64 {
 
 // How many clients are using the tunnel right now
 pub fn active_connections(port: u16) -> u64 {
-    if let Ok(out) = std::process::Command::new("lsof")
-        .args(["-nP", &format!("-iTCP:{port}"), "-sTCP:ESTABLISHED"])
-        .output()
+    let mut lsof = std::process::Command::new("lsof");
+    lsof.args(["-nP", &format!("-iTCP:{port}"), "-sTCP:ESTABLISHED"]);
+    if let Some(out) = local_tool(lsof, "lsof")
         && let Some(text) = listing(&out)
     {
         return parse_lsof_established(&text, port);
     }
-    if let Ok(out) = std::process::Command::new("ss")
-        .args(["-tnH", "state", "established", &format!("sport = :{port}")])
-        .output()
+    let mut ss = std::process::Command::new("ss");
+    ss.args(["-tnH", "state", "established", &format!("sport = :{port}")]);
+    if let Some(out) = local_tool(ss, "ss")
         && let Some(text) = listing(&out)
     {
         // `ss -H` drops the header, so every row counts
@@ -334,10 +339,9 @@ pub fn parse_etime(text: &str) -> Option<Duration> {
 }
 
 pub fn process_uptime(pid: u32) -> Option<Duration> {
-    let out = std::process::Command::new("ps")
-        .args(["-o", "etime=", "-p", &pid.to_string()])
-        .output()
-        .ok()?;
+    let mut cmd = std::process::Command::new("ps");
+    cmd.args(["-o", "etime=", "-p", &pid.to_string()]);
+    let out = local_tool(cmd, "ps")?;
     if !out.status.success() {
         return None;
     }

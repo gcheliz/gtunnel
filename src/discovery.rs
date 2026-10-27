@@ -33,9 +33,10 @@ pub struct Snapshot {
 }
 
 pub fn snapshot() -> Snapshot {
-    let Ok(out) = std::process::Command::new("ps")
-        .args(["-axo", "pid=,ppid=,command="])
-        .output()
+    let mut cmd = std::process::Command::new("ps");
+    cmd.args(["-axo", "pid=,ppid=,command="]);
+    // A timeout is an empty snapshot, as a machine with no `ps` already is
+    let Ok(out) = crate::proc::output_within_blocking(cmd, crate::proc::LOCAL_TOOL_BOUND, "ps")
     else {
         return Snapshot::default();
     };
