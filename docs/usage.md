@@ -406,7 +406,7 @@ after the text has passed the rules for that file:
 | File | What has to be true |
 |---|---|
 | `config.toml` | parses, has at least one account, and `selected_account` names one of them |
-| `tunnels.toml` | parses, every name is valid as for `gtunnel add`, no name repeats within an account, no two tunnels share a local port (in any account), and every tunnel's account is in `config.toml` |
+| `tunnels.toml` | parses, every name is valid as for `gtunnel add`, no name repeats within an account, no two tunnels share a local port (in any account), no tunnel uses a local port a live `gtunnel run` holds (`Local port 17777 is already used by the run 'scratch'`), and every tunnel's account is in `config.toml` |
 
 A file that passes is committed (`config.toml` ends at mode 0600 whatever the editor did),
 the copy is removed, and the list is reloaded without restarting the TUI: accounts, projects,
