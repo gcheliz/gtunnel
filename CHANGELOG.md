@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.20](https://github.com/gcheliz/gtunnel/compare/v0.1.19...v0.1.20) - 2026-10-27
+
+### Fixed
+
+- *(discovery)* stop listing a tunnel gtunnel just started as unmanaged ([#66](https://github.com/gcheliz/gtunnel/pull/66))
+
 ## [0.1.19](https://github.com/gcheliz/gtunnel/compare/v0.1.18...v0.1.19) - 2026-10-27
 
 ### Fixed
