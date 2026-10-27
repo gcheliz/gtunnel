@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.7](https://github.com/gcheliz/gtunnel/compare/v0.2.6...v0.2.7) - 2026-10-27
+
+### Documentation
+
+- *(site)* fix the phone layout and re-record the run, access and MCP demos ([#183](https://github.com/gcheliz/gtunnel/pull/183))
+
 ## [0.2.6](https://github.com/gcheliz/gtunnel/compare/v0.2.5...v0.2.6) - 2026-10-27
 
 ### Documentation
