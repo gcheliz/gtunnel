@@ -360,12 +360,56 @@ impl RenameOps for LiveOps {
     }
 }
 
+/// What a rename or move did, in the words both doors print. The CLI and the
+/// MCP tools render the same `message`, so neither can drift from the other.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Relocated {
+    pub old: String,
+    pub new: String,
+    pub from: String,
+    pub to: String,
+}
+
+impl Relocated {
+    /// The sentence both the CLI and the MCP tool report, one line per fact
+    pub fn message(&self) -> String {
+        if self.from == self.to {
+            return format!("Renamed {} to {}", self.old, self.new);
+        }
+        let mut out = format!("Moved {} from {} to {}", self.old, self.from, self.to);
+        if self.old != self.new {
+            out.push_str(&format!("\nIt is now called {}", self.new));
+        }
+        out
+    }
+}
+
 pub async fn cmd_move(
     name: &str,
     from: Option<&str>,
     to: &str,
     rename_to: Option<&str>,
 ) -> Result<()> {
+    println!(
+        "{}",
+        move_tunnel(name, from, to, rename_to).await?.message()
+    );
+    Ok(())
+}
+
+pub async fn cmd_rename(account: Option<&str>, old: &str, new: &str) -> Result<()> {
+    println!("{}", rename_tunnel(account, old, new).await?.message());
+    Ok(())
+}
+
+/// Move `name` from the `from` account (the active one when `None`) to `to`.
+/// Prints nothing, so the MCP server can call it on a stdio transport.
+pub async fn move_tunnel(
+    name: &str,
+    from: Option<&str>,
+    to: &str,
+    rename_to: Option<&str>,
+) -> Result<Relocated> {
     // Two accounts, so two ops: the source stops and cleans up the old
     // service, the destination verifies, installs and starts the new one
     let (config, src_acct) = resolve(from)?;
@@ -400,14 +444,16 @@ pub async fn cmd_move(
         new,
     )
     .await?;
-    println!("Moved {name} from {} to {}", src_acct.name, dst_acct.name);
-    if new != name {
-        println!("It is now called {new}");
-    }
-    Ok(())
+    Ok(Relocated {
+        old: name.to_string(),
+        new: new.to_string(),
+        from: src_acct.name,
+        to: dst_acct.name,
+    })
 }
 
-pub async fn cmd_rename(account: Option<&str>, old: &str, new: &str) -> Result<()> {
+/// Rename `old` to `new` on one account. Prints nothing, like `move_tunnel`.
+pub async fn rename_tunnel(account: Option<&str>, old: &str, new: &str) -> Result<Relocated> {
     let (config, acct) = resolve(account)?;
     let mut state = TunnelState::load()?;
     find_tunnel(&state, old, &acct.name)?;
@@ -416,17 +462,51 @@ pub async fn cmd_rename(account: Option<&str>, old: &str, new: &str) -> Result<(
         config,
         acct: acct.clone(),
     };
-    // Same reason as in `cmd_move`: the old name stops on purpose
+    // Same reason as in `move_tunnel`: the old name stops on purpose
     crate::lifecycle::forget(&acct.name, old);
     run_relocate(&ops, &ops, &mut state, &acct.name, &acct.name, old, new).await?;
-    println!("Renamed {old} to {new}");
-    Ok(())
+    Ok(Relocated {
+        old: old.to_string(),
+        new: new.to_string(),
+        from: acct.name.clone(),
+        to: acct.name,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::state::{AccessTarget, PersistentTunnel, TunnelSpec, TunnelState};
+
+    fn relocated(old: &str, new: &str, from: &str, to: &str) -> Relocated {
+        Relocated {
+            old: old.into(),
+            new: new.into(),
+            from: from.into(),
+            to: to.into(),
+        }
+    }
+
+    #[test]
+    fn a_rename_message_names_both_names() {
+        let r = relocated("db", "database", "demo", "demo");
+        assert_eq!(r.message(), "Renamed db to database");
+    }
+
+    #[test]
+    fn a_move_message_names_both_accounts() {
+        let r = relocated("db", "db", "dev", "prod");
+        assert_eq!(r.message(), "Moved db from dev to prod");
+    }
+
+    #[test]
+    fn a_move_with_a_new_name_says_so() {
+        let r = relocated("db", "db2", "dev", "prod");
+        assert_eq!(
+            r.message(),
+            "Moved db from dev to prod\nIt is now called db2"
+        );
+    }
 
     fn access(name: &str, account: &str) -> PersistentTunnel {
         PersistentTunnel {

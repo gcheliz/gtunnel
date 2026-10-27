@@ -50,7 +50,7 @@ dashboard that shows whether each one is carrying traffic.
 | Managed services | launchd on macOS, systemd `--user` on Linux. Restart on failure, optional auto-start at login |
 | Watchdog | `gtunnel watch install` restarts tunnels that are running but refusing connections |
 | Multiple accounts | One gcloud configuration, project and zone per account; `;` cycles them in the TUI |
-| MCP server and agent skill | `gtunnel mcp` is a stdio MCP server with 11 tools and 2 resources; `.agents/skills/gtunnel/SKILL.md` guides an agent through the CLI |
+| MCP server and agent skill | `gtunnel mcp` is a stdio MCP server with 13 tools and 2 resources; `.agents/skills/gtunnel/SKILL.md` guides an agent through the CLI |
 | `--json` output | `list`, `doctor` and `account list` print machine-readable JSON |
 | Shell completions | `gtunnel completions <shell>` for bash, zsh or fish completes commands and tunnel names; install lines in [docs/commands.md](docs/commands.md#shell-completions) |
 | Self-update | `gtunnel update` replaces the binary with the latest release; `--check` only reports. A Homebrew install is pointed at `brew upgrade` |
@@ -201,7 +201,7 @@ with every flag and its output: [docs/commands.md](docs/commands.md).
 | Piece | What it gives an agent |
 |---|---|
 | `.agents/skills/gtunnel/SKILL.md` | A guide in the open Agent Skills format: tunnel naming, target routing through a bastion, account scoping, and the checks to run before reporting a tunnel works |
-| `gtunnel mcp` | A JSON-RPC 2.0 stdio server in the binary: 11 tools and 2 resources (`gtunnel://tunnels`, `gtunnel://accounts`), protocol revision 2025-11-25 negotiated down to 2024-11-05, with titles, read-only and destructive annotations, and a schema-checked `structuredContent` on the five JSON tools |
+| `gtunnel mcp` | A JSON-RPC 2.0 stdio server in the binary: 13 tools and 2 resources (`gtunnel://tunnels`, `gtunnel://accounts`), protocol revision 2025-11-25 negotiated down to 2024-11-05, with titles, read-only and destructive annotations, and a schema-checked `structuredContent` on the five JSON tools |
 | `gtunnel mcp --validate` | Validates every tool schema and exits non-zero on a bad one. `npx @modelcontextprotocol/inspector gtunnel mcp` inspects them interactively |
 
 A `.mcp.json` in the workspace root registers the server:

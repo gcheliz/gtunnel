@@ -553,11 +553,11 @@ guides AI agents (Claude Code, Gemini CLI, etc.) on:
 
 ### The native MCP Server
 
-`gtunnel mcp` runs a newline-delimited JSON-RPC 2.0 stdio server in pure Rust. It exposes 11 tools
+`gtunnel mcp` runs a newline-delimited JSON-RPC 2.0 stdio server in pure Rust. It exposes 13 tools
 and 2 live resources without requiring an external runtime.
 
 <p align="center">
-  <img src="demo-mcp.gif" alt="Real MCP calls to gtunnel mcp: the 11 tools, gtunnel_run_tunnel opening db on my-vm:5432 for 30 minutes, gtunnel list showing the run and its stop time, gtunnel_stop_tunnel closing it" width="720">
+  <img src="demo-mcp.gif" alt="Real MCP calls to gtunnel mcp: the tools, gtunnel_run_tunnel opening db on my-vm:5432 for 30 minutes, gtunnel list showing the run and its stop time, gtunnel_stop_tunnel closing it" width="720">
 </p>
 
 #### Exposed Tools
@@ -573,6 +573,8 @@ and 2 live resources without requiring an external runtime.
 | `gtunnel_add_tunnel` | `name`, `target`, `via?`, `zone?`, `local_port?`, `dest_group?`, `region?`, `network?`, `start?`, `account?` | Adds an Access tunnel |
 | `gtunnel_run_tunnel` | `target`, `ttl_minutes`, `name?`, `zone?`, `local_port?`, `account?` | Opens a short-lived Access tunnel that closes by itself after `ttl_minutes` |
 | `gtunnel_delete_tunnel` | `name`, `account?` | Deletes a persistent tunnel and removes its service |
+| `gtunnel_rename_tunnel` | `name`, `new_name`, `account?` | Renames a tunnel on its account, moving its service and log; a running tunnel restarts under the new name. Answers `Renamed <old> to <new>`, the line `gtunnel rename` prints. A name the account already uses is refused and nothing changes |
+| `gtunnel_move_tunnel` | `name`, `to`, `rename?`, `account?` | Moves an Access tunnel to another configured account after checking its target there; `rename` gives it a new name when the destination already uses this one. Answers like `gtunnel move`. A destination that is not logged in fails with kind `auth`: MCP never prompts |
 | `gtunnel_list_accounts` | none | `selected_account` and every account, each with a `selected` flag |
 | `gtunnel_doctor` | `account?`, `all?` | Runs diagnostic checks on GCP resources and local config |
 
@@ -602,7 +604,7 @@ something the user keeps.
 | Part | Behaviour |
 |---|---|
 | Revisions | `initialize` answers the `protocolVersion` the client sent when it is `2025-11-25`, `2025-06-18` or `2024-11-05`; a missing, unknown or newer one gets `2025-11-25` |
-| Titles and annotations | Every tool has a `title` and all four hints. `readOnlyHint` is true for `gtunnel_list_tunnels`, `gtunnel_get_status`, `gtunnel_get_logs`, `gtunnel_list_accounts` and `gtunnel_doctor`; `destructiveHint` is true for `gtunnel_stop_tunnel`, `gtunnel_restart_tunnel` and `gtunnel_delete_tunnel` |
+| Titles and annotations | Every tool has a `title` and all four hints. `readOnlyHint` is true for `gtunnel_list_tunnels`, `gtunnel_get_status`, `gtunnel_get_logs`, `gtunnel_list_accounts` and `gtunnel_doctor`; `destructiveHint` is true for `gtunnel_stop_tunnel`, `gtunnel_restart_tunnel`, `gtunnel_delete_tunnel`, `gtunnel_rename_tunnel` and `gtunnel_move_tunnel` |
 | Structured output | `gtunnel_list_tunnels`, `gtunnel_get_status`, `gtunnel_run_tunnel`, `gtunnel_list_accounts` and `gtunnel_doctor` return `structuredContent` and declare an `outputSchema`. The list and the doctor wrap their array as `{"tunnels": [...]}` and `{"findings": [...]}`; the `content[0].text` of every tool is unchanged |
 | Failures | A failed call under an `outputSchema` returns the `{"error": {"kind", "message"}}` object, which each schema also admits |
 
@@ -660,7 +662,7 @@ To verify tool definitions and JSON schemas non-interactively:
 
 ```
 $ gtunnel mcp --validate
-Validated 11 tools and 2 resources successfully.
+Validated 13 tools and 2 resources successfully.
 ```
 
 To inspect tools, schemas, and test calls interactively using the official MCP Inspector:
