@@ -470,6 +470,7 @@ So a relay is about USD 25/month per account, and a tunnel on top of it is free.
 | Dead ephemeral | A `run` record whose process is gone |
 | Auto-start drift | Nothing: the service manager is brought to the `auto_start` in `tunnels.toml` |
 | Missing watchdog | Nothing: the watchdog agent is installed |
+| Orphan service | A `com.gtunnel.*` plist (macOS) or `gtunnel-*.service` unit (Linux) that no record in `tunnels.toml` produces a label for. Only a service that belongs to this config directory counts: the plist in `<config dir>/agents`, or a `LaunchAgents` plist or systemd unit whose log path is under `<config dir>/logs/`. A file whose log path cannot be read is left alone, and so is a loaded job that came from another config directory. The watchdog is never reported |
 | Orphan backend | A backend service whose description is `gtunnel:<account>` and that no tunnel in `tunnels.toml` claims |
 | Orphan host rule | A host rule on the relay's URL map for a hostname no tunnel claims |
 | Orphan named port | A named port starting `gt-` on the relay's instance group that no tunnel claims |

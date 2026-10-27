@@ -71,7 +71,7 @@ Specify the release version and substitute your machine's file: `gtunnel-macos-a
 `gtunnel-macos-intel`, `gtunnel-linux-amd64` or `gtunnel-linux-arm64`.
 
 ```
-VERSION="v0.1.53"
+VERSION="v0.1.55"
 F="gtunnel-macos-arm64-${VERSION}.tar.gz"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F.sha256"
@@ -83,7 +83,7 @@ so they run on any glibc.
 
 ```
 $ gtunnel --version
-gtunnel 0.1.53
+gtunnel 0.1.55
 ```
 
 #### Proving where the binary came from
@@ -1091,6 +1091,18 @@ account dev:
   - gcloud has no usable credentials for account 'dev'. Run `gcloud auth login`
 ```
 
+A service with no record is machine-wide, so it is filed under `gtunnel:` like the watchdog.
+It is a `com.gtunnel.*` plist (macOS) or `gtunnel-*.service` unit (Linux) whose label no
+record in any account produces and that belongs to this config directory: it sits in
+`<config dir>/agents`, or its log path is under `<config dir>/logs/`. A service another
+config directory installed is never reported, and neither is the watchdog:
+
+```
+$ gtunnel doctor
+gtunnel:
+  - Service com.gtunnel.dev.old-tunnel is installed but no tunnel in tunnels.toml owns it, so it may still hold a local port at login
+```
+
 | Flag | Effect |
 |---|---|
 | `--fix` | Fix what can be fixed safely |
@@ -1098,9 +1110,11 @@ account dev:
 | `-a`, `--all` | Check every account, not only the selected one |
 | `--json` | Print the findings as a JSON array of `account`, `description` and `fixable` |
 
-`--fix` removes stale local records, dead ephemeral records and per-tunnel relay leftovers
-no live tunnel claims, reconciles auto-start to what `tunnels.toml` says, and installs a
-missing watchdog; [troubleshooting.md](troubleshooting.md#leftovers) lists each finding. It
+`--fix` removes stale local records, services of this config directory that no record owns
+(a plist or unit left behind by a removed tunnel, which would otherwise keep its port at
+login), dead ephemeral records and per-tunnel relay leftovers no live tunnel claims,
+reconciles auto-start to what `tunnels.toml` says, and installs a missing watchdog;
+[troubleshooting.md](troubleshooting.md#leftovers) lists each finding. It
 re-checks the claim immediately before each removal, so a tunnel started during the scan is
 left alone. Findings it cannot fix, such as a missing firewall rule, are printed with the
 exact command that fixes them.
@@ -1171,7 +1185,7 @@ Every other command prints a one-line hint when a cached check found a newer ver
 
 ```
 $ gtunnel list
-gtunnel v9.9.9 is available (current: v0.1.53). Run `gtunnel update`.
+gtunnel v9.9.9 is available (current: v0.1.55). Run `gtunnel update`.
 ```
 
 The check runs at most once a day, in the background, and never blocks a command. A

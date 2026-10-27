@@ -3,6 +3,18 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.55](https://github.com/gcheliz/gtunnel/compare/v0.1.54...v0.1.55) - 2026-10-27
+
+### Fixed
+
+- *(doctor)* report a service that no tunnel record owns ([#143](https://github.com/gcheliz/gtunnel/pull/143))
+
+## [0.1.54](https://github.com/gcheliz/gtunnel/compare/v0.1.53...v0.1.54) - 2026-10-27
+
+### Added
+
+- *(list)* report health and local_port in list --json and gtunnel_list_tunnels ([#142](https://github.com/gcheliz/gtunnel/pull/142))
+
 ## [0.1.53](https://github.com/gcheliz/gtunnel/compare/v0.1.52...v0.1.53) - 2026-10-27
 
 ### Fixed
