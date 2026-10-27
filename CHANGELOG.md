@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.10](https://github.com/gcheliz/gtunnel/compare/v0.2.9...v0.2.10) - 2026-10-27
+
+### Documentation
+
+- *(readme)* add an architecture section before the topology diagram ([#194](https://github.com/gcheliz/gtunnel/pull/194))
+
 ## [0.2.9](https://github.com/gcheliz/gtunnel/compare/v0.2.8...v0.2.9) - 2026-10-27
 
 ### Fixed
