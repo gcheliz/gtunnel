@@ -42,7 +42,7 @@ One colour, one question. A setting is not a verdict. `src/tui/theme.rs` states 
 | `MUTED` | what is only furniture | rules, headers, captions, empty-list rows |
 | `LABEL` | what names the value beside it | field labels, footer words |
 | `OK` | is it running, healthy, done | a running status symbol, the config page's report of a saved edit |
-| `WARN` | is it worth a look while nothing is broken | the health flag, a log hint, a prompt's question, the footer's lead action key |
+| `WARN` | is it worth a look while nothing is broken | the health flag, a log hint, a prompt's question, the footer's lead action key, the version in an update notice |
 | `BAD` | is it broken | a failed status symbol, a status-line error, the config page's refusal of an edit |
 | `FLAG` | is a setting on, which is a choice and not a verdict | the auto-start flag |
 | `SELECTED_BG` | which row has the cursor | the selected list row |
@@ -60,6 +60,7 @@ What a pane sheds as the terminal narrows is decided and tested, never emergent.
 |---|---|---|
 | Header | the captions, then the project id (cut with an ellipsis, then dropped below `PROJECT_FLOOR`), then the lockup. The account name is never cut while a field can still be drawn. When even it does not fit beside the mark the header falls to one row (`HEADER_HEIGHT_COMPACT`) | `src/tui/ui.rs` (`header_lines`, `caption_spans`, `fit_project`) |
 | Header, short terminal | the header is dropped whole below 16 rows, because the list is the app and the header only says what it is | `src/tui/ui.rs` (`render`) |
+| Update notice | the command, then the version, each only while `RULE_LEAD` dashes stay ahead of it. It lives in the header's rule and moves to the footer's when the header is gone or one row, never both, so it costs no row of its own | `src/tui/ui.rs` (`rule_line_with`, `render`) |
 | Layout | below `STACK_BELOW` (121 columns) the list stacks above the other panes at full width. Side by side the list lost the url it exists to show across 100 to 120 columns; stacking costs rows, and a list loses a row more cheaply than a url. `LIST_MIN_ROWS` is the least a stacked list gets | `src/tui/ui.rs` (`STACK_BELOW`, `render`) |
 | Right column | Logs keeps `LOGS_MIN` first, because a failing tunnel is diagnosed there; Details is cut next and only for that minimum; Metrics gets the remainder and is dropped whole below `METRICS_MIN` rather than drawn too short to show a figure | `src/tui/ui.rs` (`right_heights`) |
 | Footer | whole actions from the end of the contextual group, then `; account`; `?` and `q` are never shed | `src/tui/ui.rs` (`footer_line`) |

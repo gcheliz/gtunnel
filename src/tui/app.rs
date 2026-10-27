@@ -641,6 +641,9 @@ pub struct App {
     // tunnel has just been renamed or replaced is still the same socket
     peaks: HashMap<u16, u64>,
     pub flash: Option<(String, std::time::Instant)>,
+    // Read from the update cache, never fetched here: the TUI thread must not
+    // wait on the network, and the header rule only shows what is already known
+    pub update: Option<crate::update::UpdateNotice>,
 }
 
 impl App {
@@ -704,6 +707,7 @@ impl App {
             clear_screen: false,
             peaks: HashMap::new(),
             flash: None,
+            update: None,
         }
     }
 
