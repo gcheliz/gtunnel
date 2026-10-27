@@ -122,11 +122,50 @@ fn log_tail(path: &std::path::Path) -> String {
     }
 }
 
-fn find_record(account: &str, name: &str) -> Option<(EphemeralRecord, bool)> {
+pub(crate) fn find_record(account: &str, name: &str) -> Option<(EphemeralRecord, bool)> {
     list_ephemeral()
         .ok()?
         .into_iter()
         .find(|(r, _)| r.account_name == account && r.name == name)
+}
+
+/// The live run of that name, or none. A record whose process is gone is not
+/// a run: status and logs must never describe a dead one as running.
+pub(crate) fn find_live_run(account: &str, name: &str) -> Option<EphemeralRecord> {
+    match find_record(account, name) {
+        Some((record, true)) => Some(record),
+        _ => None,
+    }
+}
+
+/// Where a launched run's output goes. One function for the writer in
+/// `launch` and the readers (the logs tool and `gtunnel logs`), so they cannot
+/// disagree about the file.
+pub(crate) fn run_log_path(account: &str, name: &str) -> anyhow::Result<std::path::PathBuf> {
+    Ok(crate::config::config_dir()?
+        .join("logs")
+        .join(format!("run-{account}-{name}.log")))
+}
+
+/// The log of a live run, for the two readers. `None` means no live run of
+/// that name, so the caller can fall through to its own not-found. Only a
+/// launch from MCP redirects output to a file; a run in a terminal prints
+/// there, and an empty success would read as "no output yet".
+pub(crate) fn live_run_log(
+    account: &str,
+    name: &str,
+) -> Option<anyhow::Result<std::path::PathBuf>> {
+    find_live_run(account, name)?;
+    Some(run_log_path(account, name).and_then(|path| {
+        if path.exists() {
+            Ok(path)
+        } else {
+            Err(GtunnelError::not_found(format!(
+                "Run '{name}' has no log: it was started from a terminal, which has its output"
+            ))
+            .into())
+        }
+    }))
 }
 
 /// Start `gtunnel run` as a process that outlives this one, and answer only
@@ -140,9 +179,11 @@ pub async fn launch(account: &str, req: &RunRequest) -> anyhow::Result<Value> {
     crate::ephemeral::check_run_name(&state, account, &req.name)?;
 
     let exe = std::env::current_exe().map_err(|e| anyhow!("Cannot find gtunnel: {e}"))?;
-    let logs = crate::config::config_dir()?.join("logs");
-    std::fs::create_dir_all(&logs).map_err(|e| anyhow!("Cannot create {}: {e}", logs.display()))?;
-    let log_path = logs.join(format!("run-{account}-{}.log", req.name));
+    let log_path = run_log_path(account, &req.name)?;
+    if let Some(logs) = log_path.parent() {
+        std::fs::create_dir_all(logs)
+            .map_err(|e| anyhow!("Cannot create {}: {e}", logs.display()))?;
+    }
     let open = || {
         std::fs::OpenOptions::new()
             .create(true)

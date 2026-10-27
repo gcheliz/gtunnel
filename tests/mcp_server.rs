@@ -406,17 +406,7 @@ fn add_with_failed_start_keeps_the_record_and_reports_the_failure() {
 fn mcp_list_tunnels_includes_a_live_run_and_marks_it() {
     let h = Harness::new();
     let mut sleeper = Command::new("/bin/sleep").arg("30").spawn().expect("sleep");
-    let dir = h.dir.path().join("config/run");
-    fs::create_dir_all(&dir).unwrap();
-    fs::write(
-        dir.join("demo-scratch.json"),
-        format!(
-            r#"{{"name":"scratch","account_name":"demo","pid":{},"started_at":1700000000,"ttl_secs":300,
-"spec":{{"mode":"access","target":{{"kind":"instance","instance":"my-vm","zone":"europe-west1-b"}},"remote_port":5432,"local_port":15999}}}}"#,
-            sleeper.id()
-        ),
-    )
-    .unwrap();
+    write_run_record(&h, "demo", "scratch", sleeper.id(), ACCESS_SPEC);
     let req = r#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"gtunnel_list_tunnels","arguments":{}}}"#;
     let (stdout, stderr, success) = h.run_mcp_pipe(&format!("{req}\n"));
     let _ = sleeper.kill();
@@ -438,6 +428,238 @@ fn mcp_list_tunnels_includes_a_live_run_and_marks_it() {
     assert_eq!(run["expires_at"], 1_700_000_300u64);
     let declared = rows.as_array().unwrap().iter().find(|r| r["name"] == "db");
     assert_eq!(declared.map(|r| r["run"].clone()), Some(false.into()));
+}
+
+const ACCESS_SPEC: &str = r#"{"mode":"access","target":{"kind":"instance","instance":"my-vm","zone":"europe-west1-b"},"remote_port":5432,"local_port":15999}"#;
+
+const EXPOSE_SPEC: &str = r#"{"mode":"expose","local_target":"localhost:8080","domain":"example.com","hostname":"app.example.com","relay_port":9000,"private":false}"#;
+
+/// A run record as `gtunnel run` writes it, for a pid the test owns. No start
+/// token, so liveness is judged by the pid alone, as for a record written
+/// before the token existed.
+fn write_run_record(h: &Harness, account: &str, name: &str, pid: u32, spec_json: &str) {
+    let dir = h.dir.path().join("config/run");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join(format!("{account}-{name}.json")),
+        format!(
+            r#"{{"name":"{name}","account_name":"{account}","pid":{pid},"started_at":1700000000,"ttl_secs":300,"spec":{spec_json}}}"#
+        ),
+    )
+    .unwrap();
+}
+
+/// Send one `tools/call` and return its `result`.
+fn call(h: &Harness, tool: &str, args: &str) -> serde_json::Value {
+    let req = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"{tool}","arguments":{args}}}}}"#
+    );
+    let (stdout, stderr, _) = h.run_mcp_pipe(&format!("{req}\n"));
+    let f = frames(&stdout)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| panic!("no reply; stderr: {stderr}"));
+    f["result"].clone()
+}
+
+/// The text of a tool result, parsed as JSON.
+fn json_text(result: &serde_json::Value) -> serde_json::Value {
+    serde_json::from_str(result["content"][0]["text"].as_str().expect("text"))
+        .unwrap_or_else(|e| panic!("not JSON ({e}): {result}"))
+}
+
+fn kind(result: &serde_json::Value) -> &serde_json::Value {
+    &result["structuredContent"]["error"]["kind"]
+}
+
+// Login passes; any other call prints one line and stays up like a tunnel
+const RUN_STUB: &str = r#"#!/bin/sh
+case "$1 $2" in
+  "auth print-access-token") echo stub-token; exit 0 ;;
+esac
+echo "Testing if tunnel connection works."
+exec /bin/sleep 60
+"#;
+
+/// Launch `name` with gtunnel_run_tunnel and return its record as JSON. The
+/// one-minute TTL is the backstop if a test dies before it stops the run.
+fn launch_run(h: &Harness, name: &str) -> serde_json::Value {
+    let result = call(
+        h,
+        "gtunnel_run_tunnel",
+        &format!(r#"{{"name":"{name}","target":"my-vm:5432","ttl_minutes":1}}"#),
+    );
+    assert_ne!(result["isError"], true, "{result}");
+    let mut record = json_text(&result);
+    // The tool answers with the run's description; the pid is in the record
+    let file = h.dir.path().join(format!("config/run/demo-{name}.json"));
+    let on_disk: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(file).expect("the record")).expect("json");
+    record["pid"] = on_disk["pid"].clone();
+    record
+}
+
+/// Poll the run's record until it is gone; false after 5s.
+fn record_gone(h: &Harness, name: &str) -> bool {
+    let path = h.dir.path().join(format!("config/run/demo-{name}.json"));
+    for _ in 0..100 {
+        if !path.exists() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    false
+}
+
+fn pid_alive(pid: u64) -> bool {
+    Command::new("/bin/kill")
+        .args(["-0", &pid.to_string()])
+        .stderr(Stdio::null())
+        .status()
+        .unwrap()
+        .success()
+}
+
+fn sleeper() -> std::process::Child {
+    Command::new("/bin/sleep").arg("30").spawn().expect("sleep")
+}
+
+fn reap(mut child: std::process::Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[test]
+fn the_cli_stop_finds_a_live_run_and_its_record_goes() {
+    let h = Harness::with_stub(RUN_STUB);
+    let record = launch_run(&h, "clistop");
+    let pid = record["pid"].as_u64().expect("a pid");
+    let (stdout, stderr, ok) = h.run(&["stop", "clistop"]);
+    assert!(ok, "stderr: {stderr}");
+    assert!(stdout.contains("clistop stopped"), "{stdout}");
+    assert!(record_gone(&h, "clistop"));
+    assert!(!pid_alive(pid), "the run's process {pid} is still alive");
+}
+
+#[test]
+fn a_persistent_tunnel_wins_over_a_run_of_the_same_name() {
+    let h = Harness::new();
+    let run = sleeper();
+    write_run_record(&h, "demo", "db", run.id(), ACCESS_SPEC);
+    let result = call(&h, "gtunnel_stop_tunnel", r#"{"name":"db"}"#);
+    let still_alive = pid_alive(u64::from(run.id()));
+    reap(run);
+    assert_eq!(
+        result["content"][0]["text"], "Stopped tunnel 'db'",
+        "{result}"
+    );
+    assert!(still_alive, "the run was stopped in the tunnel's place");
+}
+
+#[test]
+fn the_skill_flow_for_a_run_is_run_status_logs_stop() {
+    let h = Harness::with_stub(RUN_STUB);
+    let record = launch_run(&h, "flow");
+    let port = record["local_port"].as_u64().expect("a port");
+
+    // The stub's line reaches the run log a moment after the record
+    let ask = r#"{"name":"flow","lines":10}"#;
+    let mut logs = call(&h, "gtunnel_get_logs", ask);
+    for _ in 0..100 {
+        if logs["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Testing if tunnel connection works.")
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        logs = call(&h, "gtunnel_get_logs", ask);
+    }
+    assert_ne!(logs["isError"], true, "{logs}");
+    assert!(
+        logs["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Testing if tunnel connection works."),
+        "{logs}"
+    );
+
+    let s = json_text(&call(&h, "gtunnel_get_status", r#"{"name":"flow"}"#));
+    assert_eq!(s["run"], true, "{s}");
+    assert_eq!(s["status"], "running", "{s}");
+    assert_eq!(s["local_port"], port, "{s}");
+    assert_eq!(s["pid"], record["pid"], "{s}");
+    assert!(s["expires_at"].as_u64().is_some(), "{s}");
+    assert!(s.get("health").is_some(), "{s}");
+
+    let stop = call(&h, "gtunnel_stop_tunnel", r#"{"name":"flow"}"#);
+    assert_eq!(stop["content"][0]["text"], "Stopped run 'flow'", "{stop}");
+    assert!(record_gone(&h, "flow"));
+}
+
+#[test]
+fn status_and_logs_of_a_run_without_a_log_or_in_another_account() {
+    let h = Harness::new();
+    let (a, b, c) = (sleeper(), sleeper(), sleeper());
+    write_run_record(&h, "demo", "term", a.id(), ACCESS_SPEC);
+    write_run_record(&h, "other", "elsewhere", b.id(), ACCESS_SPEC);
+    write_run_record(&h, "demo", "public", c.id(), EXPOSE_SPEC);
+
+    let logs = call(&h, "gtunnel_get_logs", r#"{"name":"term"}"#);
+    assert_eq!(logs["isError"], true, "{logs}");
+    assert_eq!(kind(&logs), "not_found", "{logs}");
+    assert!(
+        logs["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("started from a terminal"),
+        "{logs}"
+    );
+
+    let s = json_text(&call(&h, "gtunnel_get_status", r#"{"name":"term"}"#));
+    assert_eq!(s["run"], true, "{s}");
+    assert_eq!(s["local_port"], 15999, "{s}");
+    assert_eq!(s["expires_at"], 1_700_000_300u64, "{s}");
+    assert!(s["probe_latency_ms"].is_null(), "{s}");
+    assert_eq!(s["health"], "unhealthy", "{s}");
+    assert!(s.get("restarts").is_none(), "{s}");
+
+    let other = call(&h, "gtunnel_get_status", r#"{"name":"elsewhere"}"#);
+    assert_eq!(kind(&other), "not_found", "{other}");
+
+    let p = json_text(&call(&h, "gtunnel_get_status", r#"{"name":"public"}"#));
+    assert!(p["local_port"].is_null(), "{p}");
+    assert_eq!(p["health"], "unknown", "{p}");
+
+    for child in [a, b, c] {
+        reap(child);
+    }
+}
+
+#[test]
+fn a_stale_run_record_is_not_found_by_status_or_logs() {
+    let h = Harness::new();
+    let mut dead = sleeper();
+    let pid = dead.id();
+    dead.kill().unwrap();
+    dead.wait().unwrap();
+    write_run_record(&h, "demo", "ghost", pid, ACCESS_SPEC);
+    for tool in ["gtunnel_get_status", "gtunnel_get_logs"] {
+        let r = call(&h, tool, r#"{"name":"ghost"}"#);
+        assert_eq!(r["isError"], true, "{tool}: {r}");
+        assert_eq!(kind(&r), "not_found", "{tool}: {r}");
+    }
+}
+
+#[test]
+fn a_persistent_tunnel_wins_for_status_and_logs() {
+    let h = Harness::new();
+    let run = sleeper();
+    write_run_record(&h, "demo", "db", run.id(), ACCESS_SPEC);
+    let s = json_text(&call(&h, "gtunnel_get_status", r#"{"name":"db"}"#));
+    reap(run);
+    assert_eq!(s["run"], false, "{s}");
 }
 
 const LOGGED_OUT_STUB: &str = r#"#!/bin/sh
@@ -464,17 +686,7 @@ fn a_failed_run_carries_the_childs_kind() {
 fn a_run_name_that_is_already_live_is_a_usage_error() {
     let h = Harness::new();
     let mut sleeper = Command::new("/bin/sleep").arg("30").spawn().expect("sleep");
-    let dir = h.dir.path().join("config/run");
-    fs::create_dir_all(&dir).unwrap();
-    fs::write(
-        dir.join("demo-scratch.json"),
-        format!(
-            r#"{{"name":"scratch","account_name":"demo","pid":{},"started_at":1700000000,"ttl_secs":300,
-"spec":{{"mode":"access","target":{{"kind":"instance","instance":"my-vm","zone":"europe-west1-b"}},"remote_port":5432,"local_port":15999}}}}"#,
-            sleeper.id()
-        ),
-    )
-    .unwrap();
+    write_run_record(&h, "demo", "scratch", sleeper.id(), ACCESS_SPEC);
     let req = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"gtunnel_run_tunnel","arguments":{"name":"scratch","target":"my-vm:5432","ttl_minutes":1}}}"#;
     let (stdout, _, _) = h.run_mcp_pipe(&format!("{req}\n"));
     let _ = sleeper.kill();
@@ -567,4 +779,32 @@ fn a_notification_gets_no_reply_and_the_session_goes_on() {
     assert_eq!(frames.len(), 1, "{stdout}");
     assert_eq!(frames[0]["id"], 2);
     assert!(frames[0].get("error").is_none(), "{stdout}");
+}
+
+#[test]
+fn the_cli_logs_of_a_run_print_its_log_and_a_terminal_run_has_none() {
+    let h = Harness::with_stub(RUN_STUB);
+    launch_run(&h, "clilogs");
+    let mut out = String::new();
+    for _ in 0..100 {
+        out = h.run(&["logs", "clilogs"]).0;
+        if out.contains("Testing if tunnel connection works.") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let (_, stop_err, stopped) = h.run(&["stop", "clilogs"]);
+    assert!(
+        out.contains("Testing if tunnel connection works."),
+        "{out}\n{stop_err}"
+    );
+    assert!(stopped, "{stop_err}");
+
+    // A run started from a terminal prints there and leaves no file
+    let term = sleeper();
+    write_run_record(&h, "demo", "term", term.id(), ACCESS_SPEC);
+    let (stdout, stderr, ok) = h.run(&["logs", "term"]);
+    reap(term);
+    assert!(!ok, "{stdout}");
+    assert!(stderr.contains("started from a terminal"), "{stderr}");
 }

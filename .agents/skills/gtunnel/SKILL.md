@@ -24,10 +24,10 @@ When executing tunnel operations, select tools according to availability:
 If `gtunnel_*` MCP tools are available in the current environment, prioritize them over CLI commands:
 - `gtunnel_list_tunnels`: List configured tunnels, daemon states, and listening ports.
 - `gtunnel_start_tunnel`: Start a tunnel daemon.
-- `gtunnel_stop_tunnel`: Stop a running tunnel daemon.
+- `gtunnel_stop_tunnel`: Stop a running tunnel daemon, or a live run.
 - `gtunnel_restart_tunnel`: Restart a tunnel daemon.
-- `gtunnel_get_status`: Inspect runtime status, process PID, restart count, and active probe latency.
-- `gtunnel_get_logs`: Read recent daemon stdout/stderr log lines.
+- `gtunnel_get_status`: Inspect runtime status, process PID, restart count, and active probe latency, for a tunnel or a live run.
+- `gtunnel_get_logs`: Read recent daemon stdout/stderr log lines of a tunnel or a run launched by `gtunnel_run_tunnel`.
 - `gtunnel_add_tunnel`: Create and register a persistent access tunnel.
 - `gtunnel_run_tunnel`: Open a short-lived access tunnel that closes by itself after `ttl_minutes` (1 to 480, required). Never public. `gtunnel_stop_tunnel` closes it early.
 - `gtunnel_delete_tunnel`: Delete a tunnel and remove its daemon configuration.
@@ -40,10 +40,10 @@ Routing: for short-lived access (a query, a one-off check) prefer `gtunnel_run_t
 If MCP tools are not configured, use the CLI directly:
 - List tunnels: `gtunnel list` (or `gtunnel list --json`)
 - Start tunnel: `gtunnel start <name>`
-- Stop tunnel: `gtunnel stop <name>`
+- Stop tunnel: `gtunnel stop <name>` (a tunnel or a live run)
 - Restart tunnel: `gtunnel restart <name>`
 - Status check: `gtunnel list --json` (one row per tunnel, with `status`)
-- Read logs: `gtunnel logs <name> --lines <N>`
+- Read logs: `gtunnel logs <name> --lines <N>` (a tunnel or a live run launched from MCP)
 - Add tunnel: `gtunnel add <name> <target> [flags]`
 - Delete tunnel: `gtunnel delete <name>`
 - Account management: `gtunnel account list` (or `gtunnel account select <name>`)

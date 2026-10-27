@@ -332,3 +332,15 @@ fn delete_keeps_the_record_when_stop_times_out() {
     let tunnels = fs::read_to_string(h.dir.path().join("config/tunnels.toml")).unwrap();
     assert!(tunnels.contains("name = \"slowdelete\""), "{tunnels}");
 }
+
+#[test]
+fn stop_of_a_name_that_is_neither_tunnel_nor_run_is_not_found() {
+    let h = Harness::new();
+    let out = h.run(&["stop", "nope"]);
+    assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("Tunnel 'nope' not found for account 'demo'"),
+        "{}",
+        stderr(&out)
+    );
+}

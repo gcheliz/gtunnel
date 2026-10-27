@@ -534,8 +534,31 @@ pub async fn stop_tunnel(account: Option<&str>, name: &str) -> Result<()> {
     Ok(())
 }
 
-pub async fn cmd_stop(account: Option<&str>, name: &str) -> Result<()> {
+/// What `stop_by_name` ended, so each caller words its own answer.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Stopped {
+    Tunnel,
+    Run,
+}
+
+/// Stop what a name means: a persistent tunnel first, then a live run, in the
+/// order status and logs use. One function for the CLI and the MCP tool, so
+/// the order cannot drift between them; with neither, `stop_tunnel` supplies
+/// the usual not-found.
+pub async fn stop_by_name(account: Option<&str>, name: &str) -> Result<Stopped> {
+    let (_, acct) = resolve(account)?;
+    let persistent = TunnelState::load()?
+        .find_for_account(name, &acct.name)
+        .is_some();
+    if !persistent && crate::mcp::run::stop_run(&acct.name, name).await?.is_some() {
+        return Ok(Stopped::Run);
+    }
     stop_tunnel(account, name).await?;
+    Ok(Stopped::Tunnel)
+}
+
+pub async fn cmd_stop(account: Option<&str>, name: &str) -> Result<()> {
+    stop_by_name(account, name).await?;
     println!("{} {name} stopped", TunnelStatus::Stopped.symbol());
     Ok(())
 }
@@ -641,8 +664,15 @@ pub async fn cmd_delete(account: Option<&str>, name: &str) -> Result<()> {
 pub async fn cmd_logs(account: Option<&str>, name: &str, follow: bool, lines: usize) -> Result<()> {
     let (_, acct) = resolve(account)?;
     let state = TunnelState::load()?;
-    let tunnel = find_tunnel(&state, name, &acct.name)?;
-    let path = tunnel.log_path()?;
+    // A persistent tunnel wins, as in stop; only without one does the name
+    // mean a live run, whose log is the file its launch redirected to
+    let path = match state.find_for_account(name, &acct.name) {
+        Some(tunnel) => tunnel.log_path()?,
+        None => match crate::mcp::run::live_run_log(&acct.name, name) {
+            Some(path) => path?,
+            None => find_tunnel(&state, name, &acct.name)?.log_path()?,
+        },
+    };
 
     // The end of the file, not all of it: these logs are talkative and the
     // lines asked for are at the end
