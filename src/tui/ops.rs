@@ -14,7 +14,9 @@ use crate::discovery::ExternalTunnel;
 use crate::ephemeral::list_ephemeral;
 use crate::expose::routes;
 use crate::gcp::GcpClient;
-use crate::probe::{collect_metrics, collect_unmanaged, http_probe, probe_tunnel, HealthStatus};
+use crate::probe::{
+    collect_metrics, collect_unmanaged, failed_health, http_probe, probe_tunnel, HealthStatus,
+};
 use crate::state::{AccessTarget, PersistentTunnel, TunnelSpec, TunnelState, TunnelStatus};
 use std::time::Duration;
 
@@ -160,7 +162,7 @@ pub async fn probe_health(tunnel: &PersistentTunnel) -> HealthStatus {
             let addr = format!("127.0.0.1:{local_port}");
             match probe_tunnel(&addr, TCP_HEALTH_TIMEOUT, &log).await {
                 Some(_) => HealthStatus::Healthy,
-                None => HealthStatus::Unhealthy,
+                None => failed_health(&log),
             }
         }
         TunnelSpec::Expose { hostname, .. } => http_probe(&format!("https://{hostname}")).await,

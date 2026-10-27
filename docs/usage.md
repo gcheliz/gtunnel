@@ -275,6 +275,25 @@ data and never touches GCP or a config file.
 | This tunnel's URL and log | `c` copy the URL, `l` copy the log to clipboard, `o` open it, `L` clear the log, `r` refresh the list, metrics and health |
 | The program | `;` cycle accounts (the relay and its domains change with the account), `:` the accounts page, `?` the keymap, `C` the config page, `q` quit, `Esc` close a page or cancel a prompt, `PgUp` `PgDn` and `g` `G` scroll the keymap page, `Ctrl+Z` suspend, `Ctrl+C` quit from anywhere |
 
+Details shows the tunnel's health as a symbol and a word. A failed probe is named by what
+the log says, so the fix is on screen instead of in the log:
+
+| Health | Symbol | Meaning | Do |
+|---|---|---|---|
+| healthy | `✓` | the far end answered | nothing |
+| unhealthy | `✗` | no answer, and no cause the log names | read the log |
+| auth expired | `⊗` | no answer, and the log in the last two minutes says `Reauthentication required` or `gcloud auth login` | `gcloud auth login`, then `R` |
+| crash loop | `↻` | the service restarted three times or more inside two minutes | check the log |
+| checking | `…` | the first probe is still in flight | wait |
+| unknown | `?` | nothing to probe: stopped, or the local port is unknown | none |
+
+A `[4033:` line is not auth expired: IAP refused an identity that is logged in, so the fix is
+the `roles/iap.tunnelResourceAccessor` role, and the row stays unhealthy. The crash loop is
+counted from one TUI session's metrics rounds, so it is empty for the first seconds after
+`gtunnel` opens. `gtunnel list --json` carries no health, because it never probes; the MCP
+`gtunnel_get_status` tool returns `health` as `healthy`, `unhealthy`, `auth_expired` or
+`unknown`, and does not report crash loops, which need restarts over time.
+
 The keymap page also carries a **SESSION PATHS** summary section showing the active loaded
 paths for `Config` (`~/.gtunnel/config.toml`), `Tunnels` (`~/.gtunnel/tunnels.toml`), and
 `Logs` (`~/.gtunnel/logs/`).

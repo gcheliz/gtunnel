@@ -87,7 +87,7 @@ pub fn all_tools() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "gtunnel_get_status".to_string(),
-            description: "Get detailed runtime status, PID, restarts, and active TCP probe latency for a tunnel".to_string(),
+            description: "Get detailed runtime status, PID, restarts, health (healthy, unhealthy, auth_expired, unknown) and active TCP probe latency for a tunnel".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -425,9 +425,23 @@ pub async fn execute_tool(
                 None
             };
 
+            // A probe that got no answer is named by the log: expired
+            // credentials are `auth_expired`, not just `unhealthy`. A crash
+            // loop needs restarts over time, which one call cannot see
+            let health = match (status, probe_latency_ms) {
+                (TunnelStatus::Running, Some(_)) => "healthy",
+                (TunnelStatus::Running, None) if matches!(t.spec, TunnelSpec::Access { .. }) => {
+                    match probe::failed_health(&t.log_path().unwrap_or_default()) {
+                        probe::HealthStatus::AuthExpired => "auth_expired",
+                        _ => "unhealthy",
+                    }
+                }
+                _ => "unknown",
+            };
             let payload = json!({
                 "name": t.name,
                 "account": t.account_name,
+                "health": health,
                 "status": match status {
                     TunnelStatus::Running => "running",
                     TunnelStatus::Stopped => "stopped",
