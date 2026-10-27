@@ -124,12 +124,11 @@ async fn save_tunnel(account: Option<&str>, req: &AddRequest<'_>) -> Result<Adde
     let (config, acct) = resolve(account)?;
     // A plain read to fail fast, before any gcloud call; `add` inside the
     // locked update below is the check that holds
-    if TunnelState::load()?
-        .find_for_account(name, &acct.name)
-        .is_some()
-    {
+    let early = TunnelState::load()?;
+    if early.find_for_account(name, &acct.name).is_some() {
         bail!("Tunnel '{name}' already exists for account '{}'", acct.name);
     }
+    early.check_label(&acct.name, name)?;
 
     let (host, remote_port) = parse_access_target(target)?;
     let access_target = match (dest_group, via) {

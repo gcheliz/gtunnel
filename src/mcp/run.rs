@@ -144,7 +144,7 @@ pub(crate) fn find_live_run(account: &str, name: &str) -> Option<EphemeralRecord
 pub(crate) fn run_log_path(account: &str, name: &str) -> anyhow::Result<std::path::PathBuf> {
     Ok(crate::config::config_dir()?
         .join("logs")
-        .join(format!("run-{account}-{name}.log")))
+        .join(format!("run-{}.log", crate::state::label_of(account, name))))
 }
 
 /// The log of a live run, for the two readers. `None` means no live run of

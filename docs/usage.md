@@ -539,6 +539,7 @@ only one account.
 | Shape | `<platform>`, or `<platform>-<service>` when the platform has more than one |
 | Leave out | the account, environment or project — no `-dev`, `-prod`, `-staging` |
 | Allowed | up to 40 characters of `a-z`, `0-9` and `-`, starting with a letter and ending with a letter or digit |
+| Refused | a name whose `<account>-<name>` another account already holds, e.g. `eu-api` on `prod` when `prod-eu` has `api`; both would write `prod-eu-api.log` |
 
 ```
 gtunnel add k8s   … --account dev     # same name
