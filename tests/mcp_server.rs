@@ -218,6 +218,66 @@ fn mcp_stdio_tools_list_returns_eleven_tools() {
     assert!(tool_names.contains(&"gtunnel_run_tunnel"));
 }
 
+fn listed_tools() -> Vec<serde_json::Value> {
+    let h = Harness::new();
+    let req = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#;
+    let (stdout, stderr, success) = h.run_mcp_pipe(&format!("{req}\n"));
+    assert!(success, "stderr: {stderr}");
+    let line = stdout.lines().next().expect("response line");
+    let resp: serde_json::Value = serde_json::from_str(line).expect("valid json response");
+    resp["result"]["tools"].as_array().expect("tools").clone()
+}
+
+#[test]
+fn every_tool_carries_a_title_and_all_four_hints() {
+    for tool in listed_tools() {
+        let name = tool["name"].as_str().unwrap();
+        let title = tool["title"].as_str().unwrap_or("");
+        assert!(!title.is_empty(), "{name} has no title");
+        for hint in [
+            "readOnlyHint",
+            "destructiveHint",
+            "idempotentHint",
+            "openWorldHint",
+        ] {
+            assert!(
+                tool["annotations"][hint].is_boolean(),
+                "{name} lacks boolean {hint}"
+            );
+        }
+    }
+}
+
+#[test]
+fn read_only_and_destructive_tools_say_so() {
+    let read_only = [
+        "gtunnel_list_tunnels",
+        "gtunnel_get_status",
+        "gtunnel_get_logs",
+        "gtunnel_list_accounts",
+        "gtunnel_doctor",
+    ];
+    let destructive = [
+        "gtunnel_stop_tunnel",
+        "gtunnel_restart_tunnel",
+        "gtunnel_delete_tunnel",
+    ];
+    for tool in listed_tools() {
+        let name = tool["name"].as_str().unwrap();
+        let a = &tool["annotations"];
+        assert_eq!(
+            a["readOnlyHint"].as_bool().unwrap(),
+            read_only.contains(&name),
+            "readOnlyHint of {name}"
+        );
+        assert_eq!(
+            a["destructiveHint"].as_bool().unwrap(),
+            destructive.contains(&name),
+            "destructiveHint of {name}"
+        );
+    }
+}
+
 #[test]
 fn mcp_stdio_tool_call_missing_required_param_returns_invalid_params() {
     let h = Harness::new();

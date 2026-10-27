@@ -1,8 +1,8 @@
 use serde_json::{json, Value};
 
 use super::protocol::{
-    JsonRpcError, ResourceContent, ResourceDefinition, ResourceReadResult, ToolCallResult,
-    ToolDefinition, INTERNAL_ERROR, INVALID_PARAMS,
+    JsonRpcError, ResourceContent, ResourceDefinition, ResourceReadResult, ToolAnnotations,
+    ToolCallResult, ToolDefinition, INTERNAL_ERROR, INVALID_PARAMS,
 };
 use crate::commands::access::{
     add_tunnel, delete_tunnel, health_word, list_rows_json, probe_local, restart_tunnel,
@@ -18,6 +18,8 @@ pub fn all_tools() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
             name: "gtunnel_list_tunnels".to_string(),
+            title: "List tunnels".to_string(),
+            annotations: ToolAnnotations::new(true,false,true,false),
             description: "List all configured tunnels and live short-lived runs (run: true, with expires_at when they have a TTL) for the given or default account, each with its status, local_port (null on a public tunnel) and probed health (healthy, unhealthy, auth_expired or unknown)".to_string(),
             input_schema: json!({
                 "type": "object",
@@ -32,6 +34,8 @@ pub fn all_tools() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "gtunnel_start_tunnel".to_string(),
+            title: "Start tunnel".to_string(),
+            annotations: ToolAnnotations::new(false,false,true,true),
             description: "Start a persistent tunnel daemon".to_string(),
             input_schema: json!({
                 "type": "object",
@@ -50,6 +54,8 @@ pub fn all_tools() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "gtunnel_stop_tunnel".to_string(),
+            title: "Stop tunnel".to_string(),
+            annotations: ToolAnnotations::new(false,true,true,false),
             description: "Stop a running tunnel daemon, or a live run started by gtunnel_run_tunnel".to_string(),
             input_schema: json!({
                 "type": "object",
@@ -68,6 +74,8 @@ pub fn all_tools() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "gtunnel_restart_tunnel".to_string(),
+            title: "Restart tunnel".to_string(),
+            annotations: ToolAnnotations::new(false,true,true,true),
             description: "Restart a tunnel daemon (reinstalls service spec and restarts)".to_string(),
             input_schema: json!({
                 "type": "object",
@@ -86,6 +94,8 @@ pub fn all_tools() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "gtunnel_get_status".to_string(),
+            title: "Get tunnel status".to_string(),
+            annotations: ToolAnnotations::new(true,false,true,false),
             description: "Get detailed runtime status, PID, restarts, health (healthy, unhealthy, auth_expired, unknown) and active TCP probe latency for a tunnel or a live run (a run reports pid, local port and expires_at)".to_string(),
             input_schema: json!({
                 "type": "object",
@@ -104,6 +114,8 @@ pub fn all_tools() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "gtunnel_get_logs".to_string(),
+            title: "Read tunnel logs".to_string(),
+            annotations: ToolAnnotations::new(true,false,true,false),
             description: "Read the most recent log lines for a tunnel daemon or a live run started from MCP".to_string(),
             input_schema: json!({
                 "type": "object",
@@ -126,6 +138,8 @@ pub fn all_tools() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "gtunnel_add_tunnel".to_string(),
+            title: "Add tunnel".to_string(),
+            annotations: ToolAnnotations::new(false,false,false,true),
             description: "Add a persistent Access tunnel (IAP TCP forward to localhost)".to_string(),
             input_schema: json!({
                 "type": "object",
@@ -176,6 +190,8 @@ pub fn all_tools() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "gtunnel_run_tunnel".to_string(),
+            title: "Run short-lived tunnel".to_string(),
+            annotations: ToolAnnotations::new(false,false,false,true),
             description: "Open a short-lived Access tunnel that closes by itself when ttl_minutes elapses. Prefer this over gtunnel_add_tunnel for temporary access; it is never public and leaves nothing to clean up. Stop it early with gtunnel_stop_tunnel".to_string(),
             input_schema: json!({
                 "type": "object",
@@ -210,6 +226,8 @@ pub fn all_tools() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "gtunnel_delete_tunnel".to_string(),
+            title: "Delete tunnel".to_string(),
+            annotations: ToolAnnotations::new(false,true,false,false),
             description: "Delete a persistent tunnel, stopping its daemon and removing its service and log".to_string(),
             input_schema: json!({
                 "type": "object",
@@ -228,6 +246,8 @@ pub fn all_tools() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "gtunnel_list_accounts".to_string(),
+            title: "List accounts".to_string(),
+            annotations: ToolAnnotations::new(true,false,true,false),
             description: "List all configured accounts and show the currently selected active account".to_string(),
             input_schema: json!({
                 "type": "object",
@@ -237,6 +257,8 @@ pub fn all_tools() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "gtunnel_doctor".to_string(),
+            title: "Run diagnostics".to_string(),
+            annotations: ToolAnnotations::new(true,false,true,true),
             description: "Run diagnostic checks on local configuration and GCP resources".to_string(),
             input_schema: json!({
                 "type": "object",

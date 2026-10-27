@@ -21,6 +21,15 @@ impl ToolValidator {
         if tool.description.is_empty() {
             bail!("Tool '{}' must have a non-empty description", tool.name);
         }
+        if tool.title.is_empty() {
+            bail!("Tool '{}' must have a non-empty title", tool.name);
+        }
+        if tool.annotations.read_only_hint && tool.annotations.destructive_hint {
+            bail!(
+                "Tool '{}' cannot be both read-only and destructive",
+                tool.name
+            );
+        }
         let schema = &tool.input_schema;
         if !schema.is_object() {
             bail!("Tool '{}' inputSchema must be a JSON object", tool.name);
@@ -162,6 +171,28 @@ pub fn validate_registered_tools() -> Result<ValidationSummary, Vec<String>> {
         tools_count: tools.len(),
         resources_count: resources.len(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_tool_with_an_empty_title_is_rejected() {
+        let mut tool = all_tools().remove(0);
+        tool.title = String::new();
+        let err = ToolValidator::validate_definition(&tool).unwrap_err();
+        assert!(err.to_string().contains("title"), "got: {err}");
+    }
+
+    #[test]
+    fn a_read_only_tool_marked_destructive_is_rejected() {
+        let mut tool = all_tools().remove(0);
+        tool.annotations.read_only_hint = true;
+        tool.annotations.destructive_hint = true;
+        let err = ToolValidator::validate_definition(&tool).unwrap_err();
+        assert!(err.to_string().contains("destructive"), "got: {err}");
+    }
 }
 
 /// CLI command runner for `gtunnel mcp --validate`.

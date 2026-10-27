@@ -134,9 +134,43 @@ pub struct InitializeResult {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ToolDefinition {
     pub name: String,
+    /// What a client's approval prompt shows instead of the `gtunnel_` id.
+    pub title: String,
     pub description: String,
     #[serde(rename = "inputSchema")]
     pub input_schema: Value,
+    pub annotations: ToolAnnotations,
+}
+
+/// All four hints are always emitted: the spec defaults `destructiveHint` and
+/// `openWorldHint` to true, so leaving one out would mislabel a read-only or
+/// local-only tool as destructive and open-world to a client that trusts them.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ToolAnnotations {
+    #[serde(rename = "readOnlyHint")]
+    pub read_only_hint: bool,
+    #[serde(rename = "destructiveHint")]
+    pub destructive_hint: bool,
+    #[serde(rename = "idempotentHint")]
+    pub idempotent_hint: bool,
+    #[serde(rename = "openWorldHint")]
+    pub open_world_hint: bool,
+}
+
+impl ToolAnnotations {
+    pub const fn new(
+        read_only: bool,
+        destructive: bool,
+        idempotent: bool,
+        open_world: bool,
+    ) -> Self {
+        Self {
+            read_only_hint: read_only,
+            destructive_hint: destructive,
+            idempotent_hint: idempotent,
+            open_world_hint: open_world,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
