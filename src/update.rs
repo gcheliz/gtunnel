@@ -57,7 +57,9 @@ fn user_agent() -> String {
 
 async fn fetch_latest_version() -> Result<String> {
     let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
-    let response = reqwest::Client::new()
+    let response = crate::http::client_builder()
+        .build()
+        .context("Failed to build the HTTP client")?
         .get(&url)
         .header("User-Agent", user_agent())
         .header("Accept", "application/vnd.github.v3+json")
@@ -305,7 +307,9 @@ fn staging_dir(parent: &Path) -> Result<TempDirGuard> {
 }
 
 async fn get(url: &str) -> Result<Vec<u8>> {
-    let response = reqwest::Client::new()
+    let response = crate::http::client_builder()
+        .build()
+        .context("Failed to build the HTTP client")?
         .get(url)
         .header("User-Agent", user_agent())
         .send()

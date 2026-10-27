@@ -308,3 +308,36 @@ The minimum Rust version is 1.89 because `File::lock`, `try_lock` and `unlock` a
 there; the alternative was a dependency for one syscall. The costs: a package that builds with
 an older compiler must update, and the lock is advisory, so an editor writing `tunnels.toml`
 directly is not stopped by it.
+
+## 17. The release binary is built for size
+
+**Status:** Accepted, 2026-10-27
+
+The release binary was 11.5 MB, and the release tarballs and `gtunnel update` download it
+whole. Four profile keys and one TLS backend choice cut it to 4.2 MB, all under
+`[profile.release]` and `Cargo.toml`, so `cargo install` builds the same binary.
+
+| Step | Size, macOS arm64 |
+|---|---|
+| Before | 11.54 MB |
+| `strip = "symbols"` | 9.42 MB |
+| `lto = "fat"`, `codegen-units = 1` | 6.72 MB |
+| `panic = "abort"` | 5.64 MB |
+| rustls on `ring`, not `aws-lc-rs` | 4.20 MB |
+
+TLS uses `ring`: reqwest is built with `rustls-no-provider` and `src/http.rs` installs the
+provider, once, for every client. `ring` is 1.4 MB smaller than `aws-lc-rs`. The cost is no
+post-quantum key exchange, which `aws-lc-rs` offers; gtunnel talks to Google and GitHub
+endpoints that negotiate classical key exchange today.
+
+`panic = "abort"` is safe here: nothing calls `catch_unwind` or inspects a panic, the
+panic hook that `ratatui::init` installs restores the terminal before the process ends, and
+launchd and systemd restart a daemon that dies. A panic is now a crash, not an unwind.
+
+`opt-level` stays 3. `"s"` would shrink the binary further, but the relay and probe paths are
+not benchmarked, so the speed given up is unknown.
+
+The costs: a clean release build takes about 166 s where it took 57 s (fat LTO and one
+codegen unit), and a client built without `crate::http::client_builder` panics, which under
+abort ends the process. `clippy.toml` forbids `reqwest::Client::new`, `Client::builder` and
+`ClientBuilder::new`, so CI rejects that door.
