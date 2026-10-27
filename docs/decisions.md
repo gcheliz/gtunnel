@@ -221,7 +221,7 @@ describes a program that no longer exists.
 
 ## 14. Releases are computed and published automatically
 
-**Status:** Accepted, 0.1.1 (2026-10-24), amended 0.1.14 (2026-10-26), amended 2026-10-27
+**Status:** Accepted, 0.1.1 (2026-10-24), amended 0.1.14 (2026-10-26), amended 2026-10-27, amended 2026-10-28 (docs no longer release)
 
 Deciding a version by hand means deciding it from memory, and a changelog written at
 release time is written from the diff rather than from the intent.
@@ -237,10 +237,11 @@ One merge to `main` is one release. `release.yml` runs a train on the merge comm
 | verify | runs on the tag: it must point at a commit on `main` and name the version that commit declares |
 | build, publish | four targets, a `.sha256` each, an attestation each, then the draft is published as latest |
 
-Every merge that writes a changelog line, `feat`, `fix`, `perf`, `refactor` or `docs`,
-cuts a release (`release_commits` in `release-plz.toml`). A merge of tests, CI or chores
-alone writes no line and changes nothing a user gets, so it changes no version. A merge
-that changes only `Cargo.lock` is invisible to that filter, because release-plz drops
+Every merge that changes the binary, `feat`, `fix`, `perf` or `refactor`, cuts a release
+(`release_commits` in `release-plz.toml`). A `docs` merge writes a changelog line but ships
+identical binaries, so it cuts none: its line ships in the notes of the next release. A
+merge of tests, CI or chores alone writes no line and changes no version. A merge that
+changes only `Cargo.lock` is invisible to that filter, because release-plz drops
 lockfile-only commits from the history it reads; it releases instead through the commit
 release-plz adds when the binary's locked dependencies differ from the last tag, which the
 filter names. A later merge on top of an unreleased lockfile change hides it again, so the

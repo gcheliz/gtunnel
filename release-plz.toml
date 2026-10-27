@@ -20,16 +20,17 @@ git_release_enable = false
 
 changelog_update = true
 
-# Every prefix that writes a changelog line cuts a release, so a merge reaches
-# users without anyone dispatching anything. Tests, CI and chores write no line
-# and change nothing a user gets; releasing them would ship identical binaries
-# under a new number with empty notes.
+# Every prefix that changes the binary cuts a release, so a merge reaches users
+# without anyone dispatching anything. `docs` writes a changelog line but changes
+# nothing in the binary, so it waits and ships with the next release a code change
+# cuts. Tests, CI and chores write no line at all. Releasing either would ship
+# identical binaries under a new number.
 #
 # A commit that changes only Cargo.lock never reaches this regex: release-plz drops
 # it from the package's history whatever its subject says. When the locked
 # dependencies of the binary differ from the last tag, it adds a commit of its own
 # instead, titled as in the second alternative, so that one releases too.
-release_commits = "^(feat|fix|perf|refactor|docs)|^chore: update Cargo\\.lock dependencies$"
+release_commits = "^(feat|fix|perf|refactor)|^chore: update Cargo\\.lock dependencies$"
 
 [changelog]
 header = """# Changelog
