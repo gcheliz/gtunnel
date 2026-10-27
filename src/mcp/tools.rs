@@ -6,7 +6,7 @@ use super::protocol::{
     ToolDefinition, INTERNAL_ERROR, INVALID_PARAMS,
 };
 use crate::commands::access::{
-    add_tunnel, delete_tunnel, restart_tunnel, start_tunnel, stop_tunnel, AddRequest,
+    add_tunnel, delete_tunnel, restart_tunnel, start_tunnel, stop_by_name, AddRequest, Stopped,
 };
 use crate::commands::{find_tunnel, resolve};
 use crate::config::load_config;
@@ -87,7 +87,7 @@ pub fn all_tools() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "gtunnel_get_status".to_string(),
-            description: "Get detailed runtime status, PID, restarts, health (healthy, unhealthy, auth_expired, unknown) and active TCP probe latency for a tunnel".to_string(),
+            description: "Get detailed runtime status, PID, restarts, health (healthy, unhealthy, auth_expired, unknown) and active TCP probe latency for a tunnel or a live run (a run reports pid, local port and expires_at)".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -105,7 +105,7 @@ pub fn all_tools() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "gtunnel_get_logs".to_string(),
-            description: "Read the most recent log lines for a tunnel daemon".to_string(),
+            description: "Read the most recent log lines for a tunnel daemon or a live run started from MCP".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -286,6 +286,88 @@ fn resolve_for_tool(
     resolve(account).map_err(|e| ToolCallResult::failure(&e))
 }
 
+/// The not-found a name earns once neither a tunnel nor a live run has it.
+/// The text comes from `find_tunnel`, so every command words it alike.
+fn not_found(state: &TunnelState, name: &str, account: &str) -> ToolCallResult {
+    match find_tunnel(state, name, account) {
+        Err(e) => ToolCallResult::failure(&e),
+        Ok(_) => ToolCallResult::failure(
+            &crate::error::GtunnelError::new(
+                crate::error::ErrorKind::Internal,
+                format!("'{name}' was found by one lookup and missed by another"),
+            )
+            .into(),
+        ),
+    }
+}
+
+/// A probe that got no answer is named by the log: expired credentials are
+/// `auth_expired`, not just `unhealthy`. A crash loop needs restarts over
+/// time, which one call cannot see.
+fn health_word(
+    running: bool,
+    probe_latency_ms: Option<u128>,
+    access: bool,
+    log: &std::path::Path,
+) -> &'static str {
+    match (running, probe_latency_ms) {
+        (true, Some(_)) => "healthy",
+        (true, None) if access => match probe::failed_health(log) {
+            probe::HealthStatus::AuthExpired => "auth_expired",
+            _ => "unhealthy",
+        },
+        _ => "unknown",
+    }
+}
+
+/// The last `n` lines of `text`, oldest first.
+fn last_lines(text: &str, n: usize) -> String {
+    let mut tail: Vec<&str> = text.lines().rev().take(n).collect();
+    tail.reverse();
+    tail.join("\n")
+}
+
+/// Status of a live run. It has no daemon, so pid and expiry come from its
+/// record, and a run that exists is by definition running. A public run has
+/// no local port to probe, so its health stays unknown rather than guessed.
+async fn run_status(run: &crate::ephemeral::EphemeralRecord) -> ToolCallResult {
+    let tunnel = run.as_tunnel();
+    let log = super::run::run_log_path(&run.account_name, &run.name).unwrap_or_default();
+    let (local_port, probe_latency_ms) = match &run.spec {
+        TunnelSpec::Access { local_port, .. } => (
+            Some(*local_port),
+            probe::probe_tunnel(
+                &format!("127.0.0.1:{local_port}"),
+                Duration::from_millis(500),
+                &log,
+            )
+            .await
+            .map(|d| d.as_millis()),
+        ),
+        TunnelSpec::Expose { .. } => (None, None),
+    };
+    let health = health_word(
+        true,
+        probe_latency_ms,
+        matches!(run.spec, TunnelSpec::Access { .. }),
+        &log,
+    );
+    let payload = json!({
+        "name": run.name,
+        "account": run.account_name,
+        "run": true,
+        "status": "running",
+        "health": health,
+        "pid": run.pid,
+        "local_port": local_port,
+        "expires_at": run.expires_at(),
+        "probe_latency_ms": probe_latency_ms,
+        "url": tunnel.display_url(),
+        "target": tunnel.display_target(),
+    });
+    ToolCallResult::text(serde_json::to_string_pretty(&payload).unwrap_or_default())
+}
+
 pub async fn execute_tool(
     name: &str,
     params: Option<&Value>,
@@ -363,27 +445,11 @@ pub async fn execute_tool(
             let tunnel_name = get_str("name")
                 .ok_or_else(|| JsonRpcError::new(INVALID_PARAMS, "Missing 'name'"))?;
             let account = get_str("account");
-            // A persistent tunnel of that name wins; only without one does the
-            // name mean a live run
-            let (_, acct) = match resolve_for_tool(account) {
-                Ok(r) => r,
-                Err(fail) => return Ok(fail),
-            };
-            let persistent = TunnelState::load()
-                .map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?
-                .find_for_account(tunnel_name, &acct.name)
-                .is_some();
-            if !persistent {
-                match super::run::stop_run(&acct.name, tunnel_name).await {
-                    Ok(Some(())) => {
-                        return Ok(ToolCallResult::text(format!("Stopped run '{tunnel_name}'")))
-                    }
-                    Ok(None) => {}
-                    Err(e) => return Ok(ToolCallResult::failure(&e)),
+            Ok(match stop_by_name(account, tunnel_name).await {
+                Ok(Stopped::Run) => ToolCallResult::text(format!("Stopped run '{tunnel_name}'")),
+                Ok(Stopped::Tunnel) => {
+                    ToolCallResult::text(format!("Stopped tunnel '{tunnel_name}'"))
                 }
-            }
-            Ok(match stop_tunnel(account, tunnel_name).await {
-                Ok(()) => ToolCallResult::text(format!("Stopped tunnel '{tunnel_name}'")),
                 Err(e) => ToolCallResult::failure(&e),
             })
         }
@@ -406,9 +472,16 @@ pub async fn execute_tool(
             };
             let state = TunnelState::load()
                 .map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
-            let t = match find_tunnel(&state, tunnel_name, &acct.name) {
-                Ok(t) => t,
-                Err(e) => return Ok(ToolCallResult::failure(&e)),
+            // A persistent tunnel of that name wins; without one, a live run
+            // of it, and only then the not-found
+            let t = match state.find_for_account(tunnel_name, &acct.name) {
+                Some(t) => t.clone(),
+                None => {
+                    if let Some(run) = super::run::find_live_run(&acct.name, tunnel_name) {
+                        return Ok(run_status(&run).await);
+                    }
+                    return Ok(not_found(&state, tunnel_name, &acct.name));
+                }
             };
 
             let label = daemon::platform_label(&t.account_name, &t.name);
@@ -433,22 +506,16 @@ pub async fn execute_tool(
                 None
             };
 
-            // A probe that got no answer is named by the log: expired
-            // credentials are `auth_expired`, not just `unhealthy`. A crash
-            // loop needs restarts over time, which one call cannot see
-            let health = match (status, probe_latency_ms) {
-                (TunnelStatus::Running, Some(_)) => "healthy",
-                (TunnelStatus::Running, None) if matches!(t.spec, TunnelSpec::Access { .. }) => {
-                    match probe::failed_health(&t.log_path().unwrap_or_default()) {
-                        probe::HealthStatus::AuthExpired => "auth_expired",
-                        _ => "unhealthy",
-                    }
-                }
-                _ => "unknown",
-            };
+            let health = health_word(
+                status == TunnelStatus::Running,
+                probe_latency_ms,
+                matches!(t.spec, TunnelSpec::Access { .. }),
+                &t.log_path().unwrap_or_default(),
+            );
             let payload = json!({
                 "name": t.name,
                 "account": t.account_name,
+                "run": false,
                 "health": health,
                 "status": match status {
                     TunnelStatus::Running => "running",
@@ -476,22 +543,20 @@ pub async fn execute_tool(
             };
             let state = TunnelState::load()
                 .map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
-            let t = match find_tunnel(&state, tunnel_name, &acct.name) {
-                Ok(t) => t,
-                Err(e) => return Ok(ToolCallResult::failure(&e)),
+            // The same order as stop and status: a persistent tunnel, then a
+            // live run, then not-found
+            let log_path = match state.find_for_account(tunnel_name, &acct.name) {
+                Some(t) => t
+                    .log_path()
+                    .map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?,
+                None => match super::run::live_run_log(&acct.name, tunnel_name) {
+                    Some(Ok(path)) => path,
+                    Some(Err(e)) => return Ok(ToolCallResult::failure(&e)),
+                    None => return Ok(not_found(&state, tunnel_name, &acct.name)),
+                },
             };
-
-            let log_path = t
-                .log_path()
-                .map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
             let text = daemon::read_tail(&log_path, daemon::TAIL_WINDOW);
-            let tail_lines: Vec<&str> = text.lines().rev().take(lines).collect();
-            let joined = tail_lines
-                .into_iter()
-                .rev()
-                .collect::<Vec<&str>>()
-                .join("\n");
-            Ok(ToolCallResult::text(joined))
+            Ok(ToolCallResult::text(last_lines(&text, lines)))
         }
         "gtunnel_add_tunnel" => {
             let tunnel_name = get_str("name")

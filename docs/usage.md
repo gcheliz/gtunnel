@@ -1232,8 +1232,8 @@ and 2 live resources without requiring an external runtime.
 | `gtunnel_start_tunnel` | `name`, `account?` | Starts a stopped tunnel daemon |
 | `gtunnel_stop_tunnel` | `name`, `account?` | Stops a running tunnel daemon; with no persistent tunnel of that name, stops the live `gtunnel_run_tunnel` run of that name |
 | `gtunnel_restart_tunnel` | `name`, `account?` | Reinstalls service spec and restarts daemon |
-| `gtunnel_get_status` | `name`, `account?` | Returns PID, restarts, and active TCP probe round-trip latency |
-| `gtunnel_get_logs` | `name`, `lines?`, `account?` | Tails daemon log with automatic error diagnosis |
+| `gtunnel_get_status` | `name`, `account?` | Returns PID, restarts, and active TCP probe round-trip latency; for a live run, its pid, local port and `expires_at` (`"run": true`) |
+| `gtunnel_get_logs` | `name`, `lines?`, `account?` | Tails daemon log with automatic error diagnosis; for a run launched by `gtunnel_run_tunnel`, tails `logs/run-<account>-<name>.log` (a run started in a terminal has none) |
 | `gtunnel_add_tunnel` | `name`, `target`, `via?`, `zone?`, `local_port?`, `dest_group?`, `region?`, `network?`, `start?`, `account?` | Adds an Access tunnel |
 | `gtunnel_run_tunnel` | `target`, `ttl_minutes`, `name?`, `zone?`, `local_port?`, `account?` | Opens a short-lived Access tunnel that closes by itself after `ttl_minutes` |
 | `gtunnel_delete_tunnel` | `name`, `account?` | Deletes a persistent tunnel and removes its service |
@@ -1256,7 +1256,7 @@ server and its only owner is the TTL, and it answers once the run has published 
 | `name` is optional | A `gt-xxxxxx` name is generated, as for `gtunnel run` without one |
 | A `name` already live, or held by a managed tunnel in the account, is refused | The run would replace the live run's record and leave it running with nothing able to stop it |
 | Output goes to `logs/run-<account>-<name>.log` | A start that fails returns that log's tail as the tool error |
-| `gtunnel_stop_tunnel` closes it early | A persistent tunnel of the same name wins; without one, the name means the live run |
+| `gtunnel_stop_tunnel` closes it early | A persistent tunnel of the same name wins; without one, the name means the live run. `gtunnel stop`, `gtunnel logs`, `gtunnel_get_status` and `gtunnel_get_logs` look in the same order |
 
 Prefer `gtunnel_run_tunnel` for access that lasts an afternoon; use `gtunnel_add_tunnel` for
 something the user keeps.
