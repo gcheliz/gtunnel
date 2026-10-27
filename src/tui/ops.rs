@@ -71,7 +71,21 @@ pub async fn load_entries(account: &str) -> Result<(Vec<TunnelEntry>, HashSet<u1
         entries.push(entry);
     }
 
-    Ok((entries, state.used_local_ports()))
+    Ok((entries, used_ports(&state)))
+}
+
+/// The ports the add dialog must not suggest: saved tunnels and the live runs
+/// of every account, the two things `gtunnel add` refuses a port for.
+// A run record that cannot be read is treated as no runs: the list is drawn
+// on every refresh and must not fail over a hint, and `add` checks again
+fn used_ports(state: &TunnelState) -> HashSet<u16> {
+    let mut used = state.used_local_ports();
+    used.extend(
+        crate::ephemeral::live_run_local_ports()
+            .unwrap_or_default()
+            .into_keys(),
+    );
+    used
 }
 
 /// What to call a `gcloud` process gtunnel did not start.
@@ -614,5 +628,29 @@ mod tests {
             external_name(&stranger(48210, "cache-1", 6379), &taken),
             "cache-1:6379@48210"
         );
+    }
+
+    #[test]
+    fn the_ports_the_add_dialog_avoids_include_a_live_runs() {
+        let _dir = crate::config::testing::TempConfigDir::new();
+        crate::ephemeral::EphemeralRecord {
+            name: "scratch".to_string(),
+            account_name: "prod".to_string(),
+            pid: std::process::id(),
+            spec: TunnelSpec::Access {
+                target: AccessTarget::Instance {
+                    instance: "my-vm".to_string(),
+                    zone: "europe-west1-b".to_string(),
+                },
+                remote_port: 5432,
+                local_port: 17777,
+            },
+            started_at: 1_700_000_000,
+            ttl_secs: None,
+            pid_start: None,
+        }
+        .save()
+        .unwrap();
+        assert!(used_ports(&TunnelState::default()).contains(&17777));
     }
 }

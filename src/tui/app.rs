@@ -1291,7 +1291,13 @@ impl App {
             // Judged against the config on disk, which is the one the daemon
             // and the CLI will read, not whatever this process loaded at start
             ConfigFile::Tunnels => crate::config::load_config()
-                .and_then(|config| edit::validate_tunnels(&text, &config))
+                .and_then(|config| {
+                    // Run records that cannot be read count as no runs: the
+                    // edit is not blocked over them, and `add` and the start
+                    // of the tunnel check the port again
+                    let runs = crate::ephemeral::live_run_local_ports().unwrap_or_default();
+                    edit::validate_tunnels(&text, &config, &runs)
+                })
                 .map(Checked::Tunnels),
         };
         let checked = match checked {

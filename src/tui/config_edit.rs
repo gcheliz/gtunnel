@@ -116,7 +116,16 @@ pub fn validate_config(text: &str) -> Result<Config> {
 /// on this machine whatever the account, so the second one would crash-loop
 /// the moment it started. An Expose tunnel has no local listener and is
 /// skipped, as `TunnelState::used_local_ports` skips it.
-pub fn validate_tunnels(text: &str, config: &Config) -> Result<TunnelState> {
+///
+/// `runs` is the live `gtunnel run` ports with the run's name, which this
+/// function cannot read itself: it stays a function of its arguments. `add`
+/// refuses those ports, so a hand edit must too, or the save succeeds and the
+/// tunnel fails at its next start.
+pub fn validate_tunnels(
+    text: &str,
+    config: &Config,
+    runs: &HashMap<u16, String>,
+) -> Result<TunnelState> {
     let state: TunnelState = parse(text)?;
     // The i-th table is the i-th header in the usual layout; a file written as
     // inline tables has none, and then the error simply carries no line
@@ -169,6 +178,14 @@ pub fn validate_tunnels(text: &str, config: &Config) -> Result<TunnelState> {
                 t.name,
                 t.account_name,
                 local_port
+            );
+        }
+        if let TunnelSpec::Access { local_port, .. } = &t.spec
+            && let Some(run) = runs.get(local_port)
+        {
+            bail!(
+                "{}Local port {local_port} is already used by the run '{run}'",
+                at(i)
             );
         }
     }
@@ -591,7 +608,7 @@ mod tests {
     #[test]
     fn tunnels_must_parse_and_the_error_names_the_line() {
         let cfg = config("dev", &["dev"]);
-        let msg = validate_tunnels("[[tunnels]\nname = 1\n", &cfg)
+        let msg = validate_tunnels("[[tunnels]\nname = 1\n", &cfg, &HashMap::new())
             .expect_err("invalid toml")
             .to_string();
         assert!(msg.contains("line 1"), "{msg}");
@@ -604,9 +621,12 @@ mod tests {
             tunnel("db", "dev", 15432),
             tunnel("db", "prod", 15433),
         ]);
-        let parsed = validate_tunnels(&text, &cfg).expect("valid");
+        let parsed = validate_tunnels(&text, &cfg, &HashMap::new()).expect("valid");
         assert_eq!(parsed.tunnels.len(), 2);
-        assert!(validate_tunnels("", &cfg).unwrap().tunnels.is_empty());
+        assert!(validate_tunnels("", &cfg, &HashMap::new())
+            .unwrap()
+            .tunnels
+            .is_empty());
     }
 
     #[test]
@@ -623,7 +643,7 @@ mod tests {
             .nth(1)
             .map(|(i, _)| i + 1)
             .unwrap();
-        let msg = validate_tunnels(&text, &cfg)
+        let msg = validate_tunnels(&text, &cfg, &HashMap::new())
             .expect_err("bad name")
             .to_string();
         assert!(msg.contains("Bad_Name"), "{msg}");
@@ -642,7 +662,7 @@ mod tests {
             remote_port: 22,
             local_port: 15432,
         };
-        let msg = validate_tunnels(&text_of(vec![bad]), &cfg)
+        let msg = validate_tunnels(&text_of(vec![bad]), &cfg, &HashMap::new())
             .expect_err("a flag for an instance")
             .to_string();
         assert!(msg.contains("--command=id"), "{msg}");
@@ -653,7 +673,7 @@ mod tests {
     fn a_duplicate_name_within_one_account_is_refused_but_not_across_accounts() {
         let cfg = config("dev", &["dev", "prod"]);
         let dup = text_of(vec![tunnel("db", "dev", 15432), tunnel("db", "dev", 15433)]);
-        let msg = validate_tunnels(&dup, &cfg)
+        let msg = validate_tunnels(&dup, &cfg, &HashMap::new())
             .expect_err("duplicate")
             .to_string();
         assert!(msg.contains("db") && msg.contains("dev"), "{msg}");
@@ -663,7 +683,7 @@ mod tests {
             tunnel("db", "dev", 15432),
             tunnel("db", "prod", 15433),
         ]);
-        assert!(validate_tunnels(&across, &cfg).is_ok());
+        assert!(validate_tunnels(&across, &cfg, &HashMap::new()).is_ok());
     }
 
     #[test]
@@ -680,7 +700,7 @@ mod tests {
             .nth(1)
             .map(|(i, _)| i + 1)
             .unwrap();
-        let msg = validate_tunnels(&text, &cfg)
+        let msg = validate_tunnels(&text, &cfg, &HashMap::new())
             .expect_err("one port")
             .to_string();
         assert_eq!(
@@ -698,7 +718,7 @@ mod tests {
             tunnel("db", "dev", 15432),
             tunnel("db", "prod", 15432),
         ]);
-        let msg = validate_tunnels(&text, &cfg)
+        let msg = validate_tunnels(&text, &cfg, &HashMap::new())
             .expect_err("machine-wide")
             .to_string();
         assert!(msg.contains("'db' (dev) and 'db' (prod)"), "{msg}");
@@ -717,14 +737,45 @@ mod tests {
             private: false,
         };
         let text = text_of(vec![tunnel("db", "dev", 15432), public]);
-        assert!(validate_tunnels(&text, &cfg).is_ok());
+        assert!(validate_tunnels(&text, &cfg, &HashMap::new()).is_ok());
+    }
+
+    #[test]
+    fn a_tunnel_on_a_port_a_live_run_holds_is_refused_naming_the_run() {
+        let cfg = config("dev", &["dev"]);
+        let runs = HashMap::from([(15432, "scratch".to_string())]);
+        let text = text_of(vec![tunnel("db", "dev", 15432)]);
+        let msg = validate_tunnels(&text, &cfg, &runs)
+            .expect_err("a run holds the port")
+            .to_string();
+        assert_eq!(
+            msg,
+            "line 1: Local port 15432 is already used by the run 'scratch'"
+        );
+        let elsewhere = text_of(vec![tunnel("db", "dev", 15433)]);
+        assert!(validate_tunnels(&elsewhere, &cfg, &runs).is_ok());
+    }
+
+    #[test]
+    fn an_expose_tunnel_is_not_held_to_a_run_port() {
+        let cfg = config("dev", &["dev"]);
+        let runs = HashMap::from([(0, "scratch".to_string())]);
+        let mut public = tunnel("site", "dev", 0);
+        public.spec = TunnelSpec::Expose {
+            local_target: "localhost:15432".into(),
+            domain: "example.com".into(),
+            hostname: "site.example.com".into(),
+            relay_port: 30001,
+            private: false,
+        };
+        assert!(validate_tunnels(&text_of(vec![public]), &cfg, &runs).is_ok());
     }
 
     #[test]
     fn a_tunnel_for_an_account_the_config_lacks_is_refused() {
         let cfg = config("dev", &["dev"]);
         let text = text_of(vec![tunnel("db", "staging", 15432)]);
-        let msg = validate_tunnels(&text, &cfg)
+        let msg = validate_tunnels(&text, &cfg, &HashMap::new())
             .expect_err("unknown account")
             .to_string();
         assert!(msg.contains("staging"), "{msg}");

@@ -554,6 +554,40 @@ fn a_tunnel_name_that_cannot_be_a_label_is_refused_with_its_line() {
 }
 
 #[test]
+fn a_tunnel_moved_onto_a_live_runs_port_is_refused_and_the_file_is_unchanged() {
+    let dir = seeded(2);
+    crate::ephemeral::EphemeralRecord {
+        name: "scratch".to_string(),
+        account_name: "prod".to_string(),
+        pid: std::process::id(),
+        spec: tunnel("scratch", 17777).spec,
+        started_at: 1_700_000_000,
+        ttl_secs: None,
+        pid_start: None,
+    }
+    .save()
+    .unwrap();
+    let before = std::fs::read(dir.path().join("tunnels.toml")).unwrap();
+    let mut app = page_app();
+    press(&mut app, KeyCode::Tab);
+    edit(&mut app, moves_a_tunnel_to_the_runs_port);
+    assert_eq!(
+        app.config_view.error.as_deref(),
+        Some("line 1: Local port 17777 is already used by the run 'scratch'")
+    );
+    assert_eq!(
+        std::fs::read(dir.path().join("tunnels.toml")).unwrap(),
+        before
+    );
+}
+
+fn moves_a_tunnel_to_the_runs_port(path: &Path) -> anyhow::Result<()> {
+    let text = std::fs::read_to_string(path)?;
+    std::fs::write(path, text.replacen("15000", "17777", 1))?;
+    Ok(())
+}
+
+#[test]
 fn removing_the_selected_account_moves_to_the_first_remaining() {
     let _dir = seeded(1);
     let mut app = page_app();
