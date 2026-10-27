@@ -474,6 +474,61 @@ fn mcp_list_tunnels_includes_a_live_run_and_marks_it() {
     assert_eq!(declared.map(|r| r["run"].clone()), Some(false.into()));
 }
 
+/// The keys of each row, by name, from a JSON array of list rows.
+fn keys_by_name(rows: &serde_json::Value) -> std::collections::BTreeMap<String, Vec<String>> {
+    rows.as_array()
+        .expect("an array of rows")
+        .iter()
+        .map(|r| {
+            let obj = r.as_object().expect("a row object");
+            let mut keys: Vec<String> = obj.keys().cloned().collect();
+            keys.sort();
+            (r["name"].as_str().unwrap().to_string(), keys)
+        })
+        .collect()
+}
+
+#[test]
+fn list_json_and_mcp_list_tunnels_have_the_same_keys_for_a_tunnel_and_a_run() {
+    let h = Harness::new();
+    let mut sleeper = Command::new("/bin/sleep").arg("30").spawn().expect("sleep");
+    write_run_record(&h, "demo", "scratch", sleeper.id(), ACCESS_SPEC);
+    let mcp = json_text(&call(&h, "gtunnel_list_tunnels", "{}"));
+    let (cli, stderr, success) = h.run(&["list", "--json"]);
+    let _ = sleeper.kill();
+    let _ = sleeper.wait();
+    assert!(success, "stderr: {stderr}");
+    let cli: serde_json::Value = serde_json::from_str(&cli).expect("list --json");
+
+    let (cli, mcp) = (keys_by_name(&cli), keys_by_name(&mcp));
+    assert_eq!(cli.len(), 2, "{cli:?}");
+    assert_eq!(cli, mcp);
+    for keys in cli.values() {
+        assert!(keys.contains(&"health".to_string()), "{keys:?}");
+        assert!(keys.contains(&"local_port".to_string()), "{keys:?}");
+        assert!(keys.contains(&"unmanaged".to_string()), "{keys:?}");
+    }
+}
+
+#[test]
+fn mcp_list_tunnels_gives_a_public_run_no_local_port() {
+    let h = Harness::new();
+    let mut sleeper = Command::new("/bin/sleep").arg("30").spawn().expect("sleep");
+    write_run_record(&h, "demo", "public", sleeper.id(), EXPOSE_SPEC);
+    let rows = json_text(&call(&h, "gtunnel_list_tunnels", "{}"));
+    let _ = sleeper.kill();
+    let _ = sleeper.wait();
+    let run = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["name"] == "public")
+        .expect("the public run");
+    assert_eq!(run["mode"], "public", "{run}");
+    assert!(run["local_port"].is_null(), "{run}");
+    assert_eq!(run["health"], "unknown", "{run}");
+}
+
 const ACCESS_SPEC: &str = r#"{"mode":"access","target":{"kind":"instance","instance":"my-vm","zone":"europe-west1-b"},"remote_port":5432,"local_port":15999}"#;
 
 const EXPOSE_SPEC: &str = r#"{"mode":"expose","local_target":"localhost:8080","domain":"example.com","hostname":"app.example.com","relay_port":9000,"private":false}"#;

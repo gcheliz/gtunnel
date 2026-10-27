@@ -291,9 +291,9 @@ the log says, so the fix is on screen instead of in the log:
 A `[4033:` line is not auth expired: IAP refused an identity that is logged in, so the fix is
 the `roles/iap.tunnelResourceAccessor` role, and the row stays unhealthy. The crash loop is
 counted from one TUI session's metrics rounds, so it is empty for the first seconds after
-`gtunnel` opens. `gtunnel list --json` carries no health, because it never probes; the MCP
-`gtunnel_get_status` tool returns `health` as `healthy`, `unhealthy`, `auth_expired` or
-`unknown`, and does not report crash loops, which need restarts over time.
+`gtunnel` opens. `gtunnel list --json`, `gtunnel_list_tunnels` and `gtunnel_get_status`
+return `health` as `healthy`, `unhealthy`, `auth_expired` or `unknown`, and do not report
+crash loops, which need restarts over time.
 
 The keymap page also carries a **SESSION PATHS** summary section showing the active loaded
 paths for `Config` (`~/.gtunnel/config.toml`), `Tunnels` (`~/.gtunnel/tunnels.toml`), and
@@ -654,7 +654,9 @@ $ gtunnel list --json
     "account": "demo",
     "auto_start": false,
     "unmanaged": false,
-    "run": false
+    "run": false,
+    "local_port": 15432,
+    "health": "unknown"
   },
   {
     "status": "running",
@@ -666,14 +668,31 @@ $ gtunnel list --json
     "auto_start": false,
     "unmanaged": false,
     "run": true,
-    "expires_at": 1793103233
+    "expires_at": 1793103233,
+    "local_port": 15999,
+    "health": "healthy"
   }
 ]
 ```
 
-`run` is on every row, so one schema covers declared tunnels and runs, and `mode` still says
-what each is. `expires_at` (unix seconds) appears only on a
-run started with `--ttl`. `gtunnel_list_tunnels` returns the same two fields.
+| Field | Type | Meaning |
+|---|---|---|
+| `status` | string | `running`, `stopped` or `error` |
+| `name`, `account` | string | The tunnel, and the account it belongs to |
+| `mode` | string | `access` or `public`, for a declared tunnel and a run alike |
+| `url` | string | What to connect to: `localhost:<port>` or `https://<hostname>` |
+| `target` | string | What sits on the other end |
+| `auto_start` | bool | Starts at login; always false on a run |
+| `unmanaged` | bool | An IAP tunnel gtunnel did not start, listed as `pid N` |
+| `run` | bool | A `gtunnel run`, which ends by itself |
+| `expires_at` | number | Unix seconds at which a run started with `--ttl` stops; absent otherwise |
+| `local_port` | number or null | The local port to connect to; `null` on a public tunnel |
+| `health` | string | `healthy`, `unhealthy`, `auth_expired` or `unknown` |
+
+Only a running row with a local port is probed, and every such row is probed at once, so
+`list --json` waits one probe timeout (500 ms) however many tunnels run. A stopped tunnel, a
+public one and an unmanaged one are `unknown`. `gtunnel_list_tunnels` returns the same rows
+less the unmanaged ones, so its `unmanaged` is always `false`.
 
 ```
 $ gtunnel logs nope
@@ -1249,7 +1268,7 @@ and 2 live resources without requiring an external runtime.
 
 | Tool | Parameters | What it does |
 |---|---|---|
-| `gtunnel_list_tunnels` | `account?` | Lists configured tunnels and their daemon statuses, and the account's live runs (`"run": true`) |
+| `gtunnel_list_tunnels` | `account?` | Lists configured tunnels and the account's live runs (`"run": true`), each with `status`, `local_port` (`null` on a public tunnel), `health` and `unmanaged` (always `false`): the rows of `gtunnel list --json` without the unmanaged ones |
 | `gtunnel_start_tunnel` | `name`, `account?` | Starts a stopped tunnel daemon |
 | `gtunnel_stop_tunnel` | `name`, `account?` | Stops a running tunnel daemon; with no persistent tunnel of that name, stops the live `gtunnel_run_tunnel` run of that name |
 | `gtunnel_restart_tunnel` | `name`, `account?` | Reinstalls service spec and restarts daemon |

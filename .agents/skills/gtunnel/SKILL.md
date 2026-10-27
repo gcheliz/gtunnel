@@ -22,7 +22,7 @@ When executing tunnel operations, select tools according to availability:
 
 ### 1. Primary: Native MCP Tools
 If `gtunnel_*` MCP tools are available in the current environment, prioritize them over CLI commands:
-- `gtunnel_list_tunnels`: List configured tunnels, daemon states, and listening ports.
+- `gtunnel_list_tunnels`: List configured tunnels and live runs, each with `status`, `local_port` (`null` on a public tunnel) and `health` (`healthy`, `unhealthy`, `auth_expired` or `unknown`). One call answers whether every tunnel works; call `gtunnel_get_status` only for the pid, restarts or probe latency of one.
 - `gtunnel_start_tunnel`: Start a tunnel daemon.
 - `gtunnel_stop_tunnel`: Stop a running tunnel daemon, or a live run.
 - `gtunnel_restart_tunnel`: Restart a tunnel daemon.
@@ -42,7 +42,7 @@ If MCP tools are not configured, use the CLI directly:
 - Start tunnel: `gtunnel start <name>`
 - Stop tunnel: `gtunnel stop <name>` (a tunnel or a live run)
 - Restart tunnel: `gtunnel restart <name>`
-- Status check: `gtunnel list --json` (one row per tunnel, with `status` only: it never probes, so health is the port probe of Step 3 below)
+- Status check: `gtunnel list --json` (one row per tunnel, with `status`, `local_port` and the probed `health`)
 - Read logs: `gtunnel logs <name> --lines <N>` (a tunnel or a live run launched from MCP)
 - Add tunnel: `gtunnel add <name> <target> [flags]`
 - Delete tunnel: `gtunnel delete <name>`
@@ -138,7 +138,7 @@ Never assume a tunnel is operational. Before reporting completion of tunnel crea
 ### Step 1: Daemon State Verification
 Read `isError` on every mutating MCP result before anything else: `true` means the call failed, whatever the text says, and a start that did not come up is one. Then check that the daemon status reports `running`:
 - MCP: Call `gtunnel_get_status` and verify `"status": "running"`, a non-zero PID and `"health": "healthy"`. `auth_expired` is a credentials problem (`gcloud auth login`), not a tunnel one; `unhealthy` means read the log.
-- CLI: Run `gtunnel list --json` and verify the tunnel's row has `"status": "running"`. The row carries no health; Step 3 supplies it.
+- CLI: Run `gtunnel list --json` and verify the tunnel's row has `"status": "running"` and `"health": "healthy"`, read the same way as above.
 
 ### Step 2: Log Inspection
 Inspect the last 10 log lines to ensure the connection initialized without errors:
