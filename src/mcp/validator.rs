@@ -30,6 +30,14 @@ impl ToolValidator {
                 tool.name
             );
         }
+        if let Some(out) = &tool.output_schema
+            && out.get("type").and_then(Value::as_str) != Some("object")
+        {
+            bail!(
+                "Tool '{}' outputSchema must be an object with 'type': 'object'",
+                tool.name
+            );
+        }
         let schema = &tool.input_schema;
         if !schema.is_object() {
             bail!("Tool '{}' inputSchema must be a JSON object", tool.name);
@@ -183,6 +191,14 @@ mod tests {
         tool.title = String::new();
         let err = ToolValidator::validate_definition(&tool).unwrap_err();
         assert!(err.to_string().contains("title"), "got: {err}");
+    }
+
+    #[test]
+    fn an_output_schema_that_is_not_an_object_schema_is_rejected() {
+        let mut tool = all_tools().remove(0);
+        tool.output_schema = Some(serde_json::json!({"type": "array"}));
+        let err = ToolValidator::validate_definition(&tool).unwrap_err();
+        assert!(err.to_string().contains("outputSchema"), "got: {err}");
     }
 
     #[test]

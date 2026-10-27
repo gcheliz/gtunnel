@@ -261,7 +261,7 @@ pub async fn launch(account: &str, req: &RunRequest) -> anyhow::Result<Value> {
     }
 }
 
-fn describe(record: &EphemeralRecord) -> Value {
+pub(super) fn describe(record: &EphemeralRecord) -> Value {
     let tunnel = record.as_tunnel();
     let local_port = match &record.spec {
         TunnelSpec::Access { local_port, .. } => Some(*local_port),

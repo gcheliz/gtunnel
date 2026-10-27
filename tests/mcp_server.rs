@@ -278,6 +278,132 @@ fn read_only_and_destructive_tools_say_so() {
     }
 }
 
+/// `tools/list` and one `tools/call` in a single process, so the schema the
+/// server advertised is the one its own answer is held to.
+fn call_with_schema(
+    h: &Harness,
+    tool: &str,
+    args: serde_json::Value,
+) -> (Option<serde_json::Value>, serde_json::Value) {
+    let list = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
+    let call = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {"name": tool, "arguments": args},
+    });
+    let (stdout, stderr, success) = h.run_mcp_pipe(&format!("{list}\n{call}\n"));
+    assert!(success, "stderr: {stderr}");
+    let mut lines = stdout.lines();
+    let listed: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+    let called: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+    let schema = listed["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == tool)
+        .and_then(|t| t.get("outputSchema").cloned());
+    (schema, called["result"].clone())
+}
+
+fn assert_conforms(schema: &Option<serde_json::Value>, result: &serde_json::Value) {
+    let schema = schema.as_ref().expect("the tool declares an outputSchema");
+    let validator = jsonschema::validator_for(schema).expect("a valid schema");
+    let structured = &result["structuredContent"];
+    assert!(
+        validator.is_valid(structured),
+        "structuredContent does not match its outputSchema: {structured}"
+    );
+}
+
+#[test]
+fn list_accounts_structured_output_matches_its_schema() {
+    let h = Harness::new();
+    let (schema, result) = call_with_schema(&h, "gtunnel_list_accounts", serde_json::json!({}));
+    assert_conforms(&schema, &result);
+    assert_eq!(result["structuredContent"]["selected_account"], "demo");
+}
+
+#[test]
+fn list_tunnels_structured_output_matches_its_schema() {
+    let h = Harness::new();
+    let (schema, result) = call_with_schema(&h, "gtunnel_list_tunnels", serde_json::json!({}));
+    assert_conforms(&schema, &result);
+    assert_eq!(result["structuredContent"]["tunnels"][0]["name"], "db");
+}
+
+#[test]
+fn list_tunnels_with_no_tunnels_is_an_empty_array() {
+    let h = Harness::new();
+    fs::write(h.dir.path().join("config/tunnels.toml"), "").unwrap();
+    let (schema, result) = call_with_schema(&h, "gtunnel_list_tunnels", serde_json::json!({}));
+    assert_conforms(&schema, &result);
+    assert_eq!(
+        result["structuredContent"],
+        serde_json::json!({"tunnels": []})
+    );
+}
+
+#[test]
+fn get_status_of_a_stopped_tunnel_matches_its_schema() {
+    let h = Harness::new();
+    let (schema, result) =
+        call_with_schema(&h, "gtunnel_get_status", serde_json::json!({"name": "db"}));
+    assert_conforms(&schema, &result);
+    assert!(result["structuredContent"]["probe_latency_ms"].is_null());
+}
+
+#[test]
+fn doctor_structured_output_matches_its_schema() {
+    let h = Harness::new();
+    let (schema, result) = call_with_schema(&h, "gtunnel_doctor", serde_json::json!({}));
+    assert_conforms(&schema, &result);
+    assert!(result["structuredContent"]["findings"].is_array());
+}
+
+#[test]
+fn a_failed_json_tool_still_matches_its_schema() {
+    let h = Harness::new();
+    let (schema, result) = call_with_schema(
+        &h,
+        "gtunnel_list_tunnels",
+        serde_json::json!({"account": "nope"}),
+    );
+    assert_eq!(result["isError"], true);
+    assert_eq!(result["structuredContent"]["error"]["kind"], "not_found");
+    assert_conforms(&schema, &result);
+}
+
+#[test]
+fn json_tool_text_is_unchanged() {
+    let h = Harness::new();
+    let (_, result) = call_with_schema(&h, "gtunnel_list_tunnels", serde_json::json!({}));
+    let text = result["content"][0]["text"].as_str().unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert!(parsed.is_array(), "the text stays the bare array: {text}");
+    assert_eq!(parsed, result["structuredContent"]["tunnels"]);
+}
+
+#[test]
+fn text_tools_declare_no_output_schema() {
+    for tool in listed_tools() {
+        let name = tool["name"].as_str().unwrap();
+        let text_only = [
+            "gtunnel_start_tunnel",
+            "gtunnel_stop_tunnel",
+            "gtunnel_restart_tunnel",
+            "gtunnel_get_logs",
+            "gtunnel_add_tunnel",
+            "gtunnel_delete_tunnel",
+        ];
+        assert_eq!(
+            tool.get("outputSchema").is_some(),
+            !text_only.contains(&name),
+            "outputSchema presence of {name}"
+        );
+    }
+}
+
 #[test]
 fn mcp_stdio_tool_call_missing_required_param_returns_invalid_params() {
     let h = Harness::new();

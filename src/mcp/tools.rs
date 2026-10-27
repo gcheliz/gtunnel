@@ -14,12 +14,154 @@ use crate::daemon;
 use crate::doctor::run_doctor;
 use crate::state::{TunnelSpec, TunnelState, TunnelStatus};
 
+/// The `{"error":{"kind","message"}}` envelope `ToolCallResult::failure`
+/// attaches. It sits in every schema because a failed call must conform too.
+fn error_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "kind": {"type": "string"},
+            "message": {"type": "string"}
+        },
+        "required": ["kind", "message"]
+    })
+}
+
+/// A result is either the success shape or the error envelope. `anyOf` over
+/// `required` keeps both sets of properties declared in one object schema, which
+/// is what the spec asks of `outputSchema`. No `additionalProperties`: a field
+/// added later must not turn a validating client's check into a failure.
+fn output_schema(success_properties: Value, success_required: &[&str]) -> Value {
+    let mut properties = success_properties;
+    properties["error"] = error_schema();
+    json!({
+        "type": "object",
+        "properties": properties,
+        "anyOf": [
+            {"required": success_required},
+            {"required": ["error"]}
+        ]
+    })
+}
+
+fn nullable(ty: &str) -> Value {
+    json!({"type": [ty, "null"]})
+}
+
+fn list_tunnels_schema() -> Value {
+    output_schema(
+        json!({
+            "tunnels": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "status": {"type": "string"},
+                        "health": {"type": "string"},
+                        "mode": {"type": "string"},
+                        "url": {"type": "string"},
+                        "target": {"type": "string"},
+                        "account": {"type": "string"},
+                        "auto_start": {"type": "boolean"},
+                        "unmanaged": {"type": "boolean"},
+                        "run": {"type": "boolean"},
+                        "expires_at": {"type": "integer"},
+                        "local_port": nullable("integer")
+                    },
+                    "required": ["name", "status", "health"]
+                }
+            }
+        }),
+        &["tunnels"],
+    )
+}
+
+fn get_status_schema() -> Value {
+    output_schema(
+        json!({
+            "name": {"type": "string"},
+            "account": {"type": "string"},
+            "run": {"type": "boolean"},
+            "status": {"type": "string"},
+            "health": {"type": "string"},
+            "pid": nullable("integer"),
+            "restarts": {"type": "integer"},
+            "local_port": nullable("integer"),
+            "expires_at": nullable("integer"),
+            "probe_latency_ms": nullable("number"),
+            "url": nullable("string"),
+            "target": {"type": "string"}
+        }),
+        &["name", "account", "run", "status", "health"],
+    )
+}
+
+fn run_tunnel_schema() -> Value {
+    output_schema(
+        json!({
+            "name": {"type": "string"},
+            "account": {"type": "string"},
+            "url": nullable("string"),
+            "local_port": nullable("integer"),
+            "target": {"type": "string"},
+            "ttl_minutes": nullable("integer"),
+            "expires_at": nullable("integer")
+        }),
+        &["name", "account", "target"],
+    )
+}
+
+fn list_accounts_schema() -> Value {
+    output_schema(
+        json!({
+            "selected_account": {"type": "string"},
+            "accounts": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "project": {"type": "string"},
+                        "default_zone": {"type": "string"},
+                        "gcloud_configuration": {"type": "string"},
+                        "selected": {"type": "boolean"}
+                    },
+                    "required": ["name", "project", "selected"]
+                }
+            }
+        }),
+        &["selected_account", "accounts"],
+    )
+}
+
+fn doctor_schema() -> Value {
+    output_schema(
+        json!({
+            "findings": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "account": {"type": "string"},
+                        "description": {"type": "string"},
+                        "fixable": {"type": "boolean"}
+                    },
+                    "required": ["account", "description", "fixable"]
+                }
+            }
+        }),
+        &["findings"],
+    )
+}
+
 pub fn all_tools() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
             name: "gtunnel_list_tunnels".to_string(),
             title: "List tunnels".to_string(),
             annotations: ToolAnnotations::new(true,false,true,false),
+            output_schema: Some(list_tunnels_schema()),
             description: "List all configured tunnels and live short-lived runs (run: true, with expires_at when they have a TTL) for the given or default account, each with its status, local_port (null on a public tunnel) and probed health (healthy, unhealthy, auth_expired or unknown)".to_string(),
             input_schema: json!({
                 "type": "object",
@@ -36,6 +178,7 @@ pub fn all_tools() -> Vec<ToolDefinition> {
             name: "gtunnel_start_tunnel".to_string(),
             title: "Start tunnel".to_string(),
             annotations: ToolAnnotations::new(false,false,true,true),
+            output_schema: None,
             description: "Start a persistent tunnel daemon".to_string(),
             input_schema: json!({
                 "type": "object",
@@ -56,6 +199,7 @@ pub fn all_tools() -> Vec<ToolDefinition> {
             name: "gtunnel_stop_tunnel".to_string(),
             title: "Stop tunnel".to_string(),
             annotations: ToolAnnotations::new(false,true,true,false),
+            output_schema: None,
             description: "Stop a running tunnel daemon, or a live run started by gtunnel_run_tunnel".to_string(),
             input_schema: json!({
                 "type": "object",
@@ -76,6 +220,7 @@ pub fn all_tools() -> Vec<ToolDefinition> {
             name: "gtunnel_restart_tunnel".to_string(),
             title: "Restart tunnel".to_string(),
             annotations: ToolAnnotations::new(false,true,true,true),
+            output_schema: None,
             description: "Restart a tunnel daemon (reinstalls service spec and restarts)".to_string(),
             input_schema: json!({
                 "type": "object",
@@ -96,6 +241,7 @@ pub fn all_tools() -> Vec<ToolDefinition> {
             name: "gtunnel_get_status".to_string(),
             title: "Get tunnel status".to_string(),
             annotations: ToolAnnotations::new(true,false,true,false),
+            output_schema: Some(get_status_schema()),
             description: "Get detailed runtime status, PID, restarts, health (healthy, unhealthy, auth_expired, unknown) and active TCP probe latency for a tunnel or a live run (a run reports pid, local port and expires_at)".to_string(),
             input_schema: json!({
                 "type": "object",
@@ -116,6 +262,7 @@ pub fn all_tools() -> Vec<ToolDefinition> {
             name: "gtunnel_get_logs".to_string(),
             title: "Read tunnel logs".to_string(),
             annotations: ToolAnnotations::new(true,false,true,false),
+            output_schema: None,
             description: "Read the most recent log lines for a tunnel daemon or a live run started from MCP".to_string(),
             input_schema: json!({
                 "type": "object",
@@ -140,6 +287,7 @@ pub fn all_tools() -> Vec<ToolDefinition> {
             name: "gtunnel_add_tunnel".to_string(),
             title: "Add tunnel".to_string(),
             annotations: ToolAnnotations::new(false,false,false,true),
+            output_schema: None,
             description: "Add a persistent Access tunnel (IAP TCP forward to localhost)".to_string(),
             input_schema: json!({
                 "type": "object",
@@ -192,6 +340,7 @@ pub fn all_tools() -> Vec<ToolDefinition> {
             name: "gtunnel_run_tunnel".to_string(),
             title: "Run short-lived tunnel".to_string(),
             annotations: ToolAnnotations::new(false,false,false,true),
+            output_schema: Some(run_tunnel_schema()),
             description: "Open a short-lived Access tunnel that closes by itself when ttl_minutes elapses. Prefer this over gtunnel_add_tunnel for temporary access; it is never public and leaves nothing to clean up. Stop it early with gtunnel_stop_tunnel".to_string(),
             input_schema: json!({
                 "type": "object",
@@ -228,6 +377,7 @@ pub fn all_tools() -> Vec<ToolDefinition> {
             name: "gtunnel_delete_tunnel".to_string(),
             title: "Delete tunnel".to_string(),
             annotations: ToolAnnotations::new(false,true,false,false),
+            output_schema: None,
             description: "Delete a persistent tunnel, stopping its daemon and removing its service and log".to_string(),
             input_schema: json!({
                 "type": "object",
@@ -248,6 +398,7 @@ pub fn all_tools() -> Vec<ToolDefinition> {
             name: "gtunnel_list_accounts".to_string(),
             title: "List accounts".to_string(),
             annotations: ToolAnnotations::new(true,false,true,false),
+            output_schema: Some(list_accounts_schema()),
             description: "List all configured accounts and show the currently selected active account".to_string(),
             input_schema: json!({
                 "type": "object",
@@ -259,6 +410,7 @@ pub fn all_tools() -> Vec<ToolDefinition> {
             name: "gtunnel_doctor".to_string(),
             title: "Run diagnostics".to_string(),
             annotations: ToolAnnotations::new(true,false,true,true),
+            output_schema: Some(doctor_schema()),
             description: "Run diagnostic checks on local configuration and GCP resources".to_string(),
             input_schema: json!({
                 "type": "object",
@@ -361,7 +513,7 @@ async fn run_status(run: &crate::ephemeral::EphemeralRecord) -> ToolCallResult {
         "url": tunnel.display_url(),
         "target": tunnel.display_target(),
     });
-    ToolCallResult::text(serde_json::to_string_pretty(&payload).unwrap_or_default())
+    ToolCallResult::json(&payload, payload.clone())
 }
 
 pub async fn execute_tool(
@@ -388,9 +540,9 @@ pub async fn execute_tool(
             let rows = list_rows_json(&acct, false)
                 .await
                 .map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
-            Ok(ToolCallResult::text(
-                serde_json::to_string_pretty(&rows).unwrap_or_default(),
-            ))
+            // The text stays the bare array agents parse today; the spec
+            // wants an object in `structuredContent`, so that one is wrapped
+            Ok(ToolCallResult::json(&rows, json!({ "tunnels": rows })))
         }
         "gtunnel_start_tunnel" => {
             let tunnel_name = get_str("name")
@@ -483,9 +635,7 @@ pub async fn execute_tool(
                 "url": t.display_url(),
                 "target": t.display_target(),
             });
-            Ok(ToolCallResult::text(
-                serde_json::to_string_pretty(&payload).unwrap_or_default(),
-            ))
+            Ok(ToolCallResult::json(&payload, payload.clone()))
         }
         "gtunnel_get_logs" => {
             let tunnel_name = get_str("name")
@@ -560,9 +710,7 @@ pub async fn execute_tool(
                 Err(fail) => return Ok(fail),
             };
             Ok(match super::run::launch(&acct.name, &req).await {
-                Ok(started) => {
-                    ToolCallResult::text(serde_json::to_string_pretty(&started).unwrap_or_default())
-                }
+                Ok(started) => ToolCallResult::json(&started, started.clone()),
                 Err(e) => ToolCallResult::failure(&e),
             })
         }
@@ -579,9 +727,7 @@ pub async fn execute_tool(
             let config =
                 load_config().map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
             let payload = accounts_payload(&config);
-            Ok(ToolCallResult::text(
-                serde_json::to_string_pretty(&payload).unwrap_or_default(),
-            ))
+            Ok(ToolCallResult::json(&payload, payload.clone()))
         }
         "gtunnel_doctor" => {
             let account = get_str("account");
@@ -613,8 +759,9 @@ pub async fn execute_tool(
                     })
                 })
                 .collect();
-            Ok(ToolCallResult::text(
-                serde_json::to_string_pretty(&json_findings).unwrap_or_default(),
+            Ok(ToolCallResult::json(
+                &json_findings,
+                json!({ "findings": json_findings }),
             ))
         }
         _ => Err(JsonRpcError::new(
@@ -649,6 +796,72 @@ fn accounts_payload(config: &crate::config::Config) -> Value {
             entry
         }).collect::<Vec<Value>>(),
     })
+}
+
+#[cfg(test)]
+mod schema_tests {
+    use super::*;
+    use crate::ephemeral::EphemeralRecord;
+    use crate::state::AccessTarget;
+
+    fn schema_of(tool: &str) -> Value {
+        all_tools()
+            .into_iter()
+            .find(|t| t.name == tool)
+            .and_then(|t| t.output_schema)
+            .expect("the tool declares an outputSchema")
+    }
+
+    fn record(ttl_secs: Option<u64>) -> EphemeralRecord {
+        EphemeralRecord {
+            name: "db".to_string(),
+            account_name: "dev".to_string(),
+            pid: 4242,
+            spec: TunnelSpec::Access {
+                target: AccessTarget::Instance {
+                    instance: "my-vm".to_string(),
+                    zone: "europe-west1-b".to_string(),
+                },
+                remote_port: 5432,
+                local_port: 15432,
+            },
+            started_at: 1_700_000_000,
+            ttl_secs,
+            pid_start: None,
+        }
+    }
+
+    #[test]
+    fn a_launched_run_matches_the_run_tunnel_schema() {
+        let validator = jsonschema::validator_for(&schema_of("gtunnel_run_tunnel")).unwrap();
+        for ttl in [Some(30 * 60), None] {
+            let payload = super::super::run::describe(&record(ttl));
+            assert!(validator.is_valid(&payload), "{payload}");
+        }
+    }
+
+    #[test]
+    fn the_error_envelope_matches_every_output_schema() {
+        let err: anyhow::Error = crate::error::GtunnelError::not_found("no such tunnel").into();
+        let failure = serde_json::to_value(ToolCallResult::failure(&err)).unwrap();
+        for tool in all_tools() {
+            let Some(schema) = tool.output_schema else {
+                continue;
+            };
+            let validator = jsonschema::validator_for(&schema).unwrap();
+            assert!(
+                validator.is_valid(&failure["structuredContent"]),
+                "{} rejects its own failure",
+                tool.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_payload_with_neither_shape_is_rejected() {
+        let validator = jsonschema::validator_for(&schema_of("gtunnel_list_accounts")).unwrap();
+        assert!(!validator.is_valid(&json!({"unrelated": true})));
+    }
 }
 
 pub fn read_resource(uri: &str) -> Result<ResourceReadResult, JsonRpcError> {

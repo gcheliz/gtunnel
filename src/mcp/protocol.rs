@@ -140,6 +140,15 @@ pub struct ToolDefinition {
     #[serde(rename = "inputSchema")]
     pub input_schema: Value,
     pub annotations: ToolAnnotations,
+    /// Only the tools that answer in JSON declare one; a text answer has no
+    /// shape to promise. It always admits the error envelope as well, because
+    /// the spec holds every structured result to the schema, a failure included.
+    #[serde(
+        rename = "outputSchema",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub output_schema: Option<Value>,
 }
 
 /// All four hints are always emitted: the spec defaults `destructiveHint` and
@@ -200,6 +209,16 @@ impl ToolCallResult {
             }],
             is_error: None,
             structured_content: None,
+        }
+    }
+
+    /// A JSON answer. `text` is what agents already parse out of `content[0]`
+    /// and stays byte for byte as it was; `structured` is the same data as the
+    /// object the spec requires, which differs only where the text is an array.
+    pub fn json(text: &impl Serialize, structured: Value) -> Self {
+        Self {
+            structured_content: Some(structured),
+            ..Self::text(serde_json::to_string_pretty(text).unwrap_or_default())
         }
     }
 
