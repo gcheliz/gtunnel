@@ -431,7 +431,10 @@ impl Commands {
             | Commands::Delete { .. }
             | Commands::Rename { .. }
             | Commands::Autostart { .. }
-            | Commands::Logs { .. } => false,
+            | Commands::Logs { .. }
+            // Reads service status and local processes only, so a stale login
+            // must not stand between a person and their own list
+            | Commands::List { .. } => false,
             Commands::Add { start, .. } => *start,
             Commands::Zones { command } => match command {
                 Some(ZonesCommands::Default { .. }) => false,
@@ -446,7 +449,6 @@ impl Commands {
             | Commands::Start { .. }
             | Commands::Stop { .. }
             | Commands::Restart { .. }
-            | Commands::List { .. }
             | Commands::Move { .. }
             | Commands::Relay { .. } => true,
         }
@@ -944,12 +946,13 @@ mod tests {
                 "{name} must not need a login"
             );
         }
-        let skip_with_args: [&[&str]; 5] = [
+        let skip_with_args: [&[&str]; 6] = [
             &["gtunnel", "completions", "zsh"],
             &["gtunnel", "delete", "db"],
             &["gtunnel", "rename", "old", "new"],
             &["gtunnel", "autostart", "db"],
             &["gtunnel", "logs", "db"],
+            &["gtunnel", "list"],
         ];
         for args in skip_with_args {
             let cli = parse(args);
@@ -979,13 +982,12 @@ mod tests {
             .command
             .expect("command")
             .needs_gcp_auth());
-        let check: [&[&str]; 8] = [
+        let check: [&[&str]; 7] = [
             &["gtunnel", "expose", "api", "3000"],
             &["gtunnel", "run", "vm:5432"],
             &["gtunnel", "start", "db"],
             &["gtunnel", "stop", "db"],
             &["gtunnel", "restart", "db"],
-            &["gtunnel", "list"],
             &["gtunnel", "zones"],
             &["gtunnel", "relay", "status"],
         ];

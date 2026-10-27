@@ -1,9 +1,11 @@
+use anyhow::anyhow;
 use serde_json::{json, Map, Value};
 use std::time::Duration;
 
 use crate::ephemeral::{
     generated_name, list_ephemeral, pid_is_alive, signalable, wait_for_pid_exit, EphemeralRecord,
 };
+use crate::error::{ErrorKind, GtunnelError};
 use crate::state::TunnelSpec;
 
 /// An agent opens a tunnel and may never come back to close it, so the
@@ -63,15 +65,7 @@ impl RunRequest {
         };
         crate::state::validate_tunnel_name(&name).map_err(|e| format!("Invalid 'name': {e:#}"))?;
 
-        let local_port = match args.get("local_port").filter(|v| !v.is_null()) {
-            None => None,
-            Some(v) => Some(
-                v.as_u64()
-                    .and_then(|n| u16::try_from(n).ok())
-                    .filter(|n| *n > 0)
-                    .ok_or("'local_port' must be between 1 and 65535")?,
-            ),
-        };
+        let local_port = parse_port(args, "local_port")?;
         let zone = args.get("zone").and_then(Value::as_str).map(str::to_string);
         if let Some(zone) = &zone {
             crate::state::validate_zone(zone).map_err(|e| format!("Invalid 'zone': {e:#}"))?;
@@ -104,6 +98,21 @@ impl RunRequest {
     }
 }
 
+/// One range check for every tool that takes a port: a cast with `as u16`
+/// turned 65536 into 0 and 70000 into 4464, and wrote that to disk. Absent or
+/// null means "pick one for me", so it is the only way to get an allocation.
+pub(crate) fn parse_port(args: &Map<String, Value>, key: &str) -> Result<Option<u16>, String> {
+    match args.get(key).filter(|v| !v.is_null()) {
+        None => Ok(None),
+        Some(v) => v
+            .as_u64()
+            .and_then(|n| u16::try_from(n).ok())
+            .filter(|n| *n > 0)
+            .map(Some)
+            .ok_or_else(|| format!("'{key}' must be between 1 and 65535")),
+    }
+}
+
 fn log_tail(path: &std::path::Path) -> String {
     let text = crate::daemon::read_tail(path, 4096);
     let lines: Vec<&str> = text.lines().rev().take(20).collect();
@@ -132,20 +141,21 @@ fn terminate(pid: u32) {
 }
 
 /// Start `gtunnel run` as a process that outlives this one, and answer only
-/// once it has published its record. Err is the text of a tool error.
-pub async fn launch(account: &str, req: &RunRequest) -> Result<Value, String> {
+/// once it has published its record. The error carries its kind, so a failed
+/// launch reaches the caller through `ToolCallResult::failure` like every
+/// other tool error.
+pub async fn launch(account: &str, req: &RunRequest) -> anyhow::Result<Value> {
     if let Some((_, true)) = find_record(account, &req.name) {
-        return Err(format!(
+        return Err(GtunnelError::usage(format!(
             "A run named '{}' is already live for account '{account}'",
             req.name
-        ));
+        ))
+        .into());
     }
 
-    let exe = std::env::current_exe().map_err(|e| format!("Cannot find gtunnel: {e}"))?;
-    let logs = crate::config::config_dir()
-        .map_err(|e| format!("{e:#}"))?
-        .join("logs");
-    std::fs::create_dir_all(&logs).map_err(|e| format!("Cannot create {}: {e}", logs.display()))?;
+    let exe = std::env::current_exe().map_err(|e| anyhow!("Cannot find gtunnel: {e}"))?;
+    let logs = crate::config::config_dir()?.join("logs");
+    std::fs::create_dir_all(&logs).map_err(|e| anyhow!("Cannot create {}: {e}", logs.display()))?;
     let log_path = logs.join(format!("run-{account}-{}.log", req.name));
     let open = || {
         std::fs::OpenOptions::new()
@@ -155,7 +165,7 @@ pub async fn launch(account: &str, req: &RunRequest) -> Result<Value, String> {
     };
     let (out, err) = open()
         .and_then(|out| open().map(|err| (out, err)))
-        .map_err(|e| format!("Cannot open {}: {e}", log_path.display()))?;
+        .map_err(|e| anyhow!("Cannot open {}: {e}", log_path.display()))?;
 
     // Its own process group, so a signal aimed at the MCP server's group (a
     // closed terminal, a client killing its tree) does not take the tunnel
@@ -168,7 +178,7 @@ pub async fn launch(account: &str, req: &RunRequest) -> Result<Value, String> {
         .stderr(err)
         .process_group(0)
         .spawn()
-        .map_err(|e| format!("Failed to start gtunnel run: {e}"))?;
+        .map_err(|e| anyhow!("Failed to start gtunnel run: {e}"))?;
 
     let deadline = std::time::Instant::now() + LAUNCH_BUDGET;
     loop {
@@ -176,23 +186,33 @@ pub async fn launch(account: &str, req: &RunRequest) -> Result<Value, String> {
             return Ok(describe(&record));
         }
         if let Ok(Some(status)) = child.try_wait() {
-            return Err(format!(
-                "gtunnel run exited with {status} before the tunnel came up. Log {}:\n{}",
-                log_path.display(),
-                log_tail(&log_path)
-            ));
+            // The child is gtunnel, so its exit code already says what kind
+            // of failure it was
+            return Err(GtunnelError::new(
+                ErrorKind::from_exit_code(status.code()),
+                format!(
+                    "gtunnel run exited with {status} before the tunnel came up. Log {}:\n{}",
+                    log_path.display(),
+                    log_tail(&log_path)
+                ),
+            )
+            .into());
         }
         if std::time::Instant::now() >= deadline {
             // It may still be starting; SIGTERM lets it tear down whatever it made
             if let Some(pid) = child.id() {
                 terminate(pid);
             }
-            return Err(format!(
-                "The tunnel did not come up within {}s. Log {}:\n{}",
-                LAUNCH_BUDGET.as_secs(),
-                log_path.display(),
-                log_tail(&log_path)
-            ));
+            return Err(GtunnelError::new(
+                ErrorKind::Internal,
+                format!(
+                    "The tunnel did not come up within {}s. Log {}:\n{}",
+                    LAUNCH_BUDGET.as_secs(),
+                    log_path.display(),
+                    log_tail(&log_path)
+                ),
+            )
+            .into());
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -217,18 +237,23 @@ fn describe(record: &EphemeralRecord) -> Value {
 
 /// Stop a live run by name. `Ok(None)` means there is no such run, so the
 /// caller can fall through to its own not-found message.
-pub async fn stop_run(account: &str, name: &str) -> Result<Option<()>, String> {
+pub async fn stop_run(account: &str, name: &str) -> anyhow::Result<Option<()>> {
     let Some((record, alive)) = find_record(account, name) else {
         return Ok(None);
     };
     if !alive {
-        return Err(format!(
+        return Err(GtunnelError::not_found(format!(
             "Run '{name}' is not running (its record is stale; `gtunnel doctor --fix` clears it)"
-        ));
+        ))
+        .into());
     }
     terminate(record.pid);
     if !wait_for_pid_exit(record.pid, Duration::from_secs(5)).await {
-        return Err(format!("Run '{name}' did not exit within 5s of SIGTERM"));
+        return Err(GtunnelError::new(
+            ErrorKind::Internal,
+            format!("Run '{name}' did not exit within 5s of SIGTERM"),
+        )
+        .into());
     }
     // gcloud is gone; the run process now removes its record. Give it a moment
     // so the answer matches what `ls` will show.
@@ -249,6 +274,34 @@ mod tests {
 
     fn args(v: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
         v.as_object().cloned().expect("an object")
+    }
+
+    #[test]
+    fn a_port_outside_one_to_65535_is_refused_and_an_absent_one_is_none() {
+        for bad in [
+            json!(0),
+            json!(65536),
+            json!(70000),
+            json!(-1),
+            json!(1.5),
+            json!("8080"),
+        ] {
+            let err = parse_port(&args(json!({"local_port": bad})), "local_port").unwrap_err();
+            assert_eq!(err, "'local_port' must be between 1 and 65535", "{bad}");
+        }
+        assert_eq!(
+            parse_port(&args(json!({"local_port": 1})), "local_port"),
+            Ok(Some(1))
+        );
+        assert_eq!(
+            parse_port(&args(json!({"local_port": 65535})), "local_port"),
+            Ok(Some(65535))
+        );
+        assert_eq!(
+            parse_port(&args(json!({"local_port": null})), "local_port"),
+            Ok(None)
+        );
+        assert_eq!(parse_port(&args(json!({})), "local_port"), Ok(None));
     }
 
     #[test]

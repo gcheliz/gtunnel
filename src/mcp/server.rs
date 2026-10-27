@@ -49,10 +49,9 @@ pub async fn handle_message(line: &str) -> Option<JsonRpcResponse> {
             };
             Some(JsonRpcResponse::success(id, json!(result)))
         }
-        "notifications/initialized" => {
-            // Client acknowledgment; no response expected for JSON-RPC notifications
-            None
-        }
+        // JSON-RPC forbids a reply to a notification, and clients send
+        // cancelled and progress ones the server has no use for
+        m if m.starts_with("notifications/") => None,
         "ping" => Some(JsonRpcResponse::success(id, json!({}))),
         "tools/list" => {
             let tools = all_tools();

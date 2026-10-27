@@ -42,6 +42,22 @@ impl ErrorKind {
             ErrorKind::Gcloud => 5,
         }
     }
+
+    /// The inverse of `exit_code`, for a parent that only sees how a child
+    /// gtunnel ended. A child killed by a signal has no code, and a code
+    /// outside the table (a Rust panic is 101) is a bug, so both are
+    /// `Internal`.
+    pub fn from_exit_code(code: Option<i32>) -> Self {
+        [
+            ErrorKind::Usage,
+            ErrorKind::NotFound,
+            ErrorKind::Auth,
+            ErrorKind::Gcloud,
+        ]
+        .into_iter()
+        .find(|kind| Some(kind.exit_code()) == code)
+        .unwrap_or(ErrorKind::Internal)
+    }
 }
 
 #[derive(Debug)]
@@ -155,6 +171,21 @@ mod tests {
             assert_eq!(kind.as_str(), name);
             assert_eq!(kind.exit_code(), code);
         }
+    }
+
+    #[test]
+    fn an_exit_code_maps_back_to_its_kind_and_a_signal_is_internal() {
+        for kind in [
+            ErrorKind::Internal,
+            ErrorKind::Usage,
+            ErrorKind::NotFound,
+            ErrorKind::Auth,
+            ErrorKind::Gcloud,
+        ] {
+            assert_eq!(ErrorKind::from_exit_code(Some(kind.exit_code())), kind);
+        }
+        assert_eq!(ErrorKind::from_exit_code(None), ErrorKind::Internal);
+        assert_eq!(ErrorKind::from_exit_code(Some(101)), ErrorKind::Internal);
     }
 
     #[test]

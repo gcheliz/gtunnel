@@ -8,7 +8,7 @@ use super::protocol::{
 use crate::commands::access::{
     add_tunnel, delete_tunnel, restart_tunnel, start_tunnel, stop_tunnel, AddRequest,
 };
-use crate::commands::resolve;
+use crate::commands::{find_tunnel, resolve};
 use crate::config::load_config;
 use crate::daemon;
 use crate::doctor::run_doctor;
@@ -276,6 +276,16 @@ pub fn all_resources() -> Vec<ResourceDefinition> {
     ]
 }
 
+/// An unknown account is the caller's mistake, not a fault in the protocol, so
+/// it comes back as a tool result carrying its kind (`not_found`). Only a
+/// tool result has a `structuredContent` to put the kind in; a JSON-RPC error
+/// frame has none.
+fn resolve_for_tool(
+    account: Option<&str>,
+) -> Result<(crate::config::Config, crate::config::Account), ToolCallResult> {
+    resolve(account).map_err(|e| ToolCallResult::failure(&e))
+}
+
 pub async fn execute_tool(
     name: &str,
     params: Option<&Value>,
@@ -284,15 +294,16 @@ pub async fn execute_tool(
     let map = params.and_then(Value::as_object).unwrap_or(&empty_map);
 
     let get_str = |key: &str| map.get(key).and_then(Value::as_str);
-    let get_u16 = |key: &str| map.get(key).and_then(Value::as_u64).map(|n| n as u16);
     let get_usize = |key: &str| map.get(key).and_then(Value::as_u64).map(|n| n as usize);
     let get_bool = |key: &str| map.get(key).and_then(Value::as_bool).unwrap_or(false);
 
     match name {
         "gtunnel_list_tunnels" => {
             let account = get_str("account");
-            let (_, acct) =
-                resolve(account).map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
+            let (_, acct) = match resolve_for_tool(account) {
+                Ok(r) => r,
+                Err(fail) => return Ok(fail),
+            };
             let state = TunnelState::load()
                 .map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
             let tunnels = state.tunnels_for_account(&acct.name);
@@ -354,8 +365,10 @@ pub async fn execute_tool(
             let account = get_str("account");
             // A persistent tunnel of that name wins; only without one does the
             // name mean a live run
-            let (_, acct) =
-                resolve(account).map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
+            let (_, acct) = match resolve_for_tool(account) {
+                Ok(r) => r,
+                Err(fail) => return Ok(fail),
+            };
             let persistent = TunnelState::load()
                 .map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?
                 .find_for_account(tunnel_name, &acct.name)
@@ -366,7 +379,7 @@ pub async fn execute_tool(
                         return Ok(ToolCallResult::text(format!("Stopped run '{tunnel_name}'")))
                     }
                     Ok(None) => {}
-                    Err(e) => return Ok(ToolCallResult::error(e)),
+                    Err(e) => return Ok(ToolCallResult::failure(&e)),
                 }
             }
             Ok(match stop_tunnel(account, tunnel_name).await {
@@ -387,21 +400,16 @@ pub async fn execute_tool(
             let tunnel_name = get_str("name")
                 .ok_or_else(|| JsonRpcError::new(INVALID_PARAMS, "Missing 'name'"))?;
             let account = get_str("account");
-            let (_, acct) =
-                resolve(account).map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
+            let (_, acct) = match resolve_for_tool(account) {
+                Ok(r) => r,
+                Err(fail) => return Ok(fail),
+            };
             let state = TunnelState::load()
                 .map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
-            let t = state
-                .find_for_account(tunnel_name, &acct.name)
-                .ok_or_else(|| {
-                    JsonRpcError::new(
-                        INVALID_PARAMS,
-                        format!(
-                            "Tunnel '{tunnel_name}' not found for account '{}'",
-                            acct.name
-                        ),
-                    )
-                })?;
+            let t = match find_tunnel(&state, tunnel_name, &acct.name) {
+                Ok(t) => t,
+                Err(e) => return Ok(ToolCallResult::failure(&e)),
+            };
 
             let label = daemon::platform_label(&t.account_name, &t.name);
             let status = daemon::status(&label).await;
@@ -462,15 +470,16 @@ pub async fn execute_tool(
                 .ok_or_else(|| JsonRpcError::new(INVALID_PARAMS, "Missing 'name'"))?;
             let lines = get_usize("lines").unwrap_or(50);
             let account = get_str("account");
-            let (_, acct) =
-                resolve(account).map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
+            let (_, acct) = match resolve_for_tool(account) {
+                Ok(r) => r,
+                Err(fail) => return Ok(fail),
+            };
             let state = TunnelState::load()
                 .map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
-            let t = state
-                .find_for_account(tunnel_name, &acct.name)
-                .ok_or_else(|| {
-                    JsonRpcError::new(INVALID_PARAMS, format!("Tunnel '{tunnel_name}' not found"))
-                })?;
+            let t = match find_tunnel(&state, tunnel_name, &acct.name) {
+                Ok(t) => t,
+                Err(e) => return Ok(ToolCallResult::failure(&e)),
+            };
 
             let log_path = t
                 .log_path()
@@ -491,7 +500,8 @@ pub async fn execute_tool(
                 .ok_or_else(|| JsonRpcError::new(INVALID_PARAMS, "Missing 'target'"))?;
             let via = get_str("via");
             let zone = get_str("zone");
-            let local_port = get_u16("local_port");
+            let local_port = super::run::parse_port(map, "local_port")
+                .map_err(|e| JsonRpcError::new(INVALID_PARAMS, e))?;
             let dest_group = get_str("dest_group");
             let region = get_str("region");
             let network = get_str("network");
@@ -525,13 +535,15 @@ pub async fn execute_tool(
                 Ok(req) => req,
                 Err(e) => return Err(JsonRpcError::new(INVALID_PARAMS, e)),
             };
-            let (_, acct) = resolve(get_str("account"))
-                .map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
+            let (_, acct) = match resolve_for_tool(get_str("account")) {
+                Ok(r) => r,
+                Err(fail) => return Ok(fail),
+            };
             Ok(match super::run::launch(&acct.name, &req).await {
                 Ok(started) => {
                     ToolCallResult::text(serde_json::to_string_pretty(&started).unwrap_or_default())
                 }
-                Err(e) => ToolCallResult::error(e),
+                Err(e) => ToolCallResult::failure(&e),
             })
         }
         "gtunnel_delete_tunnel" => {
@@ -563,8 +575,10 @@ pub async fn execute_tool(
         "gtunnel_doctor" => {
             let account = get_str("account");
             let all = get_bool("all");
-            let (config, acct) =
-                resolve(account).map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
+            let (config, acct) = match resolve_for_tool(account) {
+                Ok(r) => r,
+                Err(fail) => return Ok(fail),
+            };
             let state = TunnelState::load()
                 .map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
             let accounts: Vec<&crate::config::Account> = if all {

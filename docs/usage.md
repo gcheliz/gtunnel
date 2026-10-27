@@ -229,7 +229,7 @@ token that cannot be minted, including an expired refresh token, counts as logge
 
 | Checks the login | Skips the check |
 |---|---|
-| `gtunnel` (the TUI), `add -s`, `expose`, `run`, `start`, `stop`, `restart`, `list`, `move`, `zones`, `domains`, `relay` | `init`, `account`, `add` (without `-s`), `delete`, `rename`, `autostart`, `logs`, `zones default`, `domains default`, `domains add`, `doctor`, `watch`, `reset`, `demo`, `update`, `mcp` |
+| `gtunnel` (the TUI), `add -s`, `expose`, `run`, `start`, `stop`, `restart`, `move`, `zones`, `domains`, `relay` | `init`, `account`, `add` (without `-s`), `delete`, `rename`, `autostart`, `logs`, `list`, `zones default`, `domains default`, `domains add`, `doctor`, `watch`, `reset`, `demo`, `update`, `mcp` |
 
 `doctor` is skipped because it reports broken credentials as a finding and a login prompt
 would hide it; `init` has no account yet; `mcp` speaks JSON-RPC on stdin and stdout, so a

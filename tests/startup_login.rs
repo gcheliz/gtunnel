@@ -108,10 +108,25 @@ fn stderr(out: &Output) -> String {
 }
 
 #[test]
-fn a_logged_in_account_goes_through_without_a_login() {
-    let h = Harness::new(true);
+fn list_never_probes_and_works_logged_out() {
+    let h = Harness::new(false);
     let out = h.run(&["list"]);
     assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert!(
+        !h.calls().contains("print-access-token"),
+        "calls: {}",
+        h.calls()
+    );
+    let out = h.run(&["--account", "nope", "list"]);
+    assert_eq!(out.status.code(), Some(3), "stderr: {}", stderr(&out));
+}
+
+#[test]
+fn a_logged_in_account_goes_through_without_a_login() {
+    let h = Harness::new(true);
+    // Past the gate, then not found: exit 3 and no login
+    let out = h.run(&["stop", "nope"]);
+    assert_eq!(out.status.code(), Some(3), "stderr: {}", stderr(&out));
     assert!(h.calls().contains("auth print-access-token"));
     assert!(!h.calls().contains("auth login"));
     assert!(!h.exists("login-ran"));
@@ -120,7 +135,7 @@ fn a_logged_in_account_goes_through_without_a_login() {
 #[test]
 fn the_probe_carries_the_accounts_configuration_and_project() {
     let h = Harness::new(true);
-    h.run(&["list"]);
+    h.run(&["stop", "nope"]);
     let calls = h.calls();
     assert!(calls.contains("--configuration=work"), "calls: {calls}");
     assert!(calls.contains("--project=demo-project"), "calls: {calls}");
@@ -129,7 +144,7 @@ fn the_probe_carries_the_accounts_configuration_and_project() {
 #[test]
 fn a_logged_out_account_without_a_terminal_fails_and_never_starts_a_login() {
     let h = Harness::new(false);
-    let out = h.run(&["list"]);
+    let out = h.run(&["stop", "nope"]);
     assert_eq!(out.status.code(), Some(4), "stderr: {}", stderr(&out));
     let err = stderr(&out);
     assert!(
@@ -144,7 +159,7 @@ fn a_logged_out_account_without_a_terminal_fails_and_never_starts_a_login() {
 #[test]
 fn the_failure_names_the_account_once() {
     let h = Harness::new(false);
-    let err = stderr(&h.run(&["list"]));
+    let err = stderr(&h.run(&["stop", "nope"]));
     assert_eq!(err.matches("needs a logged-in").count(), 1, "stderr: {err}");
     assert!(err.contains("'demo'"), "stderr: {err}");
 }
