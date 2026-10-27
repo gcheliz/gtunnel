@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.9](https://github.com/gcheliz/gtunnel/compare/v0.2.8...v0.2.9) - 2026-10-27
+
+### Fixed
+
+- *(tui)* stop a run with S and refuse R on one ([#190](https://github.com/gcheliz/gtunnel/pull/190))
+
 ## [0.2.8](https://github.com/gcheliz/gtunnel/compare/v0.2.7...v0.2.8) - 2026-10-27
 
 ### Fixed
