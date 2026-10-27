@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.43](https://github.com/gcheliz/gtunnel/compare/v0.1.42...v0.1.43) - 2026-10-27
+
+### Added
+
+- *(tui)* show a run's stop time, and refresh the demo and its recordings ([#112](https://github.com/gcheliz/gtunnel/pull/112))
+
 ## [0.1.42](https://github.com/gcheliz/gtunnel/compare/v0.1.41...v0.1.42) - 2026-10-27
 
 ### Changed
