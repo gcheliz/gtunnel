@@ -24,6 +24,11 @@ pub enum Finding {
     StaleState {
         tunnel: String,
     },
+    // A service on this machine that no record in tunnels.toml owns: the mirror of
+    // StaleState. Machine-wide, so it carries a label and no account.
+    OrphanService {
+        label: String,
+    },
     MissingInstance {
         tunnel: String,
     },
@@ -96,6 +101,7 @@ impl Finding {
         matches!(
             self,
             Finding::StaleState { .. }
+                | Finding::OrphanService { .. }
                 | Finding::AutoStartDrift { .. }
                 | Finding::DeadEphemeral { .. }
                 | Finding::OrphanDns { .. }
@@ -122,6 +128,10 @@ impl Finding {
             Finding::StaleState { tunnel } => {
                 format!("Tunnel '{tunnel}' is in tunnels.toml but has no service installed")
             }
+            Finding::OrphanService { label } => format!(
+                "Service {label} is installed but no tunnel in tunnels.toml owns it, so it may \
+                 still hold a local port at login"
+            ),
             Finding::MissingInstance { tunnel } => {
                 format!("Tunnel '{tunnel}' points at an instance that no longer exists")
             }
@@ -242,6 +252,120 @@ pub fn reserved_accounts(config: &Config) -> Vec<String> {
 // a fresh install with nothing in tunnels.toml is not missing anything.
 pub fn watchdog_finding(installed: bool, tunnels: usize) -> Option<Finding> {
     (!installed && tunnels > 0).then_some(Finding::WatchdogMissing)
+}
+
+/// Services installed on this machine that no record in `tunnels.toml` owns.
+///
+/// The comparison is against the labels the records produce, never against a
+/// label taken apart: an account or a tunnel name may itself hold a dot or a
+/// dash, so splitting a label back into the two is a guess. The watchdog is
+/// one job for the machine and owns no record, so it is never an orphan.
+pub fn orphan_services(installed: &[String], expected: &HashSet<String>) -> Vec<String> {
+    let watchdog = crate::daemon::watchdog_label();
+    let watchdog_unit = format!("{watchdog}.service");
+    let mut orphans: Vec<String> = installed
+        .iter()
+        .filter(|label| {
+            !expected.contains(*label) && *label != watchdog && **label != watchdog_unit
+        })
+        .cloned()
+        .collect();
+    // The two macOS directories hold the same definition twice
+    orphans.sort();
+    orphans.dedup();
+    orphans
+}
+
+// The label a definition file stands for, or None for a file that is not a
+// gtunnel job. The prefix is what keeps another tool's plist from being read
+// as an orphan and then removed.
+#[cfg(target_os = "macos")]
+fn label_of_file(file_name: &str) -> Option<String> {
+    let label = file_name.strip_suffix(".plist")?;
+    label.starts_with("com.gtunnel.").then(|| label.to_string())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn label_of_file(file_name: &str) -> Option<String> {
+    (file_name.starts_with("gtunnel-") && file_name.ends_with(".service"))
+        .then(|| file_name.to_string())
+}
+
+// Only these directories are ever listed. Both macOS ones are shared with every
+// other config dir on the machine (LaunchAgents is keyed to the home, not to
+// GTUNNEL_CONFIG_DIR), so a file found here is judged by `owned_by` first.
+fn service_dirs() -> Vec<std::path::PathBuf> {
+    let mut dirs = Vec::new();
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(dir) = crate::daemon::launchd::agents_dir() {
+            dirs.push(dir);
+        }
+        if let Ok(dir) = crate::config::config_dir() {
+            dirs.push(dir.join("agents"));
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    if let Some(home) = dirs::home_dir() {
+        dirs.push(home.join(".config/systemd/user"));
+    }
+    dirs
+}
+
+/// Whether a service definition belongs to the config dir `config_dir`.
+///
+/// `tunnels.toml` only speaks for its own config dir, but the service manager's
+/// directory holds every config dir's services. A service logs to
+/// `<config_dir>/logs/`, so its log path is the one thing in the file that
+/// names its owner. A file whose log path cannot be read belongs to nobody:
+/// guessing wrong here deletes a service someone else is running.
+pub fn owned_by(text: &str, config_dir: &std::path::Path) -> bool {
+    #[cfg(target_os = "macos")]
+    let log = crate::daemon::launchd::plist_log_path(text);
+    #[cfg(not(target_os = "macos"))]
+    let log = crate::daemon::systemd::unit_log_path(text);
+    log.is_some_and(|log| crate::daemon::is_within(&log, &config_dir.join("logs")))
+}
+
+/// The thin caller over [`orphan_services`]: lists `dirs` and builds the
+/// expected labels from every record in every account. A directory that cannot
+/// be read holds nothing to report. A file inside `config_dir` is this
+/// config's by location; any other is a candidate only if `owned_by` says so.
+pub fn find_orphan_services(
+    dirs: &[std::path::PathBuf],
+    tunnels: &[crate::state::PersistentTunnel],
+    config_dir: &std::path::Path,
+) -> Vec<String> {
+    let expected: HashSet<String> = tunnels
+        .iter()
+        .map(|t| crate::daemon::platform_label(&t.account_name, &t.name))
+        .collect();
+    let mut installed = Vec::new();
+    for dir in dirs {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        // Exactly `agents/`, never the config dir as a whole: it can be `$HOME`,
+        // which contains the shared LaunchAgents directory
+        let ours_by_location = dir == &config_dir.join("agents");
+        for entry in entries.flatten() {
+            let Some(label) = entry
+                .file_name()
+                .into_string()
+                .ok()
+                .and_then(|name| label_of_file(&name))
+            else {
+                continue;
+            };
+            if ours_by_location
+                || std::fs::read_to_string(entry.path())
+                    .is_ok_and(|text| owned_by(&text, config_dir))
+            {
+                installed.push(label);
+            }
+        }
+    }
+    orphan_services(&installed, &expected)
 }
 
 // The exact command that makes an Access tunnel's port reachable through IAP
@@ -482,6 +606,14 @@ pub async fn run_doctor(
 
     for account in reserved_accounts(cfg) {
         out.push((account.clone(), Finding::ReservedAccountName { account }));
+    }
+
+    // Machine-wide like the watchdog: a service has no account the scan could
+    // file it under, since the record that would name it is the thing missing
+    if let Ok(config_dir) = crate::config::config_dir() {
+        for label in find_orphan_services(&service_dirs(), &state.tunnels, &config_dir) {
+            out.push((String::new(), Finding::OrphanService { label }));
+        }
     }
 
     for (record, alive) in list_ephemeral().unwrap_or_default() {
@@ -885,6 +1017,22 @@ async fn apply_fix(
             state.remove_for_account(tunnel, account_name);
             Ok(())
         }),
+        // Re-checked against the record set just loaded: a tunnel added since the
+        // scan may own this label, and uninstalling it would take that tunnel down
+        Finding::OrphanService { label } => {
+            let config_dir = crate::config::config_dir()?;
+            if !find_orphan_services(&service_dirs(), &state.tunnels, &config_dir).contains(label) {
+                anyhow::bail!("a tunnel claimed it since the scan");
+            }
+            // The launchd domain is shared by every config dir, so the plain
+            // uninstall's boot-out by label could stop another config's job
+            #[cfg(target_os = "macos")]
+            return crate::daemon::launchd::uninstall_orphan(label, &config_dir).await;
+            // The unit file passed the ownership rule above, and its path is
+            // the only thing systemd keys it by
+            #[cfg(not(target_os = "macos"))]
+            crate::daemon::uninstall(label).await
+        }
         // tunnels.toml is what the user edits, so the record is the truth the
         // service manager is brought back to
         Finding::AutoStartDrift { tunnel, .. } => {
@@ -1433,5 +1581,244 @@ mod tests {
         // No tunnels, nothing to watch: an install with nothing in it yet is
         // not a machine missing its watchdog
         assert_eq!(watchdog_finding(false, 0), None);
+    }
+
+    fn expected(labels: &[&str]) -> HashSet<String> {
+        labels.iter().map(|l| l.to_string()).collect()
+    }
+
+    #[test]
+    fn a_service_no_record_owns_is_an_orphan() {
+        let owned = crate::daemon::platform_label("dev", "db");
+        let gone = crate::daemon::platform_label("dev", "gone");
+        let found = orphan_services(&[owned.clone(), gone.clone()], &expected(&[&owned]));
+        assert_eq!(found, vec![gone]);
+    }
+
+    #[test]
+    fn a_service_is_owned_only_by_a_record_in_its_own_account() {
+        // `db` exists in prod only; dev's service for it has no record
+        let prod = crate::daemon::platform_label("prod", "db");
+        let dev = crate::daemon::platform_label("dev", "db");
+        let found = orphan_services(&[prod.clone(), dev.clone()], &expected(&[&prod]));
+        assert_eq!(found, vec![dev]);
+    }
+
+    #[test]
+    fn the_watchdog_is_never_an_orphan() {
+        let watchdog = crate::daemon::watchdog_label().to_string();
+        let found = orphan_services(&[watchdog], &expected(&[]));
+        assert!(found.is_empty(), "the watchdog is not a tunnel: {found:?}");
+    }
+
+    #[test]
+    fn a_service_listed_in_two_directories_is_reported_once() {
+        let gone = crate::daemon::platform_label("dev", "gone");
+        let found = orphan_services(&[gone.clone(), gone.clone()], &expected(&[]));
+        assert_eq!(found, vec![gone]);
+    }
+
+    #[test]
+    fn an_orphan_is_fixable_and_describes_itself() {
+        let finding = Finding::OrphanService {
+            label: "com.gtunnel.dev.gone".to_string(),
+        };
+        assert!(finding.fixable());
+        assert!(finding.describe().contains("com.gtunnel.dev.gone"));
+    }
+
+    #[cfg(target_os = "macos")]
+    fn persistent(account: &str, name: &str) -> crate::state::PersistentTunnel {
+        crate::state::PersistentTunnel {
+            name: name.to_string(),
+            account_name: account.to_string(),
+            auto_start: false,
+            spec: TunnelSpec::Access {
+                target: AccessTarget::Instance {
+                    instance: "bastion".to_string(),
+                    zone: "europe-west1-b".to_string(),
+                },
+                remote_port: 5432,
+                local_port: 15432,
+            },
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_orphan_plist_in_the_config_dir_is_found_and_the_watchdog_plist_is_not() {
+        let temp = crate::config::testing::TempConfigDir::new();
+        let agents = temp.path().join("agents");
+        std::fs::create_dir_all(&agents).expect("mkdir");
+        for label in [
+            "com.gtunnel.dev.db",
+            "com.gtunnel.dev.gone",
+            crate::daemon::launchd::WATCHDOG_LABEL,
+        ] {
+            std::fs::write(agents.join(format!("{label}.plist")), "<plist/>").expect("write");
+        }
+        // Not ours: files that merely live beside the others
+        std::fs::write(agents.join("com.example.other.plist"), "<plist/>").expect("write");
+        std::fs::write(agents.join("notes.txt"), "x").expect("write");
+
+        let found = find_orphan_services(&[agents], &[persistent("dev", "db")], temp.path());
+        assert_eq!(found, vec!["com.gtunnel.dev.gone".to_string()]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_directory_that_does_not_exist_holds_no_orphans() {
+        let temp = crate::config::testing::TempConfigDir::new();
+        let found = find_orphan_services(&[temp.path().join("absent")], &[], temp.path());
+        assert!(found.is_empty());
+    }
+
+    // The definition the host's service manager would hold for a tunnel whose
+    // log is `log`, and the file name it lives under
+    fn service_text(label: &str, log: &std::path::Path) -> String {
+        let spec = crate::daemon::ServiceSpec {
+            label: label.to_string(),
+            program: std::path::PathBuf::from("/usr/bin/gcloud"),
+            args: vec!["compute".to_string()],
+            log_path: log.to_path_buf(),
+            env: vec![],
+            auto_start: true,
+            description: "db".to_string(),
+        };
+        #[cfg(target_os = "macos")]
+        {
+            crate::daemon::launchd::render_plist(&spec)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            crate::daemon::systemd::render_unit(&spec)
+        }
+    }
+
+    fn service_file_name(label: &str) -> String {
+        if cfg!(target_os = "macos") {
+            format!("{label}.plist")
+        } else {
+            label.to_string()
+        }
+    }
+
+    #[test]
+    fn a_service_logging_into_this_config_dir_belongs_to_it() {
+        let cfg = std::path::Path::new("/tmp/cfg-a");
+        let text = service_text("x", &cfg.join("logs/dev-db.log"));
+        assert!(owned_by(&text, cfg));
+    }
+
+    #[test]
+    fn a_service_logging_into_another_config_dir_does_not() {
+        let text = service_text("x", std::path::Path::new("/tmp/cfg-b/logs/dev-db.log"));
+        assert!(!owned_by(&text, std::path::Path::new("/tmp/cfg-a")));
+        // A prefix of the name is not a parent directory
+        let text = service_text("x", std::path::Path::new("/tmp/cfg-ab/logs/dev-db.log"));
+        assert!(!owned_by(&text, std::path::Path::new("/tmp/cfg-a")));
+    }
+
+    #[test]
+    fn a_log_path_that_climbs_out_of_the_config_dir_does_not_belong_to_it() {
+        let cfg = std::path::Path::new("/tmp/cfg-a");
+        let text = service_text("x", &cfg.join("logs/../../cfg-b/logs/dev-db.log"));
+        assert!(!owned_by(&text, cfg));
+    }
+
+    #[test]
+    fn a_service_whose_log_cannot_be_read_belongs_to_nobody() {
+        let cfg = std::path::Path::new("/tmp/cfg-a");
+        assert!(!owned_by("", cfg));
+        assert!(!owned_by("not a service definition", cfg));
+    }
+
+    #[test]
+    fn a_service_installed_for_another_config_dir_is_not_an_orphan() {
+        let temp = crate::config::testing::TempConfigDir::new();
+        let installed = tempfile::tempdir().expect("tempdir");
+        let other = tempfile::tempdir().expect("tempdir");
+        let label = crate::daemon::platform_label("prod", "k8s");
+        std::fs::write(
+            installed.path().join(service_file_name(&label)),
+            service_text(&label, &other.path().join("logs/prod-k8s.log")),
+        )
+        .expect("write");
+
+        // This config has no record of it, and it is still not this config's to judge
+        let found = find_orphan_services(&[installed.path().to_path_buf()], &[], temp.path());
+        assert!(found.is_empty(), "{found:?}");
+    }
+
+    #[test]
+    fn a_service_installed_for_this_config_dir_without_a_record_is_an_orphan() {
+        let temp = crate::config::testing::TempConfigDir::new();
+        let installed = tempfile::tempdir().expect("tempdir");
+        let label = crate::daemon::platform_label("dev", "gone");
+        std::fs::write(
+            installed.path().join(service_file_name(&label)),
+            service_text(&label, &temp.path().join("logs/dev-gone.log")),
+        )
+        .expect("write");
+
+        let found = find_orphan_services(&[installed.path().to_path_buf()], &[], temp.path());
+        assert_eq!(found, vec![label]);
+    }
+
+    #[test]
+    fn a_config_dir_that_contains_the_service_dir_does_not_make_it_ours() {
+        // GTUNNEL_CONFIG_DIR=$HOME: LaunchAgents is inside it, and shared
+        let home = tempfile::tempdir().expect("tempdir");
+        let other = tempfile::tempdir().expect("tempdir");
+        let agents = home.path().join("Library/LaunchAgents");
+        std::fs::create_dir_all(&agents).expect("mkdir");
+        let label = crate::daemon::platform_label("prod", "k8s");
+        std::fs::write(
+            agents.join(service_file_name(&label)),
+            service_text(&label, &other.path().join("logs/prod-k8s.log")),
+        )
+        .expect("write");
+
+        let found = find_orphan_services(&[agents], &[], home.path());
+        assert!(found.is_empty(), "{found:?}");
+    }
+
+    #[test]
+    fn a_relative_config_dir_does_not_make_a_service_dir_ours() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let other = tempfile::tempdir().expect("tempdir");
+        let agents = home.path().join("Library/LaunchAgents");
+        std::fs::create_dir_all(&agents).expect("mkdir");
+        let label = crate::daemon::platform_label("prod", "k8s");
+        std::fs::write(
+            agents.join(service_file_name(&label)),
+            service_text(&label, &other.path().join("logs/prod-k8s.log")),
+        )
+        .expect("write");
+
+        let relative = std::path::Path::new("Library");
+        let found = find_orphan_services(&[agents], &[], relative);
+        assert!(found.is_empty(), "{found:?}");
+        // A relative path is judged as written: its own logs dir still counts
+        let text = service_text(&label, std::path::Path::new("rel-cfg/logs/prod-k8s.log"));
+        assert!(owned_by(&text, std::path::Path::new("rel-cfg")));
+        assert!(!owned_by(&text, std::path::Path::new("other-cfg")));
+    }
+
+    #[test]
+    fn an_unparsable_or_unreadable_service_file_is_not_an_orphan() {
+        let temp = crate::config::testing::TempConfigDir::new();
+        let installed = tempfile::tempdir().expect("tempdir");
+        let junk = crate::daemon::platform_label("dev", "junk");
+        let binary = crate::daemon::platform_label("dev", "binary");
+        std::fs::write(installed.path().join(service_file_name(&junk)), "junk").expect("write");
+        std::fs::write(
+            installed.path().join(service_file_name(&binary)),
+            [0xff, 0xfe, 0x00],
+        )
+        .expect("write");
+
+        let found = find_orphan_services(&[installed.path().to_path_buf()], &[], temp.path());
+        assert!(found.is_empty(), "{found:?}");
     }
 }

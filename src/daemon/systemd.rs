@@ -23,6 +23,14 @@ fn unit_path(label: &str) -> Result<PathBuf> {
     Ok(units_dir()?.join(label))
 }
 
+/// The log a unit appends to, which is how a unit says whose it is. See
+/// [`super::launchd::plist_log_path`].
+pub fn unit_log_path(text: &str) -> Option<PathBuf> {
+    text.lines()
+        .find_map(|line| line.strip_prefix("StandardOutput=append:"))
+        .map(|p| PathBuf::from(p.trim()))
+}
+
 // systemd splits ExecStart on whitespace, so anything containing one is quoted
 fn quote(arg: &str) -> String {
     if arg.is_empty() || arg.contains(|c: char| c.is_whitespace() || c == '"' || c == '\\') {
