@@ -36,7 +36,7 @@ one is actually carrying traffic.
 Everything in the table below ships in the current version. This README has no roadmap
 section because it describes only what the binary already does.
 
-![gtunnel topology: a private port inward through IAP, a public URL outward through a relay VM](docs/images/architecture/gtunnel-overview.png)
+![gtunnel topology: a private port inward through IAP, a public URL outward through a relay VM with optional IAP sign-in, and the TUI or an MCP client driving gtunnel](docs/images/architecture/gtunnel-overview.png)
 
 ## Features
 
@@ -48,6 +48,10 @@ section because it describes only what the binary already does.
 | TUI dashboard | Live status, latency, connection counts, load-balancer traffic and per-tunnel logs |
 | Managed services | launchd on macOS, systemd `--user` on Linux. Restart on failure, optional auto-start at login |
 | Multiple accounts | One gcloud configuration, project and zone per account; `;` cycles them in the TUI |
+| Gated public URLs | `expose --private` turns on IAP for the tunnel's backend, so a visitor signs in with Google first. Listed as `gated` |
+| MCP server and agent skill | `gtunnel mcp` is a stdio MCP server with 10 tools and 2 resources; `.agents/skills/gtunnel/SKILL.md` guides an agent through the CLI |
+| `--json` output | `list`, `doctor` and `account list` print machine-readable JSON |
+| Self-update | `gtunnel update` replaces the binary with the latest release; `--check` only reports. A Homebrew install is pointed at `brew upgrade` |
 
 [docs/architecture.md](docs/architecture.md) has the topology for both modes, the jump and
 service-lifecycle diagrams, the account model, and every resource name.
@@ -130,7 +134,7 @@ psql -h localhost -p 15432
 ```
 
 <p align="center">
-  <img src="docs/demo-access.gif" alt="gtunnel add, list, start, stop and delete" width="720">
+  <img src="docs/demo-access.gif" alt="gtunnel add, list, start, stop and delete, and the error for a mistyped name" width="720">
 </p>
 
 ### A public URL to a local service

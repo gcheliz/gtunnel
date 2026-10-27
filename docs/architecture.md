@@ -62,7 +62,7 @@ open against a host that is gone.
 A relay VM holds a reverse SSH tunnel back to your laptop. A global HTTPS load balancer
 terminates TLS and sends each hostname to the relay port that belongs to that tunnel.
 
-![Public mode: a visitor reaching a global HTTPS load balancer, which forwards to a relay VM holding a reverse SSH tunnel back to the laptop](images/architecture/gtunnel-public-mode.png)
+![Public mode: a visitor reaching a global HTTPS load balancer, which forwards to a relay VM holding a reverse SSH tunnel back to the laptop, with IAP sign-in in front for a gated tunnel](images/architecture/gtunnel-public-mode.png)
 
 The load balancer is drawn as one card. Behind it a request crosses five resources, which
 [What belongs to whom](#what-belongs-to-whom) below lists in full: the forwarding rule
@@ -71,6 +71,10 @@ map `gt-<acct>-urlmap` carrying one host rule per tunnel, the per-tunnel backend
 `gt-<acct>-<tunnel>`, and the instance group `gt-<acct>-ig` whose named port `gt-<tunnel>`
 selects the relay port. The Cloud DNS A record `<tunnel>.<domain>` resolves to the global
 address `gt-<acct>-ip`.
+
+A gated tunnel, `expose --private`, also turns on IAP for its backend service, so a visitor
+signs in with Google before a request reaches the relay. `list` and the TUI show its mode
+as `gated` rather than `public`.
 
 The tunnel process runs:
 
