@@ -20,10 +20,11 @@ git_release_enable = false
 
 changelog_update = true
 
-# Only these prefixes cut a release. A merge of documentation, tests, CI or chores
-# alone changes no version; its lines still reach the changelog with the next
-# release that a feat, fix, perf or refactor does cut.
-release_commits = "^(feat|fix|perf|refactor)"
+# Every prefix that writes a changelog line cuts a release, so a merge reaches
+# users without anyone dispatching anything. Tests, CI and chores write no line
+# and change nothing a user gets; releasing them would ship identical binaries
+# under a new number with empty notes.
+release_commits = "^(feat|fix|perf|refactor|docs)"
 
 [changelog]
 header = """# Changelog
