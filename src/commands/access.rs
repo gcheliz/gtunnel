@@ -352,7 +352,7 @@ pub enum Readiness {
 /// The supervisor writes `ready_file` when the tunnel's own log says it is
 /// listening. `port` is the second witness and is passed only when that file
 /// cannot be relied on: at log level `quiet` ssh prints no listener line, so a
-/// jump tunnel never gets one. It is a bare connect and not `probe::tcp_probe`,
+/// jump tunnel never gets one. It is a bare connect and not `probe::probe_tunnel`,
 /// which registers into the probe ledger and does a round trip through the far
 /// end; readiness asks only whether something is listening here.
 pub async fn wait_ready(
