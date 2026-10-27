@@ -350,7 +350,7 @@ the log says, so the fix is on screen instead of in the log:
 |---|---|---|---|
 | healthy | `✓` | the far end answered | nothing |
 | unhealthy | `✗` | no answer, and no cause the log names | read the log |
-| auth expired | `⊗` | no answer, and the log in the last two minutes says `Reauthentication required` or `gcloud auth login` | `gcloud auth login`, then `R` |
+| auth expired | `⊗` | no answer, and the log in the last two minutes says `Reauthentication required` or `gcloud auth login`; or the tunnel stopped itself for that reason and has not been started since | `gcloud auth login`, then `s` (`R` while it still runs) |
 | crash loop | `↻` | the service restarted three times or more inside two minutes | check the log |
 | checking | `…` | the first probe is still in flight | wait |
 | unknown | `?` | nothing to probe: stopped, or the local port is unknown | none |

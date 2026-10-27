@@ -135,7 +135,7 @@ emptied when its tunnel starts, so a line in it was written by the process runni
 | `4003` | IAP cannot reach the target port | Allow `35.235.240.0/20` to that port, see below |
 | `4033` | Not authorized to tunnel through IAP | Grant `roles/iap.tunnelResourceAccessor` |
 | A public URL answers `503` (nothing in the log) | The tunnel's backend, host rule, named port or DNS record is missing | `gtunnel restart <name>` re-creates them, see [the log](commands.md#start-stop-restart-autostart-logs-list-delete) |
-| `Reauthentication required` | gcloud credentials expired | `gcloud auth login` |
+| `Reauthentication required` | gcloud credentials expired. The supervisor stops the job instead of restarting it every few seconds, and `list` keeps showing `auth expired` until the next start | `gcloud auth login`, then `gtunnel start <name>` |
 | `Address already in use` | Another process holds the local port | `gtunnel doctor`, or set `--local-port` |
 | `remote port forwarding failed` | The relay port is busy on the relay VM | `gtunnel restart <name>`, then `gtunnel doctor` |
 | `Too many open files` | The tunnel ran out of file descriptors | `gtunnel doctor` names the process holding them, see below |

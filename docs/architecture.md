@@ -161,6 +161,8 @@ One diagram for both platforms: the shape is the same and only the manager diffe
 
 ![Service lifecycle: gtunnel add records the tunnel in tunnels.toml (name, account, target, local port), gtunnel start or s in the TUI writes the definition labelled com.gtunnel.ACCOUNT.NAME, then on macOS launchctl bootstrap loads CONFIG/agents/LABEL.plist and on Linux systemctl --user start loads ~/.config/systemd/user/LABEL.service; both run the gcloud child process, which on a non-zero exit is restarted by KeepAlive or Restart=on-failure RestartSec=5; A toggles auto-start, which on macOS is ~/Library/LaunchAgents/LABEL.plist starting at login and on Linux is systemctl --user enable plus loginctl enable-linger](images/architecture/gtunnel-service-lifecycle.png)
 
+A restart cannot renew a login, so a supervisor that sees gcloud die of `Reauthentication required` stops the loop and leaves `run/<label>.auth` behind, which keeps `list` on `auth expired` after the log goes quiet. It exits 0 on macOS, where `KeepAlive` restarts every non-zero exit, and 78 on Linux, which the unit lists in `RestartPreventExitStatus`. `gtunnel start`, and the supervisor itself, clear the marker.
+
 The two auto-start mechanisms are not symmetric, and the asymmetry is deliberate. On macOS
 the flag *is* the file: launchd loads everything in `~/Library/LaunchAgents` at login, and a
 `KeepAlive` job runs the moment it is loaded, so a definition left there would start whether

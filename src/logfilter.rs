@@ -290,6 +290,7 @@ pub struct Correlator {
     cap: RateCap,
     ready: Option<(PathBuf, Option<u16>)>,
     backend: Option<Backend>,
+    credentials_expired: bool,
 }
 
 pub type SharedCorrelator = Arc<Mutex<Correlator>>;
@@ -303,6 +304,7 @@ impl Correlator {
             cap: RateCap::new(CAP_PER_MINUTE, Duration::from_secs(60)),
             ready: None,
             backend: None,
+            credentials_expired: false,
         }
     }
 
@@ -353,9 +355,19 @@ impl Correlator {
         }
     }
 
+    /// Whether any line seen so far said gcloud's login expired. Read by the
+    /// supervisor when gcloud exits: this sees both streams, so the answer
+    /// does not depend on which one gcloud chose to complain on.
+    pub fn credentials_expired(&self) -> bool {
+        self.credentials_expired
+    }
+
     /// One line in, the formatted lines it produces out.
     pub fn feed(&mut self, raw: &str, now: Instant) -> Vec<String> {
         let mut out = self.tick(now);
+        if crate::probe::is_credential_failure(raw) {
+            self.credentials_expired = true;
+        }
         match classify(raw) {
             Line::Drop => {}
             Line::Keep(text) => out.push(format_line(&text)),

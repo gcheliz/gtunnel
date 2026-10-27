@@ -11,18 +11,26 @@ pub async fn run(
     port: Option<u16>,
     ready_file: Option<PathBuf>,
     conns: Option<Backend>,
+    auth_marker: Option<PathBuf>,
 ) -> Result<()> {
-    let status = run_inner(argv, port, ready_file, conns).await?;
-    std::process::exit(status.code().unwrap_or(1));
+    let code = supervise(argv, port, ready_file, conns, auth_marker).await?;
+    std::process::exit(code);
 }
 
-/// Run child process and return its ExitStatus once streams have drained.
-pub async fn run_inner(
+/// Run the child and return the code this process should exit with, once its
+/// streams have drained.
+///
+/// That is the child's own, except when it died of expired credentials on its
+/// own: restarting gcloud cannot fix a login, so the exit is the one the
+/// service manager leaves alone, and a marker records why the job is down. A
+/// stop the user asked for is not that, whatever the log says.
+pub async fn supervise(
     argv: Vec<String>,
     port: Option<u16>,
     ready_file: Option<PathBuf>,
     conns: Option<Backend>,
-) -> Result<std::process::ExitStatus> {
+    auth_marker: Option<PathBuf>,
+) -> Result<i32> {
     if argv.is_empty() {
         bail!("__supervise requires at least one argument (the program to run)");
     }
@@ -38,6 +46,10 @@ pub async fn run_inner(
     #[cfg(not(unix))]
     let mut cmd = Command::new(prog);
 
+    // A login that was renewed since the last run must not keep naming itself
+    if let Some(file) = &auth_marker {
+        let _ = std::fs::remove_file(file);
+    }
     // A ready file left by a previous run would say the listener is up before
     // this child has bound anything
     if let Some(file) = &ready_file {
@@ -102,6 +114,7 @@ pub async fn run_inner(
         }
     });
 
+    let mut asked_to_stop = false;
     #[cfg(unix)]
     let status = {
         let pgid = child.id().map(|id| id as i32);
@@ -109,8 +122,14 @@ pub async fn run_inner(
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         tokio::select! {
             res = child.wait() => res.context("failed to wait on child")?,
-            _ = sigterm.recv() => crate::proc::stop_group(&mut child, pgid, crate::proc::STOP_GRACE).await?,
-            _ = tokio::signal::ctrl_c() => crate::proc::stop_group(&mut child, pgid, crate::proc::STOP_GRACE).await?,
+            _ = sigterm.recv() => {
+                asked_to_stop = true;
+                crate::proc::stop_group(&mut child, pgid, crate::proc::STOP_GRACE).await?
+            }
+            _ = tokio::signal::ctrl_c() => {
+                asked_to_stop = true;
+                crate::proc::stop_group(&mut child, pgid, crate::proc::STOP_GRACE).await?
+            }
         }
     };
 
@@ -129,7 +148,14 @@ pub async fn run_inner(
     if let Some((dir, port)) = &probes {
         crate::probe::unwatch_probes(dir, *port);
     }
-    Ok(status)
+    let expired = lock(&conn).credentials_expired();
+    if expired && !asked_to_stop && !status.success() {
+        if let Some(file) = &auth_marker {
+            let _ = crate::fsutil::write_atomic(file, "1\n");
+        }
+        return Ok(crate::daemon::auth_expired_exit(cfg!(target_os = "macos")));
+    }
+    Ok(status.code().unwrap_or(1))
 }
 
 #[cfg(test)]
@@ -138,23 +164,24 @@ mod tests {
 
     #[tokio::test]
     async fn runs_child_and_returns_exit_code() {
-        let status = run_inner(
+        let code = supervise(
             vec!["echo".to_string(), "hello".to_string()],
+            None,
             None,
             None,
             None,
         )
         .await
         .expect("run echo");
-        assert!(status.success());
+        assert_eq!(code, 0);
     }
 
     #[tokio::test]
     async fn returns_non_zero_exit_code_on_child_failure() {
-        let status = run_inner(vec!["false".to_string()], None, None, None)
+        let code = supervise(vec!["false".to_string()], None, None, None, None)
             .await
             .expect("run false");
-        assert!(!status.success());
+        assert_eq!(code, 1);
     }
 
     // The whole path: a child that prints what gcloud prints, a ready file the
@@ -164,7 +191,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let ready = dir.path().join("com.gtunnel.dev.db.ready");
         std::fs::write(&ready, "1\n").expect("stale");
-        let status = run_inner(
+        let code = supervise(
             vec![
                 "sh".to_string(),
                 "-c".to_string(),
@@ -176,15 +203,79 @@ mod tests {
             Some(18443),
             Some(ready.clone()),
             None,
+            None,
         )
         .await
         .expect("run");
         // Gone before the child started, and back once it said it listens
-        assert!(status.success());
+        assert_eq!(code, 0);
         assert!(!ready.exists(), "removed when the supervisor exits");
         assert!(
             !dir.path().join("probes").join("18443").exists(),
             "the ledger is closed with the supervisor"
         );
+    }
+
+    fn fake_gcloud(script: &str) -> Vec<String> {
+        vec!["sh".to_string(), "-c".to_string(), script.to_string()]
+    }
+
+    // A restart cannot fix an expired login, so the exit must be one the
+    // service manager does not answer with another start
+    #[tokio::test]
+    async fn expired_credentials_end_in_the_exit_the_service_manager_does_not_restart() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let marker = dir.path().join("com.gtunnel.dev.db.auth");
+        let code = supervise(
+            fake_gcloud("echo 'ERROR: Reauthentication required.' >&2; exit 1"),
+            None,
+            None,
+            None,
+            Some(marker.clone()),
+        )
+        .await
+        .expect("run");
+        let want = if cfg!(target_os = "macos") {
+            0
+        } else {
+            crate::daemon::AUTH_EXPIRED_EXIT
+        };
+        assert_eq!(code, want);
+        assert!(marker.exists(), "the marker tells list why it is down");
+    }
+
+    #[tokio::test]
+    async fn a_failure_that_is_not_credentials_keeps_gcloud_exit_code_and_leaves_no_marker() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let marker = dir.path().join("t.auth");
+        let code = supervise(
+            fake_gcloud("echo 'ERROR: [4033: not authorized]' >&2; exit 3"),
+            None,
+            None,
+            None,
+            Some(marker.clone()),
+        )
+        .await
+        .expect("run");
+        assert_eq!(code, 3);
+        assert!(!marker.exists());
+    }
+
+    #[tokio::test]
+    async fn a_marker_from_a_previous_run_is_cleared_when_the_supervisor_starts() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let marker = dir.path().join("t.auth");
+        std::fs::write(&marker, "1\n").expect("stale");
+        let code = supervise(
+            fake_gcloud("exit 0"),
+            None,
+            None,
+            None,
+            Some(marker.clone()),
+        )
+        .await
+        .expect("run");
+        assert_eq!(code, 0);
+        assert!(!marker.exists());
     }
 }

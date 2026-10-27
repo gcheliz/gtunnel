@@ -2783,11 +2783,13 @@ impl App {
                         // about: carrying the last run's verdict across a stop
                         // made the next start's first poll read as a recovery
                         // or a repeat, by how the previous run happened to end
-                        entry.health = if entry.status == TunnelStatus::Running {
-                            old.health
-                        } else {
-                            HealthStatus::Unknown
-                        };
+                        // The one verdict a stopped row keeps is the one the
+                        // reload itself read from the marker
+                        if entry.status == TunnelStatus::Running {
+                            entry.health = old.health;
+                        } else if entry.health != HealthStatus::AuthExpired {
+                            entry.health = HealthStatus::Unknown;
+                        }
                         entry.metrics = old.metrics.clone();
                         // The first round after the op shows what it did, so
                         // it is the one that ends the pending state

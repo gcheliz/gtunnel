@@ -64,6 +64,31 @@ fn daemon_env(gcloud: &std::path::Path) -> Vec<(String, String)> {
 /// plist asking for it fails to load rather than being ignored.
 pub const TUNNEL_MAX_FILES: u64 = 4096;
 
+/// The exit a supervisor ends with when gcloud died of expired credentials, on
+/// a service manager that can be told not to restart it. 78 is `EX_CONFIG`:
+/// the fault is in the environment, and only the user can fix it.
+pub const AUTH_EXPIRED_EXIT: i32 = 78;
+
+/// What the supervisor exits with after expired credentials. launchd has no
+/// per-status exclusion: `KeepAlive` is `SuccessfulExit: false`, which
+/// restarts on every non-zero exit, so the only exit it leaves alone is 0.
+/// systemd names this code in `RestartPreventExitStatus` instead.
+pub fn auth_expired_exit(launchd: bool) -> i32 {
+    if launchd {
+        0
+    } else {
+        AUTH_EXPIRED_EXIT
+    }
+}
+
+/// Where a supervisor records that it stopped for expired credentials. Beside
+/// the ready file, keyed by the same label.
+pub fn auth_marker_path(label: &str) -> Result<PathBuf> {
+    Ok(crate::config::config_dir()?
+        .join("run")
+        .join(format!("{label}.auth")))
+}
+
 /// How often the watchdog wakes to look at every tunnel. Short enough that a
 /// wedged tunnel is noticed before a person reaches for the terminal, long
 /// enough that the probe it runs costs nothing worth measuring.
@@ -142,6 +167,9 @@ pub fn service_spec(cfg: &Config, t: &PersistentTunnel) -> Result<ServiceSpec> {
                 .to_string(),
         );
     }
+    // Every tunnel can lose its login, an expose tunnel as much as an access one
+    args.push("--auth-marker".to_string());
+    args.push(auth_marker_path(&label)?.to_string_lossy().to_string());
     args.push("--".to_string());
     args.push(gcloud.to_string_lossy().to_string());
     args.extend(gcloud_args);
@@ -517,6 +545,22 @@ mod tests {
     fn a_tunnel_does_not_ask_for_a_hard_limit_it_cannot_have() {
         let plist = launchd::render_plist(&spec());
         assert!(!plist.contains("HardResourceLimits"), "{plist}");
+    }
+
+    #[test]
+    fn a_unit_does_not_restart_after_expired_credentials() {
+        let unit = systemd::render_unit(&spec());
+        assert!(
+            unit.contains(&format!("RestartPreventExitStatus={AUTH_EXPIRED_EXIT}")),
+            "{unit}"
+        );
+    }
+
+    #[test]
+    fn the_exit_for_expired_credentials_depends_on_how_the_manager_restarts() {
+        // launchd restarts on any non-zero exit, so only 0 stops it
+        assert_eq!(auth_expired_exit(true), 0);
+        assert_eq!(auth_expired_exit(false), AUTH_EXPIRED_EXIT);
     }
 
     #[test]
