@@ -42,7 +42,7 @@ One colour, one question. A setting is not a verdict. `src/tui/theme.rs` states 
 | `MUTED` | what is only furniture | rules, headers, captions, empty-list rows |
 | `LABEL` | what names the value beside it | field labels, footer words |
 | `OK` | is it running, healthy, done | a running status symbol, the config page's report of a saved edit |
-| `WARN` | is it worth a look while nothing is broken | the health flag, a log hint, a prompt's question, the footer's lead action key, the version in an update notice |
+| `WARN` | is it worth a look while nothing is broken | the health flag, a pending row's glyph and verb, a log hint, a prompt's question, the footer's lead action key, the version in an update notice |
 | `BAD` | is it broken | a failed status symbol, a status-line error, the config page's refusal of an edit |
 | `FLAG` | is a setting on, which is a choice and not a verdict | the auto-start flag |
 | `SELECTED_BG` | which row has the cursor | the selected list row |
@@ -95,6 +95,7 @@ A column sizes to its content with a floor, and every row source shares one layo
 |---|---|---|
 | TUI list | each flexing column takes what its longest value needs while both fit; otherwise the name gives way first, down to `NAME_FLOOR`, and only then the url, which `URL_MIN` defends | `src/tui/ui.rs` (`fit_columns`, `fit`) |
 | TUI list states | an empty list says why: `loading`, `could not load tunnels`, or `no tunnels in this account`, in `theme::MUTED`. The header over a blank pane reads as a failed draw | `src/tui/ui.rs` (`render_tunnels`) |
+| TUI list, pending row | a row with an op running replaces its status symbol with `PENDING_GLYPH` and, in the tag's place, says `<verb>ing… <secs>s`, both in `theme::WARN`, on the frame of the key press. The row exists to say that the key was heard, so it is not muted whatever the status was. Narrowing clips the words first and the glyph last, because the glyph alone still says something is under way. The state ends on the first entries round begun after the op returned, never on the op's own return, so the row never shows the state from before the op. A key that would start a second op on the row is refused on the status line | `src/tui/ui.rs` (`render_tunnels`, `PENDING_GLYPH`), `src/tui/app.rs` (`PendingOp`, `refuse_pending`) |
 | TUI list scrolling | the offset is held on `App` (`list_offset`) and moves only when the selection would leave the window; it is clamped so a shrunk list or a taller terminal leaves no blank rows | `src/tui/ui.rs` (`render_tunnels`), `src/tui/app.rs` |
 | CLI `gtunnel list` | grows to the widest value, never below its floors; rows are collected before any is printed because unmanaged tunnels, discovered last, have the longest names | `src/commands/mod.rs` (`ListLayout::fit`, `NAME_FLOOR`, `URL_FLOOR`) |
 

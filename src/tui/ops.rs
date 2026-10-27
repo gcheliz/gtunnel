@@ -224,6 +224,7 @@ pub async fn execute(account: &str, op: Op) -> OpResult {
             reload: true,
             from_create: matches!(op, Op::Create(_)),
             from_account: touches_accounts(&op),
+            name: pending_row(&op),
         },
         Err(e) => OpResult {
             message: format!("{e:#}"),
@@ -234,7 +235,19 @@ pub async fn execute(account: &str, op: Op) -> OpResult {
             reload: matches!(op, Op::Delete(_) | Op::Import(_) | Op::Create(_)),
             from_create: matches!(op, Op::Create(_)),
             from_account: touches_accounts(&op),
+            name: pending_row(&op),
         },
+    }
+}
+
+// The ops the key handler marks pending: the row they acted on has to leave
+// that state when the op returns, whether it worked or not
+fn pending_row(op: &Op) -> Option<String> {
+    match op {
+        Op::Start(n) | Op::Stop(n) | Op::Restart(n) | Op::Delete(n) | Op::ToggleAutoStart(n) => {
+            Some(n.clone())
+        }
+        _ => None,
     }
 }
 
