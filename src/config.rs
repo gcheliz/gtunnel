@@ -258,6 +258,90 @@ pub fn update_or_init_config<T>(f: impl FnOnce(&mut Config) -> Result<T>) -> Res
     locked_config_update(|| Ok(load_config().unwrap_or_default()), f)
 }
 
+/// The keys a TOML text carries that `T` does not read, as dotted paths with
+/// `[i]` for array elements.
+///
+/// Loading stays lenient on purpose: a file with a stray key must keep working,
+/// so the structs do not deny unknown fields. This is the separate, opt-in
+/// check that the editor and `doctor` run, and it asks the real structs what
+/// they ignore rather than keeping a second list of known keys that would
+/// drift from them.
+///
+/// Two passes, because one is blind where the other sees. `serde_ignored`
+/// watches the deserializer, but an internally tagged enum (`TunnelSpec`,
+/// `AccessTarget`) is buffered before its variant is chosen and the buffer
+/// loses the trail, so a typo inside a tunnel's `spec` goes unreported. The
+/// second pass reads the file into `T`, writes `T` back out, and reports what
+/// the file had that the copy does not.
+pub fn unknown_keys<T: serde::de::DeserializeOwned + Serialize>(text: &str) -> Result<Vec<String>> {
+    let mut found = Vec::new();
+    let de = toml::Deserializer::parse(text).map_err(|e| anyhow!("{e}"))?;
+    let parsed: T = serde_ignored::deserialize(de, |path| found.push(dotted(&path)))
+        .map_err(|e| anyhow!("{e}"))?;
+    let original: toml::Value = toml::from_str(text).map_err(|e| anyhow!("{e}"))?;
+    let echoed = toml::Value::try_from(&parsed).context("Failed to serialize the parsed file")?;
+    missing_from(&original, &echoed, "", &mut found);
+    Ok(found)
+}
+
+// Appends each key of `original` that `echoed` lacks, once. The root is not
+// compared: its keys are never inside a buffered enum, so the first pass has
+// them all, and a root table omitted on purpose (`[notifications]` at its
+// defaults is not written back) would read as unknown here.
+fn missing_from(original: &toml::Value, echoed: &toml::Value, path: &str, out: &mut Vec<String>) {
+    match (original, echoed) {
+        (toml::Value::Table(o), toml::Value::Table(e)) => {
+            for (key, value) in o {
+                let key_text = segment(key);
+                let here = if path.is_empty() {
+                    key_text
+                } else {
+                    format!("{path}.{key_text}")
+                };
+                match e.get(key) {
+                    Some(echo) => missing_from(value, echo, &here, out),
+                    None if path.is_empty() => {}
+                    None if out.contains(&here) => {}
+                    None => out.push(here),
+                }
+            }
+        }
+        (toml::Value::Array(o), toml::Value::Array(e)) => {
+            for (i, (value, echo)) in o.iter().zip(e).enumerate() {
+                missing_from(value, echo, &format!("{path}[{i}]"), out);
+            }
+        }
+        _ => {}
+    }
+}
+
+// A key that holds a dot, bracket or space is quoted, so `\"remote.port\"` does
+// not read as two levels of the path
+fn segment(key: &str) -> String {
+    if key.contains(['.', '[', ']', ' ']) {
+        format!("\"{key}\"")
+    } else {
+        key.to_string()
+    }
+}
+
+// serde_ignored's own Display writes array indices as `.0`; the editor and
+// doctor show `[0]`, which reads as an index and not as a key named "0"
+fn dotted(path: &serde_ignored::Path<'_>) -> String {
+    use serde_ignored::Path;
+    match path {
+        Path::Root => String::new(),
+        Path::Seq { parent, index } => format!("{}[{index}]", dotted(parent)),
+        Path::Map { parent, key } => match dotted(parent) {
+            head if head.is_empty() => segment(key),
+            head => format!("{head}.{}", segment(key)),
+        },
+        Path::Some { parent }
+        | Path::NewtypeStruct { parent }
+        | Path::NewtypeVariant { parent } => dotted(parent),
+    }
+}
+
 // Held from the read to the write by every writer of config.toml; the TUI's
 // config page takes it around its final rename for the same reason
 pub fn lock_config() -> Result<crate::fsutil::Lock> {
@@ -354,6 +438,109 @@ mod tests {
         };
         let text = toml::to_string_pretty(&custom).expect("serialize");
         assert!(text.contains("[notifications]"), "{text}");
+    }
+
+    use crate::state::{AccessTarget, PersistentTunnel, TunnelSpec, TunnelState};
+
+    // The motivating mistake: a top-level key typed after the last table, where
+    // toml files it under that table and serde drops it without a word
+    const MISPLACED_LOG_LEVEL: &str = "selected_account = \"dev\"\n\
+        [[accounts]]\nname = \"dev\"\ngcloud_configuration = \"default\"\n\
+        project = \"example-dev-1a2b\"\ndefault_zone = \"europe-west1-b\"\n\
+        [accounts.expose]\nrelay_instance = \"relay\"\nrelay_zone = \"europe-west1-b\"\n\
+        network = \"default\"\ndefault_domain = \"example.com\"\n\
+        [[accounts.expose.domains]]\ndomain = \"example.com\"\nmanaged_zone = \"example\"\n\
+        log_level = \"debug\"\n";
+
+    #[test]
+    fn log_level_below_an_accounts_table_is_unknown() {
+        let keys = unknown_keys::<Config>(MISPLACED_LOG_LEVEL).expect("parse");
+        assert_eq!(keys, vec!["accounts[0].expose.domains[0].log_level"]);
+        let config: Config = toml::from_str(MISPLACED_LOG_LEVEL).expect("still loads");
+        assert_eq!(config.log_level, LogLevel::default());
+    }
+
+    #[test]
+    fn a_typo_in_a_nested_key_is_reported_with_its_path() {
+        let text = "[[tunnels]]\nname = \"db\"\naccount_name = \"dev\"\n\
+            [tunnels.spec]\nmode = \"access\"\nremote_prot = 5432\nremote_port = 5432\n\
+            local_port = 5432\n[tunnels.spec.target]\nkind = \"instance\"\n\
+            instance = \"bastion\"\nzone = \"europe-west1-b\"\n";
+        let keys = unknown_keys::<TunnelState>(text).expect("parse");
+        assert_eq!(keys, vec!["tunnels[0].spec.remote_prot"]);
+        assert!(toml::from_str::<TunnelState>(text).is_ok(), "still loads");
+    }
+
+    #[test]
+    fn a_key_holding_a_dot_is_quoted_in_its_path() {
+        let text = "[[tunnels]]\nname = \"db\"\naccount_name = \"dev\"\n\
+            [tunnels.spec]\nmode = \"access\"\nremote_port = 5432\nlocal_port = 5432\n\
+            \"stray.key\" = 1\n[tunnels.spec.target]\nkind = \"instance\"\n\
+            instance = \"bastion\"\nzone = \"europe-west1-b\"\n";
+        let keys = unknown_keys::<TunnelState>(text).expect("parse");
+        assert_eq!(keys, vec!["tunnels[0].spec.\"stray.key\""]);
+    }
+
+    #[test]
+    fn a_file_gtunnel_wrote_has_no_unknown_keys() {
+        let mut config = Config {
+            selected_account: "dev".into(),
+            ..Config::default()
+        };
+        config.accounts.push(account("dev"));
+        let text = toml::to_string_pretty(&config).expect("serialize");
+        assert!(
+            unknown_keys::<Config>(&text).expect("parse").is_empty(),
+            "{text}"
+        );
+
+        let access = PersistentTunnel {
+            name: "db".into(),
+            account_name: "dev".into(),
+            auto_start: false,
+            spec: TunnelSpec::Access {
+                target: AccessTarget::Instance {
+                    instance: "bastion".into(),
+                    zone: "europe-west1-b".into(),
+                },
+                remote_port: 5432,
+                local_port: 5432,
+            },
+        };
+        let expose = PersistentTunnel {
+            name: "web".into(),
+            account_name: "dev".into(),
+            auto_start: true,
+            spec: TunnelSpec::Expose {
+                local_target: "localhost:3000".into(),
+                domain: "example.com".into(),
+                hostname: "web.example.com".into(),
+                relay_port: 9000,
+                private: false,
+            },
+        };
+        let state = TunnelState {
+            tunnels: vec![access, expose],
+        };
+        let text = toml::to_string_pretty(&state).expect("serialize");
+        assert!(
+            unknown_keys::<TunnelState>(&text)
+                .expect("parse")
+                .is_empty(),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_notifications_table_at_its_defaults_is_not_unknown() {
+        let text =
+            "[notifications]\nup = false\ndegraded = true\nrecovered = true\nfailed = true\n";
+        assert!(unknown_keys::<Config>(text).expect("parse").is_empty());
+    }
+
+    #[test]
+    fn invalid_toml_is_an_error_not_an_empty_list() {
+        assert!(unknown_keys::<Config>("selected_account = ").is_err());
     }
 
     use super::*;

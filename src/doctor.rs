@@ -92,6 +92,13 @@ pub enum Finding {
         tunnel: String,
         holder: Option<Holder>,
     },
+    // A key in one of the two hand-edited files that the structs drop on load.
+    // Report only: which of the file's keys was meant is the person's call,
+    // and gtunnel rewriting a file they edit would lose their layout.
+    UnknownKey {
+        file: String,
+        path: String,
+    },
 }
 
 impl Finding {
@@ -213,6 +220,9 @@ impl Finding {
                  Rename the account: add one under a new name, `gtunnel move` its tunnels, then \
                  `gtunnel account remove {account}`"
             ),
+            Finding::UnknownKey { file, path } => format!(
+                "{file} has a key gtunnel ignores: {path}. Edit the file and remove or move it"
+            ),
             Finding::WatchdogMissing => format!(
                 "No watchdog is installed, so a tunnel that wedges stays wedged until someone \
                  notices. Run `gtunnel watch install` to check every {}s",
@@ -245,6 +255,35 @@ pub fn reserved_accounts(config: &Config) -> Vec<String> {
         .filter(|a| crate::config::is_reserved_account_name(&a.name))
         .map(|a| a.name.clone())
         .collect()
+}
+
+/// Keys the two config files carry that gtunnel drops on load.
+///
+/// Reads the files itself rather than taking the parsed structs, because the
+/// structs are what lost the keys. A missing file is nothing to report, and so
+/// is one that does not parse: loading already stops on that with the line.
+pub fn unknown_key_findings(dir: &std::path::Path) -> Vec<Finding> {
+    let mut out = Vec::new();
+    let mut scan = |file: &str, keys: Option<Vec<String>>| {
+        out.extend(
+            keys.unwrap_or_default()
+                .into_iter()
+                .map(|path| Finding::UnknownKey {
+                    file: file.to_string(),
+                    path,
+                }),
+        );
+    };
+    let read = |file: &str| std::fs::read_to_string(dir.join(file)).ok();
+    scan(
+        "config.toml",
+        read("config.toml").and_then(|t| crate::config::unknown_keys::<Config>(&t).ok()),
+    );
+    scan(
+        "tunnels.toml",
+        read("tunnels.toml").and_then(|t| crate::config::unknown_keys::<TunnelState>(&t).ok()),
+    );
+    out
 }
 
 // The watchdog is machine-wide, so doctor reports it once rather than once per
@@ -606,6 +645,13 @@ pub async fn run_doctor(
 
     for account in reserved_accounts(cfg) {
         out.push((account.clone(), Finding::ReservedAccountName { account }));
+    }
+
+    // The files are shared by every account, so these carry none
+    if let Ok(config_dir) = crate::config::config_dir() {
+        for finding in unknown_key_findings(&config_dir) {
+            out.push((String::new(), finding));
+        }
     }
 
     // Machine-wide like the watchdog: a service has no account the scan could
@@ -1820,5 +1866,97 @@ mod tests {
 
         let found = find_orphan_services(&[installed.path().to_path_buf()], &[], temp.path());
         assert!(found.is_empty(), "{found:?}");
+    }
+
+    // The two files the person edits by hand. `log_level` typed below the last
+    // table is the mistake that sent this check into being
+    const CONFIG_WITH_STRAY_KEY: &str = "selected_account = \"dev\"\n\
+        [[accounts]]\nname = \"dev\"\ngcloud_configuration = \"default\"\n\
+        project = \"example-dev-1a2b\"\ndefault_zone = \"europe-west1-b\"\n\
+        log_level = \"debug\"\n";
+
+    const TUNNELS_WITH_STRAY_KEY: &str = "[[tunnels]]\nname = \"db\"\naccount_name = \"dev\"\n\
+        [tunnels.spec]\nmode = \"access\"\nremote_port = 5432\nremote_prot = 5432\n\
+        local_port = 5432\n[tunnels.spec.target]\nkind = \"instance\"\n\
+        instance = \"bastion\"\nzone = \"europe-west1-b\"\n";
+
+    #[test]
+    fn doctor_reports_an_unknown_key_in_config_toml() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("config.toml"), CONFIG_WITH_STRAY_KEY).expect("write");
+        let findings = unknown_key_findings(dir.path());
+        assert_eq!(
+            findings,
+            vec![Finding::UnknownKey {
+                file: "config.toml".to_string(),
+                path: "accounts[0].log_level".to_string(),
+            }]
+        );
+        assert_eq!(
+            findings[0].describe(),
+            "config.toml has a key gtunnel ignores: accounts[0].log_level. \
+             Edit the file and remove or move it"
+        );
+    }
+
+    #[test]
+    fn doctor_reports_an_unknown_key_in_tunnels_toml() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("tunnels.toml"), TUNNELS_WITH_STRAY_KEY).expect("write");
+        let findings = unknown_key_findings(dir.path());
+        assert_eq!(
+            findings,
+            vec![Finding::UnknownKey {
+                file: "tunnels.toml".to_string(),
+                path: "tunnels[0].spec.remote_prot".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn doctor_says_nothing_for_a_clean_config() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Nothing at all, a file that does not parse (load reports that), and
+        // a file gtunnel wrote itself are all silent
+        assert!(unknown_key_findings(dir.path()).is_empty());
+        std::fs::write(dir.path().join("config.toml"), "selected_account = ").expect("write");
+        assert!(unknown_key_findings(dir.path()).is_empty());
+        let mut config = Config::default();
+        config.accounts.push(account());
+        let text = toml::to_string_pretty(&config).expect("serialize");
+        std::fs::write(dir.path().join("config.toml"), text).expect("write");
+        assert!(unknown_key_findings(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn fix_leaves_an_unknown_key_alone() {
+        let finding = Finding::UnknownKey {
+            file: "config.toml".to_string(),
+            path: "log_level".to_string(),
+        };
+        assert!(!finding.fixable());
+    }
+
+    #[test]
+    fn an_unknown_key_serializes_like_its_siblings() {
+        let finding = Finding::UnknownKey {
+            file: "tunnels.toml".to_string(),
+            path: "tunnels[0].spec.remote_prot".to_string(),
+        };
+        let json = serde_json::to_value(FindingJson {
+            account: String::new(),
+            description: finding.describe(),
+            fixable: finding.fixable(),
+        })
+        .expect("json");
+        assert_eq!(json["account"], "");
+        assert_eq!(json["fixable"], false);
+        assert!(
+            json["description"]
+                .as_str()
+                .expect("a string")
+                .contains("tunnels[0].spec.remote_prot"),
+            "{json}"
+        );
     }
 }

@@ -535,6 +535,103 @@ fn a_selected_account_that_does_not_exist_is_refused() {
     );
 }
 
+// `log_level` typed below the last table lands inside it, where serde drops it
+fn misplaces_log_level(path: &Path) -> anyhow::Result<()> {
+    std::fs::write(
+        path,
+        "selected_account = \"dev\"\n\
+         [[accounts]]\nname = \"dev\"\ngcloud_configuration = \"default\"\nproject = \"example-dev-1a2b\"\ndefault_zone = \"europe-west1-b\"\n\
+         [accounts.expose]\nrelay_instance = \"relay\"\nrelay_zone = \"europe-west1-b\"\nnetwork = \"default\"\ndefault_domain = \"example.com\"\n\
+         [[accounts.expose.domains]]\ndomain = \"example.com\"\nmanaged_zone = \"example\"\nlog_level = \"debug\"\n",
+    )?;
+    Ok(())
+}
+
+// Two stray keys in one tunnel's spec, to see the first named and the rest
+// counted; the real keys stay, so only the strays are wrong
+fn adds_two_tunnel_keys(path: &Path) -> anyhow::Result<()> {
+    let text = std::fs::read_to_string(path)?;
+    std::fs::write(
+        path,
+        text.replacen(
+            "remote_port = 5432",
+            "remote_port = 5432\nremote_prot = 5432\nlocal_prot = 5432",
+            1,
+        ),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn config_with_an_unknown_key_is_refused() {
+    let dir = seeded(1);
+    let before = std::fs::read(dir.path().join("config.toml")).unwrap();
+    let mut app = page_app();
+    edit(&mut app, misplaces_log_level);
+    let error = app.config_view.error.clone().expect("an error");
+    assert_eq!(error, "unknown key accounts[0].expose.domains[0].log_level");
+    assert!(app.status_error);
+    assert_eq!(
+        std::fs::read(dir.path().join("config.toml")).unwrap(),
+        before,
+        "byte for byte"
+    );
+    let screen = rows(&app, 120, 40).join("\n");
+    assert!(
+        screen.contains("not saved: unknown key accounts[0]"),
+        "{screen}"
+    );
+}
+
+#[test]
+fn tunnels_with_an_unknown_key_is_refused() {
+    let dir = seeded(1);
+    let before = std::fs::read(dir.path().join("tunnels.toml")).unwrap();
+    let mut app = page_app();
+    press(&mut app, KeyCode::Tab);
+    edit(&mut app, adds_two_tunnel_keys);
+    let error = app.config_view.error.clone().expect("an error");
+    assert_eq!(error, "unknown key tunnels[0].spec.local_prot and 1 more");
+    assert_eq!(
+        std::fs::read(dir.path().join("tunnels.toml")).unwrap(),
+        before
+    );
+}
+
+#[test]
+fn an_unknown_key_keeps_the_copy() {
+    let dir = seeded(1);
+    let mut app = page_app();
+    edit(&mut app, misplaces_log_level);
+    assert!(app.config_view.error.is_some());
+    assert_eq!(leftovers(&dir).len(), 1, "the refused copy stays");
+    let staged = app.config_view.staged.clone().expect("the copy is kept");
+    assert!(staged.path.exists());
+
+    // The second editor refuses to run unless it finds the first one's text
+    fn repairs_if_misplaced(path: &Path) -> anyhow::Result<()> {
+        if std::fs::read_to_string(path)?.contains("log_level") {
+            std::fs::write(path, DEV_AND_PROD)?;
+            return Ok(());
+        }
+        anyhow::bail!("the staged copy did not hold the earlier edit")
+    }
+    edit(&mut app, repairs_if_misplaced);
+    assert_eq!(app.config_view.error, None, "{:?}", app.status);
+    assert!(app.status.clone().unwrap().starts_with("reloaded"));
+    assert!(leftovers(&dir).is_empty());
+}
+
+#[test]
+fn a_valid_file_still_saves() {
+    let dir = seeded(1);
+    let mut app = page_app();
+    edit(&mut app, adds_staging);
+    assert_eq!(app.config_view.error, None, "{:?}", app.status);
+    let on_disk = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert!(on_disk.contains("staging"), "{on_disk}");
+}
+
 #[test]
 fn a_tunnel_name_that_cannot_be_a_label_is_refused_with_its_line() {
     let dir = seeded(3);
