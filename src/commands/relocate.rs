@@ -9,7 +9,8 @@ use crate::expose::naming::hostname_for;
 use crate::expose::routes;
 use crate::gcp::{compute, GcpClient};
 use crate::state::{
-    validate_tunnel_name, AccessTarget, PersistentTunnel, TunnelSpec, TunnelState, TunnelStatus,
+    clash_message, validate_tunnel_name, AccessTarget, PersistentTunnel, TunnelSpec, TunnelState,
+    TunnelStatus,
 };
 
 /// Refuse a rename or a move before anything is touched. A name is unique per
@@ -53,6 +54,16 @@ fn check_relocate(state: &TunnelState, from: &str, to: &str, old: &str, new: &st
             ""
         };
         bail!("Tunnel '{new}' already exists on account '{to}'{hint}");
+    }
+    // The moving tunnel is still in `state`, and a rename inside one account
+    // never holds another account's label, but a move can: drop it from the
+    // holders so keeping its own joined name is not a clash
+    if let Some(other) = state
+        .label_holders(to, new)
+        .into_iter()
+        .find(|t| !(t.name == old && t.account_name == from))
+    {
+        bail!("{}", clash_message(to, new, other));
     }
     Ok(())
 }
@@ -439,6 +450,25 @@ mod tests {
             state.add(t).expect("fixture adds");
         }
         state
+    }
+
+    #[test]
+    fn a_move_onto_another_accounts_joined_name_is_refused() {
+        // `api` on prod-eu already holds prod-eu-api
+        let state = state_of(vec![access("api", "prod-eu"), access("x", "dev")]);
+        let err = check_relocate(&state, "dev", "prod", "x", "eu-api").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("tunnel 'api' on account 'prod-eu'"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_move_that_keeps_its_own_joined_name_is_allowed() {
+        // the only holder of prod-eu-api is the tunnel being moved
+        let state = state_of(vec![access("eu-api", "prod")]);
+        assert!(check_relocate(&state, "prod", "prod-eu", "eu-api", "api").is_ok());
     }
 
     #[test]

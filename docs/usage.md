@@ -71,7 +71,7 @@ Specify the release version and substitute your machine's file: `gtunnel-macos-a
 `gtunnel-macos-intel`, `gtunnel-linux-amd64` or `gtunnel-linux-arm64`.
 
 ```
-VERSION="v0.1.50"
+VERSION="v0.1.51"
 F="gtunnel-macos-arm64-${VERSION}.tar.gz"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F.sha256"
@@ -83,7 +83,7 @@ so they run on any glibc.
 
 ```
 $ gtunnel --version
-gtunnel 0.1.50
+gtunnel 0.1.51
 ```
 
 #### Proving where the binary came from
@@ -539,6 +539,7 @@ only one account.
 | Shape | `<platform>`, or `<platform>-<service>` when the platform has more than one |
 | Leave out | the account, environment or project — no `-dev`, `-prod`, `-staging` |
 | Allowed | up to 40 characters of `a-z`, `0-9` and `-`, starting with a letter and ending with a letter or digit |
+| Refused | a name whose `<account>-<name>` another account already holds, e.g. `eu-api` on `prod` when `prod-eu` has `api`; both would write `prod-eu-api.log` |
 
 ```
 gtunnel add k8s   … --account dev     # same name
@@ -683,6 +684,8 @@ Error: Tunnel 'nope' not found for account 'dev'
 wins when both exist. A run launched by an MCP client has a log, `logs/run-<account>-<name>.log`;
 a run started in a terminal prints there instead and has none, so `logs` says so:
 `Run 'name' has no log: it was started from a terminal, which has its output`.
+Each launch starts the log fresh, and the log stays after the run ends, so `logs` reads a finished
+run until its name is launched again.
 
 ```
 $ gtunnel autostart db           # ask
@@ -1148,7 +1151,7 @@ Every other command prints a one-line hint when a cached check found a newer ver
 
 ```
 $ gtunnel list
-gtunnel v9.9.9 is available (current: v0.1.50). Run `gtunnel update`.
+gtunnel v9.9.9 is available (current: v0.1.51). Run `gtunnel update`.
 ```
 
 The check runs at most once a day, in the background, and never blocks a command. A

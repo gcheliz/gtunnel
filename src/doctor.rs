@@ -896,7 +896,7 @@ async fn apply_fix(
             crate::daemon::set_auto_start(&spec).await
         }
         Finding::DeadEphemeral { name } => {
-            let path = crate::ephemeral::run_dir()?.join(format!("{account_name}-{name}.json"));
+            let path = crate::ephemeral::record_path(account_name, name)?;
             if path.exists() {
                 std::fs::remove_file(path)?;
             }

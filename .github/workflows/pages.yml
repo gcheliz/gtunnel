@@ -14,10 +14,7 @@ on:
       - site/**
       - docs/logo.svg
       - docs/demo-tui.gif
-      - docs/demo-access.gif
       - docs/demo-run.gif
-      - docs/demo-mcp.gif
-      - docs/images/architecture/gtunnel-overview.png
       - .github/workflows/pages.yml
   workflow_dispatch:
 
@@ -40,21 +37,8 @@ jobs:
       - name: Assemble the site
         run: |
           set -euo pipefail
-          # The tour's hotspots in site/index.html are percentages measured on
-          # this render, so a regenerated diagram of another size must fail here
-          # rather than ship with every hotspot off its node
-          png=docs/images/architecture/gtunnel-overview.png
-          ihdr=$(od -An -tu1 -j16 -N8 "$png")
-          read -r w1 w2 w3 w4 h1 h2 h3 h4 <<< "$ihdr"
-          width=$(( (w1 << 24) | (w2 << 16) | (w3 << 8) | w4 ))
-          height=$(( (h1 << 24) | (h2 << 16) | (h3 << 8) | h4 ))
-          if [ "$width" -ne 2294 ] || [ "$height" -ne 801 ]; then
-            echo "::error file=$png::$png is ${width}x${height}, expected 2294x801. Re-measure the hotspots in site/index.html, then update this check." >&2
-            exit 1
-          fi
           mkdir _site
-          cp site/index.html docs/logo.svg docs/demo-tui.gif docs/demo-access.gif docs/demo-run.gif docs/demo-mcp.gif _site/
-          cp "$png" _site/architecture.png
+          cp site/index.html docs/logo.svg docs/demo-tui.gif docs/demo-run.gif _site/
           ls -l _site
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
