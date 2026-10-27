@@ -75,8 +75,9 @@ pub async fn cmd_init() -> Result<()> {
         }
         // A failed or empty list never blocks the account: typing still works
         other => {
-            if let Err(e) = other {
-                println!("Could not list projects: {}", short_cause(&e));
+            match other {
+                Err(e) => println!("Could not list projects: {}", short_cause(&e)),
+                Ok(_) => println!("Could not list projects: no project is visible to this account"),
             }
             prompt("Project", chosen.project.as_deref())?
         }
@@ -110,7 +111,8 @@ pub async fn cmd_init() -> Result<()> {
 }
 
 // A number in range picks that row; anything else is the id as typed, so a
-// project the list does not show (or a list that is empty) still works
+// project the list does not show (or a list that is empty) still works. Reading
+// a number as a row is safe because a GCP project id starts with a letter
 fn resolve_project_choice(input: &str, projects: &[Project]) -> String {
     let typed = input.trim();
     typed

@@ -342,8 +342,8 @@ never blocks the account: the prompt falls back to a typed project id.
 
 | Cause | Fix |
 |---|---|
-| `403` and the account lacks `resourcemanager.projects.get` | Ask for a role that carries it (`roles/browser` is the smallest), or type the project id: the list is a convenience, and the project id is all gtunnel stores |
-| `403` naming the Cloud Resource Manager API as disabled | `gcloud services enable cloudresourcemanager.googleapis.com --project <project>`, then run `init` again |
+| The list is empty, or `403`, and the account lacks `resourcemanager.projects.get` | The search returns only projects the caller holds that permission on. Ask for a role that carries it (`roles/browser` does), or type the project id: the list is a convenience, and the project id is all gtunnel stores |
+| `403` naming the Cloud Resource Manager API as disabled | `gcloud services enable cloudresourcemanager.googleapis.com --project <project>`, where `<project>` is the one the error names, then run `init` again |
 | The login expired | `gcloud auth login`, see [above](#gtunnel-needs-a-logged-in-google-account) |
 | No network | The line names the connection error; the typed field still works once the project id is known |
 | The list is empty | The account sees no active project; type the id of one it can use |
