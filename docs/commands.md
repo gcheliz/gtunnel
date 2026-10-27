@@ -745,7 +745,7 @@ person and is not a stable interface: branch on the code.
 | Kind | Exit | Meaning |
 |---|---|---|
 | `internal` | 1 | Anything unclassified: an unreadable config, a failed write, a tunnel that did not come up |
-| `usage` | 2 | A bad argument or setting, such as a target without a port or a bad `GTUNNEL_LOG_LEVEL`. Same code clap uses for a malformed command line |
+| `usage` | 2 | A request gtunnel refuses: a bad argument or setting (a target without a port, a bad `GTUNNEL_LOG_LEVEL`), a name already taken (`add`, `expose`, `rename`, `move`, `account add`), a local port a run holds, a move that cannot happen, or `expose` on an account with no relay. Same code clap uses for a malformed command line |
 | `not_found` | 3 | The tunnel or the account named does not exist |
 | `auth` | 4 | gcloud has no usable credentials for the account |
 | `gcloud` | 5 | A gcloud call ran and failed |

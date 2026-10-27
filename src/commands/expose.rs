@@ -1,3 +1,4 @@
+use crate::error::GtunnelError;
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
@@ -253,11 +254,11 @@ pub async fn expose_tunnel(account: Option<&str>, req: &ExposeRequest<'_>) -> Re
     let name = req.name;
     validate_tunnel_name(name)?;
     let (config, acct) = resolve(account)?;
-    let expose = acct.expose.clone().with_context(|| {
-        format!(
+    let expose = acct.expose.clone().ok_or_else(|| {
+        GtunnelError::usage(format!(
             "No relay for account '{}'. Run `gtunnel relay up`",
             acct.name
-        )
+        ))
     })?;
     let domain = expose.domain(req.domain)?.clone();
 
@@ -265,7 +266,11 @@ pub async fn expose_tunnel(account: Option<&str>, req: &ExposeRequest<'_>) -> Re
     // update below re-checks both the name and the port
     let state = TunnelState::load()?;
     if state.find_for_account(name, &acct.name).is_some() {
-        bail!("Tunnel '{name}' already exists for account '{}'", acct.name);
+        return Err(GtunnelError::usage(format!(
+            "Tunnel '{name}' already exists for account '{}'",
+            acct.name
+        ))
+        .into());
     }
     state.check_label(&acct.name, name)?;
 

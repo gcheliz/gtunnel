@@ -29,10 +29,11 @@ fn check_relocate(state: &TunnelState, from: &str, to: &str, old: &str, new: &st
             // A public tunnel's backend, host rule, named port and DNS record
             // live in the source project; rebuilding them in another needs a
             // relay and a domain that may not be there
-            bail!(
+            return Err(GtunnelError::usage(format!(
                 "'{old}' is an Expose tunnel and cannot move between accounts; \
                  run `gtunnel delete {old}` on '{from}', then `gtunnel expose` on '{to}'"
-            );
+            ))
+            .into());
         }
         if let TunnelSpec::Access {
             target: AccessTarget::DestGroup { group, .. },
@@ -41,10 +42,11 @@ fn check_relocate(state: &TunnelState, from: &str, to: &str, old: &str, new: &st
         {
             // The group is a resource of the source project, so the same
             // argv in the destination would name something that is not there
-            bail!(
+            return Err(GtunnelError::usage(format!(
                 "'{old}' reaches its host through the destination group '{group}' of '{from}'; \
                  create the group in '{to}', then `gtunnel delete {old}` and `gtunnel add` it there"
-            );
+            ))
+            .into());
         }
     }
     if state.find_for_account(new, to).is_some() {
@@ -53,7 +55,10 @@ fn check_relocate(state: &TunnelState, from: &str, to: &str, old: &str, new: &st
         } else {
             ""
         };
-        bail!("Tunnel '{new}' already exists on account '{to}'{hint}");
+        return Err(GtunnelError::usage(format!(
+            "Tunnel '{new}' already exists on account '{to}'{hint}"
+        ))
+        .into());
     }
     // The moving tunnel is still in `state`, and a rename inside one account
     // never holds another account's label, but a move can: drop it from the
@@ -63,7 +68,7 @@ fn check_relocate(state: &TunnelState, from: &str, to: &str, old: &str, new: &st
         .into_iter()
         .find(|t| !(t.name == old && t.account_name == from))
     {
-        bail!("{}", clash_message(to, new, other));
+        return Err(GtunnelError::usage(clash_message(to, new, other)).into());
     }
     Ok(())
 }
@@ -106,9 +111,10 @@ fn account_flag(moving: bool, account: &str) -> String {
 /// A move that stays on its account is a rename, which has its own command.
 fn check_accounts_differ(from: &str, to: &str, name: &str) -> Result<()> {
     if from == to {
-        bail!(
+        return Err(GtunnelError::usage(format!(
             "Tunnel '{name}' is already on account '{to}'; use `gtunnel rename` to change its name"
-        );
+        ))
+        .into());
     }
     Ok(())
 }
@@ -879,6 +885,15 @@ mod tests {
         let err = check_accounts_differ("dev", "dev", "db").unwrap_err();
         assert!(err.to_string().contains("already on"), "{err}");
         assert!(check_accounts_differ("dev", "prod", "db").is_ok());
+    }
+
+    // `move` has no `--json` flag, so the JSON object cannot be pinned through
+    // the binary; this is the same `to_json` the dispatcher and MCP both use
+    #[test]
+    fn a_refused_move_is_kind_usage_in_the_json_error_object() {
+        let err = check_accounts_differ("dev", "dev", "db").unwrap_err();
+        assert_eq!(crate::error::kind_of(&err).exit_code(), 2);
+        assert_eq!(crate::error::to_json(&err)["error"]["kind"], "usage");
     }
 
     #[test]

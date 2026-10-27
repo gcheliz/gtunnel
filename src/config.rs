@@ -139,7 +139,9 @@ impl Config {
     pub fn add_account(&mut self, account: Account) -> Result<()> {
         validate_account_name(&account.name)?;
         if self.accounts.iter().any(|a| a.name == account.name) {
-            bail!("Account '{}' already exists", account.name);
+            return Err(
+                GtunnelError::usage(format!("Account '{}' already exists", account.name)).into(),
+            );
         }
         if self.accounts.is_empty() {
             self.selected_account = account.name.clone();

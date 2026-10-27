@@ -1252,6 +1252,7 @@ fn rename_to_an_existing_name_is_refused_and_changes_nothing() {
         r#"{"name":"db","new_name":"cache"}"#,
     );
     assert_eq!(result["isError"], serde_json::json!(true), "{result}");
+    assert_eq!(kind(&result), "usage", "{result}");
     assert_eq!(tunnels_toml(&h), before);
 }
 
@@ -1346,6 +1347,7 @@ fn expose_without_a_relay_is_refused_and_changes_nothing() {
         result_text(&result).contains("gtunnel relay up"),
         "{result}"
     );
+    assert_eq!(kind(&result), "usage", "{result}");
     assert_eq!(tunnels_toml(&h), before);
 }
 
