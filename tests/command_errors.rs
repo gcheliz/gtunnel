@@ -226,18 +226,24 @@ fn delete_does_not_require_gcp_login() {
     );
 }
 
-// The job is a launchd one, so the test needs a macOS user session
+// The job is a launchd one, so the test needs a macOS user session. The
+// launchd domain is shared by every test in this binary, and the others run
+// `delete db` and `rename db` in parallel, so this one starts a tunnel no
+// other test names
 #[cfg(target_os = "macos")]
 #[test]
 fn start_exits_non_zero_when_the_tunnel_failed_to_start() {
     let h = Harness::failing_gcloud();
-    let out = h.run(&["start", "db"]);
+    let add = h.run(&["add", "failstart", "10.0.0.10:5432", "--via", "bastion"]);
+    assert!(add.status.success(), "stderr: {}", stderr(&add));
+    let out = h.run(&["start", "failstart"]);
     // The job stays loaded in the user's launchd domain after the test
-    h.run(&["stop", "db"]);
+    h.run(&["stop", "failstart"]);
     let (so, se) = (stdout(&out), stderr(&out));
-    assert_eq!(out.status.code(), Some(1), "stdout: {so}\nstderr: {se}");
+    let both = format!("stdout: {so}\nstderr: {se}");
+    assert_eq!(out.status.code(), Some(1), "{both}");
     // The lines a failed start always printed, where scripts already read them
-    assert!(so.contains("✗ db failed to start"), "stdout: {so}");
-    assert!(so.contains("Logs: gtunnel logs db"), "stdout: {so}");
-    assert!(!se.contains("failed to start"), "printed twice: {se}");
+    assert!(so.contains("✗ failstart failed to start"), "{both}");
+    assert!(so.contains("Logs: gtunnel logs failstart"), "{both}");
+    assert!(!se.contains("failed to start"), "printed twice: {both}");
 }
