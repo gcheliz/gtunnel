@@ -8,6 +8,7 @@ use crate::commands::access::{
     add_tunnel, delete_tunnel, health_word, list_rows_json, probe_local, restart_tunnel,
     start_tunnel, stop_by_name, AddRequest, Stopped,
 };
+use crate::commands::relocate::{move_tunnel, rename_tunnel};
 use crate::commands::{find_tunnel, resolve};
 use crate::config::load_config;
 use crate::daemon;
@@ -404,6 +405,60 @@ pub fn all_tools() -> Vec<ToolDefinition> {
             }),
         },
         ToolDefinition {
+            name: "gtunnel_rename_tunnel".to_string(),
+            title: "Rename tunnel".to_string(),
+            annotations: ToolAnnotations::new(false,true,false,true),
+            output_schema: None,
+            description: "Rename a tunnel on its account, moving its service and log with it; a running tunnel is restarted under the new name".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Current tunnel name"
+                    },
+                    "new_name": {
+                        "type": "string",
+                        "description": "New tunnel name"
+                    },
+                    "account": {
+                        "type": "string",
+                        "description": "Optional GCP account name the tunnel is on"
+                    }
+                },
+                "required": ["name", "new_name"]
+            }),
+        },
+        ToolDefinition {
+            name: "gtunnel_move_tunnel".to_string(),
+            title: "Move tunnel to another account".to_string(),
+            annotations: ToolAnnotations::new(false,true,false,true),
+            output_schema: None,
+            description: "Move an Access tunnel to another configured account, checking the target exists there first; `rename` gives it a new name when the destination already uses this one".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Tunnel name to move"
+                    },
+                    "to": {
+                        "type": "string",
+                        "description": "Destination account name"
+                    },
+                    "rename": {
+                        "type": "string",
+                        "description": "Name to give the tunnel on the destination"
+                    },
+                    "account": {
+                        "type": "string",
+                        "description": "Optional source account name"
+                    }
+                },
+                "required": ["name", "to"]
+            }),
+        },
+        ToolDefinition {
             name: "gtunnel_list_accounts".to_string(),
             title: "List accounts".to_string(),
             annotations: ToolAnnotations::new(true,false,true,false),
@@ -731,6 +786,30 @@ pub async fn execute_tool(
                 Ok(()) => ToolCallResult::text(format!("Deleted tunnel '{tunnel_name}'")),
                 Err(e) => ToolCallResult::failure(&e),
             })
+        }
+        "gtunnel_rename_tunnel" => {
+            let tunnel_name = get_str("name")
+                .ok_or_else(|| JsonRpcError::new(INVALID_PARAMS, "Missing 'name'"))?;
+            let new_name = get_str("new_name")
+                .ok_or_else(|| JsonRpcError::new(INVALID_PARAMS, "Missing 'new_name'"))?;
+            Ok(
+                match rename_tunnel(get_str("account"), tunnel_name, new_name).await {
+                    Ok(done) => ToolCallResult::text(done.message()),
+                    Err(e) => ToolCallResult::failure(&e),
+                },
+            )
+        }
+        "gtunnel_move_tunnel" => {
+            let tunnel_name = get_str("name")
+                .ok_or_else(|| JsonRpcError::new(INVALID_PARAMS, "Missing 'name'"))?;
+            let to =
+                get_str("to").ok_or_else(|| JsonRpcError::new(INVALID_PARAMS, "Missing 'to'"))?;
+            Ok(
+                match move_tunnel(tunnel_name, get_str("account"), to, get_str("rename")).await {
+                    Ok(done) => ToolCallResult::text(done.message()),
+                    Err(e) => ToolCallResult::failure(&e),
+                },
+            )
         }
         "gtunnel_list_accounts" => {
             let config =

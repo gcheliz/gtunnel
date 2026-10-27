@@ -24,6 +24,21 @@ echo "ERROR: boom" >&2
 exit 1
 "#;
 
+const TWO_ACCOUNTS: &str = r#"selected_account = "demo"
+
+[[accounts]]
+name = "demo"
+gcloud_configuration = "work"
+project = "example-dev-1a2b"
+default_zone = "europe-west1-b"
+
+[[accounts]]
+name = "other"
+gcloud_configuration = "other"
+project = "example-prod-3c4d"
+default_zone = "europe-west1-b"
+"#;
+
 const CONFIG: &str = r#"selected_account = "demo"
 
 [[accounts]]
@@ -59,7 +74,16 @@ impl Harness {
         Self::with_stub(FAILING_STUB)
     }
 
+    // Two accounts, neither logged in: a move has a destination to be refused by
+    fn logged_out() -> Self {
+        Self::build(LOGGED_OUT_STUB, TWO_ACCOUNTS)
+    }
+
     fn with_stub(stub: &str) -> Self {
+        Self::build(stub, CONFIG)
+    }
+
+    fn build(stub: &str, config: &str) -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
         fs::create_dir_all(root.join("bin")).unwrap();
@@ -73,7 +97,7 @@ impl Harness {
             fs::set_permissions(&gcloud, fs::Permissions::from_mode(0o755)).unwrap();
         }
 
-        fs::write(root.join("config/config.toml"), CONFIG).unwrap();
+        fs::write(root.join("config/config.toml"), config).unwrap();
         fs::write(root.join("config/tunnels.toml"), TUNNELS).unwrap();
         fs::write(
             root.join("config/update-check.json"),
@@ -144,7 +168,7 @@ fn mcp_validate_flag_exits_successfully() {
     let h = Harness::new();
     let (stdout, stderr, success) = h.run(&["mcp", "--validate"]);
     assert!(success, "stderr: {stderr}");
-    assert!(stdout.contains("Validated 11 tools and 2 resources successfully."));
+    assert!(stdout.contains("Validated 13 tools and 2 resources successfully."));
 }
 
 #[test]
@@ -193,7 +217,7 @@ fn initialize_from_a_newer_client_answers_the_latest() {
 }
 
 #[test]
-fn mcp_stdio_tools_list_returns_eleven_tools() {
+fn mcp_stdio_tools_list_returns_thirteen_tools() {
     let h = Harness::new();
     let req = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#;
     let (stdout, stderr, success) = h.run_mcp_pipe(&format!("{req}\n"));
@@ -202,7 +226,7 @@ fn mcp_stdio_tools_list_returns_eleven_tools() {
     let line = stdout.lines().next().expect("response line");
     let resp: serde_json::Value = serde_json::from_str(line).expect("valid json response");
     let tools = resp["result"]["tools"].as_array().expect("tools array");
-    assert_eq!(tools.len(), 11);
+    assert_eq!(tools.len(), 13);
 
     let tool_names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     assert!(tool_names.contains(&"gtunnel_list_tunnels"));
@@ -216,6 +240,8 @@ fn mcp_stdio_tools_list_returns_eleven_tools() {
     assert!(tool_names.contains(&"gtunnel_list_accounts"));
     assert!(tool_names.contains(&"gtunnel_doctor"));
     assert!(tool_names.contains(&"gtunnel_run_tunnel"));
+    assert!(tool_names.contains(&"gtunnel_rename_tunnel"));
+    assert!(tool_names.contains(&"gtunnel_move_tunnel"));
 }
 
 fn listed_tools() -> Vec<serde_json::Value> {
@@ -261,6 +287,8 @@ fn read_only_and_destructive_tools_say_so() {
         "gtunnel_stop_tunnel",
         "gtunnel_restart_tunnel",
         "gtunnel_delete_tunnel",
+        "gtunnel_rename_tunnel",
+        "gtunnel_move_tunnel",
     ];
     for tool in listed_tools() {
         let name = tool["name"].as_str().unwrap();
@@ -441,6 +469,8 @@ fn text_tools_declare_no_output_schema() {
             "gtunnel_get_logs",
             "gtunnel_add_tunnel",
             "gtunnel_delete_tunnel",
+            "gtunnel_rename_tunnel",
+            "gtunnel_move_tunnel",
         ];
         assert_eq!(
             tool.get("outputSchema").is_some(),
@@ -1166,4 +1196,110 @@ fn the_cli_logs_of_a_run_print_its_log_and_a_terminal_run_has_none() {
     reap(term);
     assert!(!ok, "{stdout}");
     assert!(stderr.contains("started from a terminal"), "{stderr}");
+}
+
+// Rename and move share one core with the CLI; these pin the MCP door of it
+
+fn tunnels_toml(h: &Harness) -> String {
+    fs::read_to_string(h.dir.path().join("config/tunnels.toml")).unwrap()
+}
+
+fn result_text(result: &serde_json::Value) -> &str {
+    result["content"][0]["text"].as_str().expect("text")
+}
+
+#[test]
+fn rename_over_mcp_renames_the_record() {
+    let h = Harness::new();
+    let input = concat!(
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"gtunnel_rename_tunnel","arguments":{"name":"db","new_name":"database"}}}"#,
+        "\n",
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"gtunnel_list_tunnels","arguments":{}}}"#,
+        "\n",
+    );
+    let (stdout, stderr, ok) = h.run_mcp_pipe(input);
+    assert!(ok, "stderr: {stderr}");
+    let frames = frames(&stdout);
+    assert_eq!(frames.len(), 2, "{stdout}");
+    let renamed = &frames[0]["result"];
+    assert_ne!(renamed["isError"], serde_json::json!(true), "{renamed}");
+    assert_eq!(result_text(renamed), "Renamed db to database");
+    let list = result_text(&frames[1]["result"]);
+    assert!(list.contains("\"database\""), "{list}");
+    assert!(!list.contains("\"db\""), "{list}");
+}
+
+#[test]
+fn rename_to_an_existing_name_is_refused_and_changes_nothing() {
+    let h = Harness::new();
+    let both = format!(
+        "{}\n{}",
+        TUNNELS,
+        TUNNELS
+            .replace("name = \"db\"", "name = \"cache\"")
+            .replace("15432", "15433")
+    );
+    fs::write(h.dir.path().join("config/tunnels.toml"), &both).unwrap();
+    let before = tunnels_toml(&h);
+    let result = call(
+        &h,
+        "gtunnel_rename_tunnel",
+        r#"{"name":"db","new_name":"cache"}"#,
+    );
+    assert_eq!(result["isError"], serde_json::json!(true), "{result}");
+    assert_eq!(tunnels_toml(&h), before);
+}
+
+#[test]
+fn rename_of_an_unknown_tunnel_is_not_found() {
+    let h = Harness::new();
+    let result = call(
+        &h,
+        "gtunnel_rename_tunnel",
+        r#"{"name":"nope","new_name":"other"}"#,
+    );
+    assert_eq!(result["isError"], serde_json::json!(true), "{result}");
+    assert_eq!(kind(&result), "not_found", "{result}");
+}
+
+#[test]
+fn move_to_an_unknown_account_is_not_found_before_anything_stops() {
+    let h = Harness::new();
+    let before = tunnels_toml(&h);
+    let result = call(&h, "gtunnel_move_tunnel", r#"{"name":"db","to":"nowhere"}"#);
+    assert_eq!(result["isError"], serde_json::json!(true), "{result}");
+    assert_eq!(kind(&result), "not_found", "{result}");
+    assert_eq!(tunnels_toml(&h), before);
+}
+
+#[test]
+fn move_to_the_same_account_points_at_rename() {
+    let h = Harness::new();
+    let result = call(&h, "gtunnel_move_tunnel", r#"{"name":"db","to":"demo"}"#);
+    assert_eq!(result["isError"], serde_json::json!(true), "{result}");
+    assert!(
+        result_text(&result).contains("use `gtunnel rename`"),
+        "{result}"
+    );
+}
+
+#[test]
+fn move_to_a_logged_out_account_fails_with_auth_and_no_prompt() {
+    let h = Harness::logged_out();
+    let req = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"gtunnel_move_tunnel","arguments":{"name":"db","to":"other"}}}"#;
+    let (stdout, stderr, _) = h.run_mcp_pipe(&format!("{req}\n"));
+    let frames = frames(&stdout);
+    assert_eq!(frames.len(), 1, "stdout: {stdout}; stderr: {stderr}");
+    let result = &frames[0]["result"];
+    assert_eq!(result["isError"], serde_json::json!(true), "{result}");
+    assert_eq!(kind(result), "auth", "{result}");
+}
+
+#[test]
+fn rename_with_a_non_string_new_name_is_invalid_params() {
+    let h = Harness::new();
+    let req = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"gtunnel_rename_tunnel","arguments":{"name":"db","new_name":5}}}"#;
+    let (stdout, _, _) = h.run_mcp_pipe(&format!("{req}\n"));
+    let frames = frames(&stdout);
+    assert_eq!(frames[0]["error"]["code"], -32602, "{stdout}");
 }
