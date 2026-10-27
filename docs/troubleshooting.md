@@ -128,11 +128,11 @@ emptied when its tunnel starts, so a line in it was written by the process runni
 
 `gtunnel start`, `restart` and `add -s` wait for the tunnel to come up. An Access tunnel,
 `--via` included, has up to 20 seconds to report it is listening (`GTUNNEL_START_DEADLINE_MS`
-moves the bound); a public tunnel is judged after a fixed 3 seconds.
+moves the bound); an Expose tunnel is judged after a fixed 3 seconds.
 `<name> failed to start` means the service exited with an error or was not listening by then,
 so the command exits 1 and the TUI status line, or an MCP client's `isError` result, says the
 same. The line under it is the hint for the newest log line gtunnel recognises, from the table
-above, or `not listening after 20s`; `gtunnel logs <name>` shows the rest. A public tunnel
+above, or `not listening after 20s`; `gtunnel logs <name>` shows the rest. An Expose tunnel
 still connecting after 3 seconds reads as running, so `gtunnel list` is the check for one that
 fails later.
 
@@ -162,7 +162,7 @@ rather than log records and `--verbosity` does not govern them. What `quiet` rem
 the per-connection line, which is a log record.
 
 Set it with `--log-level`, `GTUNNEL_LOG_LEVEL` or `log_level` in `config.toml`, in that
-order of precedence — see [usage.md](usage.md#the-log-level). A running tunnel keeps the
+order of precedence — see [configuration.md](configuration.md#the-log-level). A running tunnel keeps the
 level it started under until its service is reinstalled, which `start`, `restart`,
 `autostart` and an edit in the TUI all do.
 
@@ -173,7 +173,7 @@ the tunnel runs; a gtunnel command or the TUI adds the few facts only it knows.
 
 | Writer | Lines | When |
 |---|---|---|
-| The service's child | gcloud's own output at the configured `--verbosity`, and, for the kinds that run ssh (`--via` and public), ssh's at the matching `LogLevel` (see the table above) | Always, from start to exit |
+| The service's child | gcloud's own output at the configured `--verbosity`, and, for the kinds that run ssh (`--via` and Expose), ssh's at the matching `LogLevel` (see the table above) | Always, from start to exit |
 | The tunnel's supervisor | `gtunnel: conn ...` lines, prefixed and timestamped | Always, from start to exit |
 | gtunnel | every other `gtunnel: <message>` line, prefixed and timestamped | Only while the TUI or a gtunnel command is running |
 
@@ -183,11 +183,11 @@ The shapes below are what each kind of line looks like, not a captured transcrip
 |---|---|---|
 | Access, listener up | `Listening on port [15432].` | gcloud |
 | Jump (`--via`), forward up | `Local forwarding listening on 127.0.0.1 port 8443.` | ssh |
-| Access or jump, a client connects | `gtunnel: conn iap-4 open` (or `conn ssh-3 open from 127.0.0.1:54321` when the tool names the client at once) | gtunnel, from the tool's own line |
-| Access or jump, a client leaves | `gtunnel: conn iap-4 from 127.0.0.1:54321 closed after 12.4s` | gtunnel, from the tool's own line |
-| Access or jump, a burst | `gtunnel: conn ... 240 more in the last minute` | gtunnel |
-| Public, forward up | `debug1: Remote connections from 0.0.0.0:30001 forwarded to local address 127.0.0.1:3000` | ssh |
-| Public, a visitor arrives | `debug1: client_request_forwarded_tcpip: listen 0.0.0.0 port 30001, originator ...` | ssh |
+| Access, a client connects | `gtunnel: conn iap-4 open` (or `conn ssh-3 open from 127.0.0.1:54321` when the tool names the client at once) | gtunnel, from the tool's own line |
+| Access, a client leaves | `gtunnel: conn iap-4 from 127.0.0.1:54321 closed after 12.4s` | gtunnel, from the tool's own line |
+| Access, a burst | `gtunnel: conn ... 240 more in the last minute` | gtunnel |
+| Expose, forward up | `debug1: Remote connections from 0.0.0.0:30001 forwarded to local address 127.0.0.1:3000` | ssh |
+| Expose, a visitor arrives | `debug1: client_request_forwarded_tcpip: listen 0.0.0.0 port 30001, originator ...` | ssh |
 
 The `conn` lines are written by the tunnel's own supervisor, which reads gcloud's
 `[N] Connecting with URL` and `[N] Client closed connection from [...]` and ssh's
@@ -280,7 +280,7 @@ $ lsof -nP +c 0 -iTCP:8443 -sTCP:ESTABLISHED | awk 'NR>1{print $1, $2}' | sort |
 
 A tunnel in this state is what the watchdog exists for: it restarts one that is running but
 refusing connections, and stops one that will not come back. See `watch` in
-[usage.md](usage.md#watch).
+[commands.md](commands.md#watch).
 
 ## Local port collisions
 
@@ -349,7 +349,7 @@ The relay VM's two rules are created by `relay up` and target the tag `gt-relay`
 | `gt-<acct>-iap-ssh` | `35.235.240.0/20` | 22 |
 | `gt-<acct>-lb-hc` | `130.211.0.0/22`, `35.191.0.0/16` | 30000-30999 |
 
-A public tunnel that returns 502 with no error in the log is usually the second rule: the
+An Expose tunnel that returns 502 with no error in the log is usually the second rule: the
 load balancer's health check cannot reach the relay port, so the backend has no healthy
 instance.
 
@@ -361,7 +361,7 @@ instance.
 | `roles/compute.viewer` | The project | Listing instances and zones |
 | `roles/compute.instanceAdmin.v1` | The project | `relay up` and `relay down` |
 | `roles/compute.networkAdmin` | The project | Load balancer and firewall rules |
-| `roles/dns.admin` | The managed zone | `domains add` and public tunnels |
+| `roles/dns.admin` | The managed zone | `domains add` and Expose tunnels |
 | `roles/certificatemanager.owner` | The project | Managed certificates |
 | `roles/iap.admin` | The project | `expose --private` |
 

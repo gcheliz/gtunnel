@@ -276,7 +276,7 @@ GitHub</a>
 <div class="wrap">
 <div class="n"><span class="big c-cyan">0</span><span class="label">inbound firewall rules</span></div>
 <div class="n"><span class="big c-green">0</span><span class="label">credentials stored by gtunnel</span></div>
-<div class="n"><span class="big c-amber">3</span><span class="label">modes: access, public, on the fly</span></div>
+<div class="n"><span class="big c-amber">2</span><span class="label">modes: access, expose</span></div>
 <div class="n"><span class="big c-blue">11</span><span class="label">MCP tools for your agent</span></div>
 </div>
 </section>
@@ -285,13 +285,13 @@ GitHub</a>
 <div class="col">
 <span class="kicker c-amber">CLI</span>
 <h2 class="h2" id="cli-title">One command per <span class="c-amber">tunnel.</span></h2>
-<p class="body">Declare it, share it, or run it on the fly. Ctrl+C or a TTL closes it.</p>
+<p class="body">Two modes, each persistent or ephemeral. Ctrl+C or a TTL closes an ephemeral one.</p>
 <dl class="modes">
 <div><dt class="c-blue">ACCESS</dt><dd>gtunnel add db my-vm:5432 -s</dd><button type="button" class="copy-sm" data-copy-for="gtunnel add db my-vm:5432 -s">Copy</button></div>
-<div><dt class="c-green">PUBLIC</dt><dd>gtunnel expose web 3000 -s</dd><button type="button" class="copy-sm" data-copy-for="gtunnel expose web 3000 -s">Copy</button></div>
-<div><dt class="c-amber">ON THE FLY</dt><dd>gtunnel run my-vm:5432 --ttl 30m</dd><button type="button" class="copy-sm" data-copy-for="gtunnel run my-vm:5432 --ttl 30m">Copy</button></div>
+<div><dt class="c-green">EXPOSE</dt><dd>gtunnel expose web 3000 -s</dd><button type="button" class="copy-sm" data-copy-for="gtunnel expose web 3000 -s">Copy</button></div>
+<div><dt class="c-amber">EPHEMERAL</dt><dd>gtunnel run my-vm:5432 --ttl 30m</dd><button type="button" class="copy-sm" data-copy-for="gtunnel run my-vm:5432 --ttl 30m">Copy</button></div>
 </dl>
-<p class="body">Public mode needs a relay once per account: <code>gtunnel relay up --managed-zone my-dns-zone</code>.</p>
+<p class="body">Expose mode needs a relay once per account: <code>gtunnel relay up --managed-zone my-dns-zone</code>.</p>
 </div>
 <figure class="frame rec">
 <div class="bar2" aria-hidden="true"><i></i><i></i><i></i><span>gtunnel run my-vm:5432 --ttl 30m</span></div>

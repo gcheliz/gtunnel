@@ -41,7 +41,7 @@ is a resource someone has to remember to delete.
 An Access tunnel is a local process plus an IAP connection. No firewall rule, no public IP,
 no agent on the VM, no resource with a lifetime.
 
-Public mode cannot make the same promise — a URL needs a relay VM, a load balancer and a
+Expose mode cannot make the same promise — a URL needs a relay VM, a load balancer and a
 certificate — so the two modes are documented with their costs side by side, and `relay
 down` removes all of it. The asymmetry is deliberate, not an oversight.
 
@@ -137,7 +137,7 @@ Leaving `30000-30999` open to the internet lets anyone who knows the relay addre
 port reach the forwarded service directly, skipping the load balancer and, with
 `--private`, the IAP sign-in in front of it. The alternative — gtunnel managing firewall
 rules — would mean a tool that silently widens a VPC. Documented in
-[usage.md](usage.md#relay).
+[commands.md](commands.md#relay).
 
 ## 9. Linux releases are static musl binaries
 
