@@ -180,6 +180,8 @@ impl TunnelEntry {
 pub enum Op {
     Start(String),
     Stop(String),
+    // Ends a run, which `stop_tunnel` cannot find: it is not in `tunnels.toml`
+    StopRun(String),
     Restart(String),
     Delete(String),
     ToggleAutoStart(String),
@@ -1429,10 +1431,13 @@ impl App {
                 if let Some(entry) = self.entries.get_mut(self.selected) {
                     entry.health = HealthStatus::Unknown;
                 }
-                return self.op_for("stop", Op::Stop);
+                let is_run = self
+                    .selected_entry()
+                    .is_some_and(|e| e.kind == TunnelKind::Ephemeral);
+                return self.op_for("stop", if is_run { Op::StopRun } else { Op::Stop });
             }
             KeyCode::Char('R') => {
-                if self.refuse_pending() {
+                if self.refuse_pending() || self.refuse_ephemeral("restarting") {
                     return None;
                 }
                 if let Some(entry) = self.entries.get_mut(self.selected) {
