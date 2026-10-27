@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.59](https://github.com/gcheliz/gtunnel/compare/v0.1.58...v0.1.59) - 2026-10-27
+
+### Added
+
+- *(mcp)* negotiate up to 2025-11-25, annotate every tool, structured output ([#151](https://github.com/gcheliz/gtunnel/pull/151))
+
 ## [0.1.58](https://github.com/gcheliz/gtunnel/compare/v0.1.57...v0.1.58) - 2026-10-27
 
 ### Documentation
