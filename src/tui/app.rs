@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::discovery::ExternalTunnel;
-use crate::probe::{HealthStatus, MetricsHistory, TunnelMetrics};
+use crate::probe::{HealthStatus, MetricsHistory, RestartWatch, TunnelMetrics};
 use crate::state::{
     allocate_port, PersistentTunnel, TunnelSpec, TunnelStatus, ACCESS_PORT_BASE, ACCESS_PORT_SPAN,
 };
@@ -92,6 +92,10 @@ pub struct TunnelEntry {
     pub metrics: Option<TunnelMetrics>,
     pub history: MetricsHistory,
     pub health: HealthStatus,
+    // Restart counts across metrics rounds, and what they add up to: a loop
+    // is growth inside a window, which one round's count cannot say
+    pub restart_watch: RestartWatch,
+    pub crash_looping: bool,
     pub external: Option<ExternalTunnel>,
     pub pending: Option<PendingOp>,
     // Set when the op has returned: the first entries round begun after that
@@ -110,6 +114,8 @@ impl TunnelEntry {
             metrics: None,
             history: MetricsHistory::new(SPARKLINE_SAMPLES),
             health: HealthStatus::Unknown,
+            restart_watch: RestartWatch::default(),
+            crash_looping: false,
             external: None,
             pending: None,
             pending_settle: false,
@@ -2234,6 +2240,8 @@ impl App {
                 match carried.iter().find(|o| o.name() == entry.name()) {
                     Some(old) => {
                         entry.history = old.history.clone();
+                        entry.restart_watch = old.restart_watch.clone();
+                        entry.crash_looping = old.crash_looping;
                         // A row that is not running has nothing to be healthy
                         // about: carrying the last run's verdict across a stop
                         // made the next start's first poll read as a recovery

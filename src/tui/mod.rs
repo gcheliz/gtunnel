@@ -455,6 +455,9 @@ fn apply_polled(app: &mut App, timers: &mut Timers, msg: Msg) {
                     if let Some(d) = m.latency {
                         entry.history.record(d.as_micros() as u64);
                     }
+                    entry.crash_looping = entry
+                        .restart_watch
+                        .observe(std::time::SystemTime::now(), m.restarts);
                     entry.metrics = Some(m);
                 }
             }
@@ -467,7 +470,13 @@ fn apply_polled(app: &mut App, timers: &mut Timers, msg: Msg) {
                 let Some(entry) = app.entries.iter_mut().find(|e| e.name() == name) else {
                     continue;
                 };
-                entry.health = health;
+                entry.health = if entry.crash_looping
+                    && matches!(health, HealthStatus::Healthy | HealthStatus::Unhealthy)
+                {
+                    HealthStatus::CrashLooping
+                } else {
+                    health
+                };
             }
             announce_round(app);
         }
@@ -515,10 +524,12 @@ fn observe_lifecycle(obs: &Observer, account: &str, entries: &[TunnelEntry]) {
         }
         let healthy = match entry.health {
             HealthStatus::Healthy => Some(true),
-            HealthStatus::Unhealthy => Some(false),
+            HealthStatus::Unhealthy | HealthStatus::AuthExpired | HealthStatus::CrashLooping => {
+                Some(false)
+            }
             HealthStatus::Unknown | HealthStatus::Checking => None,
         };
-        let failures = u32::from(entry.health == HealthStatus::Unhealthy);
+        let failures = u32::from(entry.health.is_failing());
         let Some(to) = lifecycle::observe(entry.status, healthy, failures, 1) else {
             continue;
         };
@@ -5281,6 +5292,62 @@ mod tests {
             named += 1;
         }
         assert!(named >= 13, "theme.rs exports its colours, found {named}");
+    }
+
+    // The row used to say "unhealthy" for a log that said "gcloud auth login"
+    // and for a service that restarts every few seconds. Both now say so, in
+    // Details, with the one thing to do about it.
+    #[test]
+    fn details_name_expired_credentials_and_the_command_that_fixes_them() {
+        let mut app = app_with_two();
+        app.entries[0].metrics = Some(crate::probe::TunnelMetrics::default());
+        app.entries[0].health = HealthStatus::AuthExpired;
+        let text = text_of(&screen(&app, 160, 40)).join("\n");
+        assert!(text.contains("auth expired"), "{text}");
+        assert!(text.contains("gcloud auth login"), "{text}");
+        assert!(text.contains(HealthStatus::AuthExpired.symbol()), "{text}");
+    }
+
+    #[test]
+    fn a_crash_loop_is_named_even_when_the_probe_just_passed() {
+        let mut app = app_with_two();
+        let mut timers = Timers::due();
+        let metrics = |restarts| {
+            vec![(
+                "db".to_string(),
+                crate::probe::TunnelMetrics {
+                    restarts,
+                    ..Default::default()
+                },
+            )]
+        };
+        for restarts in [0, 1, 3] {
+            let generation = timers.metrics.begin();
+            apply_polled(
+                &mut app,
+                &mut timers,
+                Msg::Metrics(generation, metrics(restarts)),
+            );
+        }
+        let generation = timers.health.begin();
+        let results = vec![("db".to_string(), HealthStatus::Healthy)];
+        apply_polled(&mut app, &mut timers, Msg::Health(generation, results));
+        assert_eq!(app.entries[0].health, HealthStatus::CrashLooping);
+        assert_eq!(app.entries[1].health, HealthStatus::Unknown);
+    }
+
+    #[test]
+    fn expired_credentials_outrank_a_crash_loop_and_both_count_as_failing() {
+        let mut app = app_with_two();
+        let mut timers = Timers::due();
+        app.entries[0].crash_looping = true;
+        let generation = timers.health.begin();
+        let results = vec![("db".to_string(), HealthStatus::AuthExpired)];
+        apply_polled(&mut app, &mut timers, Msg::Health(generation, results));
+        assert_eq!(app.entries[0].health, HealthStatus::AuthExpired);
+        assert!(HealthStatus::AuthExpired.is_failing());
+        assert!(HealthStatus::CrashLooping.is_failing());
+        assert!(!HealthStatus::Checking.is_failing());
     }
 }
 
