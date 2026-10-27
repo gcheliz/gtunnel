@@ -56,6 +56,7 @@ pub async fn cmd_init() -> Result<()> {
         project: String::new(),
         default_zone: String::new(),
         impersonate_service_account: None,
+        credential_file: None,
         expose: None,
     };
     let client = GcpClient::for_account(&account);
@@ -260,6 +261,7 @@ fn account_from_configuration(
         project,
         default_zone: found.zone.clone().unwrap_or_default(),
         impersonate_service_account: None,
+        credential_file: None,
         expose: None,
     })
 }
@@ -313,6 +315,7 @@ mod tests {
             project: "example-dev-1a2b".to_string(),
             default_zone: "europe-west1-b".to_string(),
             impersonate_service_account: None,
+            credential_file: None,
             expose: None,
         }
     }

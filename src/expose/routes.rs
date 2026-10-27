@@ -295,6 +295,7 @@ mod tests {
             project: "p".to_string(),
             default_zone: "europe-west1-b".to_string(),
             impersonate_service_account: None,
+            credential_file: None,
             expose: Some(expose()),
         }
     }

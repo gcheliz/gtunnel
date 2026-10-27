@@ -45,6 +45,11 @@ pub struct Account {
     pub default_zone: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub impersonate_service_account: Option<String>,
+    // A service-account key or a workload identity federation file, passed to
+    // gcloud per call. gtunnel only holds the path: it never reads, copies or
+    // stores the secret, so a key stays where its owner put it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_file: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expose: Option<ExposeConfig>,
 }
@@ -235,7 +240,28 @@ pub fn load_config() -> Result<Config> {
     }
     let text = std::fs::read_to_string(&path)
         .with_context(|| format!("Failed to read {}", path.display()))?;
-    toml::from_str(&text).with_context(|| format!("Failed to parse {}", path.display()))
+    let config: Config =
+        toml::from_str(&text).with_context(|| format!("Failed to parse {}", path.display()))?;
+    for acct in &config.accounts {
+        if let Some(file) = &acct.credential_file {
+            validate_credential_file(file)
+                .with_context(|| format!("In account '{}' of {}", acct.name, path.display()))?;
+        }
+    }
+    Ok(config)
+}
+
+// A service runs with another working directory and no shell, so `~` and a
+// relative path would resolve against nothing. Only an absolute path loads.
+pub fn validate_credential_file(path: &std::path::Path) -> Result<()> {
+    if !path.is_absolute() {
+        return Err(GtunnelError::usage(format!(
+            "credential_file must be an absolute path: {}",
+            path.display()
+        ))
+        .into());
+    }
+    Ok(())
 }
 
 pub fn save_config(config: &Config) -> Result<()> {
@@ -426,6 +452,37 @@ mod tests {
     }
 
     #[test]
+    fn a_relative_credential_file_is_refused() {
+        assert!(validate_credential_file(std::path::Path::new("ci-key.json")).is_err());
+        assert!(validate_credential_file(std::path::Path::new("~/ci-key.json")).is_err());
+        assert!(validate_credential_file(std::path::Path::new("/secrets/ci-key.json")).is_ok());
+    }
+
+    #[test]
+    fn load_config_refuses_a_relative_credential_file() {
+        with_temp_dir(|| {
+            let mut cfg = Config::default();
+            let mut acct = account("ci");
+            acct.credential_file = Some("ci-key.json".into());
+            cfg.accounts.push(acct);
+            save_config(&cfg).expect("save");
+            let err = load_config().expect_err("relative path must not load");
+            assert!(format!("{err:#}").contains("absolute"), "{err:#}");
+        });
+    }
+
+    #[test]
+    fn an_account_without_credential_file_round_trips_unchanged() {
+        let text = "selected_account = \"dev\"\n\n[[accounts]]\nname = \"dev\"\ngcloud_configuration = \"work\"\nproject = \"example-dev-1a2b\"\ndefault_zone = \"europe-west1-b\"\n";
+        let cfg: Config = toml::from_str(text).expect("parse");
+        assert_eq!(cfg.accounts[0].credential_file, None);
+        let again = toml::to_string_pretty(&cfg).expect("serialize");
+        let back: Config = toml::from_str(&again).expect("reparse");
+        assert_eq!(back, cfg);
+        assert!(!again.contains("credential_file"), "{again}");
+    }
+
+    #[test]
     fn default_notifications_are_not_written_back_to_config_toml() {
         let text = toml::to_string_pretty(&Config::default()).expect("serialize");
         assert!(!text.contains("notifications"), "{text}");
@@ -552,6 +609,7 @@ mod tests {
             project: "proj-1".to_string(),
             default_zone: "europe-west1-b".to_string(),
             impersonate_service_account: None,
+            credential_file: None,
             expose: None,
         }
     }

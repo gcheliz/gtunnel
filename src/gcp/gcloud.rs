@@ -249,6 +249,7 @@ mod tests {
             project: "my-project".to_string(),
             default_zone: "europe-west1-b".to_string(),
             impersonate_service_account: impersonate.map(str::to_string),
+            credential_file: None,
             expose: None,
         }
     }

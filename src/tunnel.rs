@@ -23,6 +23,12 @@ pub fn gcloud_common(acct: &Account, level: LogLevel) -> Vec<String> {
     if let Some(sa) = &acct.impersonate_service_account {
         args.push(format!("--impersonate-service-account={sa}"));
     }
+    // A hidden global flag, so one place covers the token probe, the tunnel,
+    // compute ssh (gcloud hands it to ssh's inner ProxyCommand) and the argv
+    // written to a service file. One argv element: the path may hold spaces.
+    if let Some(file) = &acct.credential_file {
+        args.push(format!("--credential-file-override={}", file.display()));
+    }
     args
 }
 
@@ -266,6 +272,7 @@ mod tests {
             project: "proj-1".to_string(),
             default_zone: "europe-west1-b".to_string(),
             impersonate_service_account: None,
+            credential_file: None,
             expose: None,
         }
     }
@@ -554,6 +561,30 @@ mod tests {
                 "--impersonate-service-account=sa@proj-1.iam.gserviceaccount.com",
             ]
         );
+    }
+
+    #[test]
+    fn gcloud_common_carries_the_credential_file_only_when_set() {
+        let mut acct = account();
+        assert!(!gcloud_common(&acct, LogLevel::Quiet)
+            .iter()
+            .any(|a| a.starts_with("--credential-file-override")));
+        acct.credential_file = Some("/secrets/ci key.json".into());
+        let args = gcloud_common(&acct, LogLevel::Quiet);
+        // One argv element, spaces and all: nothing here goes through a shell
+        assert!(args.contains(&"--credential-file-override=/secrets/ci key.json".to_string()));
+    }
+
+    #[test]
+    fn every_tunnel_kind_carries_the_credential_file_when_set() {
+        let mut acct = account();
+        acct.credential_file = Some("/secrets/ci-key.json".into());
+        acct.expose = Some(expose_config());
+        let flag = "--credential-file-override=/secrets/ci-key.json".to_string();
+        for t in [instance_tunnel(), dest_group_tunnel(), jump_tunnel()] {
+            let argv = access_argv(&acct, &t, LogLevel::Info).expect("argv");
+            assert!(argv.contains(&flag), "{}: {argv:?}", t.name);
+        }
     }
 
     // Both tunnel kinds that run `gcloud compute ssh` need it. gcloud's

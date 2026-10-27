@@ -430,6 +430,7 @@ mod tests {
                     project: "proj-1".to_string(),
                     default_zone: "europe-west1-b".to_string(),
                     impersonate_service_account: None,
+                    credential_file: None,
                     expose: None,
                 }],
                 ..Config::default()
@@ -438,6 +439,49 @@ mod tests {
             let want = format!("--verbosity={}", level.gcloud_verbosity());
             assert!(got.args.contains(&want), "{level}: {:?}", got.args);
         }
+    }
+
+    // The service argv is built from the same gcloud argv, so the flag has to
+    // reach the plist or unit without any environment plumbing
+    #[test]
+    fn a_service_spec_carries_the_credential_file_flag() {
+        if crate::gcp::gcloud::require_gcloud().is_err() {
+            eprintln!("no gcloud on this machine; skipping");
+            return;
+        }
+        let tunnel = crate::state::PersistentTunnel {
+            name: "db".to_string(),
+            account_name: "ci".to_string(),
+            auto_start: false,
+            spec: TunnelSpec::Access {
+                target: crate::state::AccessTarget::Instance {
+                    instance: "my-vm".to_string(),
+                    zone: "europe-west1-b".to_string(),
+                },
+                remote_port: 5432,
+                local_port: 15432,
+            },
+        };
+        let cfg = Config {
+            selected_account: "ci".to_string(),
+            accounts: vec![crate::config::Account {
+                name: "ci".to_string(),
+                gcloud_configuration: "ci".to_string(),
+                project: "example-dev-1a2b".to_string(),
+                default_zone: "europe-west1-b".to_string(),
+                impersonate_service_account: None,
+                credential_file: Some("/secrets/ci-key.json".into()),
+                expose: None,
+            }],
+            ..Config::default()
+        };
+        let got = service_spec(&cfg, &tunnel).expect("spec");
+        assert!(
+            got.args
+                .contains(&"--credential-file-override=/secrets/ci-key.json".to_string()),
+            "{:?}",
+            got.args
+        );
     }
 
     // The supervisor decides about connection lines and its ready file from
@@ -470,6 +514,7 @@ mod tests {
                 project: "proj-1".to_string(),
                 default_zone: "europe-west1-b".to_string(),
                 impersonate_service_account: None,
+                credential_file: None,
                 expose: None,
             }],
             ..Config::default()

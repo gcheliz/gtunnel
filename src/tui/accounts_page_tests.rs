@@ -16,6 +16,7 @@ fn account(name: &str, project: &str, zone: &str) -> Account {
         project: project.to_string(),
         default_zone: zone.to_string(),
         impersonate_service_account: None,
+        credential_file: None,
         expose: None,
     }
 }

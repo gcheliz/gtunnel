@@ -773,6 +773,7 @@ fn semicolon_carries_the_relay_with_the_account() {
         project: format!("sample-{name}"),
         default_zone: "europe-west1-b".to_string(),
         impersonate_service_account: None,
+        credential_file: None,
         expose,
     };
     let relay = ExposeConfig {
