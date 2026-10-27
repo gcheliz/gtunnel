@@ -88,6 +88,18 @@ pub fn label_of(account: &str, name: &str) -> String {
     format!("{account}-{name}")
 }
 
+/// The one text of the label clash, so `add`, the early reads and relocate
+/// refuse in the same words.
+pub(crate) fn clash_message(account: &str, name: &str, other: &PersistentTunnel) -> String {
+    format!(
+        "Tunnel '{name}' on account '{account}' would share its log and service with \
+         tunnel '{}' on account '{}' (both are '{}'); choose another name",
+        other.name,
+        other.account_name,
+        other.label()
+    )
+}
+
 impl PersistentTunnel {
     // Account-qualified base name; daemon backends derive their service label from it
     pub fn label(&self) -> String {
@@ -231,15 +243,11 @@ impl TunnelState {
             .collect()
     }
 
+    /// The refusal `add` and the early reads before gcloud share. It names the
+    /// first holder only because one name is enough to act on.
     pub fn check_label(&self, account: &str, name: &str) -> Result<()> {
         if let Some(other) = self.label_holders(account, name).first() {
-            bail!(
-                "Tunnel '{name}' on account '{account}' would share its log and service with \
-                 tunnel '{}' on account '{}' (both are '{}'); choose another name",
-                other.name,
-                other.account_name,
-                other.label()
-            );
+            bail!("{}", clash_message(account, name, other));
         }
         Ok(())
     }
