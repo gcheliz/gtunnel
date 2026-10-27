@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.36](https://github.com/gcheliz/gtunnel/compare/v0.1.35...v0.1.36) - 2026-10-27
+
+### Added
+
+- *(mcp)* open ephemeral tunnels from agents, and compact the landing page ([#90](https://github.com/gcheliz/gtunnel/pull/90))
+
 ## [0.1.35](https://github.com/gcheliz/gtunnel/compare/v0.1.34...v0.1.35) - 2026-10-27
 
 ### Fixed
