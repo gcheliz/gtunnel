@@ -20,7 +20,7 @@ supervised user services, and are watched from a dashboard that shows whether ea
 one is actually carrying traffic.
 
 <p align="center">
-  <img src="docs/demo-tui.gif" alt="The gtunnel TUI: tunnel list, details, logs and metrics" width="720">
+  <img src="docs/demo-tui.gif" alt="The gtunnel TUI: tunnel list, details, logs and metrics, the edit and add choosers, the accounts page and the key map" width="720">
 </p>
 
 | Why | What it means in practice |
