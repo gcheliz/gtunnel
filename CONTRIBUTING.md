@@ -72,7 +72,9 @@ A change that alters behaviour updates the docs in the same pull request.
 
 | Change | Where it is documented |
 |---|---|
-| a command, a flag, or its output | [docs/usage.md](docs/usage.md) |
+| a command, a flag, or its output | [docs/commands.md](docs/commands.md) |
+| a config key, a file gtunnel writes, or an environment variable | [docs/configuration.md](docs/configuration.md) |
+| a mode, a target kind, setup, the TUI or the MCP server | [docs/usage.md](docs/usage.md) |
 | topology, process model, resource names | [docs/architecture.md](docs/architecture.md) |
 | a new error or failure mode | [docs/troubleshooting.md](docs/troubleshooting.md) |
 | how the TUI presents something | [docs/design.md](docs/design.md) |

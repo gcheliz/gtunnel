@@ -57,7 +57,7 @@ there is no local listener inside gcloud, so nothing prints `Listening on port`;
 keepalive options are what notice a dead bastion, since SSH will otherwise hold a forward
 open against a host that is gone.
 
-## Public mode
+## Expose mode
 
 A relay VM holds a reverse SSH tunnel back to your laptop. A global HTTPS load balancer
 terminates TLS and sends each hostname to the relay port that belongs to that tunnel.
@@ -182,6 +182,9 @@ An agent drives gtunnel through the same binary a person uses: `gtunnel mcp` spe
 | Run lookup | `find_live_run`, `live_run_log` | `stop`, `status` and `logs` look for a saved tunnel first and a live run second, in the CLI and in the tools alike |
 
 ## Files
+
+Keys, defaults and the traps of editing `config.toml` and `tunnels.toml` are in
+[configuration.md](configuration.md); this table is the inventory of the directory.
 
 | Path | Contents |
 |---|---|

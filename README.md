@@ -14,12 +14,12 @@
 
 ## What gtunnel is
 
-A TUI-first manager for GCP Identity-Aware Proxy tunnels, in one binary with two modes:
+A TUI-first manager for GCP Identity-Aware Proxy tunnels, in one binary with two modes, each persistent or ephemeral ([Concepts](docs/usage.md#concepts)):
 
 | Mode | You get |
 |---|---|
 | Access | A port on `localhost` that reaches a VM, or a host behind it, inside a VPC |
-| Public | An HTTPS URL in front of a service running on your laptop |
+| Expose | An HTTPS URL in front of a service running on your laptop |
 
 Tunnels are declared once, run as supervised user services, and are watched from a
 dashboard that shows whether each one is carrying traffic.
@@ -42,10 +42,9 @@ dashboard that shows whether each one is carrying traffic.
 
 | Feature | What it does |
 |---|---|
-| Access tunnels | `localhost:15432` reaches a VM port through IAP. Creates nothing in GCP |
-| Jump tunnels | `--via <instance>` reaches a host only that instance can reach, such as a private GKE control plane |
-| Public tunnels | `https://api.example.com` reaches `localhost:3000` through a relay VM and a global HTTPS load balancer |
-| Gated public URLs | `expose --private` turns on IAP for the tunnel's backend, so a visitor signs in with Google first. Listed as `gated` |
+| Access tunnels | `localhost:15432` reaches a VM port through IAP. Creates nothing in GCP. Three target kinds: an instance, a host behind an instance with `--via <instance>` (a jump, such as a private GKE control plane), or an IAP destination group |
+| Expose tunnels | `https://api.example.com` reaches `localhost:3000` through a relay VM and a global HTTPS load balancer |
+| Gated URLs | `expose --private` turns on IAP for the tunnel's backend, so a visitor signs in with Google first. Listed as `gated` |
 | Ephemeral tunnels | `gtunnel run` opens a tunnel in the foreground, optionally with `--ttl`; Ctrl+C closes it and leaves nothing behind |
 | TUI dashboard | Live status, latency, connection counts, load-balancer traffic and per-tunnel logs |
 | Managed services | launchd on macOS, systemd `--user` on Linux. Restart on failure, optional auto-start at login |
@@ -53,7 +52,7 @@ dashboard that shows whether each one is carrying traffic.
 | Multiple accounts | One gcloud configuration, project and zone per account; `;` cycles them in the TUI |
 | MCP server and agent skill | `gtunnel mcp` is a stdio MCP server with 11 tools and 2 resources; `.agents/skills/gtunnel/SKILL.md` guides an agent through the CLI |
 | `--json` output | `list`, `doctor` and `account list` print machine-readable JSON |
-| Shell completions | `gtunnel completions <shell>` for bash, zsh or fish completes commands and tunnel names; install lines in [docs/usage.md](docs/usage.md#shell-completions) |
+| Shell completions | `gtunnel completions <shell>` for bash, zsh or fish completes commands and tunnel names; install lines in [docs/commands.md](docs/commands.md#shell-completions) |
 | Self-update | `gtunnel update` replaces the binary with the latest release; `--check` only reports. A Homebrew install is pointed at `brew upgrade` |
 
 [docs/architecture.md](docs/architecture.md) has the topology for both modes, the jump and
@@ -71,7 +70,7 @@ service-lifecycle diagrams, the account model, and every resource name.
 | Rust 1.89 or newer and a C compiler, for the cargo routes only | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` ([rustup.rs](https://rustup.rs)); the compiler is `xcode-select --install` on macOS, `build-essential` or `gcc` on Linux ([building from source](docs/usage.md#building-from-source)) | `cargo --version`, `cc --version` |
 
 gtunnel mints every token with `gcloud auth print-access-token` for the account's gcloud
-configuration, so the login above is the only credential it uses. Public mode also needs a
+configuration, so the login above is the only credential it uses. Expose mode also needs a
 [Cloud DNS](https://cloud.google.com/dns/docs/zones) managed zone you control and the IAM in
 [docs/troubleshooting.md](docs/troubleshooting.md#iam).
 
@@ -195,7 +194,7 @@ does: [docs/design.md](docs/design.md).
 | `gtunnel completions` | Prints a completion script for bash, zsh or fish |
 
 Every command accepts `--account <name>` and `--log-level <level>`. The full command map,
-with every flag and its output: [docs/usage.md](docs/usage.md#command-map).
+with every flag and its output: [docs/commands.md](docs/commands.md).
 
 ## AI agents and MCP
 
@@ -252,7 +251,9 @@ requirements, service management commands, and cost breakdown.
 
 | Document | Contents |
 |---|---|
-| [docs/usage.md](docs/usage.md) | Every command, with its output |
+| [docs/usage.md](docs/usage.md) | Setup, the two modes and target kinds, the TUI, the MCP server |
+| [docs/commands.md](docs/commands.md) | Every command, with its output |
+| [docs/configuration.md](docs/configuration.md) | `config.toml` and `tunnels.toml` key by key, the pitfalls, environment variables |
 | [docs/architecture.md](docs/architecture.md) | Topology, process model, resource names |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Error table, firewall and IAM, services, cost |
 | [docs/design.md](docs/design.md) | How the TUI displays information: hierarchy, density, colour |
