@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.57](https://github.com/gcheliz/gtunnel/compare/v0.1.56...v0.1.57) - 2026-10-27
+
+### Documentation
+
+- *(site)* restyle the CLI and MCP rows, compact the code blocks, shrink the GitHub button ([#145](https://github.com/gcheliz/gtunnel/pull/145))
+
 ## [0.1.56](https://github.com/gcheliz/gtunnel/compare/v0.1.55...v0.1.56) - 2026-10-27
 
 ### Documentation
