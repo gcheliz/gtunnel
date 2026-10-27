@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.61](https://github.com/gcheliz/gtunnel/compare/v0.1.60...v0.1.61) - 2026-10-27
+
+### Added
+
+- *(mcp)* rename and move tools ([#157](https://github.com/gcheliz/gtunnel/pull/157))
+
 ## [0.1.60](https://github.com/gcheliz/gtunnel/compare/v0.1.59...v0.1.60) - 2026-10-27
 
 ### Documentation
