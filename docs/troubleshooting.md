@@ -477,3 +477,10 @@ gcloud compute forwarding-rules list --filter="name~^gt-"
 gcloud compute backend-services list --filter="name~^gt-"
 gcloud compute instances list --filter="name~^gt-"
 ```
+
+### A row tagged `[not managed by gtunnel]`
+
+| Symptom | Meaning |
+|---|---|
+| The row is listed from the first refresh | It is real: an IAP process forwarding a port no tunnel in `tunnels.toml` and no run record owns. Find it with `lsof -nP -iTCP:<port> -sTCP:LISTEN`, then stop it or take it over with `m` in the TUI |
+| A tunnel you just started is shown as stranger for a moment | Not expected: a process on a port one of your tunnels owns is never listed, whichever account started it. If you see this, report it with the `ps` line |

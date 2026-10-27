@@ -25,6 +25,10 @@ pub const SAMPLE_EVERY: Duration = Duration::from_millis(500);
 pub const HEALTH_EVERY: Duration = Duration::from_secs(5);
 pub const LB_EVERY: Duration = Duration::from_secs(60);
 pub const DISCOVERY_EVERY: Duration = Duration::from_secs(60);
+// A started service reports its pid before its gcloud child is listening, so
+// the refresh a start forces reads a tunnel that is not up yet. One more look
+// this long after lets the status settle without waiting out a whole round.
+pub const START_FOLLOWUP: Duration = Duration::from_secs(3);
 
 /// What the list shows for a tunnel name. The account is already in the header
 /// and in the details pane, so a trailing `-<account>` says it a third time on
@@ -608,6 +612,8 @@ pub struct App {
     pub want_instances: bool,
     // Set by `r`, cleared once the event loop has rescheduled every timer
     pub force_refresh: bool,
+    // When the one extra discovery round owed after a reload falls due
+    pub follow_up_at: Option<std::time::Instant>,
     // An entry arrived with no health to carry, so the next round is owed one
     // whatever the clock says. Startup and `;` both land here: the list is
     // replaced wholesale and nothing in it has been probed.
@@ -679,6 +685,7 @@ impl App {
             has_relay: false,
             want_instances: false,
             force_refresh: false,
+            follow_up_at: None,
             health_stale: false,
             demo: false,
             #[cfg(not(test))]
@@ -2100,6 +2107,18 @@ impl App {
         }
         if result.reload {
             self.force_refresh = true;
+            self.follow_up_at = Some(std::time::Instant::now() + START_FOLLOWUP);
+        }
+    }
+
+    /// True once when the look scheduled by the last reload is due.
+    pub fn take_follow_up(&mut self) -> bool {
+        match self.follow_up_at {
+            Some(at) if std::time::Instant::now() >= at => {
+                self.follow_up_at = None;
+                true
+            }
+            _ => false,
         }
     }
 
@@ -2527,5 +2546,40 @@ mod editor_tests {
         let started = std::time::Instant::now();
         let _guard = gate.pause();
         assert!(started.elapsed() < Duration::from_millis(200));
+    }
+}
+
+#[cfg(test)]
+mod follow_up_tests {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    fn a_reload_op_schedules_one_follow_up_discovery() {
+        let mut app = App::new("dev");
+        app.apply(OpResult {
+            message: "started".to_string(),
+            ok: true,
+            reload: true,
+            from_create: false,
+            from_account: false,
+        });
+        assert!(!app.take_follow_up(), "not before START_FOLLOWUP");
+        app.follow_up_at = Some(Instant::now() - Duration::from_millis(1));
+        assert!(app.take_follow_up());
+        assert!(!app.take_follow_up(), "taken once");
+    }
+
+    #[test]
+    fn an_op_that_changed_nothing_schedules_no_follow_up() {
+        let mut app = App::new("dev");
+        app.apply(OpResult {
+            message: "copied".to_string(),
+            ok: true,
+            reload: false,
+            from_create: false,
+            from_account: false,
+        });
+        assert!(app.follow_up_at.is_none());
     }
 }
