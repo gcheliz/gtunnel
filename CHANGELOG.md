@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.47](https://github.com/gcheliz/gtunnel/compare/v0.1.46...v0.1.47) - 2026-10-27
+
+### Fixed
+
+- *(run)* let stop, get_status and get_logs find a live run, and add gtunnel logs for runs ([#127](https://github.com/gcheliz/gtunnel/pull/127))
+
 ## [0.1.46](https://github.com/gcheliz/gtunnel/compare/v0.1.45...v0.1.46) - 2026-10-27
 
 ### Fixed
