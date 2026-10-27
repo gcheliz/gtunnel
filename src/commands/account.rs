@@ -86,6 +86,10 @@ pub async fn cmd_init() -> Result<()> {
     if project.is_empty() {
         bail!("A project is required");
     }
+    println!(
+        "Every gcloud call of this account acts as this service account; \
+         you need roles/iam.serviceAccountTokenCreator on it. Empty: act as yourself."
+    );
     let impersonate = prompt("Service account to impersonate (optional)", Some(""))?;
     account.project = project;
     account.impersonate_service_account = (!impersonate.is_empty()).then_some(impersonate);
@@ -94,7 +98,23 @@ pub async fn cmd_init() -> Result<()> {
     let zones = compute::list_zones(&client, &account.project)
         .await
         .unwrap_or_default();
-    let zone = prompt("Default zone", chosen.zone.as_deref())?;
+    // Listed as the projects are, so the zone is picked rather than recalled;
+    // an empty list (denied or unreachable) leaves the prompt as it was
+    let zone = if zones.is_empty() {
+        prompt("Default zone", chosen.zone.as_deref())?
+    } else {
+        println!("Zones:");
+        for (index, z) in zones.iter().enumerate() {
+            let default = if chosen.zone.as_deref() == Some(z.as_str()) {
+                " (default)"
+            } else {
+                ""
+            };
+            println!("  {}. {z}{default}", index + 1);
+        }
+        let answer = prompt("Default zone (number or name)", chosen.zone.as_deref())?;
+        resolve_zone_choice(&answer, &zones)
+    };
     if zone.is_empty() {
         bail!("A default zone is required");
     }
@@ -121,6 +141,19 @@ fn resolve_project_choice(input: &str, projects: &[Project]) -> String {
         .ok()
         .filter(|n| *n >= 1 && *n <= projects.len())
         .map(|n| projects[n - 1].project_id.clone())
+        .unwrap_or_else(|| typed.to_string())
+}
+
+// The same rule as a project: a number in range picks that row, anything else
+// is the zone as typed, which the existence check after the prompt then judges.
+// A zone name never parses as a number.
+fn resolve_zone_choice(input: &str, zones: &[String]) -> String {
+    let typed = input.trim();
+    typed
+        .parse::<usize>()
+        .ok()
+        .filter(|n| *n >= 1 && *n <= zones.len())
+        .map(|n| zones[n - 1].clone())
         .unwrap_or_else(|| typed.to_string())
 }
 
@@ -435,6 +468,21 @@ mod tests {
     fn an_empty_list_returns_the_typed_input() {
         assert_eq!(resolve_project_choice("2", &[]), "2");
         assert_eq!(resolve_project_choice(" ", &[]), "");
+    }
+
+    #[test]
+    fn a_zone_number_resolves_to_that_zone_and_a_name_is_kept() {
+        let zones = vec!["europe-west1-b".to_string(), "europe-west1-c".to_string()];
+        assert_eq!(resolve_zone_choice("2", &zones), "europe-west1-c");
+        assert_eq!(
+            resolve_zone_choice("europe-west1-b", &zones),
+            "europe-west1-b"
+        );
+        assert_eq!(resolve_zone_choice("9", &zones), "9");
+        assert_eq!(
+            resolve_zone_choice(" europe-west1-c ", &zones),
+            "europe-west1-c"
+        );
     }
 
     #[test]
