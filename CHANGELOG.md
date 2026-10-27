@@ -3,6 +3,14 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.41](https://github.com/gcheliz/gtunnel/compare/v0.1.40...v0.1.41) - 2026-10-27
+
+### Added
+
+- *(cli)* report json errors with a kind and an exit code ([#111](https://github.com/gcheliz/gtunnel/pull/111))
+- *(cli)* add shell completions with tunnel names ([#110](https://github.com/gcheliz/gtunnel/pull/110))
+- *(tui)* name expired credentials and crash loops in tunnel health ([#109](https://github.com/gcheliz/gtunnel/pull/109))
+
 ## [0.1.40](https://github.com/gcheliz/gtunnel/compare/v0.1.39...v0.1.40) - 2026-10-27
 
 ### Performance
