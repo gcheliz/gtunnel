@@ -1372,6 +1372,24 @@ fn expose_of_an_existing_name_is_refused() {
 }
 
 #[test]
+fn expose_of_a_remote_target_is_refused_and_changes_nothing() {
+    let h = Harness::build(STUB, RELAY_CONFIG);
+    let before = tunnels_toml(&h);
+    let req = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"gtunnel_expose_tunnel","arguments":{"name":"web","target":"169.254.169.254:80"}}}"#;
+    let (stdout, _, _) = h.run_mcp_pipe(&format!("{req}\n"));
+    let frames = frames(&stdout);
+    assert_eq!(frames[0]["error"]["code"], -32602, "{stdout}");
+    assert!(
+        frames[0]["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("only a service on this machine"),
+        "{stdout}"
+    );
+    assert_eq!(tunnels_toml(&h), before);
+}
+
+#[test]
 fn expose_tool_says_public_in_its_description() {
     let tool = listed_tools()
         .into_iter()

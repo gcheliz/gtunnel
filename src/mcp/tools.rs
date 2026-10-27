@@ -480,7 +480,7 @@ pub fn all_tools() -> Vec<ToolDefinition> {
             title: "Expose a local service".to_string(),
             annotations: ToolAnnotations::new(false,true,false,true),
             output_schema: Some(expose_tunnel_schema()),
-            description: "Publish a local service at https://<name>.<domain> through the account's relay. Private by default: visitors must sign in with Google (IAP). public: true makes it reachable by anyone on the internet. Needs a relay (gtunnel relay up, CLI only)".to_string(),
+            description: "Publish a local service at https://<name>.<domain> through the account's relay. Private by default: visitors must sign in with Google (IAP). public: true makes it reachable by anyone on the internet. Publishes only a service on this machine (a port, localhost or a loopback address); other hosts need the CLI. Needs a relay (gtunnel relay up, CLI only)".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -490,7 +490,7 @@ pub fn all_tools() -> Vec<ToolDefinition> {
                     },
                     "target": {
                         "type": "string",
-                        "description": "Local service to publish: a port (3000) or host:port (localhost:3000)"
+                        "description": "Local service to publish: a port (3000) or localhost:PORT; other hosts are refused"
                     },
                     "domain": {
                         "type": "string",
@@ -611,13 +611,47 @@ fn expose_request(
             ))
         }
     };
+    let target =
+        text("target").ok_or_else(|| JsonRpcError::new(INVALID_PARAMS, "Missing 'target'"))?;
+    require_local_target(target)?;
     Ok(ExposeRequest {
         name: text("name").ok_or_else(|| JsonRpcError::new(INVALID_PARAMS, "Missing 'name'"))?,
-        target: text("target")
-            .ok_or_else(|| JsonRpcError::new(INVALID_PARAMS, "Missing 'target'"))?,
+        target,
         domain: text("domain"),
         private: !public,
     })
+}
+
+/// An agent that can publish any host:port can publish a LAN machine or a
+/// cloud metadata endpoint to the internet, so over MCP only this machine is
+/// allowed; the CLI, where a person types the target, keeps any host. The host
+/// is parsed as an address, not prefix-matched, so `127.0.0.1.evil.com` is a
+/// hostname and fails. IPv6 needs brackets, since `::1:3000` has no single reading.
+fn require_local_target(target: &str) -> Result<(), JsonRpcError> {
+    const ONLY_LOCAL: &str = "gtunnel_expose_tunnel publishes only a service on this machine: use a port (3000) or localhost:PORT; other hosts need the CLI";
+    let normalized = crate::tunnel::normalize_local_target(target)
+        .map_err(|e| JsonRpcError::new(INVALID_PARAMS, format!("{e:#}")))?;
+    let host = normalized
+        .rsplit_once(':')
+        .map(|(host, _)| host)
+        .unwrap_or_default();
+    let local = if let Some(inner) = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
+        inner
+            .parse::<std::net::Ipv6Addr>()
+            .is_ok_and(|a| a.is_loopback())
+    } else if host.contains(':') {
+        false
+    } else {
+        host.eq_ignore_ascii_case("localhost")
+            || host
+                .parse::<std::net::Ipv4Addr>()
+                .is_ok_and(|a| a.is_loopback())
+    };
+    if local {
+        Ok(())
+    } else {
+        Err(JsonRpcError::new(INVALID_PARAMS, ONLY_LOCAL))
+    }
 }
 
 /// The route and record exist by the time a start is tried, so a failed start
@@ -1155,6 +1189,44 @@ mod expose_tests {
             let req = expose_request(&map).unwrap();
             assert_eq!(req.private, private, "{given}");
         }
+    }
+
+    #[test]
+    fn expose_accepts_only_a_service_on_this_machine() {
+        for target in [
+            "3000",
+            "localhost:3000",
+            "127.0.0.1:3000",
+            "127.9.9.9:3000",
+            "[::1]:3000",
+            "http://localhost:3000/app",
+        ] {
+            let map = args(json!({"target": target}));
+            assert!(expose_request(&map).is_ok(), "{target} should be accepted");
+        }
+        for target in [
+            "10.0.0.10:80",
+            "169.254.169.254:80",
+            "127.0.0.1.evil.com:80",
+            "db.internal:5432",
+            "::1:3000",
+            "user@127.0.0.1:80",
+            "http://10.0.0.10:80/x",
+        ] {
+            let map = args(json!({"target": target}));
+            let err = expose_request(&map)
+                .err()
+                .unwrap_or_else(|| panic!("{target} should be rejected"));
+            assert_eq!(err.code, INVALID_PARAMS, "{target}");
+        }
+        let map = args(json!({"target": "10.0.0.10:80"}));
+        let err = expose_request(&map).err().unwrap();
+        assert!(
+            err.message
+                .contains("publishes only a service on this machine"),
+            "{}",
+            err.message
+        );
     }
 
     #[test]
