@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.29](https://github.com/gcheliz/gtunnel/compare/v0.1.28...v0.1.29) - 2026-10-27
+
+### Documentation
+
+- refresh the architecture diagrams and README features ([#78](https://github.com/gcheliz/gtunnel/pull/78))
+
 ## [0.1.28](https://github.com/gcheliz/gtunnel/compare/v0.1.27...v0.1.28) - 2026-10-27
 
 ### Fixed
