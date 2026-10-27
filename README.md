@@ -43,6 +43,19 @@ Linux. They outlive the terminal, restart on failure and can start at login.
 | The dashboard tells the truth | Live latency, active connections, load-balancer request counts and the tunnel's own log, not merely a running process |
 | Agents can drive it | `gtunnel mcp` is a stdio MCP server with 14 tools and 2 resources, and an agent skill ships in the repo |
 
+## Architecture
+
+gtunnel is a **single Rust binary** that **orchestrates gcloud** instead of reimplementing
+Google's protocols. It opens every connection with **your own Google identity** and keeps
+**no credential** of its own.
+
+| Layer | How it works |
+|---|---|
+| **Access mode** | `gcloud compute start-iap-tunnel` binds a `localhost` port to a VM port through **Identity-Aware Proxy**. A **jump tunnel** reaches a host behind that VM. Nothing is created in GCP |
+| **Expose mode** | A **relay VM** with no public IP holds a **reverse SSH** tunnel to your laptop, opened through IAP. A **global HTTPS load balancer** with a **managed certificate** and a **Cloud DNS** record routes each hostname to its relay port; a gated tunnel adds **IAP sign-in** in front |
+| **Supervision** | Each tunnel is a **user service** (launchd on macOS, systemd `--user` on Linux) running one **supervisor** around one gcloud child, with **one log per tunnel**. A **machine watchdog** checks every tunnel every 30s and restarts one that is up but refusing connections |
+| **Control surfaces** | The **TUI**, the **CLI** and the **MCP server** share the same per-**account** tunnel list and the same **health probe**: a tunnel is healthy when it **answers**, not when its process exists |
+
 ![gtunnel topology: a private port inward through IAP, a public URL outward through a relay VM with optional IAP sign-in, and the TUI or an MCP client driving gtunnel](docs/images/architecture/gtunnel-overview.png)
 
 ## Install
