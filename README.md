@@ -181,17 +181,18 @@ does: [docs/design.md](docs/design.md).
 | `gtunnel start`, `stop`, `restart` | Controls a tunnel's service |
 | `gtunnel autostart` | Shows or sets whether a tunnel starts at login |
 | `gtunnel list` | Lists every tunnel |
-| `gtunnel logs` | Shows a tunnel's log; `-f` follows it |
+| `gtunnel logs` | Shows the log of a tunnel or a live run; `-f` follows it |
 | `gtunnel delete`, `rename`, `move` | Removes, renames, or moves a tunnel to another account, with its service and log |
 | `gtunnel zones`, `domains` | Compute zones and Expose domains for the account |
 | `gtunnel relay` | The account's shared relay (`up`, `down`, `status`) |
-| `gtunnel account` | Accounts (`list`, `select`, `add`, `edit`, `remove`) |
+| `gtunnel account` | Accounts (`list`, `select` or its alias `default`, `add`, `edit`, `remove`) |
 | `gtunnel watch` | Restarts tunnels that are running but refusing connections; `install` makes it a background agent |
 | `gtunnel doctor` | Reports leftovers and misconfiguration; `--fix` removes what is gtunnel's |
 | `gtunnel reset` | Removes all local configuration, never anything in GCP |
 | `gtunnel update` | Checks for and installs updates |
 | `gtunnel demo` | Opens the TUI with synthetic data |
 | `gtunnel mcp` | Runs the MCP stdio server |
+| `gtunnel completions` | Prints a completion script for bash, zsh or fish |
 
 Every command accepts `--account <name>` and `--log-level <level>`. The full command map,
 with every flag and its output: [docs/usage.md](docs/usage.md#command-map).

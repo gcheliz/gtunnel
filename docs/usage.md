@@ -206,14 +206,14 @@ Publishing a local service needs a Cloud DNS managed zone and a one-off relay pe
 | `run` | Ephemeral tunnel in the foreground, gone on Ctrl+C | read, or write with `--public` |
 | `start` / `stop` / `restart` | Service control | write, for a public tunnel only |
 | `autostart` | Turn start-at-login on or off for a tunnel | no |
-| `logs` | Read a tunnel's log | no |
+| `logs` | Read a tunnel's log, or a live run's | no |
 | `list` | Every tunnel, managed or not | no |
 | `delete` | Remove a tunnel and its route | write for public tunnels |
 | `rename` | Rename a tunnel, its service and its log | no |
 | `move` | Hand an Access tunnel to another account | read, to verify the destination |
 | `zones` / `domains` | Defaults for new tunnels | read |
 | `relay up` / `down` / `status` | The shared relay for an account | write |
-| `account` | Accounts: `list`, `select`, `add`, `edit`, `remove` | read, for `add` |
+| `account` | Accounts: `list`, `select` (alias `default`), `add`, `edit`, `remove` | read, for `add` |
 | `watch` | Restart tunnels that are running but refusing connections, and announce state changes | no |
 | `doctor` | Report, and optionally remove, leftovers | read, write with `--fix` |
 | `reset` | Remove all local configuration | no |
@@ -678,6 +678,11 @@ run started with `--ttl`. `gtunnel_list_tunnels` returns the same two fields.
 $ gtunnel logs nope
 Error: Tunnel 'nope' not found for account 'dev'
 ```
+
+`logs` and `stop` take the name of a live run when no saved tunnel has it, and a saved tunnel
+wins when both exist. A run launched by an MCP client has a log, `logs/run-<account>-<name>.log`;
+a run started in a terminal prints there instead and has none, so `logs` says so:
+`Run 'name' has no log: it was started from a terminal, which has its output`.
 
 ```
 $ gtunnel autostart db           # ask
@@ -1230,16 +1235,16 @@ and 2 live resources without requiring an external runtime.
 
 | Tool | Parameters | What it does |
 |---|---|---|
-| `gtunnel_list_tunnels` | `account?` | Lists configured tunnels and their daemon statuses |
+| `gtunnel_list_tunnels` | `account?` | Lists configured tunnels and their daemon statuses, and the account's live runs (`"run": true`) |
 | `gtunnel_start_tunnel` | `name`, `account?` | Starts a stopped tunnel daemon |
 | `gtunnel_stop_tunnel` | `name`, `account?` | Stops a running tunnel daemon; with no persistent tunnel of that name, stops the live `gtunnel_run_tunnel` run of that name |
 | `gtunnel_restart_tunnel` | `name`, `account?` | Reinstalls service spec and restarts daemon |
-| `gtunnel_get_status` | `name`, `account?` | Returns PID, restarts, and active TCP probe round-trip latency; for a live run, its pid, local port and `expires_at` (`"run": true`) |
-| `gtunnel_get_logs` | `name`, `lines?`, `account?` | Tails daemon log with automatic error diagnosis; for a run launched by `gtunnel_run_tunnel`, tails `logs/run-<account>-<name>.log` (a run started in a terminal has none) |
+| `gtunnel_get_status` | `name`, `account?` | Returns `status`, `health`, PID, restarts and the TCP probe's round-trip latency; for a live run, its pid, `local_port` and `expires_at` instead of restarts (`"run": true`) |
+| `gtunnel_get_logs` | `name`, `lines?`, `account?` | The last `lines` lines (default 50) of the tunnel's log, as written and without interpretation: the agent reads the error code itself. For a run launched by `gtunnel_run_tunnel`, the last lines of `logs/run-<account>-<name>.log` (a run started in a terminal has none) |
 | `gtunnel_add_tunnel` | `name`, `target`, `via?`, `zone?`, `local_port?`, `dest_group?`, `region?`, `network?`, `start?`, `account?` | Adds an Access tunnel |
 | `gtunnel_run_tunnel` | `target`, `ttl_minutes`, `name?`, `zone?`, `local_port?`, `account?` | Opens a short-lived Access tunnel that closes by itself after `ttl_minutes` |
 | `gtunnel_delete_tunnel` | `name`, `account?` | Deletes a persistent tunnel and removes its service |
-| `gtunnel_list_accounts` | none | Lists accounts and shows active selection |
+| `gtunnel_list_accounts` | none | `selected_account` and every account, each with a `selected` flag |
 | `gtunnel_doctor` | `account?`, `all?` | Runs diagnostic checks on GCP resources and local config |
 
 `gtunnel_run_tunnel` is the agent's way to ask for temporary access. It starts
@@ -1266,16 +1271,50 @@ something the user keeps.
 A tool that fails returns a normal result with `isError: true` and the whole cause as its
 text, such as `db failed to start` and the hint under it. A start that fails is such a failure:
 `gtunnel_add_tunnel` with `start: true` reports it and the tunnel stays in `tunnels.toml`, as
-`gtunnel add -s` leaves it. Only a call with missing or mistyped parameters is a JSON-RPC
-error, and so is an instance, zone or host that gcloud would read as an option. Nothing but
-JSON-RPC frames is ever written to stdout.
+`gtunnel add -s` leaves it. An account or tunnel that does not exist is such a failure too:
+`isError: true` and a `structuredContent.error.kind` of `not_found`, the same kind strings the
+CLI's `--json` errors carry. Only a call the server cannot act on is a JSON-RPC error:
+
+| Input | Reply |
+|---|---|
+| A missing or mistyped parameter, a `local_port` outside 1 to 65535, an instance, zone or host that gcloud would read as an option | `error.code` -32602 |
+| A tool name the server does not have | `error.code` -32601 |
+| A line that is not JSON | `error.code` -32700 |
+| A notification (`notifications/...`) | No reply at all, as JSON-RPC requires |
+
+```
+{"jsonrpc":"2.0","id":1,"result":{"content":[{"text":"Account 'nope' not found","type":"text"}],"isError":true,"structuredContent":{"error":{"kind":"not_found","message":"Account 'nope' not found"}}}}
+{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"'local_port' must be between 1 and 65535"}}
+```
+
+Nothing but JSON-RPC frames is ever written to stdout.
 
 #### Live Resources
 
 | URI | What it returns |
 |---|---|
 | `gtunnel://tunnels` | JSON array of all persistent tunnels |
-| `gtunnel://accounts` | JSON snapshot of configured accounts and active selection |
+| `gtunnel://accounts` | The `gtunnel_list_accounts` object: `selected_account` and `accounts`, plus `impersonate_service_account` and `expose` on an account that sets them |
+
+`resources/read` of `gtunnel://accounts` returns this in `contents[0].text`, the object
+`gtunnel_list_accounts` returns as its content. The resource used to be the bare array of
+accounts, without the selection; a client that cached that shape reads `accounts` from the
+object instead:
+
+```json
+{
+  "accounts": [
+    {
+      "default_zone": "europe-west1-b",
+      "gcloud_configuration": "default",
+      "name": "scratch119",
+      "project": "example-dev-1a2b",
+      "selected": true
+    }
+  ],
+  "selected_account": "scratch119"
+}
+```
 
 ### Tool Validation and Testing
 
