@@ -188,7 +188,20 @@ pub fn validate_account_name(name: &str) -> Result<()> {
              dashes, starting with a letter"
         );
     }
+    if is_reserved_account_name(name) {
+        bail!(
+            "Account name '{name}' is reserved: run logs are written as run-<account>-<name>.log, \
+             so an account named run or run-\u{2026} would share their file names"
+        );
+    }
     Ok(())
+}
+
+/// `run` and `run-*` are the only names under which a declared tunnel's log
+/// (`<account>-<name>.log`) can collide with a run's (`run-<account>-<name>.log`).
+/// Split out so `doctor` can ask the same question of accounts that predate it.
+pub fn is_reserved_account_name(name: &str) -> bool {
+    name == "run" || name.starts_with("run-")
 }
 
 pub fn config_dir() -> Result<PathBuf> {
@@ -494,6 +507,31 @@ mod tests {
         assert!(validate_account_name("").is_err());
         assert!(validate_account_name("abcdefghijklmnopq").is_err());
         assert!(validate_account_name("abcdefghijklmnop").is_ok());
+    }
+
+    #[test]
+    fn the_run_prefix_is_reserved_for_run_logs() {
+        for name in ["run", "run-eu", "run-"] {
+            let err = validate_account_name(name).expect_err(name);
+            assert!(err.to_string().contains("is reserved"), "got: {err}");
+            assert!(err.to_string().contains(name), "got: {err}");
+        }
+        assert!(validate_account_name("runner").is_ok());
+        assert!(validate_account_name("rundeck").is_ok());
+        assert!(validate_account_name("prod-run").is_ok());
+        let mut cfg = Config::default();
+        assert!(cfg.add_account(account("run-eu")).is_err());
+    }
+
+    // Validation guards what is added, not what is already on disk: refusing
+    // to load would lock the person out of the very `doctor` that names it.
+    #[test]
+    fn an_existing_account_named_run_still_loads() {
+        let text = "selected_account = \"run\"\n\n[[accounts]]\nname = \"run\"\n\
+                    gcloud_configuration = \"default\"\nproject = \"proj-1\"\n\
+                    default_zone = \"europe-west1-b\"\n";
+        let config: Config = toml::from_str(text).expect("parse");
+        assert_eq!(config.get_account(None).expect("account").name, "run");
     }
 
     // The whole precedence, through the two functions `main` actually calls.
