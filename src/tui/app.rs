@@ -2172,19 +2172,18 @@ impl App {
 // replaces them with refusals, so they go unused there by design.
 #[cfg_attr(test, allow(dead_code))]
 fn run_piped(program: &str, args: &[&str], input: &str) -> std::io::Result<bool> {
-    use std::io::Write;
-    use std::process::{Command, Stdio};
-
-    let mut child = Command::new(program)
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
-    if let Some(stdin) = child.stdin.as_mut() {
-        stdin.write_all(input.as_bytes())?;
-    }
-    Ok(child.wait()?.success())
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(args);
+    // Called from the key handler, so a clipboard tool that never exits is a
+    // frozen screen; past the bound it counts as a tool that failed
+    crate::proc::output_within_blocking_with_input(
+        cmd,
+        Some(input.as_bytes()),
+        crate::proc::LOCAL_TOOL_BOUND,
+        program,
+    )
+    .map(|out| out.status.success())
+    .map_err(std::io::Error::other)
 }
 
 #[cfg(test)]
@@ -2261,11 +2260,18 @@ pub fn open_url(url: &str) -> anyhow::Result<()> {
     } else {
         "xdg-open"
     };
-    std::process::Command::new(program)
+    // Not waited on: xdg-open can stay alive as long as the browser it
+    // launched, so a bound would turn a working open into an error. The
+    // thread only reaps the child so it leaves no zombie.
+    let mut child = std::process::Command::new(program)
         .arg(url)
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
     Ok(())
 }
 
