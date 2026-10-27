@@ -14,15 +14,21 @@
 
 ## What gtunnel is
 
-A TUI-first manager for GCP Identity-Aware Proxy tunnels, in one binary with two modes, each persistent or ephemeral ([Concepts](docs/usage.md#concepts)):
+gtunnel gives you private access to what runs inside a GCP VPC, and an HTTPS address for what
+runs on your laptop. It needs no inbound firewall rule, no public IP on the target and no stored
+credential. One binary, two modes, each persistent or ephemeral ([Concepts](docs/usage.md#concepts)):
+**Access** puts a VM, or a host behind it, on a port of `localhost` through Identity-Aware Proxy.
+**Expose** publishes a local service at an HTTPS URL through a relay in your own project.
 
-| Mode | You get |
-|---|---|
-| Access | A port on `localhost` that reaches a VM, or a host behind it, inside a VPC |
-| Expose | An HTTPS URL in front of a service running on your laptop |
+You drive it three ways, all over the same tunnels. The **TUI** is the daily surface: every
+tunnel with its live latency, connections and log, showing whether a tunnel carries traffic and
+not merely whether a process is up. The **CLI** covers the same ground for scripts, from
+`gtunnel add` to `gtunnel doctor --fix`, with `--json` where a script needs it. The **MCP
+server** (`gtunnel mcp`, 14 tools) lets an AI agent list, start, expose and diagnose tunnels; an
+expose stays private unless the agent asks for a public one.
 
-Tunnels are declared once, run as supervised user services, and are watched from a
-dashboard that shows whether each one is carrying traffic.
+Tunnels are declared once and run as supervised user services, launchd on macOS and systemd on
+Linux. They outlive the terminal, restart on failure and can start at login.
 
 <p align="center">
   <img src="docs/demo-tui.gif" alt="The gtunnel TUI: tunnel list, details, logs and metrics, the edit and add choosers, the accounts page and the key map" width="720">
