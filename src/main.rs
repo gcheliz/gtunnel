@@ -31,6 +31,9 @@ use cli::{
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // First, so a completion request is answered before anything can write
+    // to stdout or load a config
+    commands::completions::answer_if_asked();
     let args = Cli::parse();
 
     // Before anything builds an argv or calls gcloud, and before the config
@@ -52,7 +55,10 @@ async fn main() -> Result<()> {
 
     let account = args.account.as_deref();
     // The hint reads a cache file; `update` does the real check itself
-    let quiet = matches!(args.command, None | Some(Commands::Update { .. }));
+    let quiet = matches!(
+        args.command,
+        None | Some(Commands::Update { .. } | Commands::Completions { .. })
+    );
 
     // Before the TUI takes the screen or any command touches GCP, so a login
     // prints to a normal terminal and a missing one ends the process here
@@ -226,6 +232,7 @@ async fn main() -> Result<()> {
                 mcp::server::run().await
             }
         }
+        Some(Commands::Completions { shell }) => commands::completions::cmd_completions(shell),
         Some(Commands::Supervise {
             port,
             ready_file,
