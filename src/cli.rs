@@ -577,6 +577,25 @@ pub enum AccountCommands {
         // gcloud configuration to take project and zone from
         #[arg(long, help = "gcloud configuration to take project and zone from")]
         configuration: String,
+
+        // Skip the configuration lookup: needs no existing gcloud configuration
+        #[arg(
+            long,
+            help = "Project to use; the account is then built from flags, with no gcloud configuration needed"
+        )]
+        project: Option<String>,
+
+        // Default zone
+        #[arg(long, help = "Default zone")]
+        zone: Option<String>,
+
+        // Service-account key or workload identity federation file
+        #[arg(
+            long,
+            value_name = "PATH",
+            help = "Absolute path of a service-account key or workload identity federation file gcloud reads per call"
+        )]
+        credential_file: Option<std::path::PathBuf>,
     },
 
     // Change an account's project or default zone
@@ -593,6 +612,14 @@ pub enum AccountCommands {
         // New default zone
         #[arg(long, help = "New default zone")]
         zone: Option<String>,
+
+        // Credential file; an empty value clears it
+        #[arg(
+            long,
+            value_name = "PATH",
+            help = "Absolute path of a credential file; an empty value clears it"
+        )]
+        credential_file: Option<String>,
     },
 
     // Remove an account

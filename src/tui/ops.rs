@@ -381,12 +381,22 @@ async fn move_tunnel(moving: &MoveTunnel) -> Result<String> {
 // account may go at all are answered in one place, and the page is a second
 // way to ask rather than a second set of rules.
 async fn add_account(new: &NewAccount) -> Result<String> {
-    account::cmd_account_add(&new.configuration, &new.name).await?;
+    account::cmd_account_add(
+        &new.configuration,
+        &new.name,
+        account::AddOptions::default(),
+    )
+    .await?;
     Ok(format!("added account {}", new.name))
 }
 
 fn edit_account(edit: &AccountEdit) -> Result<String> {
-    account::cmd_account_edit(&edit.name, edit.project.as_deref(), edit.zone.as_deref())?;
+    account::cmd_account_edit(
+        &edit.name,
+        edit.project.as_deref(),
+        edit.zone.as_deref(),
+        None,
+    )?;
     Ok(format!("{} updated", edit.name))
 }
 
