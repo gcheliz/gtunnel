@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.44](https://github.com/gcheliz/gtunnel/compare/v0.1.43...v0.1.44) - 2026-10-27
+
+### Fixed
+
+- *(mcp)* answer no notification, refuse bad ports, give every tool error a kind, and let list run logged out ([#121](https://github.com/gcheliz/gtunnel/pull/121))
+
 ## [0.1.43](https://github.com/gcheliz/gtunnel/compare/v0.1.42...v0.1.43) - 2026-10-27
 
 ### Added
