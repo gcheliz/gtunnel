@@ -1,5 +1,5 @@
 ---
-title: "Public mode"
+title: "Expose mode"
 subtitle: "A global HTTPS load balancer in front of a relay VM"
 date: "2026-10-27"
 team: "gtunnel"
@@ -8,9 +8,9 @@ classification: "Public"
 tags: [architecture, gcp]
 ---
 
-## Public mode
+## Expose mode
 
-:::diagram-architecture "Public mode"
+:::diagram-architecture "Expose mode"
 nodes:
 - id: net, label: "Internet", style: external, type: container
 - id: visitor, label: "Visitors", subtitle: "web.example.com", icon: users, parent: net

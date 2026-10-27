@@ -62,7 +62,7 @@ open against a host that is gone.
 A relay VM holds a reverse SSH tunnel back to your laptop. A global HTTPS load balancer
 terminates TLS and sends each hostname to the relay port that belongs to that tunnel.
 
-![Public mode: a visitor reaching a global HTTPS load balancer, which forwards to a relay VM holding a reverse SSH tunnel back to the laptop, with IAP sign-in in front for a gated tunnel](images/architecture/gtunnel-public-mode.png)
+![Expose mode: a visitor reaching a global HTTPS load balancer, which forwards to a relay VM holding a reverse SSH tunnel back to the laptop, with IAP sign-in in front for a gated tunnel](images/architecture/gtunnel-expose-mode.png)
 
 The load balancer is drawn as one card. Behind it a request crosses five resources, which
 [What belongs to whom](#what-belongs-to-whom) below lists in full: the forwarding rule
