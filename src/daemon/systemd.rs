@@ -198,10 +198,10 @@ pub fn parse_systemctl_show(text: &str) -> (TunnelStatus, RuntimeInfo) {
 async fn systemctl(args: &[&str]) -> Result<std::process::Output> {
     let mut full = vec!["--user"];
     full.extend_from_slice(args);
-    Command::new("systemctl")
-        .args(&full)
-        .stdin(Stdio::null())
-        .output()
+    let mut cmd = Command::new("systemctl");
+    cmd.args(&full).stdin(Stdio::null());
+    let what = format!("systemctl {}", args.first().unwrap_or(&""));
+    crate::proc::output_within(cmd, crate::proc::service_bound(), &what)
         .await
         .context("Failed to run systemctl")
 }

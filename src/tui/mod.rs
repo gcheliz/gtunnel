@@ -25,13 +25,15 @@ enum Msg {
     Instances(Vec<app::InstanceChoice>),
     InstancesFailed(String),
     Tick,
-    Entries(Vec<TunnelEntry>, HashSet<u16>),
-    EntriesFailed(String),
-    Metrics(Vec<(String, crate::probe::TunnelMetrics)>),
+    // The leading number is the generation the round was begun under; a result
+    // whose generation is no longer the poller's current one is dropped
+    Entries(u64, Vec<TunnelEntry>, HashSet<u16>),
+    EntriesFailed(u64, String),
+    Metrics(u64, Vec<(String, crate::probe::TunnelMetrics)>),
     // One reading of every local port's established connections, far more
     // often than a metrics round, so a request shorter than a round is seen
     Samples(std::collections::HashMap<u16, u64>),
-    Health(Vec<(String, HealthStatus)>),
+    Health(u64, Vec<(String, HealthStatus)>),
     Logs(String, Vec<String>),
     OpDone(OpResult),
 }
@@ -154,6 +156,9 @@ fn spawn_input(tx: mpsc::UnboundedSender<Msg>, gate: std::sync::Arc<app::InputGa
 fn spawn_ticker(tx: mpsc::UnboundedSender<Msg>) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(TICK);
+        // After a suspend or a stalled loop, the default replays every missed
+        // tick back to back: a burst of schedule passes that did no new work
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
             if tx.send(Msg::Tick).is_err() {
@@ -163,11 +168,68 @@ fn spawn_ticker(tx: mpsc::UnboundedSender<Msg>) {
     });
 }
 
+/// One slow poll: at most one round in flight, and a result is applied only
+/// if it belongs to the round the poller last began.
+///
+/// Without the flight guard a round that takes longer than its period (a
+/// `gcloud` call waiting on a login, a wedged `launchctl`) is started again on
+/// every tick, and the subprocesses pile up. Without the generation, a round
+/// begun for the previous account lands in the new account's list.
+struct Poller {
+    last: Instant,
+    in_flight: bool,
+    generation: u64,
+}
+
+impl Poller {
+    // Due at once, so the first frame is not empty
+    fn due_now() -> Self {
+        Self {
+            last: Instant::now() - Duration::from_secs(3600),
+            in_flight: false,
+            generation: 0,
+        }
+    }
+
+    fn due(&self, every: Duration) -> bool {
+        !self.in_flight && self.last.elapsed() >= every
+    }
+
+    fn begin(&mut self) -> u64 {
+        self.in_flight = true;
+        self.last = Instant::now();
+        self.generation += 1;
+        self.generation
+    }
+
+    /// Whether `generation` is the current round. Only that round frees the
+    /// flight slot: an older one finishing must not free a newer round's.
+    fn finish(&mut self, generation: u64) -> bool {
+        let current = generation == self.generation;
+        if current {
+            self.in_flight = false;
+        }
+        current
+    }
+
+    /// Drop whatever is in flight: its result will no longer be accepted, and
+    /// the next round may start at once.
+    fn invalidate(&mut self) {
+        self.generation += 1;
+        self.in_flight = false;
+    }
+
+    // Make the next round due without disturbing one already running
+    fn force(&mut self) {
+        self.last = Instant::now() - Duration::from_secs(3600);
+    }
+}
+
 struct Timers {
-    entries: Instant,
-    metrics: Instant,
+    entries: Poller,
+    metrics: Poller,
     sample: Instant,
-    health: Instant,
+    health: Poller,
     lb: Instant,
 }
 
@@ -176,16 +238,30 @@ impl Timers {
     fn due() -> Self {
         let past = Instant::now() - Duration::from_secs(3600);
         Self {
-            entries: past,
-            metrics: past,
+            entries: Poller::due_now(),
+            metrics: Poller::due_now(),
             sample: past,
-            health: past,
+            health: Poller::due_now(),
             lb: past,
         }
     }
 
+    // Not `*self = Self::due()`: that would restart the generations, and a
+    // result still in flight could then match the number of a new round
     fn force(&mut self) {
-        *self = Self::due();
+        let past = Instant::now() - Duration::from_secs(3600);
+        self.entries.force();
+        self.metrics.force();
+        self.sample = past;
+        self.health.force();
+        self.lb = past;
+    }
+
+    // What an account change does to every round begun for the old account
+    fn account_changed(&mut self) {
+        self.entries.invalidate();
+        self.metrics.invalidate();
+        self.health.invalidate();
     }
 }
 
@@ -238,7 +314,7 @@ async fn event_loop(
                     logs_for = None;
                 }
                 if app.take_follow_up() {
-                    timers.entries = Instant::now() - app::DISCOVERY_EVERY;
+                    timers.entries.force();
                 }
                 if app.want_instances {
                     app.want_instances = false;
@@ -263,40 +339,11 @@ async fn event_loop(
                     });
                 }
             }
-            Msg::Entries(entries, used_ports) => app.replace_entries(entries, used_ports),
-            Msg::EntriesFailed(error) => app.load_failed(&error),
-            Msg::Metrics(metrics) => {
-                for (name, m) in metrics {
-                    if let Some(entry) = app.entries.iter_mut().find(|e| e.name() == name) {
-                        // A process gtunnel does not manage owns no log here,
-                        // so there is nothing of ours to append to
-                        if entry.kind != TunnelKind::External {
-                            let was = entry.metrics.as_ref().map(|p| p.active_connections);
-                            if let Some(line) = connection_change(was, m.active_connections)
-                                && let Ok(path) = entry.tunnel.log_path()
-                            {
-                                let _ = crate::daemon::log_event(&path, &line);
-                            }
-                        }
-                        // Microseconds: a fast hop is a real measurement, and
-                        // whole milliseconds would record it as nothing
-                        if let Some(d) = m.latency {
-                            entry.history.record(d.as_micros() as u64);
-                        }
-                        entry.metrics = Some(m);
-                    }
-                }
-            }
+            msg @ (Msg::Entries(..)
+            | Msg::EntriesFailed(..)
+            | Msg::Metrics(..)
+            | Msg::Health(..)) => apply_polled(app, &mut timers, msg),
             Msg::Samples(samples) => app.record_samples(samples),
-            Msg::Health(results) => {
-                for (name, health) in results {
-                    let Some(entry) = app.entries.iter_mut().find(|e| e.name() == name) else {
-                        continue;
-                    };
-                    announce(entry, health);
-                    entry.health = health;
-                }
-            }
             Msg::Logs(name, lines) => {
                 if app.selected_entry().map(|e| e.name().to_string()) == Some(name) {
                     app.logs = lines;
@@ -308,6 +355,11 @@ async fn event_loop(
             }
             Msg::InstancesFailed(reason) => app.instances_failed(&reason),
             Msg::OpDone(result) => {
+                // Rounds begun for the previous account must not land in the
+                // new one's list
+                if result.from_account {
+                    timers.account_changed();
+                }
                 if let Some(name) = forget_after.take() {
                     app.forget_metrics(&name);
                 }
@@ -331,7 +383,63 @@ async fn event_loop(
 }
 
 fn timers_logs_due(timers: &Timers) -> bool {
-    timers.metrics.elapsed() < Duration::from_millis(200)
+    timers.metrics.last.elapsed() < Duration::from_millis(200)
+}
+
+// The result of a poller round, applied only when it is the round the poller
+// last began. A round invalidated by an account switch, or overtaken by a
+// newer one, is dropped whole.
+fn apply_polled(app: &mut App, timers: &mut Timers, msg: Msg) {
+    match msg {
+        Msg::Entries(generation, entries, used_ports) => {
+            if timers.entries.finish(generation) {
+                app.replace_entries(entries, used_ports);
+            }
+        }
+        Msg::EntriesFailed(generation, error) => {
+            if timers.entries.finish(generation) {
+                app.load_failed(&error);
+            }
+        }
+        Msg::Metrics(generation, metrics) => {
+            if !timers.metrics.finish(generation) {
+                return;
+            }
+            for (name, m) in metrics {
+                if let Some(entry) = app.entries.iter_mut().find(|e| e.name() == name) {
+                    // A process gtunnel does not manage owns no log here,
+                    // so there is nothing of ours to append to
+                    if entry.kind != TunnelKind::External {
+                        let was = entry.metrics.as_ref().map(|p| p.active_connections);
+                        if let Some(line) = connection_change(was, m.active_connections)
+                            && let Ok(path) = entry.tunnel.log_path()
+                        {
+                            let _ = crate::daemon::log_event(&path, &line);
+                        }
+                    }
+                    // Microseconds: a fast hop is a real measurement, and
+                    // whole milliseconds would record it as nothing
+                    if let Some(d) = m.latency {
+                        entry.history.record(d.as_micros() as u64);
+                    }
+                    entry.metrics = Some(m);
+                }
+            }
+        }
+        Msg::Health(generation, results) => {
+            if !timers.health.finish(generation) {
+                return;
+            }
+            for (name, health) in results {
+                let Some(entry) = app.entries.iter_mut().find(|e| e.name() == name) else {
+                    continue;
+                };
+                announce(entry, health);
+                entry.health = health;
+            }
+        }
+        _ => {}
+    }
 }
 
 // gtunnel measures the connection count every 5s and, until now, kept it to
@@ -396,8 +504,8 @@ fn announce(entry: &TunnelEntry, now: HealthStatus) {
 fn schedule(app: &mut App, timers: &mut Timers, tx: &mpsc::UnboundedSender<Msg>) {
     let account = app.account.clone();
 
-    if timers.entries.elapsed() >= app::DISCOVERY_EVERY {
-        timers.entries = Instant::now();
+    if timers.entries.due(app::DISCOVERY_EVERY) {
+        let generation = timers.entries.begin();
         // One small file read, so a check that finishes while the TUI is open
         // shows up within a round
         app.update = crate::update::available_update();
@@ -405,8 +513,8 @@ fn schedule(app: &mut App, timers: &mut Timers, tx: &mpsc::UnboundedSender<Msg>)
         let account = account.clone();
         tokio::spawn(async move {
             let _ = tx.send(match ops::load_entries(&account).await {
-                Ok((entries, used_ports)) => Msg::Entries(entries, used_ports),
-                Err(e) => Msg::EntriesFailed(format!("{e:#}")),
+                Ok((entries, used_ports)) => Msg::Entries(generation, entries, used_ports),
+                Err(e) => Msg::EntriesFailed(generation, format!("{e:#}")),
             });
         });
     }
@@ -430,19 +538,20 @@ fn schedule(app: &mut App, timers: &mut Timers, tx: &mpsc::UnboundedSender<Msg>)
                     out.push((name, m));
                 }
             }
-            let _ = tx.send(Msg::Metrics(out));
+            let _ = tx.send(Msg::Metrics(round.generation, out));
         });
     }
 
     let targets = health_round(app, timers);
     if !targets.is_empty() {
+        let generation = timers.health.begin();
         let tx = tx.clone();
         tokio::spawn(async move {
             let probes = targets
                 .into_iter()
                 .map(|(name, tunnel)| async move { (name, ops::probe_health(&tunnel).await) });
             let results = futures_join(probes).await;
-            let _ = tx.send(Msg::Health(results));
+            let _ = tx.send(Msg::Health(generation, results));
         });
     }
 }
@@ -462,6 +571,7 @@ fn ports_worth_sampling(app: &App) -> bool {
 
 // What one metrics round measures, and the sampler window it reports
 struct MetricsRound {
+    generation: u64,
     targets: Vec<ops::MetricTarget>,
     include_lb: bool,
     peaks: std::collections::HashMap<u16, u64>,
@@ -473,15 +583,16 @@ struct MetricsRound {
 /// clients seen since the last round, so a round that left them in place would
 /// report the same burst every five seconds until a larger one replaced it.
 fn metrics_round(app: &mut App, timers: &mut Timers) -> Option<MetricsRound> {
-    if timers.metrics.elapsed() < app::METRICS_EVERY {
+    if !timers.metrics.due(app::METRICS_EVERY) {
         return None;
     }
-    timers.metrics = Instant::now();
+    let generation = timers.metrics.begin();
     let include_lb = timers.lb.elapsed() >= app::LB_EVERY;
     if include_lb {
         timers.lb = Instant::now();
     }
     Some(MetricsRound {
+        generation,
         targets: ops::metric_targets(&app.entries),
         include_lb,
         peaks: app.take_peaks(),
@@ -505,7 +616,8 @@ fn health_round(
     app: &mut App,
     timers: &mut Timers,
 ) -> Vec<(String, crate::state::PersistentTunnel)> {
-    if timers.health.elapsed() < app::HEALTH_EVERY && !app.health_stale {
+    // A round already out keeps its slot; a stale row stays owed until it lands
+    if timers.health.in_flight || (!timers.health.due(app::HEALTH_EVERY) && !app.health_stale) {
         return Vec::new();
     }
     let running = |e: &&mut TunnelEntry| e.status == crate::state::TunnelStatus::Running;
@@ -524,7 +636,7 @@ fn health_round(
     // turn.
     app.health_stale = false;
     if !targets.is_empty() {
-        timers.health = Instant::now();
+        timers.health.last = Instant::now();
     }
     targets
 }
@@ -589,6 +701,85 @@ mod tests {
             None,
             "a line per poll is 17,280 a day that say nothing"
         );
+    }
+
+    #[test]
+    fn a_poller_in_flight_is_not_due() {
+        let mut p = Poller::due_now();
+        assert!(p.due(Duration::from_secs(5)));
+        let g = p.begin();
+        assert!(!p.due(Duration::ZERO));
+        assert!(p.finish(g));
+        p.last = Instant::now() - Duration::from_secs(6);
+        assert!(p.due(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn a_result_from_an_older_round_is_dropped() {
+        let mut p = Poller::due_now();
+        let old = p.begin();
+        p.invalidate();
+        assert!(!p.finish(old));
+        let new = p.begin();
+        assert!(
+            !p.finish(old),
+            "the old round must not free the new one's slot"
+        );
+        assert!(p.in_flight);
+        assert!(p.finish(new));
+    }
+
+    #[test]
+    fn forcing_the_timers_leaves_a_round_in_flight_alone() {
+        let mut timers = Timers::due();
+        let g = timers.entries.begin();
+        timers.force();
+        assert!(
+            !timers.entries.due(Duration::ZERO),
+            "a second round started"
+        );
+        assert!(timers.entries.finish(g));
+        assert!(
+            timers.entries.due(app::DISCOVERY_EVERY),
+            "the force was lost"
+        );
+    }
+
+    #[test]
+    fn a_round_for_the_previous_account_is_dropped() {
+        let mut app = App::new("dev");
+        let mut timers = Timers::due();
+        let old = timers.entries.begin();
+        // What an account switch does when its op completes
+        timers.account_changed();
+        let stale = vec![TunnelEntry::new(
+            access("db", 15432),
+            TunnelStatus::Running,
+            TunnelKind::Managed,
+        )];
+        apply_polled(
+            &mut app,
+            &mut timers,
+            Msg::Entries(old, stale, HashSet::new()),
+        );
+        assert!(app.entries.is_empty(), "the old account's rows landed");
+
+        let new = timers.entries.begin();
+        apply_polled(
+            &mut app,
+            &mut timers,
+            Msg::Entries(new, Vec::new(), HashSet::new()),
+        );
+        assert!(app.loaded, "the current round was refused");
+    }
+
+    #[test]
+    fn a_metrics_round_in_flight_is_not_started_twice() {
+        let mut app = app_with_two();
+        let mut timers = Timers::due();
+        assert!(metrics_round(&mut app, &mut timers).is_some());
+        timers.metrics.last = Instant::now() - app::METRICS_EVERY;
+        assert!(metrics_round(&mut app, &mut timers).is_none());
     }
 
     // The sampler spawns a process ten times per round, so it only runs while
@@ -792,7 +983,7 @@ mod tests {
         );
 
         app.entries[0].health = HealthStatus::Healthy;
-        timers.health = Instant::now() - app::HEALTH_EVERY;
+        timers.health.last = Instant::now() - app::HEALTH_EVERY;
         let _ = health_round(&mut app, &mut timers);
         assert_eq!(app.entries[0].health, HealthStatus::Healthy);
     }

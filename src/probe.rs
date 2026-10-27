@@ -301,6 +301,13 @@ fn connections_for(peaks: Option<&HashMap<u16, u64>>, port: u16) -> u64 {
         .unwrap_or_else(|| active_connections(port))
 }
 
+// `lsof` and `ps` are processes that can hang on a wedged filesystem, and a
+// metrics round awaits them: run on the blocking pool, so a stuck one holds a
+// pool thread rather than a worker that every other poller shares.
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+    tokio::task::spawn_blocking(f).await.ok()
+}
+
 // `ps -o etime=` prints MM:SS, HH:MM:SS or D-HH:MM:SS
 pub fn parse_etime(text: &str) -> Option<Duration> {
     let text = text.trim();
@@ -386,7 +393,10 @@ async fn measure(
 ) -> TunnelMetrics {
     let mut metrics = TunnelMetrics {
         restarts: runtime.restarts,
-        uptime: runtime.pid.and_then(process_uptime),
+        uptime: match runtime.pid {
+            Some(pid) => blocking(move || process_uptime(pid)).await.flatten(),
+            None => None,
+        },
         available: status == TunnelStatus::Running,
         ..TunnelMetrics::default()
     };
@@ -395,7 +405,11 @@ async fn measure(
         TunnelSpec::Access { local_port, .. } => {
             // Read before the probe opens its own socket, so the probe is
             // never one of the clients it reports
-            metrics.active_connections = connections_for(peaks, *local_port);
+            let port = *local_port;
+            let peaks = peaks.cloned();
+            metrics.active_connections = blocking(move || connections_for(peaks.as_ref(), port))
+                .await
+                .unwrap_or(0);
             if let Some(rtt) = tcp_probe(&format!("127.0.0.1:{local_port}"), TCP_TIMEOUT).await {
                 metrics.latency = Some(rtt);
             } else {

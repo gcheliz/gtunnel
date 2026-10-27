@@ -246,10 +246,10 @@ pub fn parse_launchctl_print(text: &str) -> (TunnelStatus, RuntimeInfo) {
 }
 
 async fn launchctl(args: &[&str]) -> Result<std::process::Output> {
-    Command::new("launchctl")
-        .args(args)
-        .stdin(Stdio::null())
-        .output()
+    let mut cmd = Command::new("launchctl");
+    cmd.args(args).stdin(Stdio::null());
+    let what = format!("launchctl {}", args.first().unwrap_or(&""));
+    crate::proc::output_within(cmd, crate::proc::service_bound(), &what)
         .await
         .context("Failed to run launchctl")
 }

@@ -4,6 +4,9 @@ use tempfile::TempDir;
 
 struct Harness {
     dir: TempDir,
+    // Set only by a test of the timeout path: a short bound on every real
+    // launchctl would make the other tests flaky
+    service_bound_ms: Option<u64>,
 }
 
 const LOGGED_OUT_STUB: &str = r#"#!/bin/sh
@@ -82,17 +85,25 @@ impl Harness {
     }
 
     fn with_stub(stub: &str) -> Self {
+        Self::with_stubs(&[("gcloud", stub)])
+    }
+
+    // Each stub is an executable of that name in the first directory on PATH,
+    // so it stands in for the real program in the run
+    fn with_stubs(stubs: &[(&str, &str)]) -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
         fs::create_dir_all(root.join("bin")).unwrap();
         fs::create_dir_all(root.join("config")).unwrap();
 
-        let gcloud = root.join("bin/gcloud");
-        fs::write(&gcloud, stub).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&gcloud, fs::Permissions::from_mode(0o755)).unwrap();
+        for (name, body) in stubs {
+            let path = root.join("bin").join(name);
+            fs::write(&path, body).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+            }
         }
 
         fs::write(root.join("config/config.toml"), CONFIG).unwrap();
@@ -102,7 +113,10 @@ impl Harness {
             r#"{"latest_version":"0.0.1","checked_at":99999999999}"#,
         )
         .unwrap();
-        Self { dir }
+        Self {
+            dir,
+            service_bound_ms: None,
+        }
     }
 
     fn run(&self, args: &[&str]) -> Output {
@@ -112,8 +126,11 @@ impl Harness {
             root.join("bin").display(),
             std::env::var("PATH").unwrap_or_default()
         );
-        Command::new(env!("CARGO_BIN_EXE_gtunnel"))
-            .args(args)
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_gtunnel"));
+        if let Some(ms) = self.service_bound_ms {
+            cmd.env("GTUNNEL_SERVICE_BOUND_MS", ms.to_string());
+        }
+        cmd.args(args)
             .env("PATH", path)
             .env("HOME", root)
             .env("GTUNNEL_CONFIG_DIR", root.join("config"))
@@ -246,4 +263,27 @@ fn start_exits_non_zero_when_the_tunnel_failed_to_start() {
     assert!(so.contains("✗ failstart failed to start"), "{both}");
     assert!(so.contains("Logs: gtunnel logs failstart"), "{both}");
     assert!(!se.contains("failed to start"), "printed twice: {both}");
+}
+
+// `launchctl` is a stub that outlives the bound, so no real job is touched.
+// The name is used by no other test: the label is still in the real launchd
+// domain's namespace.
+#[cfg(target_os = "macos")]
+#[test]
+fn delete_keeps_the_record_when_stop_times_out() {
+    let mut h = Harness::with_stubs(&[
+        ("gcloud", STUB),
+        ("launchctl", "#!/bin/sh\nexec sleep 20\n"),
+    ]);
+    h.service_bound_ms = Some(300);
+    let add = h.run(&["add", "slowdelete", "10.0.0.10:5432", "--via", "bastion"]);
+    assert!(add.status.success(), "stderr: {}", stderr(&add));
+
+    let out = h.run(&["delete", "slowdelete"]);
+    let se = stderr(&out);
+    assert!(!out.status.success(), "stderr: {se}");
+    assert!(se.contains("timed out after"), "{se}");
+
+    let tunnels = fs::read_to_string(h.dir.path().join("config/tunnels.toml")).unwrap();
+    assert!(tunnels.contains("name = \"slowdelete\""), "{tunnels}");
 }
