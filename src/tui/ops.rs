@@ -475,19 +475,10 @@ async fn import(account: &str, name: &str) -> Result<String> {
     daemon::install(&daemon::service_spec(&config, &tunnel)?).await?;
     // The run holds the local port and, for a public tunnel, the relay port;
     // the managed service cannot take over until it lets go
-    #[cfg(unix)]
-    if let Some(pid) = crate::ephemeral::signalable(record.pid) {
-        // SAFETY: kill(2) takes two integers and no pointer, so it cannot touch
-        // our memory. The pid is the one in the run's own record, which this
-        // function loaded a moment ago, and `signalable` has rejected 0 and
-        // negative values so it names one process and never a group. If the run
-        // already exited the call fails with ESRCH, which the wait below treats
-        // the same as a clean exit.
-        unsafe {
-            libc::kill(pid, libc::SIGTERM);
-        }
-    }
-    let exited = crate::ephemeral::wait_for_pid_exit(record.pid, IMPORT_HANDOVER).await;
+    // A run that already exited is not signalled, and the wait below treats it
+    // the same as a clean exit
+    record.terminate();
+    let exited = record.wait_for_exit(IMPORT_HANDOVER).await;
     record.remove()?;
 
     // The run tears its own route down as it dies, taking the backend, host

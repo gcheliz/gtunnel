@@ -1,5 +1,7 @@
 //! Every subprocess gtunnel waits on goes through here, so a hung one is an
-//! error the caller can show instead of a task that never returns.
+//! error the caller can show instead of a task that never returns. This is
+//! also where a long-lived child is stopped and identified, so the supervisor
+//! and `run` end gcloud the same way.
 //!
 //! A poller that awaits a `launchctl print` stuck behind a wedged launchd, or
 //! a `gcloud` waiting on a browser login nobody will finish, holds its round
@@ -168,6 +170,151 @@ pub fn output_within_blocking_with_input(
     })
 }
 
+/// How long a stopping child gets between SIGTERM and SIGKILL. It has to stay
+/// under launchd's ExitTimeOut (20 s by default) and systemd's TimeoutStopSec
+/// (90 s), or the init system kills the supervisor first and the SIGKILL below
+/// never reaches the group. A plain const: no caller needs to tune it.
+#[cfg(unix)]
+pub const STOP_GRACE: Duration = Duration::from_secs(2);
+
+/// Send `signal` to every member of process group `pgid`. The one
+/// `kill(-pgid, sig)` site, so the guard against a non-positive id (which
+/// would signal every process of the user, or our own group) lives once.
+/// ESRCH is ignored: a group that is gone is the outcome being asked for.
+#[cfg(unix)]
+pub fn signal_group(pgid: i32, signal: libc::c_int) {
+    if pgid <= 0 {
+        return;
+    }
+    // SAFETY: pgid is positive, so -pgid names one group and never "every
+    // process"; the call reads no memory of ours.
+    unsafe { libc::kill(-pgid, signal) };
+}
+
+#[cfg(unix)]
+fn group_alive(pgid: i32) -> bool {
+    // SAFETY: signal 0 sends nothing; pgid is checked positive by the caller.
+    pgid > 0 && unsafe { libc::kill(-pgid, 0) } == 0
+}
+
+/// Stop the child the way a terminal would: SIGTERM to its whole group, a
+/// bounded wait, then SIGKILL to the whole group. gcloud closes its IAP
+/// websocket and releases the port in its SIGTERM handler, and a SIGKILL sent
+/// at once leaves that to the server's idle timeout. The group is signalled,
+/// not just the child, because gcloud is a launcher with children of its own.
+///
+/// A leader that exits on TERM does not mean the group is gone: ssh may ignore
+/// it and keep the port. A reaped leader leaves its id with the surviving
+/// members, so `-pgid` still names only this group and the sweep can finish
+/// the job within the same grace.
+///
+/// Takes the child and its group, not the signal, so a test can stop a child
+/// of its own without signalling the test process. Correct after the caller's
+/// own `child.wait()` already reaped the child: the status is cached.
+#[cfg(unix)]
+pub async fn stop_group(
+    child: &mut tokio::process::Child,
+    pgid: Option<i32>,
+    grace: Duration,
+) -> Result<std::process::ExitStatus> {
+    use anyhow::Context;
+    let deadline = std::time::Instant::now() + grace;
+    if let Some(pgid) = pgid {
+        signal_group(pgid, libc::SIGTERM);
+    }
+    let status = match tokio::time::timeout(grace, child.wait()).await {
+        Ok(status) => status.context("failed to wait on child after a stop signal"),
+        Err(_) => {
+            if let Some(pgid) = pgid {
+                signal_group(pgid, libc::SIGKILL);
+            }
+            let _ = child.kill().await;
+            child
+                .wait()
+                .await
+                .context("failed to wait on child after SIGKILL")
+        }
+    };
+    if let Some(pgid) = pgid {
+        while group_alive(pgid) && std::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        if group_alive(pgid) {
+            signal_group(pgid, libc::SIGKILL);
+        }
+    }
+    status
+}
+
+/// Who `pid` is, as an opaque string that changes when the kernel hands the
+/// same number to another process. A pid alone is reused after a reboot or a
+/// wrap; pid and start together name one process. `None` when the pid is not
+/// signalable, the process is gone, or this platform cannot say. Callers on
+/// macOS and Linux treat `None` for a process they just spawned as "it already
+/// exited".
+///
+/// Neither source is the wall clock: macOS stamps the start at fork and Linux
+/// counts ticks since boot, qualified by the boot id. A clock step must not
+/// make a live run read as dead, which `/proc/stat` `btime` would do.
+pub fn start_token(pid: u32) -> Option<String> {
+    let pid = i32::try_from(pid).ok().filter(|p| *p > 0)?;
+    start_token_of(pid)
+}
+
+#[cfg(target_os = "macos")]
+fn start_token_of(pid: i32) -> Option<String> {
+    use std::mem::{size_of, MaybeUninit};
+    let mut info = MaybeUninit::<libc::proc_bsdinfo>::zeroed();
+    let size = size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    // SAFETY: the buffer is a zeroed proc_bsdinfo and the size passed is its
+    // own, so the kernel cannot write past it; the pid is positive.
+    let got = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            info.as_mut_ptr().cast(),
+            size,
+        )
+    };
+    if got != size {
+        return None;
+    }
+    // SAFETY: the call filled the whole struct (got == size), and zeroed is a
+    // valid value for it besides.
+    let info = unsafe { info.assume_init() };
+    Some(format!(
+        "{}.{:06}",
+        info.pbi_start_tvsec, info.pbi_start_tvusec
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn start_token_of(pid: i32) -> Option<String> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let ticks = linux_start_ticks(&stat)?;
+    match std::fs::read_to_string("/proc/sys/kernel/random/boot_id") {
+        Ok(boot) => Some(format!("{}/{ticks}", boot.trim())),
+        Err(_) => Some(ticks.to_string()),
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn start_token_of(_pid: i32) -> Option<String> {
+    None
+}
+
+/// Field 22 of `/proc/<pid>/stat`, the start time in ticks since boot. The
+/// command name is field 2, in parentheses, and may itself hold `) `, so the
+/// fields are counted from the last `)`. Compiled everywhere so the parser is
+/// tested on the machine the author has.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn linux_start_ticks(stat: &str) -> Option<u64> {
+    let after = &stat[stat.rfind(')')? + 1..];
+    // The text starts at field 3, so field 22 is index 19
+    after.split_whitespace().nth(19)?.parse().ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,5 +405,121 @@ mod tests {
         }
         .into();
         assert_eq!(err.to_string(), "launchctl print timed out after 10s");
+    }
+
+    #[test]
+    fn a_live_process_has_a_stable_start_token() {
+        let a = start_token(std::process::id()).expect("our own start");
+        assert_eq!(start_token(std::process::id()), Some(a));
+    }
+
+    #[test]
+    fn a_missing_or_group_pid_has_no_start_token() {
+        assert_eq!(start_token(999_999), None);
+        assert_eq!(start_token(0), None);
+        assert_eq!(start_token(u32::MAX), None);
+    }
+
+    // The command name is in parentheses and may itself hold ") ", so the fields
+    // are counted from the last ')'
+    #[test]
+    fn the_start_ticks_are_field_22_even_when_the_command_name_holds_a_parenthesis() {
+        let stat = "4242 (a) b) S 1 4242 4242 0 -1 4194304 1 0 0 0 0 0 0 0 20 0 1 0 987654 1 2 3";
+        assert_eq!(linux_start_ticks(stat), Some(987_654));
+        assert_eq!(linux_start_ticks("4242 (sh) S 1"), None);
+    }
+
+    #[test]
+    fn a_macos_start_token_is_seconds_and_six_digit_microseconds() {
+        if cfg!(target_os = "macos") {
+            let token = start_token(std::process::id()).unwrap();
+            let (secs, micros) = token.split_once('.').expect("sec.usec");
+            assert!(secs.parse::<u64>().unwrap() > 1_000_000_000, "{token}");
+            assert_eq!(micros.chars().count(), 6, "{token}");
+        }
+    }
+
+    #[cfg(unix)]
+    mod stopping {
+        use super::super::*;
+        use std::os::unix::process::ExitStatusExt;
+        use tokio::process::Command;
+
+        const SHORT: Duration = Duration::from_millis(600);
+
+        fn spawn_sh(script: &str) -> (tokio::process::Child, Option<i32>) {
+            let mut c = Command::new("sh");
+            c.args(["-c", script]).process_group(0);
+            let child = c.spawn().expect("spawn sh");
+            let pgid = child.id().map(|id| id as i32);
+            (child, pgid)
+        }
+
+        #[tokio::test]
+        async fn a_child_that_exits_on_sigterm_is_not_sigkilled() {
+            let (mut child, pgid) = spawn_sh(r#"trap "sleep 0.3; exit 0" TERM; sleep 30 & wait"#);
+            // Let sh install its trap before the signal arrives
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let status = stop_group(&mut child, pgid, SHORT).await.expect("stop");
+            assert_eq!(
+                status.signal(),
+                None,
+                "a clean exit, not a kill: {status:?}"
+            );
+            assert_eq!(status.code(), Some(0));
+        }
+
+        #[tokio::test]
+        async fn a_child_that_ignores_sigterm_is_killed_after_the_grace() {
+            let (mut child, pgid) = spawn_sh(r#"trap "" TERM; while :; do sleep 1; done"#);
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let started = std::time::Instant::now();
+            let status = stop_group(&mut child, pgid, SHORT).await.expect("stop");
+            let took = started.elapsed();
+            assert_eq!(status.signal(), Some(libc::SIGKILL), "{status:?}");
+            assert!(took >= SHORT, "waited out the grace first: {took:?}");
+            assert!(took < SHORT * 4, "and did not hang: {took:?}");
+        }
+
+        #[tokio::test]
+        async fn a_child_that_outlives_its_leader_is_killed_by_the_sweep() {
+            // The leader exits on TERM at once; its child ignores TERM
+            let dir = tempfile::tempdir().unwrap();
+            let pidfile = dir.path().join("child");
+            let (mut child, pgid) = spawn_sh(&format!(
+                "(trap '' TERM; exec sleep 30) & echo $! > {}; wait",
+                pidfile.display()
+            ));
+            // The shell writes the pid once its subshell has forked; wait for it
+            let mut grandchild = 0;
+            for _ in 0..100 {
+                if let Ok(text) = std::fs::read_to_string(&pidfile)
+                    && let Ok(pid) = text.trim().parse()
+                {
+                    grandchild = pid;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            assert!(grandchild > 0, "the grandchild never reported its pid");
+            let started = std::time::Instant::now();
+            stop_group(&mut child, pgid, SHORT).await.expect("stop");
+            assert!(
+                started.elapsed() < SHORT * 4,
+                "bounded: {:?}",
+                started.elapsed()
+            );
+            // Reparented to init and reaped there, so poll, bounded
+            let mut gone = false;
+            for _ in 0..40 {
+                // SAFETY: signal 0 sends nothing; the pid is positive
+                if unsafe { libc::kill(grandchild, 0) } != 0 {
+                    gone = true;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            assert!(gone, "pid {grandchild} survived the group stop");
+        }
     }
 }

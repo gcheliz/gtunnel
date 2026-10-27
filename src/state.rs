@@ -183,6 +183,17 @@ impl TunnelState {
         Ok(value)
     }
 
+    /// Read the state under the same lock `update` takes, and save nothing. A
+    /// claim that other readers of the state count (a run's port or name) has
+    /// to be decided and recorded before the next claimant reads, so the
+    /// claim's own record is written inside `f`, not after it. The same rule as
+    /// `update` applies: `f` must not await or start a daemon.
+    pub fn with_lock<T>(f: impl FnOnce(&TunnelState) -> Result<T>) -> Result<T> {
+        let _lock =
+            crate::fsutil::lock_exclusive(&tunnels_lock_path()?, crate::fsutil::LOCK_DEADLINE)?;
+        f(&Self::load()?)
+    }
+
     pub fn add(&mut self, tunnel: PersistentTunnel) -> Result<()> {
         validate_tunnel_name(&tunnel.name)?;
         if let TunnelSpec::Access { target, .. } = &tunnel.spec {
@@ -414,10 +425,51 @@ pub fn local_port_is_free(port: u16) -> bool {
     std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
 }
 
+/// The one place an explicit local port is vetted, for `add` and for `run`.
+/// Port 0 is refused first because `local_port_is_free(0)` binds an ephemeral
+/// port and succeeds, so a saved 0 would pass every later check and then mean
+/// a different port each start. `used` is the caller's to build: `add` counts
+/// saved tunnels, `run` counts those and every live run too.
+pub fn check_local_port(
+    port: u16,
+    used: &HashSet<u16>,
+    is_free: impl Fn(u16) -> bool,
+) -> Result<()> {
+    if port == 0 {
+        return Err(
+            crate::error::GtunnelError::usage("Local port must be between 1 and 65535").into(),
+        );
+    }
+    if used.contains(&port) {
+        bail!("Local port {port} is already used by another gtunnel tunnel");
+    }
+    if !is_free(port) {
+        bail!("Local port {port} is already in use on this machine");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn check_local_port_refuses_zero_a_saved_port_and_a_bound_one() {
+        let used: HashSet<u16> = [15432].into_iter().collect();
+        let zero = check_local_port(0, &used, |_| true).unwrap_err();
+        assert_eq!(zero.to_string(), "Local port must be between 1 and 65535");
+        assert_eq!(crate::error::kind_of(&zero), crate::error::ErrorKind::Usage);
+        assert!(check_local_port(15432, &used, |_| true)
+            .unwrap_err()
+            .to_string()
+            .contains("already used by another gtunnel tunnel"));
+        assert!(check_local_port(15433, &used, |_| false)
+            .unwrap_err()
+            .to_string()
+            .contains("already in use on this machine"));
+        check_local_port(15433, &used, |_| true).expect("free and unsaved");
+    }
 
     fn access_instance(name: &str, local: u16) -> PersistentTunnel {
         PersistentTunnel {

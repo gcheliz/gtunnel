@@ -351,6 +351,7 @@ mod tests {
                 },
                 started_at: 0,
                 ttl_secs: None,
+                pid_start: None,
             },
             true,
         )]

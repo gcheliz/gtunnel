@@ -2,9 +2,7 @@ use anyhow::anyhow;
 use serde_json::{json, Map, Value};
 use std::time::Duration;
 
-use crate::ephemeral::{
-    generated_name, list_ephemeral, pid_is_alive, signalable, wait_for_pid_exit, EphemeralRecord,
-};
+use crate::ephemeral::{generated_name, list_ephemeral, signalable, EphemeralRecord};
 use crate::error::{ErrorKind, GtunnelError};
 use crate::state::TunnelSpec;
 
@@ -131,27 +129,15 @@ fn find_record(account: &str, name: &str) -> Option<(EphemeralRecord, bool)> {
         .find(|(r, _)| r.account_name == account && r.name == name)
 }
 
-fn terminate(pid: u32) {
-    if let Some(pid) = signalable(pid) {
-        // SAFETY: kill(2) takes two integers and no pointer. `signalable`
-        // rejected 0 and negative values, so this names one process and never
-        // a group. A pid that has exited since is a harmless ESRCH.
-        unsafe { libc::kill(pid, libc::SIGTERM) };
-    }
-}
-
 /// Start `gtunnel run` as a process that outlives this one, and answer only
 /// once it has published its record. The error carries its kind, so a failed
 /// launch reaches the caller through `ToolCallResult::failure` like every
 /// other tool error.
 pub async fn launch(account: &str, req: &RunRequest) -> anyhow::Result<Value> {
-    if let Some((_, true)) = find_record(account, &req.name) {
-        return Err(GtunnelError::usage(format!(
-            "A run named '{}' is already live for account '{account}'",
-            req.name
-        ))
-        .into());
-    }
+    // The child `gtunnel run` checks again under the lock; this early check
+    // only returns the refusal without waiting out the launch budget
+    let state = crate::state::TunnelState::load()?;
+    crate::ephemeral::check_run_name(&state, account, &req.name)?;
 
     let exe = std::env::current_exe().map_err(|e| anyhow!("Cannot find gtunnel: {e}"))?;
     let logs = crate::config::config_dir()?.join("logs");
@@ -200,8 +186,12 @@ pub async fn launch(account: &str, req: &RunRequest) -> anyhow::Result<Value> {
         }
         if std::time::Instant::now() >= deadline {
             // It may still be starting; SIGTERM lets it tear down whatever it made
-            if let Some(pid) = child.id() {
-                terminate(pid);
+            if let Some(pid) = child.id().and_then(signalable) {
+                // SAFETY: kill(2) takes two integers and no pointer. This is
+                // the `gtunnel run` this function just spawned and still
+                // holds, not a record, so the pid cannot be a recycled one;
+                // `signalable` rejected 0 and negative values.
+                unsafe { libc::kill(pid, libc::SIGTERM) };
             }
             return Err(GtunnelError::new(
                 ErrorKind::Internal,
@@ -247,23 +237,21 @@ pub async fn stop_run(account: &str, name: &str) -> anyhow::Result<Option<()>> {
         ))
         .into());
     }
-    terminate(record.pid);
-    if !wait_for_pid_exit(record.pid, Duration::from_secs(5)).await {
+    record.terminate();
+    if !record.wait_for_exit(Duration::from_secs(5)).await {
         return Err(GtunnelError::new(
             ErrorKind::Internal,
             format!("Run '{name}' did not exit within 5s of SIGTERM"),
         )
         .into());
     }
-    // gcloud is gone; the run process now removes its record. Give it a moment
-    // so the answer matches what `ls` will show.
-    for _ in 0..40 {
-        if find_record(account, name).is_none() {
-            break;
-        }
+    // gcloud is gone; the run process now sweeps its group, which can take the
+    // whole grace, and then removes its record. Give it that long so the
+    // answer matches what `ls` will show.
+    let deadline = std::time::Instant::now() + crate::proc::STOP_GRACE + Duration::from_secs(1);
+    while find_record(account, name).is_some() && std::time::Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    debug_assert!(!pid_is_alive(record.pid));
     Ok(Some(()))
 }
 
