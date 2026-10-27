@@ -9,6 +9,7 @@ mod ephemeral;
 mod expose;
 mod fsutil;
 mod gcp;
+mod http;
 mod lifecycle;
 mod logfilter;
 mod loglevel;

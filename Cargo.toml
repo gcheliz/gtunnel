@@ -16,7 +16,10 @@ categories = ["command-line-utilities", "network-programming"]
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["full", "process"] }
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+# rustls-no-provider keeps aws-lc-rs out of the build; crate::http installs ring.
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider"] }
+# Named directly so the ring provider is reachable from crate::http.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1"
@@ -45,3 +48,13 @@ undocumented_unsafe_blocks = "warn"
 dbg_macro = "warn"
 todo = "warn"
 unimplemented = "warn"
+
+# Sizes are macOS arm64, measured one key at a time on top of the previous.
+[profile.release]
+# 11.54 -> 9.42 MB
+strip = "symbols"
+# with codegen-units = 1: 9.42 -> 6.72 MB
+lto = "fat"
+codegen-units = 1
+# 6.72 -> 5.64 MB; no catch_unwind anywhere, see docs/decisions.md section 17
+panic = "abort"

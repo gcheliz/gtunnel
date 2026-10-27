@@ -1,0 +1,8 @@
+# A client built any other way misses the rustls provider that crate::http
+# installs, and reqwest then panics in build(), which under panic = "abort"
+# kills the process.
+disallowed-methods = [
+    { path = "reqwest::Client::new", reason = "use crate::http::client_builder" },
+    { path = "reqwest::Client::builder", reason = "use crate::http::client_builder" },
+    { path = "reqwest::ClientBuilder::new", reason = "use crate::http::client_builder" },
+]

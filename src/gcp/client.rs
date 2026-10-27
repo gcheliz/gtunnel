@@ -123,7 +123,7 @@ pub struct GcpClient {
 impl GcpClient {
     pub fn new(source: TokenSource, endpoints: Endpoints) -> Self {
         Self {
-            http: reqwest::Client::builder()
+            http: crate::http::client_builder()
                 .timeout(Duration::from_secs(30))
                 .build()
                 .expect("reqwest client"),

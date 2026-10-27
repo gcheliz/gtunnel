@@ -116,7 +116,9 @@ Attestations begin with v0.1.1; v0.1.0 predates them.
 #### Building from source
 
 The two cargo routes compile gtunnel on your machine, so they need Rust 1.89 or newer and
-a C compiler: the TLS stack builds C code. A published binary needs neither.
+a C compiler: the TLS stack builds C code. A published binary needs neither. A release
+build takes about three minutes from clean on an Apple silicon laptop, because the release
+profile uses fat LTO.
 
 | Machine | Rust | C compiler |
 |---|---|---|
