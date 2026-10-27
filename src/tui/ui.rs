@@ -15,6 +15,9 @@ use crate::state::{TunnelSpec, TunnelStatus};
 use crate::tunnel::diagnose_log_line;
 use crate::update::UpdateNotice;
 
+#[cfg(test)]
+mod tests;
+
 pub const LOG_LINES: usize = 200;
 
 /// A blank row, the lockup and the name beneath it, and the rule that closes
