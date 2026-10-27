@@ -168,7 +168,19 @@ impl TunnelState {
                 .with_context(|| format!("Failed to create {}", dir.display()))?;
         }
         let text = toml::to_string_pretty(self).context("Failed to serialize tunnel state")?;
-        std::fs::write(&path, text).with_context(|| format!("Failed to write {}", path.display()))
+        crate::fsutil::write_atomic(&path, &text)
+    }
+
+    // The only way to change the file: two gtunnels that each load, edit and
+    // save would otherwise drop one another's tunnel. The closure must not
+    // await or start a daemon, since the lock is held until it returns.
+    pub fn update<T>(f: impl FnOnce(&mut TunnelState) -> Result<T>) -> Result<T> {
+        let _lock =
+            crate::fsutil::lock_exclusive(&tunnels_lock_path()?, crate::fsutil::LOCK_DEADLINE)?;
+        let mut state = Self::load()?;
+        let value = f(&mut state)?;
+        state.save()?;
+        Ok(value)
     }
 
     pub fn add(&mut self, tunnel: PersistentTunnel) -> Result<()> {
@@ -254,6 +266,10 @@ pub fn tunnels_path() -> Result<PathBuf> {
     Ok(config::config_dir()?.join("tunnels.toml"))
 }
 
+pub fn tunnels_lock_path() -> Result<PathBuf> {
+    Ok(config::config_dir()?.join("tunnels.lock"))
+}
+
 pub fn ensure_logs_dir() -> Result<PathBuf> {
     let dir = config::config_dir()?.join("logs");
     std::fs::create_dir_all(&dir).with_context(|| format!("Failed to create {}", dir.display()))?;
@@ -331,6 +347,27 @@ mod tests {
                 local_port: local,
             },
         }
+    }
+
+    #[test]
+    fn concurrent_updates_do_not_lose_tunnels() {
+        let _cfg = crate::config::testing::TempConfigDir::new();
+        let handles: Vec<_> = (0..2u16)
+            .map(|w| {
+                std::thread::spawn(move || {
+                    for i in 0..100u16 {
+                        TunnelState::update(|s| {
+                            s.add(access_instance(&format!("t{w}-{i}"), 20000 + w * 1000 + i))
+                        })
+                        .unwrap();
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert_eq!(TunnelState::load().unwrap().tunnels.len(), 200);
     }
 
     fn access_dest_group(name: &str) -> PersistentTunnel {

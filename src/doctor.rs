@@ -823,21 +823,22 @@ pub async fn cmd_doctor(
         return Ok(());
     }
 
-    let mut state = TunnelState::load()?;
     for (account_name, finding) in fixable {
-        match apply_fix(&config, &mut state, &account_name, &finding).await {
+        // Read per fix: each can await gcloud, and the file is only locked
+        // for the one removal that writes it
+        let state = TunnelState::load()?;
+        match apply_fix(&config, &state, &account_name, &finding).await {
             // Not every fix is a removal: auto-start drift is reconciled, not deleted
             Ok(()) => println!("  fixed: {}", finding.describe()),
             Err(e) => eprintln!("  failed: {} ({e:#})", finding.describe()),
         }
     }
-    state.save()?;
     Ok(())
 }
 
 async fn apply_fix(
     config: &Config,
-    state: &mut TunnelState,
+    state: &TunnelState,
     account_name: &str,
     finding: &Finding,
 ) -> Result<()> {
@@ -853,10 +854,10 @@ async fn apply_fix(
         anyhow::bail!("a tunnel claimed it since the scan");
     }
     match finding {
-        Finding::StaleState { tunnel } => {
+        Finding::StaleState { tunnel } => TunnelState::update(|state| {
             state.remove_for_account(tunnel, account_name);
             Ok(())
-        }
+        }),
         // tunnels.toml is what the user edits, so the record is the truth the
         // service manager is brought back to
         Finding::AutoStartDrift { tunnel, .. } => {

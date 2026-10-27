@@ -39,7 +39,7 @@ impl EphemeralRecord {
     pub fn save(&self) -> Result<()> {
         let path = self.path()?;
         let json = serde_json::to_string_pretty(self).context("Failed to encode the run record")?;
-        std::fs::write(&path, json).with_context(|| format!("Failed to write {}", path.display()))
+        crate::fsutil::write_atomic(&path, &json)
     }
 
     pub fn remove(&self) -> Result<()> {

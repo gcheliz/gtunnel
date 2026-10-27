@@ -7,7 +7,7 @@ getting from a clone to a green test run takes one command.
 
 | Requirement | Why | Check |
 |---|---|---|
-| Rust 1.88 or newer | the floor `ratatui` 0.30 sets, declared in `Cargo.toml` | `cargo --version` |
+| Rust 1.89 or newer | the floor `std::fs::File::lock` sets, declared in `Cargo.toml` | `cargo --version` |
 | Google Cloud SDK | only to run gtunnel against a real project; not needed to build or test | `gcloud version` |
 
 ```
@@ -38,7 +38,7 @@ surprised:
 | `cargo clippy --all-targets -- -D warnings` | every clippy warning, including the lints declared in `Cargo.toml` |
 | `cargo test` | the suite, on ubuntu and macos separately |
 | `cargo audit --deny warnings` | a dependency with an advisory |
-| `cargo check --locked --all-targets` on 1.88 | anything that needs a newer compiler than declared |
+| `cargo check --locked --all-targets` on 1.89 | anything that needs a newer compiler than declared |
 | `zizmor --offline .github/workflows` | an unpinned action or a template injection |
 
 All checks must be green and the branch must be up to date with `main` before a

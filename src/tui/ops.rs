@@ -371,37 +371,37 @@ async fn create(new: &NewTunnel) -> Result<String> {
 
 async fn edit_tunnel(edit: &EditTunnel) -> Result<String> {
     let (config, acct) = resolve(Some(&edit.account))?;
-    let mut state = TunnelState::load()?;
-    let tunnel = state
-        .find_for_account_mut(&edit.name, &acct.name)
-        .with_context(|| format!("No tunnel named '{}'", edit.name))?;
+    let updated = TunnelState::update(|state| {
+        let tunnel = state
+            .find_for_account_mut(&edit.name, &acct.name)
+            .with_context(|| format!("No tunnel named '{}'", edit.name))?;
 
-    match &mut tunnel.spec {
-        TunnelSpec::Access {
-            remote_port,
-            local_port,
-            ..
-        } => {
-            let (remote, local) = edit
-                .value
-                .split_once(':')
-                .context("Write the new ports as <remote>:<local>")?;
-            *remote_port = remote.trim().parse().context("Remote port is not a port")?;
-            *local_port = local.trim().parse().context("Local port is not a port")?;
+        match &mut tunnel.spec {
+            TunnelSpec::Access {
+                remote_port,
+                local_port,
+                ..
+            } => {
+                let (remote, local) = edit
+                    .value
+                    .split_once(':')
+                    .context("Write the new ports as <remote>:<local>")?;
+                *remote_port = remote.trim().parse().context("Remote port is not a port")?;
+                *local_port = local.trim().parse().context("Local port is not a port")?;
+            }
+            TunnelSpec::Expose {
+                local_target,
+                private,
+                ..
+            } => match edit.value.trim() {
+                "private" => *private = true,
+                "public" => *private = false,
+                other => *local_target = other.to_string(),
+            },
         }
-        TunnelSpec::Expose {
-            local_target,
-            private,
-            ..
-        } => match edit.value.trim() {
-            "private" => *private = true,
-            "public" => *private = false,
-            other => *local_target = other.to_string(),
-        },
-    }
 
-    let updated = tunnel.clone();
-    state.save()?;
+        Ok(tunnel.clone())
+    })?;
 
     // A public tunnel's access rule lives on the backend, not in tunnels.toml
     if updated.is_expose() {
@@ -426,14 +426,14 @@ fn running_line(started: &Started) -> String {
 
 async fn toggle_auto_start(account: &str, name: &str) -> Result<String> {
     let (config, acct) = resolve(Some(account))?;
-    let mut state = TunnelState::load()?;
-    let tunnel = state
-        .find_for_account_mut(name, &acct.name)
-        .with_context(|| format!("No tunnel named '{name}' in account '{}'", acct.name))?;
-    tunnel.auto_start = !tunnel.auto_start;
-    let now_on = tunnel.auto_start;
-    let spec = daemon::service_spec(&config, &tunnel.clone())?;
-    state.save()?;
+    let (now_on, spec) = TunnelState::update(|state| {
+        let tunnel = state
+            .find_for_account_mut(name, &acct.name)
+            .with_context(|| format!("No tunnel named '{name}' in account '{}'", acct.name))?;
+        tunnel.auto_start = !tunnel.auto_start;
+        let spec = daemon::service_spec(&config, &tunnel.clone())?;
+        Ok((tunnel.auto_start, spec))
+    })?;
     daemon::set_auto_start(&spec).await?;
     Ok(format!(
         "{name} auto-start {}",
@@ -450,15 +450,13 @@ async fn import(account: &str, name: &str) -> Result<String> {
         .find(|(r, _)| r.name == name && r.account_name == acct.name)
         .with_context(|| format!("No run named '{name}'"))?;
 
-    let mut state = TunnelState::load()?;
     let tunnel = PersistentTunnel {
         name: record.name.clone(),
         account_name: acct.name.clone(),
         auto_start: false,
         spec: record.spec.clone(),
     };
-    state.add(tunnel.clone())?;
-    state.save()?;
+    TunnelState::update(|state| state.add(tunnel.clone()))?;
     daemon::install(&daemon::service_spec(&config, &tunnel)?).await?;
     // The run holds the local port and, for a public tunnel, the relay port;
     // the managed service cannot take over until it lets go

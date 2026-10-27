@@ -164,7 +164,7 @@ branch.
 | `cargo clippy --all-targets -- -D warnings` | carries the lint policy declared in `Cargo.toml` |
 | `cargo test` | on ubuntu and macos, because the service back ends differ |
 | `cargo audit --deny warnings` | a vulnerable crate reaches users as a binary they trust |
-| `cargo check --locked` on 1.88 | a declared `rust-version` that nothing checks rots on the next bump |
+| `cargo check --locked` on 1.89 | a declared `rust-version` that nothing checks rots on the next bump |
 | `zizmor --offline` | the workflows hold a release token, so an injection there is the most expensive mistake available |
 
 Every action is pinned to a commit SHA with `persist-credentials: false`, the workflow
@@ -278,3 +278,29 @@ returns that error afterwards, so the record stays, as it did on the CLI.
 The costs: a start now takes the three-second settle in the TUI too, and the CLI keeps the
 failure lines on stdout but now exits 1, so a script that ignored the status starts seeing
 failures it used to miss.
+
+## 16. State files are written atomically under an advisory lock
+
+**Status:** Accepted, 2026-10-27
+
+`tunnels.toml` and `config.toml` were written with truncate-then-write and changed by
+load, edit, save. A crash mid-write left an empty file that reads as "nothing configured", and
+two gtunnels (the TUI and a CLI command, or the watchdog) that each loaded, edited and saved
+dropped one another's change. Only some files were owner-only.
+
+Every write goes through `fsutil::write_atomic`: a sibling temp file with mode 0600, then a
+rename. Every change goes through `TunnelState::update` or `config::update_config`, which take
+an exclusive `File::try_lock` on `tunnels.lock` or `config.lock`, load, run the closure and
+save. The lock is polled for 5 seconds and then fails naming the lock file, so a wedged holder
+is an error a person can act on and not a frozen TUI. The lock is a file of its own because
+the rename replaces the data file's inode, and a lock on the old one would guard nothing.
+
+The closure never awaits. A command that talks to gcloud or a service manager does that first
+and changes the record afterwards: `delete` stops and uninstalls, then removes the record; `add`
+verifies the instance, then saves. The cost of that order is a window in which the world has
+changed and the record has not, which every one of those commands already had.
+
+The minimum Rust version is 1.89 because `File::lock`, `try_lock` and `unlock` are stable from
+there; the alternative was a dependency for one syscall. The costs: a package that builds with
+an older compiler must update, and the lock is advisory, so an editor writing `tunnels.toml`
+directly is not stopped by it.

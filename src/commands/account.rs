@@ -1,7 +1,9 @@
 use anyhow::{bail, Context, Result};
 
 use super::{confirm, prompt};
-use crate::config::{config_dir, load_config, save_config, validate_account_name, Account};
+use crate::config::{
+    config_dir, load_config, update_config, update_or_init_config, validate_account_name, Account,
+};
 use crate::gcp::{compute, gcloud, GcpClient};
 
 // First run: turn a gcloud configuration into a gtunnel account
@@ -36,7 +38,8 @@ pub async fn cmd_init() -> Result<()> {
         .with_context(|| format!("'{choice}' is not one of the listed numbers"))?;
     let chosen = &configurations[index - 1];
 
-    let mut config = load_config().unwrap_or_default();
+    // Read for the early duplicate check; the locked update at the end checks again
+    let config = load_config().unwrap_or_default();
     let name = prompt("Account name", Some(&chosen.name))?;
     validate_account_name(&name)?;
     if config.accounts.iter().any(|a| a.name == name) {
@@ -74,8 +77,7 @@ pub async fn cmd_init() -> Result<()> {
     }
     account.default_zone = zone;
 
-    config.add_account(account)?;
-    save_config(&config)?;
+    update_or_init_config(|config| config.add_account(account))?;
     println!("Account '{name}' saved to {}", config_dir()?.display());
     Ok(())
 }
@@ -125,9 +127,7 @@ pub fn cmd_account_list(json: bool) -> Result<()> {
 }
 
 pub fn cmd_account_select(name: &str) -> Result<()> {
-    let mut config = load_config()?;
-    config.select_account(name)?;
-    save_config(&config)?;
+    update_config(|config| config.select_account(name))?;
     println!("Selected account '{name}'");
     Ok(())
 }
@@ -137,7 +137,6 @@ pub fn cmd_account_select(name: &str) -> Result<()> {
 // nothing else: it cannot answer what becomes of the tunnels, which is the one
 // question a script cannot have settled by passing a flag.
 pub fn cmd_account_remove(name: &str, assume_yes: bool) -> Result<()> {
-    let mut config = load_config()?;
     let state = crate::state::TunnelState::load()?;
     let held = state.tunnels_for_account(name).len();
     if held > 0 {
@@ -150,8 +149,7 @@ pub fn cmd_account_remove(name: &str, assume_yes: bool) -> Result<()> {
         println!("Cancelled");
         return Ok(());
     }
-    config.remove_account(name)?;
-    save_config(&config)?;
+    update_config(|config| config.remove_account(name))?;
     println!("Removed account '{name}'");
     Ok(())
 }
@@ -191,9 +189,7 @@ pub async fn cmd_account_add(configuration: &str, name: &str) -> Result<()> {
     gcloud::require_gcloud()?;
     let configurations = gcloud::list_configurations().await?;
     let account = account_from_configuration(&configurations, configuration, name)?;
-    let mut config = load_config().unwrap_or_default();
-    config.add_account(account)?;
-    save_config(&config)?;
+    update_or_init_config(|config| config.add_account(account))?;
     println!("Account '{name}' saved to {}", config_dir()?.display());
     Ok(())
 }
@@ -207,15 +203,16 @@ pub fn cmd_account_edit(name: &str, project: Option<&str>, zone: Option<&str>) -
     if project == Some("") || zone == Some("") {
         bail!("A project or zone cannot be empty");
     }
-    let mut config = load_config()?;
-    let account = config.get_account_mut(Some(name))?;
-    if let Some(project) = project {
-        account.project = project.to_string();
-    }
-    if let Some(zone) = zone {
-        account.default_zone = zone.to_string();
-    }
-    save_config(&config)?;
+    update_config(|config| {
+        let account = config.get_account_mut(Some(name))?;
+        if let Some(project) = project {
+            account.project = project.to_string();
+        }
+        if let Some(zone) = zone {
+            account.default_zone = zone.to_string();
+        }
+        Ok(())
+    })?;
     println!("Account '{name}' updated");
     Ok(())
 }
@@ -224,7 +221,7 @@ pub fn cmd_account_edit(name: &str, project: Option<&str>, zone: Option<&str>) -
 mod tests {
     use super::*;
     use crate::config::testing::TempConfigDir;
-    use crate::config::Config;
+    use crate::config::{save_config, Config};
     use crate::state::{AccessTarget, PersistentTunnel, TunnelSpec, TunnelState};
 
     fn account(name: &str) -> Account {

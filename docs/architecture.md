@@ -200,6 +200,7 @@ separate switch, with `loginctl enable-linger` deciding whether it survives a lo
 |---|---|
 | `<config>/config.toml` | Accounts, default account, relay and domains per account |
 | `<config>/tunnels.toml` | Persistent tunnels |
+| `<config>/tunnels.lock`, `<config>/config.lock` | Empty files whose only job is to be locked. A command that changes `tunnels.toml` or `config.toml` holds the matching lock from its read to its write, so two gtunnels cannot drop each other's change. Safe to delete when no gtunnel is running |
 | `<config>/run/<account>-<name>.json` | One record per live `gtunnel run` |
 | `<config>/agents/<label>.plist` | macOS: the service definition gtunnel loads and unloads |
 | `~/Library/LaunchAgents/<label>.plist` | macOS: present only while auto-start is on |
@@ -207,6 +208,12 @@ separate switch, with `loginctl enable-linger` deciding whether it survives a lo
 | `<config>/logs/watchdog.log` | What the watchdog did. A pass where nothing needed doing writes nothing |
 | `<config>/logs/<account>-<name>.log` | Per-tunnel log, written by the service |
 | `<config>/update-check.json` | Last version check |
+
+Every file gtunnel writes is written to a sibling `<name>.<pid>.new` and renamed into place,
+so a crash or a full disk leaves the previous file whole, and with mode 0600 because the
+contents name accounts, projects and hosts. No lock is held while a command waits on gcloud
+or a service manager: the daemon work happens first, then the record is changed in one short
+locked update ([decision 16](decisions.md#16-state-files-are-written-atomically-under-an-advisory-lock)).
 
 `<config>` is `~/.gtunnel` (or `~/Library/Application Support/gtunnel` on macOS
 and `~/.config/gtunnel` on Linux), and `GTUNNEL_CONFIG_DIR` overrides it.

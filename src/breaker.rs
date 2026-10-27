@@ -189,7 +189,7 @@ pub mod persist {
     use super::Breaker;
     use anyhow::{Context, Result};
     use std::collections::BTreeMap;
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
     /// One tunnel's row: its breaker, and how long its log was when the
     /// watchdog last looked.
@@ -252,10 +252,8 @@ pub mod persist {
     /// Writes the breakers of tunnels that still exist, and only those: a
     /// deleted tunnel's row would otherwise sit in the file forever.
     ///
-    /// The write goes to a sibling temp file and is renamed into place.
-    /// Rename is atomic within a filesystem and truncate-then-write is not,
-    /// so a save that fails partway leaves the previous file whole rather
-    /// than leaving an empty one that reads as every breaker closed.
+    /// The write is atomic: a save that fails partway leaves the previous
+    /// file whole rather than an empty one that reads as every breaker closed.
     pub fn save(breakers: &BreakerFile, live: &[String]) -> Result<()> {
         let path = path()?;
         let dir = path.parent().context("breakers.toml has no directory")?;
@@ -269,32 +267,7 @@ pub mod persist {
             .collect();
         let text = toml::to_string_pretty(&kept).context("Failed to serialize the breakers")?;
 
-        // The temp name carries the pid: `gtunnel watch` in a terminal and
-        // the agent's `watch --once` are a documented pair, and one fixed
-        // name lets the second writer truncate the first one's half-written
-        // temp before both rename it into place.
-        let temp = path.with_extension(format!("{}.new", std::process::id()));
-        write_private(&temp, &text)
-            .with_context(|| format!("Failed to write {}", temp.display()))?;
-        std::fs::rename(&temp, &path).with_context(|| {
-            let _ = std::fs::remove_file(&temp);
-            format!("Failed to replace {}", path.display())
-        })?;
-        Ok(())
-    }
-
-    // Owner-only, like every other file gtunnel writes: the keys name the
-    // accounts and tunnels on this machine
-    fn write_private(path: &Path, text: &str) -> Result<()> {
-        std::fs::write(path, text)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(path)?.permissions();
-            perms.set_mode(0o600);
-            std::fs::set_permissions(path, perms)?;
-        }
-        Ok(())
+        crate::fsutil::write_atomic(&path, &text)
     }
 }
 

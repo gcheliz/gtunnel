@@ -193,24 +193,33 @@ pub fn save_config(config: &Config) -> Result<()> {
     std::fs::create_dir_all(&dir).with_context(|| format!("Failed to create {}", dir.display()))?;
     let path = config_path()?;
     let text = toml::to_string_pretty(config).context("Failed to serialize config")?;
-    std::fs::write(&path, text).with_context(|| format!("Failed to write {}", path.display()))?;
-    set_owner_only(&path)?;
-    Ok(())
+    crate::fsutil::write_atomic(&path, &text)
 }
 
-// The config holds project and account identity, so keep it readable only by its owner
-#[cfg(unix)]
-fn set_owner_only(path: &std::path::Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let mut perms = std::fs::metadata(path)?.permissions();
-    perms.set_mode(0o600);
-    std::fs::set_permissions(path, perms)?;
-    Ok(())
+// Same contract as `TunnelState::update`, on its own lock so editing an account
+// never waits on a tunnel save. A config that does not exist yet is an error;
+// the commands that create one use `update_or_init_config`.
+pub fn update_config<T>(f: impl FnOnce(&mut Config) -> Result<T>) -> Result<T> {
+    locked_config_update(load_config, f)
 }
 
-#[cfg(not(unix))]
-fn set_owner_only(_path: &std::path::Path) -> Result<()> {
-    Ok(())
+// For `init` and `account add`, which may be writing the first account
+pub fn update_or_init_config<T>(f: impl FnOnce(&mut Config) -> Result<T>) -> Result<T> {
+    locked_config_update(|| Ok(load_config().unwrap_or_default()), f)
+}
+
+fn locked_config_update<T>(
+    load: impl FnOnce() -> Result<Config>,
+    f: impl FnOnce(&mut Config) -> Result<T>,
+) -> Result<T> {
+    let _lock = crate::fsutil::lock_exclusive(
+        &config_dir()?.join("config.lock"),
+        crate::fsutil::LOCK_DEADLINE,
+    )?;
+    let mut config = load()?;
+    let value = f(&mut config)?;
+    save_config(&config)?;
+    Ok(value)
 }
 
 // Tests across several modules point GTUNNEL_CONFIG_DIR at a temp directory.

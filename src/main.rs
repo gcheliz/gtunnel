@@ -7,6 +7,7 @@ mod discovery;
 mod doctor;
 mod ephemeral;
 mod expose;
+mod fsutil;
 mod gcp;
 mod logfilter;
 mod loglevel;

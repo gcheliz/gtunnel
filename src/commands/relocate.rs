@@ -147,7 +147,14 @@ trait RenameOps {
     async fn remove_route(&self, tunnel: &PersistentTunnel) -> Result<()>;
     async fn stop(&self, label: &str);
     async fn uninstall(&self, label: &str) -> Result<()>;
-    fn save(&self, state: &TunnelState) -> Result<()>;
+    // `apply` is the relocation itself, so the live implementation can replay it
+    // on a freshly loaded file under the lock instead of overwriting whatever
+    // another gtunnel saved since `state` was read
+    fn save(
+        &self,
+        state: &TunnelState,
+        apply: &dyn Fn(&mut TunnelState) -> Result<()>,
+    ) -> Result<()>;
     async fn install(&self, spec: &ServiceSpec) -> Result<()>;
     async fn ensure_route(&self, tunnel: &PersistentTunnel) -> Result<()>;
     async fn start(&self, label: &str) -> Result<()>;
@@ -206,10 +213,11 @@ async fn run_relocate(
     src.stop(&old_label).await;
     src.uninstall(&old_label).await?;
 
-    relocate_in_state(state, from, to, old, new)?;
+    let apply = |s: &mut TunnelState| relocate_in_state(s, from, to, old, new).map(|_| ());
+    apply(state)?;
     // Past the uninstall the old service is gone; a failed save leaves the
     // record where it was, and `start` rebuilds the service from that record
-    dst.save(state).map_err(|e| {
+    dst.save(state, &apply).map_err(|e| {
         e.context(format!(
             "'{old}' was stopped and uninstalled but the record was not saved, so it is \
              still on account '{from}'; run `gtunnel start {old}{}` to bring it back",
@@ -321,8 +329,8 @@ impl RenameOps for LiveOps {
     async fn uninstall(&self, label: &str) -> Result<()> {
         daemon::uninstall(label).await
     }
-    fn save(&self, state: &TunnelState) -> Result<()> {
-        state.save()
+    fn save(&self, _: &TunnelState, apply: &dyn Fn(&mut TunnelState) -> Result<()>) -> Result<()> {
+        TunnelState::update(apply)
     }
     async fn install(&self, spec: &ServiceSpec) -> Result<()> {
         daemon::install(spec).await
@@ -569,7 +577,7 @@ mod tests {
         async fn uninstall(&self, _: &str) -> Result<()> {
             self.step("uninstall")
         }
-        fn save(&self, _: &TunnelState) -> Result<()> {
+        fn save(&self, _: &TunnelState, _: &dyn Fn(&mut TunnelState) -> Result<()>) -> Result<()> {
             self.step("save")
         }
         async fn install(&self, spec: &ServiceSpec) -> Result<()> {

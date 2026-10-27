@@ -115,7 +115,7 @@ Attestations begin with v0.1.1; v0.1.0 predates them.
 
 #### Building from source
 
-The two cargo routes compile gtunnel on your machine, so they need Rust 1.88 or newer and
+The two cargo routes compile gtunnel on your machine, so they need Rust 1.89 or newer and
 a C compiler: the TLS stack builds C code. A published binary needs neither.
 
 | Machine | Rust | C compiler |
@@ -135,9 +135,9 @@ $ cc --version | head -1
 Apple clang version 21.0.0 (clang-2100.3.34.2)
 ```
 
-Any `cargo` of 1.88 or later passes, and Linux prints its own compiler, such as
+Any `cargo` of 1.89 or later passes, and Linux prints its own compiler, such as
 `cc (Debian 12.2.0-14+deb12u1) 12.2.0`. Distribution packages of Rust often lag behind
-1.88, which is why rustup is the one route listed; `rustup update` moves to a newer
+1.89, which is why rustup is the one route listed; `rustup update` moves to a newer
 toolchain later. No other build tool is needed. Without a C compiler the build stops in its
 first seconds:
 
