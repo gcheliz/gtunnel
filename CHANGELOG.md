@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.30](https://github.com/gcheliz/gtunnel/compare/v0.1.29...v0.1.30) - 2026-10-27
+
+### Changed
+
+- bound every remaining subprocess ([#83](https://github.com/gcheliz/gtunnel/pull/83))
+
 ## [0.1.29](https://github.com/gcheliz/gtunnel/compare/v0.1.28...v0.1.29) - 2026-10-27
 
 ### Documentation
