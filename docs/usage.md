@@ -181,16 +181,18 @@ not about the setup.
 ### 7. Add a tunnel
 
 ```
-gtunnel add db my-vm:5432 -s
+gtunnel add db my-vm:5432 --local-port 15432 -s
 psql -h localhost -p 15432
 ```
 
-[add](#add) covers the three shapes a target can take: a port of an instance, a host behind
-a jump instance with `--via`, and an IAP destination group. `-s` installs the user service
-and starts it, so the tunnel survives closing the terminal.
+`--local-port` pins the port; without it the port is derived from the name, in 15000-15999.
+`-s` installs the user service and starts it, so the tunnel survives closing the terminal.
+[add](#add) covers the three target shapes: an instance port, a host behind `--via`, and an
+IAP destination group.
 
-Publishing a local service instead needs a Cloud DNS managed zone and a one-off relay per
-account: [domains](#zones-and-domains), [relay](#relay), then [expose](#expose).
+Publishing a local service needs a Cloud DNS managed zone and a one-off relay per account:
+`gtunnel relay up --managed-zone <zone>` ([relay](#relay)), then [expose](#expose).
+[domains add](#zones-and-domains) registers further zones once the relay exists.
 
 ## Command map
 
@@ -224,11 +226,12 @@ token that cannot be minted, including an expired refresh token, counts as logge
 
 | Checks the login | Skips the check |
 |---|---|
-| `gtunnel` (the TUI), `add -s`, `expose`, `run`, `start`, `stop`, `restart`, `list`, `move`, `zones`, `domains`, `relay` | `init`, `account`, `add` (without `-s`), `delete`, `rename`, `autostart`, `logs`, `zones default`, `domains default`, `domains add`, `doctor`, `watch`, `reset`, `demo`, `update` |
+| `gtunnel` (the TUI), `add -s`, `expose`, `run`, `start`, `stop`, `restart`, `list`, `move`, `zones`, `domains`, `relay` | `init`, `account`, `add` (without `-s`), `delete`, `rename`, `autostart`, `logs`, `zones default`, `domains default`, `domains add`, `doctor`, `watch`, `reset`, `demo`, `update`, `mcp` |
 
 `doctor` is skipped because it reports broken credentials as a finding and a login prompt
-would hide it; `init` has no account yet. Background services run `gcloud` directly and
-never go through this check.
+would hide it; `init` has no account yet; `mcp` speaks JSON-RPC on stdin and stdout, so a
+prompt there would corrupt the protocol. Background services run `gcloud` directly and never
+go through this check.
 
 On a terminal, a failed probe prompts for confirmation (`[y/N]`, defaulting to `No`)
 before running `gcloud auth login --configuration=<configuration>` with the terminal handed
@@ -571,7 +574,12 @@ and on a crash.
 gtunnel run my-vm:5432                 # access, prints the local port
 gtunnel run db my-vm:5432              # access, under a name
 gtunnel run --public 3000              # https://gt-<random>.<domain>
+gtunnel run my-vm:5432 --ttl 30m       # stops itself after 30 minutes
 ```
+
+<p align="center">
+  <img src="demo-run.gif" alt="gtunnel run db my-vm:5432 prints the local port, Ctrl+C closes the tunnel, and gtunnel list shows nothing left behind" width="720">
+</p>
 
 ## start, stop, restart, autostart, logs, list, delete
 
@@ -579,8 +587,13 @@ gtunnel run --public 3000              # https://gt-<random>.<domain>
 $ gtunnel list
 STATUS     NAME             MODE    URL                              TARGET
 ○ stopped  db               access  localhost:15432                  postgres-1:5432 (europe-west1-b)
+● running  scratch          access  localhost:15999                  my-vm:5432 (europe-west1-b)  [run, stops at 14:32]
 ● running  pid 59670        access  -                                bastion-1:22 (europe-west1-b)  [not managed by gtunnel]
 ```
+
+A live `gtunnel run` is listed with the mode it really is, `access` or `public`, and a marker
+after the target: `[run, stops at 14:32]` (local time) when it has a TTL, `[run]` when it does
+not. A run whose process is gone is not listed; `doctor` reports its leftover record.
 
 Add `--json` for machine-readable output:
 
@@ -595,10 +608,27 @@ $ gtunnel list --json
     "target": "postgres-1:5432 (europe-west1-b)",
     "account": "demo",
     "auto_start": false,
-    "unmanaged": false
+    "unmanaged": false,
+    "run": false
+  },
+  {
+    "status": "running",
+    "name": "scratch",
+    "mode": "access",
+    "url": "localhost:15999",
+    "target": "my-vm:5432 (europe-west1-b)",
+    "account": "demo",
+    "auto_start": false,
+    "unmanaged": false,
+    "run": true,
+    "expires_at": 1793103233
   }
 ]
 ```
+
+`run` is on every row, so one schema covers declared tunnels and runs, and `mode` still says
+what each is. `expires_at` (unix seconds) appears only on a
+run started with `--ttl`. `gtunnel_list_tunnels` returns the same two fields.
 
 ```
 $ gtunnel logs nope
@@ -617,9 +647,11 @@ bring the service manager to it, which is the same thing `A` does in the TUI. Wh
 disagree — a plist left at login by an older gtunnel, say — `gtunnel doctor` reports the
 drift and `doctor --fix` reconciles the service manager to the record.
 
-A start is judged three seconds after it is asked for. A tunnel whose service has failed by
-then is a failed start: the command prints the same lines it always did on stdout, exits 1,
-and the record stays. The hint line appears when the log holds a line gtunnel recognises, and
+A start waits for the tunnel to listen. An Access tunnel, `--via` included, is given up to
+20 seconds (`GTUNNEL_START_DEADLINE_MS`) and passes as soon as its log reports the listener;
+a public tunnel has no listener to wait for, so it is judged after a fixed 3 seconds. A
+tunnel whose service failed, or that is not listening by the deadline, is a failed start:
+the command prints the lines below on stdout, exits 1, and the record stays. The hint line appears when the log holds a line gtunnel recognises, and
 the TUI status line carries the same text.
 
 ```
@@ -747,7 +779,7 @@ No relay for account 'dev'. Run `gtunnel relay up`
 ```
 $ gtunnel relay up
 Relay for account 'dev' in europe-west1-b:
-  e2-micro VM + Global HTTPS Load Balancer (~$25/mo per account)
+  Global forwarding rule (~USD 18/month) and e2-micro VM (~USD 7/month, free tier in some US regions)
 Create it? [y/N] [n]: y
 ```
 
@@ -756,7 +788,7 @@ Declining cancels cleanly:
 ```
 $ gtunnel relay up
 Relay for account 'dev' in europe-west1-b:
-  e2-micro VM + Global HTTPS Load Balancer (~$25/mo per account)
+  Global forwarding rule (~USD 18/month) and e2-micro VM (~USD 7/month, free tier in some US regions)
 Create it? [y/N] [n]: Cancelled
 ```
 
@@ -769,21 +801,20 @@ Delete the relay for account 'dev' and everything it owns? [y/N] [n]: Cancelled
 
 ### The relay's firewall is yours to close
 
+`relay up` opens exactly two ingress rules, both on the network tag `gt-relay`; a tunnel
+opens nothing.
+
+| Rule | Allows | From |
+|---|---|---|
+| `gt-<account>-iap-ssh` | tcp `22` | IAP, `35.235.240.0/20` |
+| `gt-<account>-lb-hc` | tcp `30000-30999`, the relay ports | the load balancer and its health checkers, `130.211.0.0/22` and `35.191.0.0/16` |
+
 A public tunnel forwards with `ssh -R 0.0.0.0:<relay-port>:<local target>`, so the port
-listens on every interface of the relay VM. It has to: the load balancer reaches it from
-another host, and a loopback bind would leave the URL unreachable. gtunnel allocates the
-port; it never opens or closes a firewall for it.
-
-| | |
-|---|---|
-| Port range | `30000-30999` |
-| Should reach it | the load balancer, and Google's health checkers at `35.191.0.0/16` and `130.211.0.0/22` |
-| Must not reach it | anything else, and above all the internet |
-
-Leave that range open and a client who knows the relay's address and a port connects to
-the forwarded service directly. That skips the load balancer, and with `--private` it
-skips the IAP sign-in in front of it too, which is the whole protection that flag buys.
-Restrict the range on the relay's network tag before the first `gtunnel expose`.
+listens on every interface of the relay VM: the load balancer reaches it from another host.
+Any other rule on that network that admits `30000-30999` from elsewhere, such as an
+allow-all, lets a client who knows the relay's address connect to the forwarded service
+directly. That skips the load balancer and, with `--private`, the IAP sign-in in front of it.
+Check the network's rules before the first `gtunnel expose`.
 
 ## account
 
@@ -795,14 +826,14 @@ $ gtunnel account list
 `account select <name>` sets the default. The star marks it.
 
 ```
-gtunnel account add <gcloud-configuration> [<name>]
+gtunnel account add <name> --configuration <gcloud-configuration>
 gtunnel account edit <name> [--project P] [--zone Z]
 gtunnel account remove <name>
 ```
 
-`add` takes an existing gcloud configuration and reads the project and default zone from it,
-so an account is never a second place to type what gcloud already knows; the name defaults to
-the configuration's. `edit` changes only what it is given:
+`add` reads the project and default zone from an existing gcloud configuration, so an account
+is never a second place to type what gcloud already knows. `edit` changes only what it is
+given:
 
 ```
 $ gtunnel account edit dev --zone europe-west4-a
@@ -985,30 +1016,38 @@ account dev:
 | `--fix` | Fix what can be fixed safely |
 | `-y`, `--yes` | Skip the confirmation that `--fix` asks for |
 | `-a`, `--all` | Check every account, not only the selected one |
+| `--json` | Print the findings as a JSON array of `account`, `description` and `fixable` |
 
-`--fix` only ever removes stale local records, dead ephemeral records, and relay resources
-tagged `gtunnel:<account>` that no live tunnel claims, and reconciles auto-start to what
-`tunnels.toml` says. It re-checks that claim immediately
-before each removal, so a tunnel started during the scan is left alone. Findings it cannot
-fix, such as a missing firewall rule, are printed with the exact command that fixes them.
+`--fix` removes stale local records, dead ephemeral records and per-tunnel relay leftovers
+no live tunnel claims, reconciles auto-start to what `tunnels.toml` says, and installs a
+missing watchdog; [troubleshooting.md](troubleshooting.md#leftovers) lists each finding. It
+re-checks the claim immediately before each removal, so a tunnel started during the scan is
+left alone. Findings it cannot fix, such as a missing firewall rule, are printed with the
+exact command that fixes them.
 
-```
-$ gtunnel doctor --fix
-Remove 2 leftover(s)? [y/N] [n]: Cancelled
-```
-
-```
-$ gtunnel doctor --fix
-Remove 2 leftover(s)? [y/N] [n]: y
-  fixed: Stale local record for 'old-tunnel'
-```
-
-When no fixable leftovers remain:
+The report comes first, then the question; a declined one changes nothing. The samples
+below are written from the format strings in `src/doctor.rs`, since a scan reaches GCP:
 
 ```
 $ gtunnel doctor --fix
+account dev:
+  - Tunnel 'old-tunnel' is in tunnels.toml but has no service installed
+
+Remove 1 leftover(s)? [y/N] [n]: y
+  fixed: Tunnel 'old-tunnel' is in tunnels.toml but has no service installed
+```
+
+When the findings hold nothing gtunnel may remove:
+
+```
+$ gtunnel doctor --fix
+account dev:
+  ! Tunnel 'db' wants local port 15432, which is already in use
+
 Nothing here is gtunnel's to remove
 ```
+
+`-` marks a finding `--fix` handles, `!` one it only explains.
 
 ## reset
 
@@ -1037,8 +1076,13 @@ Nothing to remove: /Users/you/.gtunnel does not exist
 ```
 $ gtunnel update --check
 Checking for updates...
-gcheliz/gtunnel has no published releases yet, so there is nothing to update to
+Update available: v0.1.34 -> v0.1.35
+
+Run `gtunnel update` to install.
 ```
+
+Captured from a v0.1.34 build while v0.1.35 was the latest release. On the latest release the
+second line is `gtunnel v<version> is already the latest version.` instead.
 
 Every other command prints a one-line hint when a cached check found a newer version:
 
@@ -1047,9 +1091,9 @@ $ gtunnel list
 gtunnel v9.9.9 is available (current: v0.1.35). Run `gtunnel update`.
 ```
 
-The check runs at most once a day, in the background, and never blocks a command. An install
-from Homebrew is detected and `update` prints `brew upgrade gtunnel` instead of replacing the
-binary. Standalone downloads and `~/.cargo/bin` binaries update themselves directly.
+The check runs at most once a day, in the background, and never blocks a command. A
+downloaded binary and one in `~/.cargo/bin` replace themselves after verifying the published
+SHA-256; a Homebrew install is detected and pointed at `brew upgrade gtunnel` instead.
 
 ## Model Context Protocol (MCP) and AI Agent Integration
 
@@ -1062,13 +1106,13 @@ Located at `.agents/skills/gtunnel/SKILL.md` using the open Agent Skills standar
 guides AI agents (Claude Code, Gemini CLI, etc.) on:
 
 - Enforcing tunnel naming conventions (`<platform>` or `<platform>-<service>`, never account/env suffixes).
-- Routing client-side protocols through bastions (e.g. MongoDB Compass over SSH on port 2222/2223).
+- Routing client-side protocols through one bastion tunnel (e.g. MongoDB Compass over SSH) rather than one tunnel per backend host.
 - Scoping commands to the correct GCP account.
 - Performing mandatory pre-completion verification: checking daemon status, inspecting logs for IAP error codes (such as `4033`), and probing local listening ports.
 
 ### The native MCP Server
 
-`gtunnel mcp` runs a newline-delimited JSON-RPC 2.0 stdio server in pure Rust. It exposes 10 tools
+`gtunnel mcp` runs a newline-delimited JSON-RPC 2.0 stdio server in pure Rust. It exposes 11 tools
 and 2 live resources without requiring an external runtime.
 
 #### Exposed Tools
@@ -1077,14 +1121,35 @@ and 2 live resources without requiring an external runtime.
 |---|---|---|
 | `gtunnel_list_tunnels` | `account?` | Lists configured tunnels and their daemon statuses |
 | `gtunnel_start_tunnel` | `name`, `account?` | Starts a stopped tunnel daemon |
-| `gtunnel_stop_tunnel` | `name`, `account?` | Stops a running tunnel daemon |
+| `gtunnel_stop_tunnel` | `name`, `account?` | Stops a running tunnel daemon; with no persistent tunnel of that name, stops the live `gtunnel_run_tunnel` run of that name |
 | `gtunnel_restart_tunnel` | `name`, `account?` | Reinstalls service spec and restarts daemon |
 | `gtunnel_get_status` | `name`, `account?` | Returns PID, restarts, and active TCP probe round-trip latency |
 | `gtunnel_get_logs` | `name`, `lines?`, `account?` | Tails daemon log with automatic error diagnosis |
 | `gtunnel_add_tunnel` | `name`, `target`, `via?`, `zone?`, `local_port?`, `dest_group?`, `region?`, `network?`, `start?`, `account?` | Adds an Access tunnel |
+| `gtunnel_run_tunnel` | `target`, `ttl_minutes`, `name?`, `zone?`, `local_port?`, `account?` | Opens a short-lived Access tunnel that closes by itself after `ttl_minutes` |
 | `gtunnel_delete_tunnel` | `name`, `account?` | Deletes a persistent tunnel and removes its service |
 | `gtunnel_list_accounts` | none | Lists accounts and shows active selection |
 | `gtunnel_doctor` | `account?`, `all?` | Runs diagnostic checks on GCP resources and local config |
+
+`gtunnel_run_tunnel` is the agent's way to ask for temporary access. It starts
+`gtunnel run <name> <target> --ttl <n>m` as a detached process, so the tunnel outlives the MCP
+server and its only owner is the TTL, and it answers once the run has published its record:
+
+```json
+{"name": "gt-4k9x2m", "account": "demo", "url": "localhost:15247", "local_port": 15247,
+ "target": "my-vm:5432 (europe-west1-b)", "ttl_minutes": 5, "expires_at": 1793103233}
+```
+
+| Rule | Why |
+|---|---|
+| `ttl_minutes` is required, 1 to 480 | An agent may never come back to close what it opened, so the lifetime is part of the request and has a ceiling. Longer-lived access is `gtunnel_add_tunnel`, which the user can see and delete |
+| Access mode only; `public` is refused | Publishing a hostname is something a person asks for, never a side effect of an agent's call |
+| `name` is optional | A `gt-xxxxxx` name is generated, as for `gtunnel run` without one |
+| Output goes to `logs/run-<account>-<name>.log` | A start that fails returns that log's tail as the tool error |
+| `gtunnel_stop_tunnel` closes it early | A persistent tunnel of the same name wins; without one, the name means the live run |
+
+Prefer `gtunnel_run_tunnel` for access that lasts an afternoon; use `gtunnel_add_tunnel` for
+something the user keeps.
 
 A tool that fails returns a normal result with `isError: true` and the whole cause as its
 text, such as `db failed to start` and the hint under it. A start that fails is such a failure:
@@ -1105,7 +1170,7 @@ To verify tool definitions and JSON schemas non-interactively:
 
 ```
 $ gtunnel mcp --validate
-Validated 10 tools and 2 resources successfully.
+Validated 11 tools and 2 resources successfully.
 ```
 
 To inspect tools, schemas, and test calls interactively using the official MCP Inspector:
@@ -1216,7 +1281,7 @@ Each entry in `accounts`:
 | `domains` | array of tables | no | Every registered domain; `default_domain` must name one of them |
 
 Each entry in `domains` has `domain` (the DNS name) and `managed_zone` (the Cloud DNS
-managed zone that serves it). `domains add` writes these; `domains list` reads them.
+managed zone that serves it). `domains add` writes these; `gtunnel domains` lists them.
 
 ### tunnels.toml
 
@@ -1298,12 +1363,25 @@ the level in force at the moment of the toggle. Worth knowing if you exported
 `GTUNNEL_LOG_LEVEL` to diagnose something and left it set: the next `autostart --on` puts
 that level on the tunnel's start at login.
 
+### run --ttl
+
+`gtunnel run --ttl DURATION` stops the run by itself, through the same teardown as Ctrl+C: the
+route and the record in `run/` go the same way.
+
+| Form | Meaning |
+|---|---|
+| `90s`, `30m`, `2h` | Seconds, minutes, hours |
+| `45` | A bare number is minutes |
+| `0`, `1.5h`, `10d`, over `24h` | Refused before anything starts |
+
 ### Environment
 
 | Variable | Read by | Effect |
 |---|---|---|
 | `GTUNNEL_CONFIG_DIR` | every command | Moves `config.toml`, `tunnels.toml`, `lifecycle.json`, `run/` (including the watchdog heartbeat), `agents/` and `logs/` into that directory. The service label is still `com.gtunnel.<account>.<name>`, so give a throwaway configuration an account name of its own or `install` restarts the live job that shares the label |
 | `GTUNNEL_LOG_LEVEL` | every command | `quiet`, `info` or `debug`. Beaten by `--log-level`, beats `log_level` in `config.toml`. An empty value counts as unset; anything else that is not a level is an error naming the variable. See [The log level](#the-log-level) |
+| `GTUNNEL_NO_NOTIFY` | every command | Silences desktop notifications when set to anything but empty or `0`. The integration tests set it, so `cargo test` never posts a banner |
+| `GTUNNEL_START_DEADLINE_MS` | `start`, `restart`, `add -s` | Milliseconds an Access tunnel is given to report it is listening before the start counts as failed. Default 20000; an empty or non-numeric value counts as unset. Public tunnels use a fixed 3-second settle instead |
 | `GTUNNEL_SERVICE_BOUND_MS` | every command | A test and diagnostics knob: milliseconds to wait for one `launchctl` or `systemctl` call before it is reported as `timed out after`. Default 10000; an empty, zero or non-numeric value counts as unset. Leave it alone unless you are testing the timeout path or diagnosing a slow service manager |
 | `VISUAL`, then `EDITOR` | the TUI's config page | Which editor `e` opens. `VISUAL` wins because it names the full-screen editor. An empty value counts as unset, since `EDITOR=` is how a shell clears one, and neither set falls back to the platform default |
 | `PATH` | startup | Where `gcloud` is found |
@@ -1318,12 +1396,13 @@ Linux if `~/.gtunnel` does not exist).
 
 ### Exit codes
 
-gtunnel never calls `exit` with a code of its own, so there are only two:
+gtunnel never calls `exit` with a code of its own, so there are three:
 
 | Code | Meaning |
 |---|---|
 | `0` | The command did what it said |
 | `1` | It did not, and the reason is on stderr, or on stdout for a failed start |
+| `2` | The command line did not parse: an unknown command or flag, or a missing argument. The usage error is on stderr |
 
 A failure is one line on stderr beginning `Error:`, so a script can branch on the status
 and show the line. A start that did not come up is the exception: it keeps the `✗` lines it

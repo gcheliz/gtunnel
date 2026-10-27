@@ -34,8 +34,8 @@ Knowing what is and is not at stake usually narrows a report quickly.
 |---|---|
 | Credentials | None are stored. Every call takes a fresh token from `gcloud auth print-access-token`, and gtunnel shells out to `gcloud` rather than holding one itself |
 | On disk | `config.toml` and `tunnels.toml` (accounts, projects, zones, tunnel definitions), launchd plists or systemd units, and logs. No secret is written to any of them |
-| Network | Tunnels are made by `gcloud compute start-iap-tunnel`; gtunnel does not implement the transport |
-| In GCP | Access mode creates nothing. Public mode creates a relay VM, a load balancer, a certificate map, DNS records and firewall rules, each tagged `gtunnel:<account>` so `doctor --fix` can only remove what gtunnel made |
+| Network | gtunnel does not implement the transport. An Access tunnel runs `gcloud compute start-iap-tunnel`, a `--via` tunnel `gcloud compute ssh --tunnel-through-iap -- -N -L`, and a public tunnel the same command with `-R` to the relay VM |
+| In GCP | Access mode creates nothing. Public mode creates a relay VM, a load balancer, a certificate map, DNS records and firewall rules. `doctor --fix` removes only per-tunnel leftovers: backend services tagged `gtunnel:<account>`, and host rules, named ports and DNS records on the relay gtunnel made |
 
 A tunnel's local port is reachable by anything on the machine that can open a
 socket. That is what a forwarded port is, not a defect, but it is worth
@@ -43,5 +43,5 @@ knowing on a shared host.
 
 ## Dependencies
 
-`cargo audit --deny warnings` runs on every push, and Dependabot opens updates
-for the crate and action dependencies.
+`cargo audit --deny warnings` runs on every pull request and on every release, and
+Dependabot opens updates for the crate and action dependencies.

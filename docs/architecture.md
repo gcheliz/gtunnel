@@ -111,8 +111,8 @@ balancer's health check reach the port.
 
 Both firewall rules target the tag `gt-relay`, which only the relay VM carries. Every
 backend service gtunnel creates carries `description: gtunnel:<account>`, and that tag,
-not the name, is what `doctor --fix` uses to decide whether a resource is gtunnel's. A
-resource someone created by hand that happens to match the naming scheme is never deleted.
+not the name, is what `doctor --fix` uses to decide whether a backend is gtunnel's. A
+backend someone created by hand that happens to match the naming scheme is never deleted.
 
 Port ranges: local ports 15000-15999, relay ports 30000-30998. Relay port 30999 is the
 default backend, which has no listener, so an unknown hostname gets a 503 instead of
@@ -122,9 +122,11 @@ reaching another tunnel.
 
 ![What relay up creates: on your laptop, gtunnel relay up creates the per-account resources once (HTTPS front end with global address, forwarding rule and HTTPS proxy; URL map with default backend and health check; relay VM and its instance group; firewall rules gt-ACCT-iap-ssh and gt-ACCT-lb-hc; certificate map gt-ACCT-certs), gtunnel domains add creates the per-domain certificate, DNS authorization and apex and wildcard certificate-map entries, and gtunnel expose or run --public creates the per-tunnel backend service and named port, URL-map host rule and Cloud DNS A record with TTL 60, all in GCP example-prod-3c4d; the certificate-map entries are added to the certificate map and the host rule to the URL map](images/architecture/gtunnel-relay-resources.png)
 
-Everything above except the DNS record carries `description: gtunnel:<account>`. A Cloud DNS
-record has no description field, so gtunnel treats one as its own only while it still holds a
-tagged backend, host rule or named port for the same tunnel.
+Only the per-tunnel backend service carries `description: gtunnel:<account>`. `doctor --fix`
+treats a host rule on the relay's URL map as orphaned when no tunnel claims its hostname, and a
+named port on the relay's instance group when it starts `gt-` and no tunnel claims it. A Cloud
+DNS record has no description field, so gtunnel treats one as its own only while it still
+holds a tagged backend, a host rule or a named port for the same tunnel.
 
 `relay down` removes the per-account and per-domain halves, in dependency order: forwarding
 rule, HTTPS proxy, global address, URL map, default backend, health check, each domain's
@@ -148,7 +150,7 @@ services first. It never touches the Cloud DNS managed zone, which is yours.
 | TUI polling | Discovery, metrics and health are three pollers, each with at most one round in flight: a round slower than its period is waited for, never started again on top of itself. A result carries the generation its round began under and is dropped when that is no longer current, which is what an account switch does to every round begun for the old account. Every `gcloud`, `launchctl` and `systemctl` call is bounded (30s and 10s) and fails with `<command> timed out after <n>s`; the child is killed on timeout. The `lsof` and `ps` reads run on the blocking pool. `delete` treats a timed-out stop as a failure and keeps the record, because removing it would orphan a job that may still be running |
 | Strangers | A `[not managed by gtunnel]` row is an IAP process nothing here accounts for. One `ps` snapshot is read, then a process is gtunnel's if it forwards a port that any account's `tunnels.toml` entry or any run record owns, or if it sits below a pid launchd or a run record names. The port is tried first because launchd reports a supervisor's pid before the supervisor has spawned its gcloud child, and a verdict that depends on that gap is a verdict that depends on timing |
 | Concurrent writes | Read-modify-write against a fingerprinted resource (URL map, named ports) retries up to 5 times on HTTP 412 |
-| Metrics | Latency every 5s, health every 30s, load-balancer request counts every 60s over a 10-minute window. Connections are sampled every 500ms from one `lsof` listing covering every tunnel, and the 5s figure is the peak of that window: a request shorter than the window would otherwise be missed entirely |
+| Metrics | Latency every 5s, health every 5s, load-balancer request counts every 60s over a 10-minute window. Connections are sampled every 500ms from one `lsof` listing covering every tunnel, and the 5s figure is the peak of that window: a request shorter than the window would otherwise be missed entirely |
 
 ### Service lifecycle
 
@@ -171,6 +173,10 @@ separate switch, with `loginctl enable-linger` deciding whether it survives a lo
 | `<config>/tunnels.toml` | Persistent tunnels |
 | `<config>/tunnels.lock`, `<config>/config.lock` | Empty files whose only job is to be locked. A command that changes `tunnels.toml` or `config.toml` holds the matching lock from its read to its write, so two gtunnels cannot drop each other's change. Safe to delete when no gtunnel is running |
 | `<config>/run/<account>-<name>.json` | One record per live `gtunnel run` |
+| `<config>/run/<label>.ready` | Written by a tunnel's supervisor once its log reports the listener; what `start` waits for |
+| `<config>/run/probes/` | One file per local port gtunnel is probing, so the supervisor leaves gtunnel's own health checks out of the `conn` lines |
+| `<config>/run/watchdog.heartbeat` | Time of the watchdog's last pass. `watch status` reports its age; while it is under 90s old the TUI leaves notifications to the watchdog |
+| `<config>/lifecycle.json`, `<config>/lifecycle.lock` | The last state each tunnel was seen in, shared by the watchdog, the TUI and the CLI so that a change is notified once. The lock serialises its updates |
 | `<config>/agents/<label>.plist` | macOS: the service definition gtunnel loads and unloads |
 | `~/Library/LaunchAgents/<label>.plist` | macOS: present only while auto-start is on |
 | `<config>/breakers.toml` | One row per tunnel: what the watchdog has seen of it, and how far up the restart ladder it is. Rewritten whole on every pass, by writing a sibling file and renaming it, and pruned to the tunnels that still exist |
@@ -184,8 +190,9 @@ contents name accounts, projects and hosts. No lock is held while a command wait
 or a service manager: the daemon work happens first, then the record is changed in one short
 locked update ([decision 16](decisions.md#16-state-files-are-written-atomically-under-an-advisory-lock)).
 
-`<config>` is `~/.gtunnel` (or `~/Library/Application Support/gtunnel` on macOS
-and `~/.config/gtunnel` on Linux), and `GTUNNEL_CONFIG_DIR` overrides it.
+`<config>` is `~/.gtunnel`. A legacy `~/Library/Application Support/gtunnel` on macOS or
+`~/.config/gtunnel` on Linux is used only when it exists and `~/.gtunnel` does not.
+`GTUNNEL_CONFIG_DIR` overrides both.
 
 ### The account and config model
 

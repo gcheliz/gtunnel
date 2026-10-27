@@ -134,6 +134,7 @@ impl Harness {
             .env("PATH", path)
             .env("HOME", root)
             .env("GTUNNEL_CONFIG_DIR", root.join("config"))
+            .env("GTUNNEL_NO_NOTIFY", "1")
             .stdin(Stdio::null())
             .output()
             .expect("run gtunnel")

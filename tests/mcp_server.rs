@@ -94,6 +94,7 @@ impl Harness {
             .env("PATH", path)
             .env("HOME", root)
             .env("GTUNNEL_CONFIG_DIR", root.join("config"))
+            .env("GTUNNEL_NO_NOTIFY", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -124,6 +125,7 @@ impl Harness {
             .env("PATH", path)
             .env("HOME", root)
             .env("GTUNNEL_CONFIG_DIR", root.join("config"))
+            .env("GTUNNEL_NO_NOTIFY", "1")
             .stdin(Stdio::null())
             .output()
             .expect("run gtunnel");
@@ -140,7 +142,7 @@ fn mcp_validate_flag_exits_successfully() {
     let h = Harness::new();
     let (stdout, stderr, success) = h.run(&["mcp", "--validate"]);
     assert!(success, "stderr: {stderr}");
-    assert!(stdout.contains("Validated 10 tools and 2 resources successfully."));
+    assert!(stdout.contains("Validated 11 tools and 2 resources successfully."));
 }
 
 #[test]
@@ -161,7 +163,7 @@ fn mcp_stdio_initialize_handshake() {
 }
 
 #[test]
-fn mcp_stdio_tools_list_returns_ten_tools() {
+fn mcp_stdio_tools_list_returns_eleven_tools() {
     let h = Harness::new();
     let req = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#;
     let (stdout, stderr, success) = h.run_mcp_pipe(&format!("{req}\n"));
@@ -170,7 +172,7 @@ fn mcp_stdio_tools_list_returns_ten_tools() {
     let line = stdout.lines().next().expect("response line");
     let resp: serde_json::Value = serde_json::from_str(line).expect("valid json response");
     let tools = resp["result"]["tools"].as_array().expect("tools array");
-    assert_eq!(tools.len(), 10);
+    assert_eq!(tools.len(), 11);
 
     let tool_names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     assert!(tool_names.contains(&"gtunnel_list_tunnels"));
@@ -183,6 +185,7 @@ fn mcp_stdio_tools_list_returns_ten_tools() {
     assert!(tool_names.contains(&"gtunnel_delete_tunnel"));
     assert!(tool_names.contains(&"gtunnel_list_accounts"));
     assert!(tool_names.contains(&"gtunnel_doctor"));
+    assert!(tool_names.contains(&"gtunnel_run_tunnel"));
 }
 
 #[test]
@@ -372,4 +375,42 @@ fn add_with_failed_start_keeps_the_record_and_reports_the_failure() {
     let text = frames[0]["result"]["content"][0]["text"].as_str().unwrap();
     assert!(text.contains("redis failed to start"), "{text}");
     assert!(tunnels.contains("name = \"redis\""), "{tunnels}");
+}
+
+#[test]
+fn mcp_list_tunnels_includes_a_live_run_and_marks_it() {
+    let h = Harness::new();
+    let mut sleeper = Command::new("/bin/sleep").arg("30").spawn().expect("sleep");
+    let dir = h.dir.path().join("config/run");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("demo-scratch.json"),
+        format!(
+            r#"{{"name":"scratch","account_name":"demo","pid":{},"started_at":1700000000,"ttl_secs":300,
+"spec":{{"mode":"access","target":{{"kind":"instance","instance":"my-vm","zone":"europe-west1-b"}},"remote_port":5432,"local_port":15999}}}}"#,
+            sleeper.id()
+        ),
+    )
+    .unwrap();
+    let req = r#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"gtunnel_list_tunnels","arguments":{}}}"#;
+    let (stdout, stderr, success) = h.run_mcp_pipe(&format!("{req}\n"));
+    let _ = sleeper.kill();
+    let _ = sleeper.wait();
+    assert!(success, "stderr: {stderr}");
+    let resp: serde_json::Value =
+        serde_json::from_str(stdout.lines().next().expect("line")).expect("json");
+    let text = resp["result"]["content"][0]["text"].as_str().expect("text");
+    let rows: serde_json::Value = serde_json::from_str(text).expect("rows");
+    let run = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["name"] == "scratch")
+        .expect("the run is listed");
+    assert_eq!(run["run"], true);
+    assert_eq!(run["mode"], "access");
+    assert_eq!(run["status"], "running");
+    assert_eq!(run["expires_at"], 1_700_000_300u64);
+    let declared = rows.as_array().unwrap().iter().find(|r| r["name"] == "db");
+    assert_eq!(declared.map(|r| r["run"].clone()), Some(false.into()));
 }

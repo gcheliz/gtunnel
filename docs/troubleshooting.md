@@ -53,9 +53,9 @@ cargo install --git https://github.com/gcheliz/gtunnel --force
 `cargo install --list` shows what is left. The entry you want names a `git+` or `path+`
 source, never `registry+https://github.com/rust-lang/crates.io-index`.
 
-v0.1.0 is how most people get here: its `gtunnel update` printed `cargo install gtunnel`
-for a cargo-installed copy, sending its own users to the wrong crate. v0.1.1 and later
-print the `--git` command above instead.
+A v0.1.0 binary is the usual way here: its `gtunnel update` printed `cargo install gtunnel`
+for a cargo-installed copy. Current versions replace a cargo-installed binary themselves, as
+they do a download, and point only a Homebrew install at `brew upgrade gtunnel`.
 
 ### `gtunnel --version` reports an older version than the latest release
 
@@ -69,9 +69,10 @@ exactly this, and nothing about it is broken.
 | Where cargo got it | `cargo install --list` | the source in parentheses is the truth |
 | What is published | `gh release list --repo gcheliz/gtunnel --limit 1` | compare the tag against `--version` |
 
-Fix it the way it was installed: `git pull && cargo install --path .` from a clone,
-`cargo install --git https://github.com/gcheliz/gtunnel --force` from the repository, or
-`gtunnel update` for a downloaded binary.
+`gtunnel update` brings a downloaded or cargo-installed binary to the latest release, and
+`brew upgrade gtunnel` a Homebrew one. To stay on a source build instead:
+`git pull && cargo install --path .` from a clone, or
+`cargo install --git https://github.com/gcheliz/gtunnel --force` from the repository.
 
 ### `gtunnel: command not found` right after installing
 
@@ -125,12 +126,15 @@ emptied when its tunnel starts, so a line in it was written by the process runni
 
 ### A start that says `failed to start`
 
-`gtunnel start`, `restart` and `add -s` wait three seconds and then read the service's state.
-`<name> failed to start` means the service had already exited with an error by then, so the
-command exits 1 and the TUI status line, or an MCP client's `isError` result, says the same.
-The line under it is the hint for the newest log line gtunnel recognises, from the table above;
-`gtunnel logs <name>` shows the rest. A tunnel that is still connecting after three seconds
-reads as running, so `gtunnel list` is the check for one that fails later.
+`gtunnel start`, `restart` and `add -s` wait for the tunnel to come up. An Access tunnel,
+`--via` included, has up to 20 seconds to report it is listening (`GTUNNEL_START_DEADLINE_MS`
+moves the bound); a public tunnel is judged after a fixed 3 seconds.
+`<name> failed to start` means the service exited with an error or was not listening by then,
+so the command exits 1 and the TUI status line, or an MCP client's `isError` result, says the
+same. The line under it is the hint for the newest log line gtunnel recognises, from the table
+above, or `not listening after 20s`; `gtunnel logs <name>` shows the rest. A public tunnel
+still connecting after 3 seconds reads as running, so `gtunnel list` is the check for one that
+fails later.
 
 ### One level, two scales
 
@@ -164,14 +168,14 @@ level it started under until its service is reinstalled, which `start`, `restart
 
 ### Who writes what
 
-Two processes append to the same file. The service's child writes continuously, whether
-or not anyone is watching; gtunnel writes the few facts only it knows, and only while a
-gtunnel process is running.
+Three writers append to the same file. The service and its supervisor write for as long as
+the tunnel runs; a gtunnel command or the TUI adds the few facts only it knows.
 
 | Writer | Lines | When |
 |---|---|---|
 | The service's child | gcloud's own output at the configured `--verbosity`, and, for the kinds that run ssh (`--via` and public), ssh's at the matching `LogLevel` (see the table above) | Always, from start to exit |
-| gtunnel | `gtunnel: <message>`, always prefixed and timestamped | Only while the TUI or a gtunnel command is running |
+| The tunnel's supervisor | `gtunnel: conn ...` lines, prefixed and timestamped | Always, from start to exit |
+| gtunnel | every other `gtunnel: <message>` line, prefixed and timestamped | Only while the TUI or a gtunnel command is running |
 
 The shapes below are what each kind of line looks like, not a captured transcript:
 
@@ -464,12 +468,18 @@ So a relay is about USD 25/month per account, and a tunnel on top of it is free.
 |---|---|
 | Stale local record | A tunnel in `tunnels.toml` with no service installed |
 | Dead ephemeral | A `run` record whose process is gone |
-| Orphan DNS record, backend, host rule, named port | Relay resources tagged `gtunnel:<account>` that no live tunnel claims |
+| Auto-start drift | Nothing: the service manager is brought to the `auto_start` in `tunnels.toml` |
+| Missing watchdog | Nothing: the watchdog agent is installed |
+| Orphan backend | A backend service whose description is `gtunnel:<account>` and that no tunnel in `tunnels.toml` claims |
+| Orphan host rule | A host rule on the relay's URL map for a hostname no tunnel claims |
+| Orphan named port | A named port starting `gt-` on the relay's instance group that no tunnel claims |
+| Orphan DNS record | An A record aimed at the relay that one of the above still ties to the tunnel |
 
 It re-checks the claim against `tunnels.toml` and the live runs immediately before each
 removal, so a tunnel created while the scan was running is never torn out from under you.
-Anything created by hand is left alone, even when its name matches gtunnel's scheme, because
-the decision is made on the `gtunnel:<account>` tag rather than on the name.
+Only backend services carry the `gtunnel:<account>` tag, so a hand-made backend is left
+alone even when its name matches gtunnel's scheme. Host rules and named ports live on the
+relay's own URL map and instance group, which gtunnel created.
 
 A Cloud DNS record set carries no description, so pointing at the relay address is not proof
 of ownership. gtunnel treats such a record as its own only while it still holds a tagged

@@ -350,6 +350,7 @@ mod tests {
                     local_port,
                 },
                 started_at: 0,
+                ttl_secs: None,
             },
             true,
         )]

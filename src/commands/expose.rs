@@ -60,7 +60,7 @@ async fn pick_managed_zone(client: &GcpClient, project: &str) -> Result<String> 
     let zones = dns::list_managed_zones(client, project).await?;
     match zones.len() {
         0 => bail!(
-            "No Cloud DNS managed zones in project '{project}'. Create one with `gcloud dns managed-zones create`, then run `gtunnel domains add`"
+            "No Cloud DNS managed zones in project '{project}'. Create one with `gcloud dns managed-zones create`, then run `gtunnel relay up --managed-zone <zone>`"
         ),
         1 => Ok(zones[0].name.clone()),
         _ => {
@@ -389,7 +389,7 @@ mod tests {
         let msg = format!("{err:#}");
         assert!(msg.contains("No Cloud DNS managed zones in project 'proj-1'"));
         assert!(msg.contains(
-            "Create one with `gcloud dns managed-zones create`, then run `gtunnel domains add`"
+            "Create one with `gcloud dns managed-zones create`, then run `gtunnel relay up --managed-zone <zone>`"
         ));
     }
 }

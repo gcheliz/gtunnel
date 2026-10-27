@@ -28,6 +28,31 @@ pub fn status_word(status: TunnelStatus) -> &'static str {
     }
 }
 
+/// `[run, stops at 14:32]`, or `[run]` for a run with no TTL. Local time, since
+/// the reader compares it with a clock on the wall, and a TTL is at most a day
+/// so the hour and minute cannot be mistaken for another day's.
+pub fn run_note(expires_at: Option<u64>) -> String {
+    match expires_at.and_then(local_hhmm) {
+        Some(time) => format!("  [run, stops at {time}]"),
+        None => "  [run]".to_string(),
+    }
+}
+
+fn local_hhmm(unix_secs: u64) -> Option<String> {
+    let t = libc::time_t::try_from(unix_secs).ok()?;
+    // SAFETY: localtime_r writes into the zeroed tm we own and reads the
+    // time_t we pass by reference; neither pointer outlives the call, and unlike
+    // localtime it keeps no shared static buffer, so threads cannot race on it.
+    let tm = unsafe {
+        let mut tm: libc::tm = std::mem::zeroed();
+        if libc::localtime_r(&t, &mut tm).is_null() {
+            return None;
+        }
+        tm
+    };
+    Some(format!("{:02}:{:02}", tm.tm_hour, tm.tm_min))
+}
+
 /// One line of `gtunnel list`, before it knows how wide its columns are.
 ///
 /// Rows are collected before any of them is printed because a column cannot
@@ -40,10 +65,26 @@ pub struct ListRow {
     pub url: String,
     pub target: String,
     /// Appended after the target, for a tunnel gtunnel does not own.
-    pub note: Option<&'static str>,
+    pub note: Option<String>,
 }
 
 impl ListRow {
+    /// A live `gtunnel run`. The mode column keeps saying what the tunnel is,
+    /// so a reader scanning it still finds every public one; that it ends by
+    /// itself is a trailing marker, like the one on a tunnel gtunnel does not
+    /// own, and says when so nobody has to do the arithmetic.
+    pub fn from_run(record: &crate::ephemeral::EphemeralRecord) -> Self {
+        let t = record.as_tunnel();
+        Self {
+            status: TunnelStatus::Running,
+            name: t.name.clone(),
+            mode: t.display_kind(),
+            url: t.display_url(),
+            target: t.display_target(),
+            note: Some(run_note(record.expires_at())),
+        }
+    }
+
     pub fn from_tunnel(status: TunnelStatus, t: &PersistentTunnel) -> Self {
         Self {
             status,
@@ -56,7 +97,7 @@ impl ListRow {
     }
 
     pub fn render(&self, layout: &ListLayout) -> String {
-        let note = self.note.unwrap_or_default();
+        let note = self.note.as_deref().unwrap_or_default();
         format!(
             "{} {:<8} {:<name$} {:<MODE_WIDTH$} {:<url$} {}{note}",
             self.status.symbol(),
@@ -216,6 +257,18 @@ mod tests {
             }
         }
         starts
+    }
+
+    #[test]
+    fn a_run_note_names_the_stop_time_only_with_a_ttl() {
+        assert_eq!(run_note(None), "  [run]");
+        let with = run_note(Some(1_700_000_000));
+        let time = with
+            .strip_prefix("  [run, stops at ")
+            .and_then(|t| t.strip_suffix(']'))
+            .expect(&with);
+        assert_eq!(time.chars().count(), 5, "{time}");
+        assert_eq!(time.as_bytes()[2], b':');
     }
 
     #[test]

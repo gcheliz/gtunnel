@@ -669,6 +669,12 @@ pub struct ListRowJson {
     pub account: String,
     pub auto_start: bool,
     pub unmanaged: bool,
+    /// A `gtunnel run`, which ends by itself. False on a declared tunnel, so an
+    /// agent reads one schema for every row; `mode` still says what it is.
+    pub run: bool,
+    /// Unix seconds at which the run's TTL ends it; absent without a TTL.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
 }
 
 pub async fn cmd_list(account: Option<&str>, json: bool) -> Result<()> {
@@ -676,6 +682,7 @@ pub async fn cmd_list(account: Option<&str>, json: bool) -> Result<()> {
     let state = TunnelState::load()?;
     let tunnels = state.tunnels_for_account(&acct.name);
     let external = external_rows().await;
+    let runs = crate::ephemeral::live_runs(&acct.name).unwrap_or_default();
 
     if json {
         let mut json_rows = Vec::new();
@@ -690,6 +697,23 @@ pub async fn cmd_list(account: Option<&str>, json: bool) -> Result<()> {
                 account: tunnel.account_name.clone(),
                 auto_start: tunnel.auto_start,
                 unmanaged: false,
+                run: false,
+                expires_at: None,
+            });
+        }
+        for run in &runs {
+            let t = run.as_tunnel();
+            json_rows.push(ListRowJson {
+                status: "running".to_string(),
+                name: t.name.clone(),
+                mode: t.display_kind().to_string(),
+                url: t.display_url(),
+                target: t.display_target(),
+                account: t.account_name.clone(),
+                auto_start: false,
+                unmanaged: false,
+                run: true,
+                expires_at: run.expires_at(),
             });
         }
         for ext in external {
@@ -702,13 +726,15 @@ pub async fn cmd_list(account: Option<&str>, json: bool) -> Result<()> {
                 account: acct.name.clone(),
                 auto_start: false,
                 unmanaged: true,
+                run: false,
+                expires_at: None,
             });
         }
         println!("{}", serde_json::to_string_pretty(&json_rows)?);
         return Ok(());
     }
 
-    if tunnels.is_empty() {
+    if tunnels.is_empty() && runs.is_empty() {
         println!("No tunnels for account '{}'", acct.name);
         return Ok(());
     }
@@ -719,6 +745,7 @@ pub async fn cmd_list(account: Option<&str>, json: bool) -> Result<()> {
         let status = tunnel_status(tunnel).await;
         rows.push(ListRow::from_tunnel(status, tunnel));
     }
+    rows.extend(runs.iter().map(ListRow::from_run));
     rows.extend(external);
 
     let layout = ListLayout::fit(&rows);
@@ -750,7 +777,7 @@ async fn external_rows() -> Vec<ListRow> {
                 Some(zone) => format!("{}:{} ({zone})", external.target, external.remote_port),
                 None => format!("{}:{}", external.target, external.remote_port),
             },
-            note: Some("  [not managed by gtunnel]"),
+            note: Some("  [not managed by gtunnel]".to_string()),
         })
         .collect()
 }

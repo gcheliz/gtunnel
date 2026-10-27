@@ -19,7 +19,7 @@ pub fn all_tools() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
             name: "gtunnel_list_tunnels".to_string(),
-            description: "List all configured tunnels and their daemon statuses for the given or default account".to_string(),
+            description: "List all configured tunnels and live short-lived runs (run: true, with expires_at when they have a TTL) and their statuses for the given or default account".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -51,7 +51,7 @@ pub fn all_tools() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "gtunnel_stop_tunnel".to_string(),
-            description: "Stop a running tunnel daemon".to_string(),
+            description: "Stop a running tunnel daemon, or a live run started by gtunnel_run_tunnel".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -176,6 +176,40 @@ pub fn all_tools() -> Vec<ToolDefinition> {
             }),
         },
         ToolDefinition {
+            name: "gtunnel_run_tunnel".to_string(),
+            description: "Open a short-lived Access tunnel that closes by itself when ttl_minutes elapses. Prefer this over gtunnel_add_tunnel for temporary access; it is never public and leaves nothing to clean up. Stop it early with gtunnel_stop_tunnel".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "Remote target as INSTANCE:PORT, e.g. my-vm:5432"
+                    },
+                    "ttl_minutes": {
+                        "type": "integer",
+                        "description": "Minutes until the tunnel closes by itself (1 to 480)"
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Tunnel name (generated if omitted)"
+                    },
+                    "zone": {
+                        "type": "string",
+                        "description": "Compute zone of the instance"
+                    },
+                    "local_port": {
+                        "type": "integer",
+                        "description": "Local port to listen on (automatically allocated if omitted)"
+                    },
+                    "account": {
+                        "type": "string",
+                        "description": "Optional GCP account name"
+                    }
+                },
+                "required": ["target", "ttl_minutes"]
+            }),
+        },
+        ToolDefinition {
             name: "gtunnel_delete_tunnel".to_string(),
             description: "Delete a persistent tunnel, stopping its daemon and removing its service and log".to_string(),
             input_schema: json!({
@@ -279,7 +313,25 @@ pub async fn execute_tool(
                     "url": t.display_url(),
                     "target": t.display_target(),
                     "auto_start": t.auto_start,
+                    "run": false,
                 }));
+            }
+            for run in crate::ephemeral::live_runs(&acct.name).unwrap_or_default() {
+                let t = run.as_tunnel();
+                let mut row = json!({
+                    "name": t.name,
+                    "account": t.account_name,
+                    "status": "running",
+                    "mode": t.display_kind(),
+                    "url": t.display_url(),
+                    "target": t.display_target(),
+                    "auto_start": false,
+                    "run": true,
+                });
+                if let Some(expires_at) = run.expires_at() {
+                    row["expires_at"] = json!(expires_at);
+                }
+                results.push(row);
             }
             Ok(ToolCallResult::text(
                 serde_json::to_string_pretty(&results).unwrap_or_default(),
@@ -300,6 +352,23 @@ pub async fn execute_tool(
             let tunnel_name = get_str("name")
                 .ok_or_else(|| JsonRpcError::new(INVALID_PARAMS, "Missing 'name'"))?;
             let account = get_str("account");
+            // A persistent tunnel of that name wins; only without one does the
+            // name mean a live run
+            let (_, acct) =
+                resolve(account).map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
+            let persistent = TunnelState::load()
+                .map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?
+                .find_for_account(tunnel_name, &acct.name)
+                .is_some();
+            if !persistent {
+                match super::run::stop_run(&acct.name, tunnel_name).await {
+                    Ok(Some(())) => {
+                        return Ok(ToolCallResult::text(format!("Stopped run '{tunnel_name}'")))
+                    }
+                    Ok(None) => {}
+                    Err(e) => return Ok(ToolCallResult::error(e)),
+                }
+            }
             Ok(match stop_tunnel(account, tunnel_name).await {
                 Ok(()) => ToolCallResult::text(format!("Stopped tunnel '{tunnel_name}'")),
                 Err(e) => ToolCallResult::error(format!("{e:#}")),
@@ -430,6 +499,20 @@ pub async fn execute_tool(
                     "Added tunnel '{tunnel_name}' for target '{target}'"
                 )),
                 Err(e) => ToolCallResult::error(format!("{e:#}")),
+            })
+        }
+        "gtunnel_run_tunnel" => {
+            let req = match super::run::RunRequest::parse(map) {
+                Ok(req) => req,
+                Err(e) => return Err(JsonRpcError::new(INVALID_PARAMS, e)),
+            };
+            let (_, acct) = resolve(get_str("account"))
+                .map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
+            Ok(match super::run::launch(&acct.name, &req).await {
+                Ok(started) => {
+                    ToolCallResult::text(serde_json::to_string_pretty(&started).unwrap_or_default())
+                }
+                Err(e) => ToolCallResult::error(e),
             })
         }
         "gtunnel_delete_tunnel" => {
