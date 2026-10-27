@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.40](https://github.com/gcheliz/gtunnel/compare/v0.1.39...v0.1.40) - 2026-10-27
+
+### Performance
+
+- cut the release binary from 11.5 MB to 4.2 MB ([#106](https://github.com/gcheliz/gtunnel/pull/106))
+
 ## [0.1.39](https://github.com/gcheliz/gtunnel/compare/v0.1.38...v0.1.39) - 2026-10-27
 
 ### Fixed
