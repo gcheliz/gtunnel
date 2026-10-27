@@ -1,5 +1,22 @@
 # Troubleshooting
 
+[Home](../README.md) / [Usage](usage.md) / [Commands](commands.md) / [Configuration](configuration.md) / [Architecture](architecture.md) / Troubleshooting
+
+Contents:
+
+- [Installation](#installation)
+- [What the log says, and what it means](#what-the-log-says-and-what-it-means)
+- [Local port collisions](#local-port-collisions)
+- [gtunnel needs a logged-in Google account](#gtunnel-needs-a-logged-in-google-account)
+- [Could not list projects](#could-not-list-projects)
+- [IAP firewall](#iap-firewall)
+- [IAM](#iam)
+- [Cloud DNS managed zones](#cloud-dns-managed-zones)
+- [NumPy](#numpy)
+- [Services](#services)
+- [Cost](#cost)
+- [Leftovers](#leftovers)
+
 Start with `gtunnel doctor`. It reports everything below that can be detected, and prints
 the exact command for the things it cannot fix itself.
 
@@ -117,6 +134,7 @@ emptied when its tunnel starts, so a line in it was written by the process runni
 |---|---|---|
 | `4003` | IAP cannot reach the target port | Allow `35.235.240.0/20` to that port, see below |
 | `4033` | Not authorized to tunnel through IAP | Grant `roles/iap.tunnelResourceAccessor` |
+| A public URL answers `503` (nothing in the log) | The tunnel's backend, host rule, named port or DNS record is missing | `gtunnel restart <name>` re-creates them, see [the log](commands.md#start-stop-restart-autostart-logs-list-delete) |
 | `Reauthentication required` | gcloud credentials expired | `gcloud auth login` |
 | `Address already in use` | Another process holds the local port | `gtunnel doctor`, or set `--local-port` |
 | `remote port forwarding failed` | The relay port is busy on the relay VM | `gtunnel restart <name>`, then `gtunnel doctor` |

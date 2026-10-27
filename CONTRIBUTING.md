@@ -84,6 +84,9 @@ A change that alters behaviour updates the docs in the same pull request.
 One topic, one file. If a doc for your topic exists, add a section to it rather than
 starting a second file.
 
+The recordings in `docs/` are generated from the [VHS](https://github.com/charmbracelet/vhs)
+tapes in [docs/tapes](docs/tapes) with `vhs docs/tapes/<name>.tape`.
+
 ### Placeholders, always
 
 This repository is public, and a set of individually harmless identifiers is an inventory

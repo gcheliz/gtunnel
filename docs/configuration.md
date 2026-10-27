@@ -1,5 +1,7 @@
 # Configuration
 
+[Home](../README.md) / [Usage](usage.md) / [Commands](commands.md) / Configuration / [Architecture](architecture.md) / [Troubleshooting](troubleshooting.md)
+
 Every file gtunnel writes, every key in the two you may edit, and every environment variable
 it reads. The words Access, Expose, target kind and lifetime are defined once in
 [Concepts](usage.md#concepts).
@@ -232,6 +234,20 @@ the level in force at the moment of the toggle. Worth knowing if you exported
 that level on the tunnel's start at login.
 
 ## Environment
+
+### At a glance
+
+| Variable | Use it to | For |
+|---|---|---|
+| `GTUNNEL_CONFIG_DIR` | keep every file in another directory | a throwaway configuration |
+| `GTUNNEL_LOG_LEVEL` | set `quiet`, `info` or `debug` without a flag | every command |
+| `GTUNNEL_START_DEADLINE_MS` | give a slow tunnel longer to listen | a start that fails before the tunnel is up |
+| `VISUAL`, then `EDITOR` | choose the editor `e` opens | the TUI's config page |
+| `GTUNNEL_NO_NOTIFY` | silence desktop notifications | tests and diagnostics |
+| `GTUNNEL_NO_DISCOVERY` | stop looking for processes outside gtunnel | tests and diagnostics |
+| `GTUNNEL_SERVICE_BOUND_MS` | bound one `launchctl` or `systemctl` call | tests and diagnostics |
+
+### Reference
 
 | Variable | Read by | Effect |
 |---|---|---|

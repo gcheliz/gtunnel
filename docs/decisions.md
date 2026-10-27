@@ -196,12 +196,10 @@ The published history is what a reader of a public repository sees, and a branch
 commits are not that.
 
 The `main` ruleset requires a pull request, allows squash as the only merge method, and
-requires all five CI checks with the branch up to date. Deletion and non-fast-forward
-pushes are blocked.
-
-Amended: the ruleset now requires six checks, the five CI ones plus `pr-title`, because a
-squash takes the pull request title as its commit message and the release train reads that
-message.
+requires six checks with the branch up to date: `test` on macOS and Ubuntu, `audit`,
+`msrv`, `zizmor` (the gate of [decision 10](#10-the-ci-gate-is-six-checks-and-each-one-exists-for-a-reason))
+and `pr-title`. A squash takes the pull request title as its commit message and the release train reads that
+message, so the title is checked too. Deletion and non-fast-forward pushes are blocked.
 
 The cost is that a one-line fix still needs a branch and a wait for CI. The benefit is that
 every commit on `main` is one reviewed idea with a message that explains it, and that no

@@ -1,5 +1,7 @@
 # Architecture
 
+[Home](../README.md) / [Usage](usage.md) / [Commands](commands.md) / [Configuration](configuration.md) / Architecture / [Troubleshooting](troubleshooting.md)
+
 ## Access mode
 
 A local port forwarded to a port inside the VPC. Nothing is created in GCP: IAP already
@@ -178,7 +180,7 @@ An agent drives gtunnel through the same binary a person uses: `gtunnel mcp` spe
 | Tool table | `src/mcp/tools.rs`: `all_tools`, `all_resources` | The one source of names and schemas. `tools/list` serves it, and `gtunnel mcp --validate` (`src/mcp/validator.rs`) checks every definition against it |
 | Stateless era | `modern_version`, `stamp_modern` in `src/mcp/protocol.rs` | A request is modern when `params._meta` carries the protocol version key, never by method name, so legacy traffic is untouched. `2026-07-28` is the only modern version; an unknown one is `-32022` listing it. `server/discover` and every modern result carry `resultType` and the server identity in `_meta` |
 | Handshake | `negotiate_version` in `src/mcp/protocol.rs` | Echoes the client's revision when it is one of `2025-11-25`, `2025-06-18`, `2024-11-05`, and offers `2025-11-25` otherwise, so a newer client stays on this handshake |
-| Tool metadata | `ToolDefinition` | `title`, four always-present annotation hints and, for the five tools that answer in JSON, an `outputSchema` that admits the error envelope too, because a structured result must conform even when it is a failure |
+| Tool metadata | `ToolDefinition` | `title`, four always-present annotation hints and, for the six tools that answer in JSON, an `outputSchema` that admits the error envelope too, because a structured result must conform even when it is a failure |
 | Dispatch | `execute_tool`, `read_resource` | A failed operation, including an unknown account or tunnel, is a result with `isError` and a `kind`, the same kinds the CLI's `--json` errors carry. Only parameters the server cannot act on are JSON-RPC errors |
 | Accounts | `accounts_payload` | The `gtunnel_list_accounts` tool and the `gtunnel://accounts` resource call one function, so the two cannot describe the selection differently |
 | Run launcher | `src/mcp/run.rs`: `launch` | Spawns `gtunnel run <name> <target> --ttl <n>m` in its own process group, so the tunnel outlives the server and the TTL is its only owner. Waits `LAUNCH_BUDGET` (5s) for the run record, and on failure returns the log's tail as the tool error |
@@ -228,6 +230,5 @@ account in its own name — the launchd label, the log file, the run record — 
 copies never collide on disk or in the service manager. What must differ between them is the
 local port, because both run on one laptop.
 
-The practical consequence is a naming rule: a tunnel is named for what it connects to, never
-for the account it lives in. An account suffix is redundant everywhere it could appear, and
-it costs you the ability to use the same command in both accounts.
+The practical consequence is that a tunnel is named for what it connects to, never for its
+account: [Naming a tunnel](commands.md#naming-a-tunnel).
