@@ -378,8 +378,10 @@ or fails, the text field stays and the line `Could not list projects: <cause>` s
 Starting to type before the list arrives keeps the field.
 
 The zone step works the same way, with the zones of the project chosen in step 1, which may
-not be the saved one. The current zone is selected even when the project does not list it,
-so Enter keeps it; a failure says `Could not list zones: <cause>` and keeps the text field.
+not be the saved one. While the project is unchanged, the current zone is selected even when
+the project does not list it, so Enter keeps it. Unlike projects, a typed zone the list lacks
+is refused, `'<zone>' is not a zone of <project>`, because the zone list is the project's whole
+set. A failure says `Could not list zones: <cause>` and keeps the text field.
 
 Adding an account starts from a picker of the machine's gcloud configurations, one row each
 as `<name>  <project>  (active)`, with the active one selected. A configuration with no

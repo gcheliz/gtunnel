@@ -420,18 +420,42 @@ fn typing_narrows_the_zones_and_enter_sends_the_pick() {
 }
 
 #[test]
-fn a_typed_zone_the_list_lacks_is_taken() {
+// Unlike a project list, which permissions or the 5,000 cap can cut short, a
+// zone list is the project's whole set: a zone it lacks is a typo, and
+// `account edit` would save it unchecked. `init` refuses the same input.
+fn a_typed_zone_the_list_lacks_is_refused() {
     let mut app = zone_step();
     app.zones_arrived("dev", "example-dev-1a2b", zones());
-    retype(&mut app, "asia-east1-a");
+    retype(&mut app, "eurpoe-west1-b");
+    assert_eq!(app.handle_key(key(KeyCode::Enter)), None);
     assert_eq!(
-        app.handle_key(key(KeyCode::Enter)),
-        Some(Op::AccountEdit(AccountEdit {
-            name: "dev".to_string(),
-            project: None,
-            zone: Some("asia-east1-a".to_string()),
-        }))
+        app.input_mode,
+        InputMode::AccountZonePick,
+        "the dialog stays"
     );
+    let said = app.draft_error.clone().expect("a reason beside the list");
+    assert!(
+        said.contains("'eurpoe-west1-b' is not a zone of example-dev-1a2b"),
+        "{said}"
+    );
+}
+
+// The saved zone is offered first only while the project is the saved one;
+// a project chosen in step 1 may not have it, and Enter would save that pair
+#[test]
+fn a_new_project_does_not_inherit_a_zone_it_lacks() {
+    let mut app = page_app();
+    app.handle_key(key(KeyCode::Char('e')));
+    retype(&mut app, "example-prod-3c4d");
+    app.handle_key(key(KeyCode::Enter));
+    app.zones_arrived("dev", "example-prod-3c4d", zones());
+    assert_eq!(app.input_mode, InputMode::AccountZonePick);
+    assert!(
+        !app.zones_list.iter().any(|z| z == "europe-west1-b"),
+        "{:?}",
+        app.zones_list
+    );
+    assert_eq!(app.filtered_zones()[app.zone_selected], "europe-west1-c");
 }
 
 // The zones belong to the project chosen one step back, so a list fetched

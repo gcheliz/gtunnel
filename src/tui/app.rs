@@ -1050,10 +1050,13 @@ impl App {
             return;
         }
         let mut list = list;
+        let same_project = self.projects.get(account) == Some(&self.account_draft.project);
         self.zone_selected = match list.iter().position(|z| *z == current) {
             Some(i) => i,
-            // Enter must keep the zone the account has, listed or not
-            None if !current.is_empty() => {
+            // Enter must keep the zone the account has, listed or not; but a
+            // project changed in step 1 may not have it, and the pair would
+            // be saved without a check
+            None if !current.is_empty() && same_project => {
                 list.insert(0, current);
                 0
             }
@@ -2570,9 +2573,17 @@ impl App {
                     .map(|z| z.to_string());
                 let zone = match chosen {
                     Some(z) => z,
-                    // A filter that matches nothing is the person naming a
-                    // zone the list lacks: take it
-                    None if !self.input.trim().is_empty() => self.input.trim().to_string(),
+                    // Unlike a project list, the zone list is the project's
+                    // whole set, so a zone it lacks is a typo that `account
+                    // edit` would save unchecked; `init` refuses it too
+                    None if !self.input.trim().is_empty() => {
+                        self.draft_error = Some(format!(
+                            "'{}' is not a zone of {}",
+                            self.input.trim(),
+                            self.account_draft.project
+                        ));
+                        return None;
+                    }
                     None => return None,
                 };
                 self.clear_list_failure();
