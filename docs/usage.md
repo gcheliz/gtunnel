@@ -313,6 +313,21 @@ subtitle beside the logo goes first, then the project id is cut with a `…` (ne
 cells, and dropped whole if there is no room for that), and the account name is the last to
 go. An account with no project shows the name alone.
 
+When a newer release is cached, the header's closing rule carries it at its right end:
+
+```
+ ───────────────────────────────────────────────────────────────────────────────────────── ↑ v9.9.9 · gtunnel update ──
+```
+
+| Question | Answer |
+|---|---|
+| Where | the rule under the header; the rule above the footer when the header is hidden (under 16 rows) or is the one-line form |
+| What it says | `↑ v<latest> · <command>`: `brew upgrade gtunnel` for a Homebrew install, `gtunnel update` otherwise |
+| Where it comes from | the daily background `update --check` (see [update](#update)); the TUI starts one when the cache is missing or a day old, and re-reads the cache every minute |
+| Waits on the network | never; it shows what an earlier check already learned, so the first run after a release shows nothing until a check finishes |
+| When it narrows | the command goes first, leaving `↑ v<latest>`, then the whole notice; a step shows only when at least 8 dashes stay before it, and a string is never cut |
+| `gtunnel demo` | shows no notice and starts no check |
+
 Details repeats the project under the `target` row it qualifies. The header carries it
 once as a property of the account, at the far edge of the screen from the host it belongs
 to; the pane open while a `gcloud` command of your own is being typed is the one that has

@@ -170,21 +170,55 @@ pub async fn cmd_update(check_only: bool) -> Result<()> {
     Ok(())
 }
 
-// Reads the cache only: a CLI command must never wait on the network to print
-// its own output
-pub fn maybe_print_update_hint() {
-    let current = env!("CARGO_PKG_VERSION");
-    if let Some(cache) = read_cache() {
-        if is_newer(current, &cache.latest_version) {
-            eprintln!(
-                "\ngtunnel v{} is available (current: v{current}). Run `gtunnel update`.",
-                cache.latest_version
-            );
-            return;
-        }
-        if now_secs().saturating_sub(cache.checked_at) < CHECK_INTERVAL_SECS {
-            return;
-        }
+/// What the TUI and the CLI both say when a newer release is cached. One type
+/// so the two surfaces cannot name different commands for the same install.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateNotice {
+    pub latest: String,
+    pub command: &'static str,
+}
+
+// Pure so the install method and the versions are arguments, not the test
+// runner's own path and Cargo.toml
+fn notice_for(current: &str, latest: &str, method: &InstallMethod) -> Option<UpdateNotice> {
+    if !is_newer(current, latest) {
+        return None;
+    }
+    let command = match method {
+        InstallMethod::Homebrew => "brew upgrade gtunnel",
+        InstallMethod::Binary(_) => "gtunnel update",
+    };
+    Some(UpdateNotice {
+        latest: latest.trim_start_matches('v').to_string(),
+        command,
+    })
+}
+
+/// A file read and nothing more: the TUI calls this on its own thread, where a
+/// network wait would freeze the screen.
+pub fn available_update() -> Option<UpdateNotice> {
+    let cache = read_cache()?;
+    notice_for(
+        env!("CARGO_PKG_VERSION"),
+        &cache.latest_version,
+        &detect_install_method(),
+    )
+}
+
+// A cache dated in the future is not due: a clock that stepped back would
+// otherwise respawn the check on every start
+fn check_due(cache: Option<&UpdateCache>, now: u64) -> bool {
+    match cache {
+        Some(cache) => now.saturating_sub(cache.checked_at) >= CHECK_INTERVAL_SECS,
+        None => true,
+    }
+}
+
+/// Starts `update --check` detached when the cache is missing or a day old.
+/// It never waits for it: the answer lands in the cache for the next read.
+pub fn spawn_check_if_due() {
+    if !check_due(read_cache().as_ref(), now_secs()) {
+        return;
     }
     if let Ok(exe) = std::env::current_exe() {
         let _ = std::process::Command::new(exe)
@@ -193,6 +227,20 @@ pub fn maybe_print_update_hint() {
             .stderr(std::process::Stdio::null())
             .spawn();
     }
+}
+
+// Reads the cache only: a CLI command must never wait on the network to print
+// its own output
+pub fn maybe_print_update_hint() {
+    let current = env!("CARGO_PKG_VERSION");
+    if let Some(notice) = available_update() {
+        eprintln!(
+            "\ngtunnel v{} is available (current: v{current}). Run `gtunnel update`.",
+            notice.latest
+        );
+        return;
+    }
+    spawn_check_if_due();
 }
 
 // "<hex>  <filename>", as shasum and sha256sum both write it
@@ -483,5 +531,43 @@ mod tests {
         let line = format!("abc123  gtunnel-macos-arm64-v{version}.tar.gz\n");
         assert_eq!(parse_sha256_file(&line), Some("abc123".to_string()));
         assert_eq!(parse_sha256_file("   \n"), None);
+    }
+
+    #[test]
+    fn a_newer_cached_version_is_a_notice_with_the_install_command() {
+        let binary = InstallMethod::Binary(PathBuf::from("/usr/local/bin/gtunnel"));
+        assert_eq!(
+            notice_for("0.1.0", "9.9.9", &binary),
+            Some(UpdateNotice {
+                latest: "9.9.9".to_string(),
+                command: "gtunnel update"
+            })
+        );
+        assert_eq!(
+            notice_for("0.1.0", "9.9.9", &InstallMethod::Homebrew)
+                .expect("a newer version is a notice")
+                .command,
+            "brew upgrade gtunnel"
+        );
+    }
+
+    #[test]
+    fn the_current_or_an_older_version_is_no_notice() {
+        assert_eq!(notice_for("1.2.3", "1.2.3", &InstallMethod::Homebrew), None);
+        assert_eq!(notice_for("1.2.3", "1.2.2", &InstallMethod::Homebrew), None);
+    }
+
+    #[test]
+    fn a_missing_or_day_old_cache_is_due_and_a_fresh_one_is_not() {
+        let cache = |checked_at| UpdateCache {
+            latest_version: "9.9.9".to_string(),
+            checked_at,
+        };
+        let now = 10 * CHECK_INTERVAL_SECS;
+        assert!(check_due(None, now));
+        assert!(check_due(Some(&cache(now - CHECK_INTERVAL_SECS)), now));
+        assert!(!check_due(Some(&cache(now - CHECK_INTERVAL_SECS + 1)), now));
+        // A clock that stepped back must not read as a check due forever
+        assert!(!check_due(Some(&cache(now + 5)), now));
     }
 }

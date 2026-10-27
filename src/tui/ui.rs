@@ -13,6 +13,7 @@ use super::theme;
 use crate::probe::{HealthStatus, LB_WINDOW_MINUTES};
 use crate::state::{TunnelSpec, TunnelStatus};
 use crate::tunnel::diagnose_log_line;
+use crate::update::UpdateNotice;
 
 pub const LOG_LINES: usize = 200;
 
@@ -169,15 +170,70 @@ pub fn mark_dots() -> Vec<(u16, u16, Color)> {
 
 /// The rule that closes the header off from the panes, inset by the margin so
 /// it starts and ends where the panes below it do.
-fn rule_line(w: usize) -> Line<'static> {
-    Line::from(vec![
+pub(super) fn rule_line(w: usize) -> Line<'static> {
+    rule_line_with(w, None)
+}
+
+/// The fewest dashes that must stay ahead of the notice. Fewer and the rule
+/// reads as a label with a stub of line in front, so the notice steps down
+/// instead of crowding it.
+pub const RULE_LEAD: usize = 8;
+
+/// The rule, with an available update set into its right end.
+///
+/// The notice lives in the rule because the rule is the one row that is
+/// always full width and carries nothing else: it costs no row and moves
+/// nothing. It sheds whole steps (full, then the version, then nothing) and
+/// never cuts a string, since half a command is worse than none. The total is
+/// `w` cells either way, so a caller can swap one for the other.
+pub fn rule_line_with(w: usize, notice: Option<&UpdateNotice>) -> Line<'static> {
+    let muted = Style::default().fg(theme::MUTED);
+    let version = notice.map(|n| format!("\u{2191} v{}", n.latest));
+
+    // Margin, the lead, a space either side of the text, two dashes and the
+    // margin: everything but the lead and the text is these six cells.
+    const FIXED: usize = MARGIN * 2 + 2 + 2;
+    let fits = |text_cells: usize| w >= FIXED + text_cells + RULE_LEAD;
+
+    let mut tail: Vec<Span<'static>> = Vec::new();
+    let mut text_cells = 0;
+    if let (Some(notice), Some(version)) = (notice, version) {
+        let version_cells = version.chars().count();
+        // " \u{b7} " is three cells between the version and the command
+        let full_cells = version_cells + 3 + notice.command.chars().count();
+        let warn = Style::default().fg(theme::WARN);
+        if fits(full_cells) {
+            text_cells = full_cells;
+            tail = vec![
+                Span::styled(version, warn),
+                Span::styled(" \u{b7} ", muted),
+                Span::styled(notice.command, Style::default().fg(theme::LABEL)),
+            ];
+        } else if fits(version_cells) {
+            text_cells = version_cells;
+            tail = vec![Span::styled(version, warn)];
+        }
+    }
+
+    if tail.is_empty() {
+        return Line::from(vec![
+            Span::raw(" ".repeat(MARGIN)),
+            Span::styled("\u{2500}".repeat(w.saturating_sub(MARGIN * 2)), muted),
+            Span::raw(" ".repeat(MARGIN.min(w))),
+        ]);
+    }
+
+    let lead = w - FIXED - text_cells;
+    let mut spans = vec![
         Span::raw(" ".repeat(MARGIN)),
-        Span::styled(
-            "\u{2500}".repeat(w.saturating_sub(MARGIN * 2)),
-            Style::default().fg(theme::MUTED),
-        ),
-        Span::raw(" ".repeat(MARGIN.min(w))),
-    ])
+        Span::styled("\u{2500}".repeat(lead), muted),
+        Span::raw(" "),
+    ];
+    spans.extend(tail);
+    spans.push(Span::raw(" "));
+    spans.push(Span::styled("\u{2500}\u{2500}", muted));
+    spans.push(Span::raw(" ".repeat(MARGIN)));
+    Line::from(spans)
 }
 
 /// The divider between the lockup and the subtitle, with its two cells of air
@@ -757,20 +813,34 @@ pub fn render(f: &mut Frame, app: &App) {
         ])
         .split(f.area());
 
+    // The header's own last line is its rule, so the notice replaces that line
+    // when there is one. A hidden or one-line header has no rule, and then the
+    // footer's rule carries it: never both, or the same news would be said twice.
+    let width = f.area().width;
+    let mut header = if header_height > 0 {
+        header_lines(width, f.area().height, &app.account, app.project())
+    } else {
+        Vec::new()
+    };
+    let notice_in_header = header.len() > 1;
+    if let (true, Some(last)) = (notice_in_header, header.last_mut()) {
+        *last = rule_line_with(width as usize, app.update.as_ref());
+    }
+
     // The design closes the panes off from the footer the same way it closes
     // the header off from them, so the two rules bracket the work area.
-    f.render_widget(Paragraph::new(rule_line(f.area().width as usize)), main[2]);
+    let footer_notice = if notice_in_header {
+        None
+    } else {
+        app.update.as_ref()
+    };
+    f.render_widget(
+        Paragraph::new(rule_line_with(width as usize, footer_notice)),
+        main[2],
+    );
 
     if header_height > 0 {
-        f.render_widget(
-            Paragraph::new(header_lines(
-                f.area().width,
-                f.area().height,
-                &app.account,
-                app.project(),
-            )),
-            main[0],
-        );
+        f.render_widget(Paragraph::new(header), main[0]);
     }
 
     // Side by side, the list at 80 columns is 32 cells wide and the url is the

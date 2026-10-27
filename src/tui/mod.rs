@@ -62,6 +62,11 @@ pub async fn run_tui(initial_account: Option<&str>) -> Result<()> {
     spawn_input(tx.clone(), app.input_gate.clone());
     spawn_ticker(tx.clone());
 
+    // Once, before the screen exists: the check runs detached and writes the
+    // cache, so what is shown is what an earlier run already learned
+    crate::update::spawn_check_if_due();
+    app.update = crate::update::available_update();
+
     // The first health check is due now, not after the first tick
     let mut timers = Timers::due();
     schedule(&mut app, &mut timers, &tx);
@@ -393,6 +398,9 @@ fn schedule(app: &mut App, timers: &mut Timers, tx: &mpsc::UnboundedSender<Msg>)
 
     if timers.entries.elapsed() >= app::DISCOVERY_EVERY {
         timers.entries = Instant::now();
+        // One small file read, so a check that finishes while the TUI is open
+        // shows up within a round
+        app.update = crate::update::available_update();
         let tx = tx.clone();
         let account = account.clone();
         tokio::spawn(async move {
@@ -1482,6 +1490,108 @@ mod tests {
         assert_eq!(lines.len(), 1);
         assert_eq!(ui::header_height(18, 24, "dev", "sample-dev-1"), 1);
         assert!(line_text(&lines[0]).chars().count() <= 18);
+    }
+
+    fn sample_notice() -> crate::update::UpdateNotice {
+        crate::update::UpdateNotice {
+            latest: "9.9.9".to_string(),
+            command: "gtunnel update",
+        }
+    }
+
+    // The rule already spans the screen, so the notice costs no row: it is the
+    // header's own last line with words in it, still exactly as wide.
+    #[test]
+    fn the_header_rule_carries_an_available_update() {
+        let mut app = app_with_two();
+        app.update = Some(sample_notice());
+        let buffer = screen(&app, 120, 30);
+        let rule = row_chars(&buffer, (ui::HEADER_HEIGHT_FULL - 1) as usize as u16);
+        let text: String = rule.iter().collect();
+        assert!(
+            text.contains("\u{2191} v9.9.9 \u{b7} gtunnel update"),
+            "{text:?}"
+        );
+        assert_eq!(rule.len(), 120);
+        let at = find(&rule, "\u{2191}").expect("the arrow");
+        assert_eq!(buffer[(at as u16, 3)].fg, theme::WARN);
+        let dot = find(&rule, "\u{b7}").expect("the separator");
+        assert_eq!(buffer[(dot as u16, 3)].fg, theme::MUTED);
+        let command = find(&rule, "gtunnel update").expect("the command");
+        assert_eq!(buffer[(command as u16, 3)].fg, theme::LABEL);
+        // Never both rules: the footer keeps its plain dashes
+        assert_eq!(render_to_string(&app, 120, 30).matches("v9.9.9").count(), 1);
+    }
+
+    // A fragment of a command is worse than none, so a step is dropped whole
+    // and only while at least RULE_LEAD dashes stay before it.
+    #[test]
+    fn the_notice_sheds_whole_steps_as_the_width_drops() {
+        let notice = sample_notice();
+        let full = "\u{2191} v9.9.9 \u{b7} gtunnel update";
+        let short = "\u{2191} v9.9.9";
+        assert_eq!(full.chars().count(), 25);
+        for w in 2..=140usize {
+            let line = ui::rule_line_with(w, Some(&notice));
+            let text = line_text(&line);
+            assert_eq!(text.chars().count(), w, "width {w}: {text:?}");
+            let shown = if text.contains(full) {
+                full
+            } else if text.contains(short) {
+                short
+            } else {
+                assert!(
+                    !text.contains('\u{2191}') && !text.contains("gtunnel") && !text.contains('v'),
+                    "width {w} shows a fragment: {text:?}"
+                );
+                ""
+            };
+            // margin, dashes, space, notice, space, two dashes, margin
+            let lead = if shown.is_empty() {
+                w
+            } else {
+                w - shown.chars().count() - 6
+            };
+            assert!(shown.is_empty() || lead >= ui::RULE_LEAD, "width {w}");
+            let wanted = if w >= full.chars().count() + 6 + ui::RULE_LEAD {
+                full
+            } else if w >= short.chars().count() + 6 + ui::RULE_LEAD {
+                short
+            } else {
+                ""
+            };
+            assert_eq!(shown, wanted, "width {w}: {text:?}");
+        }
+    }
+
+    #[test]
+    fn no_notice_leaves_the_rule_as_it_was() {
+        for w in 0..=140usize {
+            assert_eq!(
+                line_text(&ui::rule_line_with(w, None)),
+                line_text(&ui::rule_line(w)),
+                "width {w}"
+            );
+        }
+    }
+
+    // Under 16 rows there is no header, and the footer rule is the only rule
+    // left that can carry it.
+    #[test]
+    fn a_hidden_header_moves_the_notice_to_the_footer_rule() {
+        let mut app = app_with_two();
+        app.update = Some(sample_notice());
+        let buffer = screen(&app, 100, 12);
+        let holders: Vec<u16> = (0..12)
+            .filter(|y| {
+                row_chars(&buffer, *y)
+                    .iter()
+                    .collect::<String>()
+                    .contains("\u{2191} v9.9.9 \u{b7} gtunnel update")
+            })
+            .collect();
+        // The rule sits directly above the one-row footer
+        assert_eq!(holders, vec![12 - 2]);
     }
 
     // The design draws the same eleven cells on a 1200-pixel board as on a
