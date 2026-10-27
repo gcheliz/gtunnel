@@ -1939,7 +1939,18 @@ impl App {
                 None
             }
             InputMode::AddJumpHost => {
-                self.draft.host = value.trim().to_string();
+                let host = value.trim().to_string();
+                // Empty means the instance itself is the destination
+                if let Err(e) = Some(&host)
+                    .filter(|h| !h.is_empty())
+                    .map_or(Ok(()), |h| crate::state::validate_host(h))
+                {
+                    self.draft_error = Some(e.to_string());
+                    self.input = value;
+                    return None;
+                }
+                self.draft_error = None;
+                self.draft.host = host;
                 self.input_mode = InputMode::AddRemotePort;
                 None
             }

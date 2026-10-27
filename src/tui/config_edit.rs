@@ -6,7 +6,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 
 use crate::config::Config;
-use crate::state::{validate_tunnel_name, TunnelState};
+use crate::state::{validate_target, validate_tunnel_name, TunnelSpec, TunnelState};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -129,6 +129,11 @@ pub fn validate_tunnels(text: &str, config: &Config) -> Result<TunnelState> {
     for (i, t) in state.tunnels.iter().enumerate() {
         if let Err(e) = validate_tunnel_name(&t.name) {
             bail!("{}{e}", at(i));
+        }
+        if let TunnelSpec::Access { target, .. } = &t.spec
+            && let Err(e) = validate_target(target)
+        {
+            bail!("{}tunnel '{}': {e}", at(i), t.name);
         }
         if !config.accounts.iter().any(|a| a.name == t.account_name) {
             bail!(
@@ -483,6 +488,25 @@ mod tests {
             .to_string();
         assert!(msg.contains("Bad_Name"), "{msg}");
         assert!(msg.contains(&format!("line {second_header}")), "{msg}");
+    }
+
+    #[test]
+    fn an_instance_that_gcloud_would_read_as_a_flag_is_refused_with_its_line() {
+        let cfg = config("dev", &["dev"]);
+        let mut bad = tunnel("db", "dev", 15432);
+        bad.spec = TunnelSpec::Access {
+            target: AccessTarget::Instance {
+                instance: "--command=id".to_string(),
+                zone: "europe-west1-b".to_string(),
+            },
+            remote_port: 22,
+            local_port: 15432,
+        };
+        let msg = validate_tunnels(&text_of(vec![bad]), &cfg)
+            .expect_err("a flag for an instance")
+            .to_string();
+        assert!(msg.contains("--command=id"), "{msg}");
+        assert!(msg.contains("line 1"), "{msg}");
     }
 
     #[test]

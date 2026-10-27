@@ -3,6 +3,18 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.38](https://github.com/gcheliz/gtunnel/compare/v0.1.37...v0.1.38) - 2026-10-27
+
+### Fixed
+
+- *(state)* reject instance and host values that gcloud would read as flags ([#105](https://github.com/gcheliz/gtunnel/pull/105))
+
+## [0.1.37](https://github.com/gcheliz/gtunnel/compare/v0.1.36...v0.1.37) - 2026-10-27
+
+### Fixed
+
+- *(supervise)* give gcloud time to exit before killing it ([#104](https://github.com/gcheliz/gtunnel/pull/104))
+
 ## [0.1.36](https://github.com/gcheliz/gtunnel/compare/v0.1.35...v0.1.36) - 2026-10-27
 
 ### Added

@@ -8,8 +8,9 @@ use crate::expose::routes;
 use crate::gcp::{compute, GcpClient};
 use crate::lifecycle::{self, Cause, State};
 use crate::state::{
-    allocate_port, local_port_is_free, validate_tunnel_name, AccessTarget, PersistentTunnel,
-    TunnelSpec, TunnelState, TunnelStatus, ACCESS_PORT_BASE, ACCESS_PORT_SPAN,
+    allocate_port, local_port_is_free, validate_host, validate_instance_name, validate_tunnel_name,
+    validate_zone, AccessTarget, PersistentTunnel, TunnelSpec, TunnelState, TunnelStatus,
+    ACCESS_PORT_BASE, ACCESS_PORT_SPAN,
 };
 use crate::tunnel::diagnose_log_line;
 
@@ -74,6 +75,28 @@ pub struct AddRequest<'a> {
     pub start: bool,
 }
 
+impl AddRequest<'_> {
+    /// The checks that need no account and no gcloud, in one place so the CLI,
+    /// the TUI and the MCP server refuse the same values with the same words,
+    /// and so a bad instance is refused before `verify_instance` hands it to
+    /// the API. The MCP server maps this error to Invalid params.
+    pub fn validate(&self) -> Result<()> {
+        validate_tunnel_name(self.name)?;
+        let (host, _) = parse_access_target(self.target)?;
+        if let Some(zone) = self.zone {
+            validate_zone(zone)?;
+        }
+        match (self.via, self.dest_group) {
+            (Some(instance), _) => {
+                validate_instance_name(instance)?;
+                validate_host(&host)
+            }
+            (None, Some(_)) => validate_host(&host),
+            (None, None) => validate_instance_name(&host),
+        }
+    }
+}
+
 pub struct Added {
     pub name: String,
     pub display_url: String,
@@ -95,7 +118,7 @@ async fn save_tunnel(account: Option<&str>, req: &AddRequest<'_>) -> Result<Adde
         network,
         ..
     } = *req;
-    validate_tunnel_name(name)?;
+    req.validate()?;
     let (config, acct) = resolve(account)?;
     // A plain read to fail fast, before any gcloud call; `add` inside the
     // locked update below is the check that holds
@@ -329,7 +352,7 @@ pub enum Readiness {
 /// The supervisor writes `ready_file` when the tunnel's own log says it is
 /// listening. `port` is the second witness and is passed only when that file
 /// cannot be relied on: at log level `quiet` ssh prints no listener line, so a
-/// jump tunnel never gets one. It is a bare connect and not `probe::tcp_probe`,
+/// jump tunnel never gets one. It is a bare connect and not `probe::probe_tunnel`,
 /// which registers into the probe ledger and does a round trip through the far
 /// end; readiness asks only whether something is listening here.
 pub async fn wait_ready(

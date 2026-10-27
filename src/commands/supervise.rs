@@ -5,6 +5,13 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tokio::process::Command;
 
+/// How long a stopping child gets between SIGTERM and SIGKILL. It has to stay
+/// under launchd's ExitTimeOut (20 s by default) and systemd's TimeoutStopSec
+/// (90 s), or the init system kills the supervisor first and the SIGKILL below
+/// never reaches the group. A plain const: no caller needs to tune it.
+#[cfg(unix)]
+const STOP_GRACE: Duration = Duration::from_secs(2);
+
 /// Run a child process, pumping its stdout and stderr through the log filter, then exit with its status.
 pub async fn run(
     argv: Vec<String>,
@@ -14,6 +21,40 @@ pub async fn run(
 ) -> Result<()> {
     let status = run_inner(argv, port, ready_file, conns).await?;
     std::process::exit(status.code().unwrap_or(1));
+}
+
+/// Stop the child the way a terminal would: SIGTERM to its whole group, a
+/// bounded wait, then SIGKILL to the whole group. gcloud closes its IAP
+/// websocket and releases the port in its SIGTERM handler, and a SIGKILL sent
+/// at once leaves that to the server's idle timeout. The group is signalled,
+/// not just the child, because gcloud is a launcher with children of its own.
+///
+/// Takes the child and its group, not the signal, so a test can stop a child
+/// of its own without signalling the test process.
+#[cfg(unix)]
+async fn stop_child(
+    child: &mut tokio::process::Child,
+    pgid: Option<i32>,
+    grace: Duration,
+) -> Result<std::process::ExitStatus> {
+    if let Some(pgid) = pgid {
+        // SAFETY: pgid is a valid process group id spawned above.
+        unsafe { libc::kill(-pgid, libc::SIGTERM) };
+    }
+    match tokio::time::timeout(grace, child.wait()).await {
+        Ok(status) => status.context("failed to wait on child after a stop signal"),
+        Err(_) => {
+            if let Some(pgid) = pgid {
+                // SAFETY: the child is not yet reaped, so its group id is still ours.
+                unsafe { libc::kill(-pgid, libc::SIGKILL) };
+            }
+            let _ = child.kill().await;
+            child
+                .wait()
+                .await
+                .context("failed to wait on child after SIGKILL")
+        }
+    }
 }
 
 /// Run child process and return its ExitStatus once streams have drained.
@@ -109,22 +150,8 @@ pub async fn run_inner(
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         tokio::select! {
             res = child.wait() => res.context("failed to wait on child")?,
-            _ = sigterm.recv() => {
-                if let Some(pgid) = pgid {
-                    // SAFETY: pgid is a valid process group id spawned above.
-                    unsafe { libc::kill(-pgid, libc::SIGTERM) };
-                }
-                let _ = child.kill().await;
-                child.wait().await.context("failed to wait on child after SIGTERM")?
-            }
-            _ = tokio::signal::ctrl_c() => {
-                if let Some(pgid) = pgid {
-                    // SAFETY: pgid is a valid process group id spawned above.
-                    unsafe { libc::kill(-pgid, libc::SIGTERM) };
-                }
-                let _ = child.kill().await;
-                child.wait().await.context("failed to wait on child after SIGINT")?
-            }
+            _ = sigterm.recv() => stop_child(&mut child, pgid, STOP_GRACE).await?,
+            _ = tokio::signal::ctrl_c() => stop_child(&mut child, pgid, STOP_GRACE).await?,
         }
     };
 
@@ -200,5 +227,47 @@ mod tests {
             !dir.path().join("probes").join("18443").exists(),
             "the ledger is closed with the supervisor"
         );
+    }
+
+    #[cfg(unix)]
+    mod stopping {
+        use super::super::*;
+        use std::os::unix::process::ExitStatusExt;
+
+        const SHORT: Duration = Duration::from_millis(600);
+
+        fn spawn_sh(script: &str) -> (tokio::process::Child, Option<i32>) {
+            let mut c = Command::new("sh");
+            c.args(["-c", script]).process_group(0);
+            let child = c.spawn().expect("spawn sh");
+            let pgid = child.id().map(|id| id as i32);
+            (child, pgid)
+        }
+
+        #[tokio::test]
+        async fn a_child_that_exits_on_sigterm_is_not_sigkilled() {
+            let (mut child, pgid) = spawn_sh(r#"trap "sleep 0.3; exit 0" TERM; sleep 30 & wait"#);
+            // Let sh install its trap before the signal arrives
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let status = stop_child(&mut child, pgid, SHORT).await.expect("stop");
+            assert_eq!(
+                status.signal(),
+                None,
+                "a clean exit, not a kill: {status:?}"
+            );
+            assert_eq!(status.code(), Some(0));
+        }
+
+        #[tokio::test]
+        async fn a_child_that_ignores_sigterm_is_killed_after_the_grace() {
+            let (mut child, pgid) = spawn_sh(r#"trap "" TERM; while :; do sleep 1; done"#);
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let started = std::time::Instant::now();
+            let status = stop_child(&mut child, pgid, SHORT).await.expect("stop");
+            let took = started.elapsed();
+            assert_eq!(status.signal(), Some(libc::SIGKILL), "{status:?}");
+            assert!(took >= SHORT, "waited out the grace first: {took:?}");
+            assert!(took < SHORT * 4, "and did not hang: {took:?}");
+        }
     }
 }
