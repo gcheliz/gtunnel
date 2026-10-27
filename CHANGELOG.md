@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.21](https://github.com/gcheliz/gtunnel/compare/v0.1.20...v0.1.21) - 2026-10-27
+
+### Documentation
+
+- re-record the TUI demo with the edit, add and accounts flows ([#67](https://github.com/gcheliz/gtunnel/pull/67))
+
 ## [0.1.20](https://github.com/gcheliz/gtunnel/compare/v0.1.19...v0.1.20) - 2026-10-27
 
 ### Fixed
