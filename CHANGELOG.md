@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.45](https://github.com/gcheliz/gtunnel/compare/v0.1.44...v0.1.45) - 2026-10-27
+
+### Fixed
+
+- *(tui)* lock the config editor's save and refuse a file that changed under it ([#122](https://github.com/gcheliz/gtunnel/pull/122))
+
 ## [0.1.44](https://github.com/gcheliz/gtunnel/compare/v0.1.43...v0.1.44) - 2026-10-27
 
 ### Fixed
