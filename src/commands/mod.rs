@@ -41,7 +41,7 @@ pub fn run_note(expires_at: Option<u64>) -> String {
     }
 }
 
-fn local_hhmm(unix_secs: u64) -> Option<String> {
+pub(crate) fn local_hhmm(unix_secs: u64) -> Option<String> {
     let t = libc::time_t::try_from(unix_secs).ok()?;
     // SAFETY: localtime_r writes into the zeroed tm we own and reads the
     // time_t we pass by reference; neither pointer outlives the call, and unlike

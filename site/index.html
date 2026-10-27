@@ -325,7 +325,7 @@ $ gtunnel run --public 3000</pre>
 </ul>
 </div>
 <figure class="figure" style="flex: 1 1 520px">
-<img src="demo-run.gif" alt="A terminal recording: gtunnel run db my-vm:5432 prints the local port, Ctrl+C closes the tunnel, and gtunnel list shows nothing left behind, animated" width="1500" height="500" loading="lazy">
+<img src="demo-run.gif" alt="A terminal recording: gtunnel run --ttl 30m db my-vm:5432 prints the local port and its stop time, gtunnel list shows the run with its stop time, Ctrl+C closes it, and the list is empty again, animated" width="1500" height="500" loading="lazy">
 <figcaption>A tunnel from run to Ctrl+C, every line as gtunnel prints it.</figcaption>
 </figure>
 </section>
@@ -346,6 +346,9 @@ $ gtunnel run --public 3000</pre>
 <ul class="calls" aria-label="Tools it calls"><li>run_tunnel</li></ul>
 </div>
 </div>
+<figure class="figure">
+<img src="demo-mcp.gif" alt="A terminal recording of real MCP calls to gtunnel mcp: the 11 tools, gtunnel_run_tunnel opening db on my-vm:5432 for 30 minutes, gtunnel list showing the run and its stop time, gtunnel_stop_tunnel closing it, animated" width="1500" height="500" loading="lazy">
+</figure>
 <div class="split" style="gap: 16px; align-items: stretch">
 <div class="card" style="flex: 1 1 520px">
 <span class="kicker" style="color: var(--dim)">AGENTS - .mcp.json</span>

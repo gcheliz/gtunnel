@@ -3211,3 +3211,92 @@ fn details_name_expired_credentials_and_the_command_that_fixes_them() {
     assert!(text.contains("gcloud auth login"), "{text}");
     assert!(text.contains(HealthStatus::AuthExpired.symbol()), "{text}");
 }
+
+// A run's stop time, in its tag and in the details pane
+mod run_stop_time {
+    use super::super::*;
+    use crate::state::{AccessTarget, PersistentTunnel};
+
+    fn run_entry(expires_at: Option<u64>) -> TunnelEntry {
+        let mut e = TunnelEntry::new(
+            PersistentTunnel {
+                name: "gt-3b2c10".to_string(),
+                account_name: "demo".to_string(),
+                auto_start: false,
+                spec: TunnelSpec::Access {
+                    target: AccessTarget::Instance {
+                        instance: "my-vm".to_string(),
+                        zone: "europe-west1-b".to_string(),
+                    },
+                    remote_port: 5432,
+                    local_port: 15900,
+                },
+            },
+            TunnelStatus::Running,
+            TunnelKind::Ephemeral,
+        );
+        e.expires_at = expires_at;
+        e
+    }
+
+    fn text(lines: &[Line<'_>]) -> Vec<String> {
+        lines.iter().map(|l| l.to_string()).collect()
+    }
+
+    #[test]
+    fn a_run_with_a_ttl_says_when_it_stops_in_its_tag() {
+        let tag = run_entry(Some(1_700_000_000)).tag().unwrap();
+        let clock = crate::commands::local_hhmm(1_700_000_000).unwrap();
+        assert_eq!(tag, format!("[run, stops at {clock}]"));
+        assert_eq!(tag.chars().count(), "[run, stops at 00:00]".chars().count());
+    }
+
+    #[test]
+    fn a_run_without_a_ttl_keeps_the_ephemeral_tag() {
+        assert_eq!(run_entry(None).tag().unwrap(), "[ephemeral]");
+    }
+
+    #[test]
+    fn the_detail_pane_counts_down_to_a_runs_stop_time() {
+        let now = 1_700_000_000;
+        let lines = text(&detail_lines_at(
+            &run_entry(Some(now + 23 * 60)),
+            "",
+            60,
+            now,
+        ));
+        let clock = crate::commands::local_hhmm(now + 23 * 60).unwrap();
+        let row = lines.iter().find(|l| l.starts_with("stops at")).unwrap();
+        assert_eq!(row, &format!("{:<11}{clock} (in 23m)", "stops at"));
+    }
+
+    #[test]
+    fn the_countdown_rounds_up_and_never_goes_negative() {
+        let now = 1_700_000_000;
+        assert!(stops_at(now + 61, now).ends_with("(in 2m)"));
+        assert!(stops_at(now + 5, now).ends_with("(in 1m)"));
+        assert!(stops_at(now + 90 * 60, now).ends_with("(in 1h 30m)"));
+        assert!(stops_at(now, now).ends_with("(ending)"));
+        assert!(stops_at(now - 30, now).ends_with("(ending)"));
+    }
+
+    #[test]
+    fn a_row_without_a_ttl_has_no_stops_at_line() {
+        let lines = text(&detail_lines_at(&run_entry(None), "", 60, 1_700_000_000));
+        assert!(
+            !lines.iter().any(|l| l.starts_with("stops at")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_runs_stop_time_survives_a_wide_list_and_a_narrow_one_does_not_panic() {
+        let mut app = App::new_demo();
+        let tag = app.entries[3].tag().unwrap().to_string();
+        assert!(super::render_to_string(&app, 200, 40).contains(&tag));
+        app.selected = 3;
+        for w in [60u16, 80, 100, 120] {
+            let _ = super::render_to_string(&app, w, 30);
+        }
+    }
+}

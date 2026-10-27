@@ -5,18 +5,23 @@ use crate::gcp::monitoring::LbStats;
 use crate::probe::{HealthStatus, MetricsHistory, TunnelMetrics};
 use crate::state::{AccessTarget, PersistentTunnel, TunnelSpec, TunnelStatus};
 
+// The shape `logfilter::format_line` writes: an RFC 3339 stamp, then either
+// gcloud's own line or the one normalised `gtunnel: conn <id> ...` line that
+// pairs a connection's open with its close and carries the client's source port
 const DEMO_LOG: &[&str] = &[
-    "Testing if tunnel connection works.",
-    "Listening on port [15432].",
-    "WARNING: `gcloud compute start-iap-tunnel` is in beta for this instance.",
-    "New connection from [127.0.0.1:52118]",
-    "New connection from [127.0.0.1:52119]",
+    "2026-10-27T09:14:02Z Testing if tunnel connection works.",
+    "2026-10-27T09:14:03Z Listening on port [15432].",
+    "2026-10-27T09:14:03Z WARNING: `gcloud compute start-iap-tunnel` is in beta for this instance.",
+    "2026-10-27T09:31:40Z gtunnel: conn iap-3 open from 127.0.0.1:52118",
+    "2026-10-27T09:31:52Z gtunnel: conn iap-3 from 127.0.0.1:52118 closed after 12.4s",
+    "2026-10-27T09:33:07Z gtunnel: conn iap-4 open from 127.0.0.1:52119",
+    "2026-10-27T09:33:07Z gtunnel: conn iap-5 open from 127.0.0.1:52120",
 ];
 
 const STAGING_LOG: &[&str] = &[
-    "Testing if tunnel connection works.",
-    "Listening on port [15379].",
-    "New connection from [127.0.0.1:61204]",
+    "2026-10-27T08:02:11Z Testing if tunnel connection works.",
+    "2026-10-27T08:02:12Z Listening on port [15379].",
+    "2026-10-27T08:20:45Z gtunnel: conn iap-1 open from 127.0.0.1:61204",
 ];
 
 fn access(
@@ -35,6 +40,43 @@ fn access(
             target: AccessTarget::Instance {
                 instance: instance.to_string(),
                 zone: "europe-west1-b".to_string(),
+            },
+            remote_port: remote,
+            local_port: local,
+        },
+    }
+}
+
+// A tunnel through a jump host: the instance is the hop, the host is the goal
+fn jump(name: &str, host: &str, remote: u16, local: u16) -> PersistentTunnel {
+    PersistentTunnel {
+        name: name.to_string(),
+        account_name: "demo".to_string(),
+        auto_start: false,
+        spec: TunnelSpec::Access {
+            target: AccessTarget::Jump {
+                instance: "bastion".to_string(),
+                zone: "europe-west1-b".to_string(),
+                host: host.to_string(),
+            },
+            remote_port: remote,
+            local_port: local,
+        },
+    }
+}
+
+// A tunnel to a destination group, which has no instance to name
+fn dest_group(name: &str, host: &str, remote: u16, local: u16) -> PersistentTunnel {
+    PersistentTunnel {
+        name: name.to_string(),
+        account_name: "demo".to_string(),
+        auto_start: false,
+        spec: TunnelSpec::Access {
+            target: AccessTarget::DestGroup {
+                host: host.to_string(),
+                region: "europe-west1".to_string(),
+                group: "prod-hosts".to_string(),
+                network: "default".to_string(),
             },
             remote_port: remote,
             local_port: local,
@@ -97,6 +139,40 @@ fn demo_entries() -> Vec<TunnelEntry> {
     db.history = history(&[11, 13, 12, 18, 14, 15, 21, 14, 12, 13, 14, 16, 14]);
     db.health = HealthStatus::Healthy;
 
+    let mut cache = TunnelEntry::new(
+        jump("redis", "cache.example.internal", 6379, 15381),
+        TunnelStatus::Running,
+        TunnelKind::Managed,
+    );
+    cache.metrics = Some(metrics(19, 2, 6_480, None));
+    cache.history = history(&[17, 19, 22, 18, 19, 20, 17, 19, 23, 19, 18, 19]);
+    cache.health = HealthStatus::Healthy;
+
+    let mut hosts = TunnelEntry::new(
+        dest_group("pg-hosts", "10.0.0.5", 5432, 15433),
+        TunnelStatus::Running,
+        TunnelKind::Managed,
+    );
+    hosts.metrics = Some(metrics(27, 1, 2_760, None));
+    hosts.history = history(&[25, 28, 27, 31, 26, 27, 29, 25, 27, 28, 27, 26]);
+    hosts.health = HealthStatus::Healthy;
+
+    // What an agent opened with `gtunnel_run_tunnel`: it lives 25 minutes from
+    // now, so the row and its details always show a stop time still ahead
+    let mut run = TunnelEntry::new(
+        access("demo", "gt-3b2c10", "my-vm", 5432, 15900, false),
+        TunnelStatus::Running,
+        TunnelKind::Ephemeral,
+    );
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    run.expires_at = Some(now + 25 * 60);
+    run.metrics = Some(metrics(16, 1, 300, None));
+    run.history = history(&[15, 17, 16, 14, 18, 16, 15, 16, 17, 16]);
+    run.health = HealthStatus::Healthy;
+
     // Someone else's gcloud process, which gtunnel reports but never touches
     let mut redis = TunnelEntry::new(
         access("demo", "cache-1:6379", "cache-1", 6379, 15379, false),
@@ -133,7 +209,7 @@ fn demo_entries() -> Vec<TunnelEntry> {
     );
     preview.health = HealthStatus::Unhealthy;
 
-    vec![db, redis, api, preview]
+    vec![db, cache, hosts, run, redis, api, preview]
 }
 
 // A second account, with no relay: Access tunnels only, one of them stopped
@@ -184,6 +260,12 @@ impl App {
             })
             .collect();
         app.load_demo_account();
+        // The header's rule carries an available update; a fixed version, so the
+        // demo shows one whatever release it is built from
+        app.update = Some(crate::update::UpdateNotice {
+            latest: "9.9.9".to_string(),
+            command: "gtunnel update",
+        });
         app.set_status("demo data: nothing here touches GCP");
         app
     }

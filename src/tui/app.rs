@@ -101,6 +101,9 @@ pub struct TunnelEntry {
     // Set when the op has returned: the first entries round begun after that
     // is the one that shows what the op did, and only then does `pending` go
     pub pending_settle: bool,
+    /// Unix seconds at which a live `gtunnel run` ends by itself; `None` for a
+    /// declared tunnel and for a run started without a TTL.
+    pub expires_at: Option<u64>,
 }
 
 const NOT_MANAGED: &str = "[not managed by gtunnel]";
@@ -119,6 +122,7 @@ impl TunnelEntry {
             external: None,
             pending: None,
             pending_settle: false,
+            expires_at: None,
         }
     }
 
@@ -153,12 +157,20 @@ impl TunnelEntry {
         self.tunnel.display_kind()
     }
 
-    // The suffix that says a row is not an ordinary managed tunnel
-    pub fn tag(&self) -> Option<&'static str> {
-        match self.kind {
-            TunnelKind::Managed => None,
-            TunnelKind::Ephemeral => Some("[ephemeral]"),
-            TunnelKind::External => Some(NOT_MANAGED),
+    // The suffix that says a row is not an ordinary managed tunnel. A run with
+    // a TTL says when it ends, in the words `gtunnel list` uses for it; one
+    // without keeps `[ephemeral]`, which also names the public previews that
+    // `list` marks `[run]`, so the row does not change what it says by gaining
+    // a clock.
+    pub fn tag(&self) -> Option<std::borrow::Cow<'static, str>> {
+        use std::borrow::Cow;
+        match (self.kind, self.expires_at) {
+            (TunnelKind::Managed, _) => None,
+            (TunnelKind::Ephemeral, Some(at)) => Some(Cow::Owned(
+                crate::commands::run_note(Some(at)).trim().to_string(),
+            )),
+            (TunnelKind::Ephemeral, None) => Some(Cow::Borrowed("[ephemeral]")),
+            (TunnelKind::External, _) => Some(Cow::Borrowed(NOT_MANAGED)),
         }
     }
 }

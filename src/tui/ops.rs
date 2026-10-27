@@ -42,7 +42,7 @@ pub async fn load_entries(account: &str) -> Result<(Vec<TunnelEntry>, HashSet<u1
         if record.account_name != account {
             continue;
         }
-        entries.push(TunnelEntry::new(
+        let mut entry = TunnelEntry::new(
             record.as_tunnel(),
             if alive {
                 TunnelStatus::Running
@@ -50,7 +50,9 @@ pub async fn load_entries(account: &str) -> Result<(Vec<TunnelEntry>, HashSet<u1
                 TunnelStatus::Error
             },
             TunnelKind::Ephemeral,
-        ));
+        );
+        entry.expires_at = record.expires_at();
+        entries.push(entry);
     }
 
     let mut taken: HashSet<String> = entries.iter().map(|e| e.tunnel.name.clone()).collect();

@@ -11,6 +11,9 @@
 # the listing shows this recording's tunnel rather than whatever else happens to
 # be tunnelling on the machine doing the recording.
 #
+# The stand-in prints the `Listening on port [N].` line the real gcloud prints,
+# which is what `start` waits for before it reports the tunnel running.
+#
 # `target/release` goes first on PATH, so the recording shows the binary this
 # checkout builds (`cargo build --release`), never an older installed one.
 #
@@ -29,13 +32,17 @@ Set TypingSpeed 55ms
 Hide
 Type `export GT=$(mktemp -d) && mkdir -p "$GT/bin" "$GT/cfg"`
 Enter
-Type `printf '#!/bin/sh\ncase "$1" in auth) echo ya29.demo-token ;; *) exec sleep 3600 ;; esac\n' > "$GT/bin/gcloud" && chmod +x "$GT/bin/gcloud"`
+Type `printf '#!/bin/sh\ncase "$1" in auth) echo ya29.demo-token; exit 0 ;; esac\nfor a; do case "$a" in --local-host-port=*) echo "Listening on port [${a##*:}]." >&2 ;; esac; done\nexec sleep 3600\n' > "$GT/bin/gcloud" && chmod +x "$GT/bin/gcloud"`
 Enter
 Type `printf '#!/bin/sh\n/bin/ps "$@" | grep -v start-iap-tunnel || true\n' > "$GT/bin/ps" && chmod +x "$GT/bin/ps"`
 Enter
 Type `printf 'selected_account = "demo"\n[[accounts]]\nname = "demo"\ngcloud_configuration = "demo"\nproject = "example-dev-1a2b"\ndefault_zone = "europe-west1-b"\n' > "$GT/cfg/config.toml"`
 Enter
-Type `export PATH="$PWD/target/release:$GT/bin:$PATH" GTUNNEL_CONFIG_DIR="$GT/cfg" PS1="$ "`
+Type `export PATH="$PWD/target/release:$GT/bin:$PATH" GTUNNEL_CONFIG_DIR="$GT/cfg" GTUNNEL_NO_NOTIFY=1 PS1="$ "`
+Enter
+# A fresh update cache, so the recording carries no "newer release" hint that
+# would date it
+Type `printf '{"latest_version":"%s","checked_at":%s}' "$(gtunnel --version | cut -d" " -f2)" "$(date +%s)" > "$GT/cfg/update-check.json"`
 Enter
 Type "clear"
 Enter
