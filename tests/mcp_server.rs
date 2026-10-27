@@ -346,6 +346,29 @@ fn a_tool_failure_carries_is_error_and_the_cause_chain() {
     assert!(text.contains("nope"), "{text}");
 }
 
+#[test]
+fn add_with_an_instance_that_reads_as_a_flag_is_invalid_params() {
+    let h = Harness::new();
+    let input = concat!(
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"gtunnel_add_tunnel","arguments":{"name":"bad","target":"10.0.0.10:22","via":"--command=id"}}}"#,
+        "\n",
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"gtunnel_add_tunnel","arguments":{"name":"bad","target":"-oProxyCommand=id:22","via":"bastion"}}}"#,
+        "\n",
+        r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"gtunnel_run_tunnel","arguments":{"target":"--command=id:22","ttl_minutes":5}}}"#,
+        "\n",
+    );
+    let (stdout, _, _) = h.run_mcp_pipe(input);
+    let frames = frames(&stdout);
+    assert_eq!(frames.len(), 3, "{stdout}");
+    for f in &frames {
+        assert_eq!(f["error"]["code"], -32602, "{f}");
+    }
+    let msg = frames[0]["error"]["message"].as_str().unwrap();
+    assert!(msg.contains("--command=id"), "{msg}");
+    let tunnels = fs::read_to_string(h.dir.path().join("config/tunnels.toml")).unwrap();
+    assert!(!tunnels.contains("bad"), "{tunnels}");
+}
+
 // The job is a launchd one, so the test needs a macOS user session. Its tunnel
 // is not `k8s`: tests run in parallel and a label is shared by name, so the
 // other tests' delete of `k8s` would unload this job mid-start

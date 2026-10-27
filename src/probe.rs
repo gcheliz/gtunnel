@@ -1,4 +1,5 @@
 use std::collections::{HashMap, VecDeque};
+use std::path::Path;
 use std::time::Duration;
 
 use crate::config::Config;
@@ -32,15 +33,71 @@ impl HealthStatus {
     }
 }
 
-// How long the far end takes to answer, or None when it does not answer at
-// all. The local accept is no measurement: gcloud's listener accepts whether
-// or not IAP, the bastion or the network are reachable, so the probe asks the
-// far end for something and times the round trip it costs.
-pub async fn tcp_probe(addr: &str, timeout: Duration) -> Option<Duration> {
+/// How long the far end takes to answer, or None when it does not. The local
+/// accept is no measurement: gcloud's listener accepts whether or not IAP, the
+/// bastion or the network are reachable, so the probe asks the far end for
+/// something and times the round trip it costs.
+///
+/// A bare close is ambiguous. IAP refusing the websocket and a server that
+/// speaks last (Postgres, Redis, HTTP) both end in EOF with no bytes, so only
+/// the tunnel's own log can tell them apart: a close counts as an answer unless
+/// the log gained a refusal line while the probe was open. A log that is
+/// missing or unreadable reads as empty, which is the old behaviour (a silent
+/// close is an answer) and the best a caller without a tunnel can do.
+pub async fn probe_tunnel(addr: &str, timeout: Duration, log_path: &Path) -> Option<Duration> {
+    let before = std::fs::metadata(log_path).map_or(0, |m| m.len());
+    match probe_connection(addr, timeout).await {
+        Close::Answered(rtt) => Some(rtt),
+        Close::NoAnswer => None,
+        Close::ClosedSilently(rtt) => {
+            // gcloud and ssh can write the refusal just after closing the
+            // socket, and the supervisor relays it to the log through a pipe
+            tokio::time::sleep(REFUSAL_SETTLE).await;
+            let appended = daemon::read_from(log_path, before);
+            if appended.lines().any(is_refusal) {
+                None
+            } else {
+                Some(rtt)
+            }
+        }
+    }
+}
+
+/// How long a silent close waits for the log before it is read. Long enough
+/// for the supervisor's pipe to flush a line written as the socket closed,
+/// short enough that a health pass over many tunnels does not feel it.
+const REFUSAL_SETTLE: Duration = Duration::from_millis(250);
+
+/// A log line that says the far end refused the connection a probe just made:
+/// IAP or credentials (the entries of `diagnose_log_line` that name a refusal,
+/// not a local fault like a busy port), gcloud's own connect error, or ssh
+/// failing to open the channel of a jump tunnel.
+pub fn is_refusal(line: &str) -> bool {
+    const NEEDLES: &[&str] = &[
+        "Error while connecting",
+        "[4003:",
+        "[4033:",
+        "Reauthentication required",
+        "gcloud auth login",
+        "open failed",
+        "connect failed",
+    ];
+    NEEDLES.iter().any(|n| line.contains(n))
+}
+
+/// What one probe connection saw before the log is consulted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Close {
+    Answered(Duration),
+    ClosedSilently(Duration),
+    NoAnswer,
+}
+
+async fn probe_connection(addr: &str, timeout: Duration) -> Close {
     let connect = tokio::net::TcpStream::connect(addr);
     let mut stream = match tokio::time::timeout(timeout, connect).await {
         Ok(Ok(stream)) => stream,
-        _ => return None,
+        _ => return Close::NoAnswer,
     };
     if let Ok(local) = stream.local_addr() {
         register_probe(addr, local.port());
@@ -137,27 +194,34 @@ pub fn is_probe_in(dir: &std::path::Path, target_port: u16, src_port: u16) -> bo
 // and the tunnel's log fills with them. Half-close so the peer sees a FIN, then
 // read until its own close arrives. Returns how long the far end took to say
 // anything back, which is the round trip the probe reports.
-async fn close_politely(stream: &mut tokio::net::TcpStream, budget: Duration) -> Option<Duration> {
+async fn close_politely(stream: &mut tokio::net::TcpStream, budget: Duration) -> Close {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     if stream.shutdown().await.is_err() {
-        return None;
+        return Close::NoAnswer;
     }
     let started = std::time::Instant::now();
-    let mut answered = None;
+    let mut first_byte = None;
+    let mut closed = None;
     let drain = async {
-        // Anything from the far end is its answer: a greeting, or its own close
-        // relayed back. Read on to EOF so nothing is left unread.
+        // Read on to EOF so nothing is left unread. Bytes are the far end's
+        // answer; an EOF alone is its close relayed back, which says only that
+        // something closed, so the caller weighs it against the log.
         let mut scratch = [0u8; 1024];
         while let Ok(read) = stream.read(&mut scratch).await {
-            answered.get_or_insert_with(|| started.elapsed());
             if read == 0 {
+                closed = Some(started.elapsed());
                 break;
             }
+            first_byte.get_or_insert_with(|| started.elapsed());
         }
     };
     let _ = tokio::time::timeout(budget, drain).await;
-    answered
+    match (first_byte, closed) {
+        (Some(rtt), _) => Close::Answered(rtt),
+        (None, Some(rtt)) => Close::ClosedSilently(rtt),
+        (None, None) => Close::NoAnswer,
+    }
 }
 
 // A 4xx still proves the request reached the service; only 5xx and a failure
@@ -500,7 +564,10 @@ async fn measure(
             metrics.active_connections = blocking(move || connections_for(peaks.as_ref(), port))
                 .await
                 .unwrap_or(0);
-            if let Some(rtt) = tcp_probe(&format!("127.0.0.1:{local_port}"), TCP_TIMEOUT).await {
+            // No log to read means a silent close is taken as an answer
+            let log = t.log_path().unwrap_or_default();
+            let addr = format!("127.0.0.1:{local_port}");
+            if let Some(rtt) = probe_tunnel(&addr, TCP_TIMEOUT, &log).await {
                 metrics.latency = Some(rtt);
             } else {
                 metrics.available = false;
@@ -568,6 +635,179 @@ mod tests {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    // A probe with no tunnel behind it: no log, so a silent close is an answer
+    async fn bare_probe(addr: &str, timeout: Duration) -> Option<Duration> {
+        probe_tunnel(addr, timeout, Path::new("")).await
+    }
+
+    // A peer that accepts, waits `after`, runs `then`, and closes without
+    // writing a byte: what gcloud's listener does when IAP refuses, and what a
+    // server that speaks last does once the half-close reaches it
+    async fn silent_peer(after: Duration, then: impl FnOnce() + Send + 'static) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr").to_string();
+        tokio::spawn(async move {
+            let (sock, _) = listener.accept().await.expect("accept");
+            tokio::time::sleep(after).await;
+            then();
+            drop(sock);
+        });
+        addr
+    }
+
+    fn log_with(initial: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "gtunnel-probe-{}-{}.log",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::write(&path, initial).expect("write log");
+        path
+    }
+
+    fn append(path: &Path, line: &str) {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(path)
+            .expect("open log");
+        writeln!(f, "{line}").expect("append");
+    }
+
+    const IAP_REFUSAL: &str =
+        "ERROR: (gcloud.compute.start-iap-tunnel) Error while connecting [4033: 'not authorized'].";
+
+    #[tokio::test]
+    async fn a_peer_with_a_banner_is_answered_whatever_the_log_says() {
+        use tokio::io::AsyncWriteExt;
+        let log = log_with("");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr").to_string();
+        let writer = log.clone();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.expect("accept");
+            append(&writer, IAP_REFUSAL);
+            let _ = sock.write_all(b"SSH-2.0-OpenSSH_10.0p2\r\n").await;
+        });
+        assert!(probe_tunnel(&addr, TCP_TIMEOUT, &log).await.is_some());
+    }
+
+    // The case that reported a refused tunnel as healthy: gcloud accepted, IAP
+    // said no, gcloud logged it and closed, and the probe saw only an EOF
+    #[tokio::test]
+    async fn a_silent_close_after_a_logged_refusal_is_not_healthy() {
+        let log = log_with("old line\n");
+        let writer = log.clone();
+        let addr = silent_peer(Duration::ZERO, move || append(&writer, IAP_REFUSAL)).await;
+        assert_eq!(probe_tunnel(&addr, TCP_TIMEOUT, &log).await, None);
+    }
+
+    // The refusal can land just after the socket closes, through the log pipe
+    #[tokio::test]
+    async fn a_refusal_logged_just_after_the_close_is_still_seen() {
+        let log = log_with("");
+        let writer = log.clone();
+        let addr = silent_peer(Duration::ZERO, move || {
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(60));
+                append(&writer, IAP_REFUSAL);
+            });
+        })
+        .await;
+        assert_eq!(probe_tunnel(&addr, TCP_TIMEOUT, &log).await, None);
+    }
+
+    // Postgres, Redis and HTTP wait for the client, so a probe that sends
+    // nothing gets an EOF and no bytes from a perfectly healthy service
+    #[tokio::test]
+    async fn a_silent_close_with_a_quiet_log_is_a_server_that_speaks_last() {
+        let log = log_with("");
+        let addr = silent_peer(Duration::ZERO, || {}).await;
+        assert!(probe_tunnel(&addr, TCP_TIMEOUT, &log).await.is_some());
+
+        let log = log_with("");
+        let writer = log.clone();
+        let addr = silent_peer(Duration::ZERO, move || {
+            append(&writer, "conn 127.0.0.1:50000 closed");
+        })
+        .await;
+        assert!(
+            probe_tunnel(&addr, TCP_TIMEOUT, &log).await.is_some(),
+            "an unrelated line was read as a refusal"
+        );
+    }
+
+    // Only what the log gained during the probe counts: yesterday's refusal
+    // belongs to yesterday's tunnel
+    #[tokio::test]
+    async fn a_refusal_already_in_the_log_before_the_probe_is_not_this_probe() {
+        let log = log_with(&format!("{IAP_REFUSAL}\n"));
+        let addr = silent_peer(Duration::ZERO, || {}).await;
+        assert!(probe_tunnel(&addr, TCP_TIMEOUT, &log).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_jump_tunnel_whose_channel_failed_to_open_is_not_healthy() {
+        let log = log_with("");
+        let writer = log.clone();
+        let addr = silent_peer(Duration::ZERO, move || {
+            append(
+                &writer,
+                "channel 3: open failed: connect failed: Connection refused",
+            );
+        })
+        .await;
+        assert_eq!(probe_tunnel(&addr, TCP_TIMEOUT, &log).await, None);
+    }
+
+    #[test]
+    fn what_counts_as_a_refusal_line() {
+        let table: &[(&str, bool)] = &[
+            (IAP_REFUSAL, true),
+            (
+                "Error while connecting [4003: 'failed to connect to backend']",
+                true,
+            ),
+            ("ERROR: Reauthentication required.", true),
+            ("Please run: gcloud auth login", true),
+            (
+                "channel 3: open failed: connect failed: Connection refused",
+                true,
+            ),
+            ("bind [127.0.0.1]:3379: Address already in use", false),
+            ("Too many open files", false),
+            ("Install NumPy for gcloud", false),
+            ("conn 127.0.0.1:50000 closed", false),
+            ("conn 127.0.0.1:4033 closed", false),
+            ("Testing if tunnel connection works.", false),
+            ("", false),
+        ];
+        for (line, expected) in table {
+            assert_eq!(is_refusal(line), *expected, "line: {line:?}");
+        }
+    }
+
+    // The IAP and auth entries of `diagnose_log_line` are what a refusal is,
+    // so a hint added there for one of them must not silently stop counting
+    #[test]
+    fn every_iap_and_auth_hint_of_the_diagnosis_table_is_a_refusal() {
+        for line in [
+            "[4003: x]",
+            "[4033: x]",
+            "Reauthentication required",
+            "gcloud auth login",
+        ] {
+            assert!(crate::tunnel::diagnose_log_line(line).is_some(), "{line}");
+            assert!(is_refusal(line), "{line}");
+        }
+    }
+
     // A tunnel's own health check must not look like a client crash to the
     // process on the other end: a socket dropped with the peer's greeting
     // still unread closes with RST, and gcloud logs a traceback per probe
@@ -591,7 +831,7 @@ mod tests {
         });
 
         assert!(
-            tcp_probe(&addr, TCP_TIMEOUT).await.is_some(),
+            bare_probe(&addr, TCP_TIMEOUT).await.is_some(),
             "the probe did not connect"
         );
 
@@ -608,7 +848,7 @@ mod tests {
     // which costs a round trip through the tunnel
     #[tokio::test]
     async fn the_latency_reported_is_the_far_end_answering() {
-        let measured = tcp_probe(&slow_greeter().await.to_string(), TCP_TIMEOUT)
+        let measured = bare_probe(&slow_greeter().await.to_string(), TCP_TIMEOUT)
             .await
             .expect("the peer greeted, so the probe has a measurement");
         assert!(
@@ -634,7 +874,7 @@ mod tests {
         });
 
         assert_eq!(
-            tcp_probe(&addr, Duration::from_millis(300)).await,
+            bare_probe(&addr, Duration::from_millis(300)).await,
             None,
             "a port that answers nothing was reported as a live tunnel"
         );
@@ -654,7 +894,7 @@ mod tests {
         });
 
         assert!(
-            tcp_probe(&addr, TCP_TIMEOUT).await.is_some(),
+            bare_probe(&addr, TCP_TIMEOUT).await.is_some(),
             "a reachable service that does not greet was reported as down"
         );
     }
@@ -687,7 +927,10 @@ mod tests {
             .await
             .expect("the probe did not connect");
         assert!(
-            close_politely(&mut patient, TCP_TIMEOUT).await.is_some(),
+            matches!(
+                close_politely(&mut patient, TCP_TIMEOUT).await,
+                Close::Answered(_)
+            ),
             "closed before the peer's greeting and its own close arrived"
         );
 
@@ -695,9 +938,7 @@ mod tests {
             .await
             .expect("the probe did not connect");
         assert!(
-            close_politely(&mut hasty, Duration::from_millis(50))
-                .await
-                .is_none(),
+            close_politely(&mut hasty, Duration::from_millis(50)).await == Close::NoAnswer,
             "a close given 50 ms reported an answer 300 ms away, so the budget is not the caller's"
         );
     }
@@ -1075,8 +1316,8 @@ LISTEN 0      128    127.0.0.1:15432     0.0.0.0:*
             let (sock, _) = listener.accept().await.expect("accept");
             drop(sock);
         });
-        assert!(tcp_probe(&addr, Duration::from_secs(2)).await.is_some());
-        assert!(tcp_probe("127.0.0.1:1", Duration::from_millis(200))
+        assert!(bare_probe(&addr, Duration::from_secs(2)).await.is_some());
+        assert!(bare_probe("127.0.0.1:1", Duration::from_millis(200))
             .await
             .is_none());
     }
