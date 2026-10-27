@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.18](https://github.com/gcheliz/gtunnel/compare/v0.1.17...v0.1.18) - 2026-10-27
+
+### Documentation
+
+- sync version references to 0.1.17 and check them in CI ([#52](https://github.com/gcheliz/gtunnel/pull/52))
+
 ## [0.1.17](https://github.com/gcheliz/gtunnel/compare/v0.1.16...v0.1.17) - 2026-10-26
 
 ### Added
