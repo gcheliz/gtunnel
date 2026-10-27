@@ -437,3 +437,132 @@ fn mcp_list_tunnels_includes_a_live_run_and_marks_it() {
     let declared = rows.as_array().unwrap().iter().find(|r| r["name"] == "db");
     assert_eq!(declared.map(|r| r["run"].clone()), Some(false.into()));
 }
+
+const LOGGED_OUT_STUB: &str = r#"#!/bin/sh
+echo "ERROR: (gcloud.auth.print-access-token) No credential found" >&2
+exit 1
+"#;
+
+// The run child is gtunnel itself: it fails at the login gate with exit 4,
+// before any record, so the kind is deterministic
+#[test]
+fn a_failed_run_carries_the_childs_kind() {
+    let h = Harness::with_stub(LOGGED_OUT_STUB);
+    let req = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"gtunnel_run_tunnel","arguments":{"name":"r1","target":"my-vm:5432","ttl_minutes":1}}}"#;
+    let (stdout, _, _) = h.run_mcp_pipe(&format!("{req}\n"));
+    let f = &frames(&stdout)[0];
+    assert_eq!(f["result"]["isError"], true, "{f}");
+    assert_eq!(
+        f["result"]["structuredContent"]["error"]["kind"], "auth",
+        "{f}"
+    );
+}
+
+#[test]
+fn a_run_name_that_is_already_live_is_a_usage_error() {
+    let h = Harness::new();
+    let mut sleeper = Command::new("/bin/sleep").arg("30").spawn().expect("sleep");
+    let dir = h.dir.path().join("config/run");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("demo-scratch.json"),
+        format!(
+            r#"{{"name":"scratch","account_name":"demo","pid":{},"started_at":1700000000,"ttl_secs":300,
+"spec":{{"mode":"access","target":{{"kind":"instance","instance":"my-vm","zone":"europe-west1-b"}},"remote_port":5432,"local_port":15999}}}}"#,
+            sleeper.id()
+        ),
+    )
+    .unwrap();
+    let req = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"gtunnel_run_tunnel","arguments":{"name":"scratch","target":"my-vm:5432","ttl_minutes":1}}}"#;
+    let (stdout, _, _) = h.run_mcp_pipe(&format!("{req}\n"));
+    let _ = sleeper.kill();
+    let _ = sleeper.wait();
+    let f = &frames(&stdout)[0];
+    assert_eq!(f["result"]["isError"], true, "{f}");
+    assert_eq!(
+        f["result"]["structuredContent"]["error"]["kind"], "usage",
+        "{f}"
+    );
+}
+
+#[test]
+fn an_unknown_account_or_tunnel_is_a_tool_error_with_not_found() {
+    let h = Harness::new();
+    let calls = [
+        r#"{"name":"gtunnel_list_tunnels","arguments":{"account":"nope"}}"#,
+        r#"{"name":"gtunnel_stop_tunnel","arguments":{"name":"db","account":"nope"}}"#,
+        r#"{"name":"gtunnel_get_status","arguments":{"name":"db","account":"nope"}}"#,
+        r#"{"name":"gtunnel_get_logs","arguments":{"name":"db","account":"nope"}}"#,
+        r#"{"name":"gtunnel_run_tunnel","arguments":{"target":"my-vm:5432","ttl_minutes":1,"account":"nope"}}"#,
+        r#"{"name":"gtunnel_doctor","arguments":{"account":"nope"}}"#,
+        r#"{"name":"gtunnel_get_status","arguments":{"name":"nope"}}"#,
+        r#"{"name":"gtunnel_get_logs","arguments":{"name":"nope"}}"#,
+    ];
+    let input: String = calls
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            format!(r#"{{"jsonrpc":"2.0","id":{i},"method":"tools/call","params":{p}}}"#) + "\n"
+        })
+        .collect();
+    let (stdout, _, _) = h.run_mcp_pipe(&input);
+    let frames = frames(&stdout);
+    assert_eq!(frames.len(), calls.len(), "{stdout}");
+    for f in &frames {
+        assert!(f.get("error").is_none(), "{f}");
+        assert_eq!(f["result"]["isError"], true, "{f}");
+        assert_eq!(
+            f["result"]["structuredContent"]["error"]["kind"], "not_found",
+            "{f}"
+        );
+    }
+}
+
+#[test]
+fn add_with_a_port_out_of_range_is_invalid_params_and_writes_nothing() {
+    let h = Harness::new();
+    let before = fs::read_to_string(h.dir.path().join("config/tunnels.toml")).unwrap();
+    let mut input = String::new();
+    for (id, port) in [(1, "70000"), (2, "0"), (3, "-1")] {
+        input.push_str(&format!(
+            r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/call","params":{{"name":"gtunnel_add_tunnel","arguments":{{"name":"k9","target":"10.0.0.10:443","via":"bastion","local_port":{port}}}}}}}"#
+        ));
+        input.push('\n');
+    }
+    let (stdout, _, _) = h.run_mcp_pipe(&input);
+    let frames = frames(&stdout);
+    assert_eq!(frames.len(), 3, "{stdout}");
+    for f in &frames {
+        assert_eq!(f["error"]["code"], -32602, "{f}");
+        assert!(
+            f["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("between 1 and 65535"),
+            "{f}"
+        );
+    }
+    let after = fs::read_to_string(h.dir.path().join("config/tunnels.toml")).unwrap();
+    assert_eq!(before, after);
+}
+
+#[test]
+fn a_notification_gets_no_reply_and_the_session_goes_on() {
+    let h = Harness::new();
+    let input = concat!(
+        r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+        "\n",
+        r#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":1,"reason":"x"}}"#,
+        "\n",
+        r#"{"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":1,"progress":1}}"#,
+        "\n",
+        r#"{"jsonrpc":"2.0","id":2,"method":"ping"}"#,
+        "\n",
+    );
+    let (stdout, stderr, ok) = h.run_mcp_pipe(input);
+    assert!(ok, "stderr: {stderr}");
+    let frames = frames(&stdout);
+    assert_eq!(frames.len(), 1, "{stdout}");
+    assert_eq!(frames[0]["id"], 2);
+    assert!(frames[0].get("error").is_none(), "{stdout}");
+}

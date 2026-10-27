@@ -363,13 +363,13 @@ fn a_bad_target_is_a_usage_error_with_exit_2() {
 }
 
 #[test]
-fn a_logged_out_gcloud_under_json_is_an_auth_error_with_exit_4() {
+fn list_under_json_works_with_a_logged_out_gcloud() {
     let h = Harness::with_stub(STUB_LOGGED_OUT);
     let out = h.run(&["list", "--json"]);
-    let (kind, message, code) = json_error(&out);
-    assert_eq!(kind, "auth");
-    assert!(message.contains("gcloud auth login"), "{message}");
-    assert_eq!(code, 4);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let val: serde_json::Value = serde_json::from_str(&stdout(&out))
+        .unwrap_or_else(|e| panic!("stdout should be json ({e}): {}", stdout(&out)));
+    assert!(val.is_array(), "{val}");
 }
 
 #[test]
