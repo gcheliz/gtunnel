@@ -714,6 +714,16 @@ mod tests {
         assert_eq!(status, TunnelStatus::Stopped);
     }
 
+    #[test]
+    fn stopping_a_unit_that_is_not_loaded_is_already_stopped() {
+        assert!(systemd::stop_failure_is_already_stopped(
+            "Failed to stop gtunnel-dev-db.service: Unit gtunnel-dev-db.service not loaded.\n"
+        ));
+        assert!(!systemd::stop_failure_is_already_stopped(
+            "Failed to stop gtunnel-dev-db.service: Access denied\n"
+        ));
+    }
+
     // The joined "<account>-<name>" label cannot be split back apart
     // ("prod-eu-api" is ambiguous), so both parts stay separate
     #[test]

@@ -248,9 +248,16 @@ pub async fn stop(label: &str) -> Result<()> {
     let out = systemctl(&["stop", label]).await?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
-        anyhow::bail!("systemctl stop failed: {}", stderr.trim());
+        if !stop_failure_is_already_stopped(&stderr) {
+            anyhow::bail!("systemctl stop failed: {}", stderr.trim());
+        }
     }
     Ok(())
+}
+
+// Not loaded is already stopped, as it is for launchd
+pub fn stop_failure_is_already_stopped(stderr: &str) -> bool {
+    stderr.contains("not loaded")
 }
 
 pub async fn set_auto_start(spec: &ServiceSpec) -> Result<()> {
