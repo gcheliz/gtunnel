@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.42](https://github.com/gcheliz/gtunnel/compare/v0.1.41...v0.1.42) - 2026-10-27
+
+### Changed
+
+- split a library crate out of the binary and move the ui tests beside ui.rs ([#113](https://github.com/gcheliz/gtunnel/pull/113))
+
 ## [0.1.41](https://github.com/gcheliz/gtunnel/compare/v0.1.40...v0.1.41) - 2026-10-27
 
 ### Added
