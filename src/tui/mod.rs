@@ -232,6 +232,9 @@ async fn event_loop(
                     timers.force();
                     logs_for = None;
                 }
+                if app.take_follow_up() {
+                    timers.entries = Instant::now() - app::DISCOVERY_EVERY;
+                }
                 if app.want_instances {
                     app.want_instances = false;
                     let account = app.account.clone();

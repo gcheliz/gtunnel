@@ -419,8 +419,11 @@ pub async fn cmd_list(account: Option<&str>, json: bool) -> Result<()> {
 // IAP tunnels started outside gtunnel hold ports and confuse `doctor`, so the
 // list names them instead of pretending they are not there
 async fn external_rows() -> Vec<ListRow> {
-    let managed = crate::discovery::managed_pids().await;
-    crate::discovery::external_tunnels(&managed)
+    let Ok(state) = crate::state::TunnelState::load() else {
+        return Vec::new();
+    };
+    crate::discovery::classify(&crate::discovery::snapshot(), &state)
+        .await
         .into_iter()
         .map(|external| ListRow {
             status: TunnelStatus::Running,

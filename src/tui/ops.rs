@@ -9,7 +9,7 @@ use crate::commands::{account, relocate};
 use crate::commands::{find_tunnel, resolve};
 use crate::config::load_config;
 use crate::daemon;
-use crate::discovery::{external_tunnels, ExternalTunnel};
+use crate::discovery::ExternalTunnel;
 use crate::ephemeral::list_ephemeral;
 use crate::expose::routes;
 use crate::gcp::GcpClient;
@@ -25,10 +25,6 @@ const TCP_HEALTH_TIMEOUT: Duration = Duration::from_secs(2);
 pub async fn load_entries(account: &str) -> Result<(Vec<TunnelEntry>, HashSet<u16>)> {
     let state = TunnelState::load()?;
     let mut entries = Vec::new();
-    // Every gtunnel pid on the machine, so another account's tunnel is not
-    // listed a second time as a stranger
-    let managed_pids: HashSet<u32> = crate::discovery::managed_pids().await;
-
     for tunnel in state.tunnels_for_account(account) {
         let label = daemon::platform_label(account, &tunnel.name);
         let status = daemon::status(&label).await;
@@ -60,7 +56,10 @@ pub async fn load_entries(account: &str) -> Result<(Vec<TunnelEntry>, HashSet<u1
     }
 
     let mut taken: HashSet<String> = entries.iter().map(|e| e.tunnel.name.clone()).collect();
-    for external in external_tunnels(&managed_pids) {
+    // Every account's tunnels and every run record, so another account's
+    // tunnel is not listed a second time as a stranger
+    let strangers = crate::discovery::classify(&crate::discovery::snapshot(), &state).await;
+    for external in strangers {
         let name = external_name(&external, &taken);
         taken.insert(name.clone());
         let mut entry = TunnelEntry::new(
