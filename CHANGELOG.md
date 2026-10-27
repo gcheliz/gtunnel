@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.49](https://github.com/gcheliz/gtunnel/compare/v0.1.48...v0.1.49) - 2026-10-27
+
+### Fixed
+
+- *(mcp)* make gtunnel://accounts match gtunnel_list_accounts, and bring the docs and skill in line with the code ([#129](https://github.com/gcheliz/gtunnel/pull/129))
+
 ## [0.1.48](https://github.com/gcheliz/gtunnel/compare/v0.1.47...v0.1.48) - 2026-10-27
 
 ### Fixed
