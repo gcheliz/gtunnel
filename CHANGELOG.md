@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.34](https://github.com/gcheliz/gtunnel/compare/v0.1.33...v0.1.34) - 2026-10-27
+
+### Documentation
+
+- add the architecture tour, tighten spacing, render every diagram with the infra pipeline ([#87](https://github.com/gcheliz/gtunnel/pull/87))
+
 ## [0.1.33](https://github.com/gcheliz/gtunnel/compare/v0.1.32...v0.1.33) - 2026-10-27
 
 ### Fixed
