@@ -805,8 +805,9 @@ fn access_port(spec: &TunnelSpec) -> Option<u16> {
     }
 }
 
-/// The wait for one probe. `list` runs its probes at once, so it pays this
-/// once however many tunnels are running.
+/// The wait for one probe to connect and to read an answer. `list` runs its
+/// probes at once, so it waits one probe's worth however many tunnels are
+/// running; a silent close adds the probe's settle time to read the log.
 pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// The round trip of a probe of a local tunnel port, or `None` without an
@@ -875,10 +876,22 @@ pub async fn list_rows_json(acct: &Account, include_unmanaged: bool) -> Result<V
             (index, health_word(true, latency, true, &log))
         });
     }
-    for (index, health) in set.join_all().await {
-        rows[index].health = health;
-    }
+    fill_health(&mut rows, set).await;
     Ok(rows)
+}
+
+/// Drained one task at a time, not with `join_all`, which re-raises a task's
+/// panic: one probe that dies would take the whole list with it. Its row keeps
+/// `unknown`, which is the truth about a probe that never reported.
+async fn fill_health(
+    rows: &mut [ListRowJson],
+    mut set: tokio::task::JoinSet<(usize, &'static str)>,
+) {
+    while let Some(joined) = set.join_next().await {
+        if let Ok((index, health)) = joined {
+            rows[index].health = health;
+        }
+    }
 }
 
 pub async fn cmd_list(account: Option<&str>, json: bool) -> Result<()> {
@@ -1074,6 +1087,20 @@ mod tests {
         assert_eq!(row.local_port, Some(15999));
         assert_eq!(row.health, "unknown");
         assert!(row.run);
+    }
+
+    #[tokio::test]
+    async fn a_probe_task_that_fails_leaves_its_row_unknown_and_the_rest_filled() {
+        let mut rows = vec![
+            ListRowJson::from_run(&live_run("scratch", "dev", 15999)),
+            ListRowJson::from_run(&live_run("broken", "dev", 16000)),
+        ];
+        let mut set = tokio::task::JoinSet::new();
+        set.spawn(async { (0, "healthy") });
+        set.spawn(async { panic!("a probe task that dies") });
+        fill_health(&mut rows, set).await;
+        assert_eq!(rows[0].health, "healthy");
+        assert_eq!(rows[1].health, "unknown");
     }
 
     #[test]
