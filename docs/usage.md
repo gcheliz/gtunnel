@@ -597,6 +597,15 @@ server and its only owner is the TTL, and it answers once the run has published 
 Prefer `gtunnel_run_tunnel` for access that lasts an afternoon; use `gtunnel_add_tunnel` for
 something the user keeps.
 
+#### Protocol revision, annotations and structured output
+
+| Part | Behaviour |
+|---|---|
+| Revisions | `initialize` answers the `protocolVersion` the client sent when it is `2025-11-25`, `2025-06-18` or `2024-11-05`; a missing, unknown or newer one gets `2025-11-25` |
+| Titles and annotations | Every tool has a `title` and all four hints. `readOnlyHint` is true for `gtunnel_list_tunnels`, `gtunnel_get_status`, `gtunnel_get_logs`, `gtunnel_list_accounts` and `gtunnel_doctor`; `destructiveHint` is true for `gtunnel_stop_tunnel`, `gtunnel_restart_tunnel` and `gtunnel_delete_tunnel` |
+| Structured output | `gtunnel_list_tunnels`, `gtunnel_get_status`, `gtunnel_run_tunnel`, `gtunnel_list_accounts` and `gtunnel_doctor` return `structuredContent` and declare an `outputSchema`. The list and the doctor wrap their array as `{"tunnels": [...]}` and `{"findings": [...]}`; the `content[0].text` of every tool is unchanged |
+| Failures | A failed call under an `outputSchema` returns the `{"error": {"kind", "message"}}` object, which each schema also admits |
+
 A tool that fails returns a normal result with `isError: true` and the whole cause as its
 text, such as `db failed to start` and the hint under it. A start that fails is such a failure:
 `gtunnel_add_tunnel` with `start: true` reports it and the tunnel stays in `tunnels.toml`, as

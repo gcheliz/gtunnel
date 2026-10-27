@@ -176,6 +176,8 @@ An agent drives gtunnel through the same binary a person uses: `gtunnel mcp` spe
 |---|---|---|
 | Stdio server | `src/mcp/server.rs` | One JSON-RPC message per line. Stdout carries frames and nothing else, so a login prompt there would corrupt the protocol and `mcp` skips the login check. A `notifications/...` message gets no reply |
 | Tool table | `src/mcp/tools.rs`: `all_tools`, `all_resources` | The one source of names and schemas. `tools/list` serves it, and `gtunnel mcp --validate` (`src/mcp/validator.rs`) checks every definition against it |
+| Handshake | `negotiate_version` in `src/mcp/protocol.rs` | Echoes the client's revision when it is one of `2025-11-25`, `2025-06-18`, `2024-11-05`, and offers `2025-11-25` otherwise, so a newer client stays on this handshake |
+| Tool metadata | `ToolDefinition` | `title`, four always-present annotation hints and, for the five tools that answer in JSON, an `outputSchema` that admits the error envelope too, because a structured result must conform even when it is a failure |
 | Dispatch | `execute_tool`, `read_resource` | A failed operation, including an unknown account or tunnel, is a result with `isError` and a `kind`, the same kinds the CLI's `--json` errors carry. Only parameters the server cannot act on are JSON-RPC errors |
 | Accounts | `accounts_payload` | The `gtunnel_list_accounts` tool and the `gtunnel://accounts` resource call one function, so the two cannot describe the selection differently |
 | Run launcher | `src/mcp/run.rs`: `launch` | Spawns `gtunnel run <name> <target> --ttl <n>m` in its own process group, so the tunnel outlives the server and the TTL is its only owner. Waits `LAUNCH_BUDGET` (5s) for the run record, and on failure returns the log's tail as the tool error |

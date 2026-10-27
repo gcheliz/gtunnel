@@ -34,6 +34,8 @@ If `gtunnel_*` MCP tools are available in the current environment, prioritize th
 - `gtunnel_list_accounts`: List configured GCP accounts and the active selection (`selected_account`, and `selected` on each account). The `gtunnel://accounts` resource returns the same object.
 - `gtunnel_doctor`: Run diagnostic checks on prerequisites, permissions, and daemon configurations.
 
+The JSON tools (`gtunnel_list_tunnels`, `gtunnel_get_status`, `gtunnel_run_tunnel`, `gtunnel_list_accounts`, `gtunnel_doctor`) also return `structuredContent`; the list is `{"tunnels": [...]}` and the doctor `{"findings": [...]}`. A failure is `{"error": {"kind", "message"}}`. Tools annotated `readOnlyHint` change nothing, so call them freely.
+
 Routing: for short-lived access (a query, a one-off check) prefer `gtunnel_run_tunnel`: it needs no cleanup. Use `gtunnel_add_tunnel` only for something the user keeps. Choose the TTL for the task at hand, not the maximum.
 
 ### 2. Fallback: Shell Commands

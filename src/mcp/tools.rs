@@ -798,6 +798,39 @@ fn accounts_payload(config: &crate::config::Config) -> Value {
     })
 }
 
+pub fn read_resource(uri: &str) -> Result<ResourceReadResult, JsonRpcError> {
+    match uri {
+        "gtunnel://tunnels" => {
+            let state = TunnelState::load()
+                .map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
+            let text = serde_json::to_string_pretty(&state.tunnels).unwrap_or_default();
+            Ok(ResourceReadResult {
+                contents: vec![ResourceContent {
+                    uri: uri.to_string(),
+                    mime_type: Some("application/json".to_string()),
+                    text,
+                }],
+            })
+        }
+        "gtunnel://accounts" => {
+            let config =
+                load_config().map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
+            let text = serde_json::to_string_pretty(&accounts_payload(&config)).unwrap_or_default();
+            Ok(ResourceReadResult {
+                contents: vec![ResourceContent {
+                    uri: uri.to_string(),
+                    mime_type: Some("application/json".to_string()),
+                    text,
+                }],
+            })
+        }
+        _ => Err(JsonRpcError::new(
+            INVALID_PARAMS,
+            format!("Resource '{uri}' not found"),
+        )),
+    }
+}
+
 #[cfg(test)]
 mod schema_tests {
     use super::*;
@@ -861,38 +894,5 @@ mod schema_tests {
     fn a_payload_with_neither_shape_is_rejected() {
         let validator = jsonschema::validator_for(&schema_of("gtunnel_list_accounts")).unwrap();
         assert!(!validator.is_valid(&json!({"unrelated": true})));
-    }
-}
-
-pub fn read_resource(uri: &str) -> Result<ResourceReadResult, JsonRpcError> {
-    match uri {
-        "gtunnel://tunnels" => {
-            let state = TunnelState::load()
-                .map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
-            let text = serde_json::to_string_pretty(&state.tunnels).unwrap_or_default();
-            Ok(ResourceReadResult {
-                contents: vec![ResourceContent {
-                    uri: uri.to_string(),
-                    mime_type: Some("application/json".to_string()),
-                    text,
-                }],
-            })
-        }
-        "gtunnel://accounts" => {
-            let config =
-                load_config().map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
-            let text = serde_json::to_string_pretty(&accounts_payload(&config)).unwrap_or_default();
-            Ok(ResourceReadResult {
-                contents: vec![ResourceContent {
-                    uri: uri.to_string(),
-                    mime_type: Some("application/json".to_string()),
-                    text,
-                }],
-            })
-        }
-        _ => Err(JsonRpcError::new(
-            INVALID_PARAMS,
-            format!("Resource '{uri}' not found"),
-        )),
     }
 }

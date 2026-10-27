@@ -181,6 +181,26 @@ pub fn validate_registered_tools() -> Result<ValidationSummary, Vec<String>> {
     })
 }
 
+/// CLI command runner for `gtunnel mcp --validate`.
+pub fn run_validate() -> Result<()> {
+    match validate_registered_tools() {
+        Ok(summary) => {
+            println!(
+                "Validated {} tools and {} resources successfully.",
+                summary.tools_count, summary.resources_count
+            );
+            Ok(())
+        }
+        Err(errors) => {
+            eprintln!("Tool validation failed with {} error(s):", errors.len());
+            for err in errors {
+                eprintln!("  - {err}");
+            }
+            bail!("Validation failed");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,25 +228,5 @@ mod tests {
         tool.annotations.destructive_hint = true;
         let err = ToolValidator::validate_definition(&tool).unwrap_err();
         assert!(err.to_string().contains("destructive"), "got: {err}");
-    }
-}
-
-/// CLI command runner for `gtunnel mcp --validate`.
-pub fn run_validate() -> Result<()> {
-    match validate_registered_tools() {
-        Ok(summary) => {
-            println!(
-                "Validated {} tools and {} resources successfully.",
-                summary.tools_count, summary.resources_count
-            );
-            Ok(())
-        }
-        Err(errors) => {
-            eprintln!("Tool validation failed with {} error(s):", errors.len());
-            for err in errors {
-                eprintln!("  - {err}");
-            }
-            bail!("Validation failed");
-        }
     }
 }
