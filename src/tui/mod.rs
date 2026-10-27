@@ -166,6 +166,7 @@ async fn demo_loop(
                         entry.pending = None;
                     }
                 }
+                app.answer_demo_lists();
                 if app.should_quit {
                     break;
                 }

@@ -566,6 +566,45 @@ fn the_demo_is_always_loaded() {
     assert!(app.loaded, "the demo carries its own data across accounts");
 }
 
+// The demo has no gcloud behind it, so every list a form asks for is answered
+// from placeholder data; otherwise its pickers never open and a recording of
+// the forms shows only the text fields they fall back to
+#[test]
+fn the_demo_answers_every_list_a_form_asks_for() {
+    let mut app = App::new_demo();
+    app.handle_key(key(KeyCode::Char(':')));
+    app.handle_key(key(KeyCode::Char('a')));
+    app.answer_demo_lists();
+    assert_eq!(app.input_mode, InputMode::AccountConfigurationPick);
+    assert!(!app.want_configurations, "the request is answered once");
+    let active = &app.filtered_configurations()[app.configuration_selected];
+    assert_eq!(active.name, "demo");
+    assert!(
+        app.configurations_list.iter().any(|c| c.project.is_none()),
+        "one row shows the refusal"
+    );
+
+    app.handle_key(key(KeyCode::Esc));
+    app.handle_key(key(KeyCode::Char('e')));
+    app.answer_demo_lists();
+    assert_eq!(app.input_mode, InputMode::AccountProjectPick);
+    app.handle_key(key(KeyCode::Enter));
+    app.answer_demo_lists();
+    assert_eq!(app.input_mode, InputMode::AccountZonePick);
+    assert_eq!(app.filtered_zones()[app.zone_selected], "europe-west1-b");
+
+    let mut app = App::new_demo();
+    app.handle_key(key(KeyCode::Char('a')));
+    app.handle_key(key(KeyCode::Char('1')));
+    for c in "postgres".chars() {
+        app.handle_key(key(KeyCode::Char(c)));
+    }
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(app.input_mode, InputMode::AddInstance);
+    app.answer_demo_lists();
+    assert!(!app.instances.is_empty(), "the instance picker has rows");
+}
+
 #[test]
 fn a_failed_load_reaches_the_status_line_and_leaves_the_list_loading() {
     let mut app = App::new("dev");

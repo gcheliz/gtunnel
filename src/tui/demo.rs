@@ -1,6 +1,9 @@
 use std::time::Duration;
 
-use super::app::{App, TunnelEntry, TunnelKind, SPARKLINE_SAMPLES};
+use super::app::{
+    App, ConfigurationChoice, InstanceChoice, ProjectChoice, TunnelEntry, TunnelKind,
+    SPARKLINE_SAMPLES,
+};
 use crate::gcp::monitoring::LbStats;
 use crate::probe::{HealthStatus, MetricsHistory, TunnelMetrics};
 use crate::state::{AccessTarget, PersistentTunnel, TunnelSpec, TunnelStatus};
@@ -268,6 +271,69 @@ impl App {
         });
         app.set_status("demo data: nothing here touches GCP");
         app
+    }
+
+    // What gcloud would have answered for each list a form asks for. The demo
+    // loop calls it after every key, so a picker opens as it would for real;
+    // one configuration has no project, so the refusal can be shown too.
+    pub fn answer_demo_lists(&mut self) {
+        if std::mem::take(&mut self.want_instances) {
+            self.instances = ["bastion", "cache-vm", "db-vm"]
+                .map(|name| InstanceChoice {
+                    name: name.to_string(),
+                    zone: self.default_zone.clone(),
+                })
+                .to_vec();
+            self.instance_selected = 0;
+        }
+        if std::mem::take(&mut self.want_configurations) {
+            self.configurations_arrived(vec![
+                ConfigurationChoice {
+                    name: "demo".to_string(),
+                    project: Some("gtunnel-demo-000000".to_string()),
+                    is_active: true,
+                },
+                ConfigurationChoice {
+                    name: "scratch".to_string(),
+                    project: None,
+                    is_active: false,
+                },
+                ConfigurationChoice {
+                    name: "staging".to_string(),
+                    project: Some("gtunnel-staging-000000".to_string()),
+                    is_active: false,
+                },
+            ]);
+        }
+        if std::mem::take(&mut self.want_projects) {
+            let account = self.account_draft.name.clone();
+            self.projects_arrived(
+                &account,
+                [
+                    ("gtunnel-demo-000000", "Demo"),
+                    ("gtunnel-staging-000000", "Staging"),
+                ]
+                .map(|(id, name)| ProjectChoice {
+                    project_id: id.to_string(),
+                    name: name.to_string(),
+                })
+                .to_vec(),
+            );
+        }
+        if std::mem::take(&mut self.want_zones) {
+            let (account, project) = (
+                self.account_draft.name.clone(),
+                self.account_draft.project.clone(),
+            );
+            let zones = [
+                "europe-west1-b",
+                "europe-west1-c",
+                "europe-west1-d",
+                "europe-west4-a",
+                "europe-west4-b",
+            ];
+            self.zones_arrived(&account, &project, zones.map(str::to_string).to_vec());
+        }
     }
 
     // What the runtime would have loaded for the selected account, had there
