@@ -492,6 +492,8 @@ pub async fn execute_tool(
                 network,
                 start,
             };
+            req.validate()
+                .map_err(|e| JsonRpcError::new(INVALID_PARAMS, format!("{e:#}")))?;
             // The record is saved before a start is tried, so an error here
             // may describe a tunnel that exists: the text says what failed
             Ok(match add_tunnel(account, req).await {

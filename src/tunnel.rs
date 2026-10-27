@@ -2,7 +2,10 @@ use anyhow::{bail, Result};
 
 use crate::config::{Account, ExposeConfig};
 use crate::loglevel::LogLevel;
-use crate::state::{AccessTarget, PersistentTunnel, TunnelSpec};
+use crate::state::{
+    validate_instance_name, validate_target, validate_zone, AccessTarget, PersistentTunnel,
+    TunnelSpec,
+};
 
 // Flags every gcloud invocation carries, so a tunnel never depends on which
 // gcloud configuration happens to be active in the shell
@@ -37,6 +40,9 @@ pub fn access_argv(acct: &Account, t: &PersistentTunnel, level: LogLevel) -> Res
             )
         }
     };
+
+    // Whatever loaded or built this tunnel, nothing reaches argv unchecked
+    validate_target(target)?;
 
     // A jump tunnel is a different gcloud command, not a different flag: IAP
     // carries an ssh connection and ssh makes the forward from the far side
@@ -136,6 +142,8 @@ pub fn expose_argv(
         }
     };
     let normalized = normalize_local_target(local_target)?;
+    validate_instance_name(&ex.relay_instance)?;
+    validate_zone(&ex.relay_zone)?;
 
     let mut argv = vec![
         "compute".to_string(),
@@ -321,6 +329,41 @@ mod tests {
                 private: false,
             },
         }
+    }
+
+    #[test]
+    fn access_argv_refuses_a_value_gcloud_would_read_as_a_flag() {
+        let mut t = instance_tunnel();
+        t.spec = TunnelSpec::Access {
+            target: AccessTarget::Instance {
+                instance: "--command=id".to_string(),
+                zone: "europe-west1-b".to_string(),
+            },
+            remote_port: 22,
+            local_port: 15432,
+        };
+        let err = access_argv(&account(), &t, LogLevel::Quiet).unwrap_err();
+        assert!(err.to_string().contains("--command=id"), "{err}");
+
+        let mut t = jump_tunnel();
+        t.spec = TunnelSpec::Access {
+            target: AccessTarget::Jump {
+                instance: "bastion".to_string(),
+                zone: "europe-west1-b".to_string(),
+                host: "-oProxyCommand=id".to_string(),
+            },
+            remote_port: 443,
+            local_port: 8443,
+        };
+        assert!(access_argv(&account(), &t, LogLevel::Quiet).is_err());
+    }
+
+    #[test]
+    fn expose_argv_refuses_a_relay_that_gcloud_would_read_as_a_flag() {
+        let mut ex = expose_config();
+        ex.relay_instance = "--command=id".to_string();
+        let err = expose_argv(&account(), &ex, &expose_tunnel("3000"), LogLevel::Quiet);
+        assert!(err.unwrap_err().to_string().contains("--command=id"));
     }
 
     // gcloud's scale, asked for by the level rather than written at the
