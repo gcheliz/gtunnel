@@ -4,6 +4,7 @@ use super::{confirm, prompt};
 use crate::config::{
     config_dir, load_config, update_config, update_or_init_config, validate_account_name, Account,
 };
+use crate::gcp::projects::{self, Project};
 use crate::gcp::{compute, gcloud, GcpClient};
 
 // First run: turn a gcloud configuration into a gtunnel account
@@ -46,20 +47,46 @@ pub async fn cmd_init() -> Result<()> {
         bail!("Account '{name}' already exists");
     }
 
-    let project = prompt("Project", chosen.project.as_deref())?;
+    // Provisional: the project list is fetched with this account's gcloud
+    // configuration, before the project is known
+    let mut account = Account {
+        name: name.clone(),
+        gcloud_configuration: chosen.name.clone(),
+        project: String::new(),
+        default_zone: String::new(),
+        impersonate_service_account: None,
+        expose: None,
+    };
+    let client = GcpClient::for_account(&account);
+
+    let project = match projects::list_projects(&client).await {
+        Ok(listed) if !listed.is_empty() => {
+            println!("Projects:");
+            for (index, p) in listed.iter().enumerate() {
+                let default = if chosen.project.as_deref() == Some(p.project_id.as_str()) {
+                    " (default)"
+                } else {
+                    ""
+                };
+                println!("  {}. {}  {}{default}", index + 1, p.project_id, p.name);
+            }
+            let answer = prompt("Project (number or id)", chosen.project.as_deref())?;
+            resolve_project_choice(&answer, &listed)
+        }
+        // A failed or empty list never blocks the account: typing still works
+        other => {
+            if let Err(e) = other {
+                println!("Could not list projects: {}", short_cause(&e));
+            }
+            prompt("Project", chosen.project.as_deref())?
+        }
+    };
     if project.is_empty() {
         bail!("A project is required");
     }
     let impersonate = prompt("Service account to impersonate (optional)", Some(""))?;
-
-    let mut account = Account {
-        name: name.clone(),
-        gcloud_configuration: chosen.name.clone(),
-        project,
-        default_zone: String::new(),
-        impersonate_service_account: (!impersonate.is_empty()).then_some(impersonate),
-        expose: None,
-    };
+    account.project = project;
+    account.impersonate_service_account = (!impersonate.is_empty()).then_some(impersonate);
 
     let client = GcpClient::for_account(&account);
     let zones = compute::list_zones(&client, &account.project)
@@ -80,6 +107,25 @@ pub async fn cmd_init() -> Result<()> {
     update_or_init_config(|config| config.add_account(account))?;
     println!("Account '{name}' saved to {}", config_dir()?.display());
     Ok(())
+}
+
+// A number in range picks that row; anything else is the id as typed, so a
+// project the list does not show (or a list that is empty) still works
+fn resolve_project_choice(input: &str, projects: &[Project]) -> String {
+    let typed = input.trim();
+    typed
+        .parse::<usize>()
+        .ok()
+        .filter(|n| *n >= 1 && *n <= projects.len())
+        .map(|n| projects[n - 1].project_id.clone())
+        .unwrap_or_else(|| typed.to_string())
+}
+
+// The root cause only: the full chain names the request URL, which is noise
+// on a prompt line
+fn short_cause(err: &anyhow::Error) -> String {
+    let cause = err.root_cause().to_string();
+    cause.lines().next().unwrap_or_default().to_string()
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -351,6 +397,43 @@ mod tests {
         let err = account_from_configuration(&configs, "bare", "dev").unwrap_err();
         assert!(err.to_string().contains("project"), "{err}");
     }
+    fn listed(ids: &[&str]) -> Vec<Project> {
+        ids.iter()
+            .map(|id| Project {
+                project_id: (*id).to_string(),
+                name: String::new(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_number_picks_the_row() {
+        let rows = listed(&["example-dev-1a2b", "example-prod-3c4d"]);
+        assert_eq!(resolve_project_choice("2", &rows), "example-prod-3c4d");
+    }
+
+    #[test]
+    fn a_number_out_of_range_is_taken_as_typed() {
+        let rows = listed(&["example-dev-1a2b", "example-prod-3c4d"]);
+        assert_eq!(resolve_project_choice("7", &rows), "7");
+        assert_eq!(resolve_project_choice("0", &rows), "0");
+    }
+
+    #[test]
+    fn a_typed_id_is_returned_trimmed() {
+        let rows = listed(&["example-prod-3c4d"]);
+        assert_eq!(
+            resolve_project_choice("  example-dev-1a2b ", &rows),
+            "example-dev-1a2b"
+        );
+    }
+
+    #[test]
+    fn an_empty_list_returns_the_typed_input() {
+        assert_eq!(resolve_project_choice("2", &[]), "2");
+        assert_eq!(resolve_project_choice(" ", &[]), "");
+    }
+
     #[test]
     fn duplicate_account_name_is_rejected() {
         let mut config = Config::default();

@@ -1,6 +1,3 @@
-// Dead until `init` calls it, in the next commit
-#![allow(dead_code)]
-
 use anyhow::Result;
 use serde::Deserialize;
 
