@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.39](https://github.com/gcheliz/gtunnel/compare/v0.1.38...v0.1.39) - 2026-10-27
+
+### Fixed
+
+- *(probe)* a silent close after a logged refusal is not healthy ([#108](https://github.com/gcheliz/gtunnel/pull/108))
+
 ## [0.1.38](https://github.com/gcheliz/gtunnel/compare/v0.1.37...v0.1.38) - 2026-10-27
 
 ### Fixed
