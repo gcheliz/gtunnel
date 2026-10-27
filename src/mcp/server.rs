@@ -3,8 +3,9 @@ use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use super::protocol::{
-    InitializeResult, JsonRpcError, JsonRpcRequest, JsonRpcResponse, ResourcesCapability,
-    ServerCapabilities, ServerInfo, ToolsCapability, INVALID_PARAMS, METHOD_NOT_FOUND, PARSE_ERROR,
+    modern_version, stamp_modern, InitializeResult, JsonRpcError, JsonRpcRequest, JsonRpcResponse,
+    ResourcesCapability, ServerCapabilities, ServerInfo, ToolsCapability, INVALID_PARAMS,
+    METHOD_NOT_FOUND, MODERN_PROTOCOL_VERSIONS, PARSE_ERROR,
 };
 use super::tools::{all_resources, all_tools, execute_tool, read_resource};
 use super::validator::ToolValidator;
@@ -27,8 +28,58 @@ pub async fn handle_message(line: &str) -> Option<JsonRpcResponse> {
         }
     };
 
-    let id = req.id.clone();
+    // Notifications get no reply in either era, so they skip the era check
+    if req.method.starts_with("notifications/") {
+        return None;
+    }
 
+    let id = req.id.clone();
+    let modern = match modern_version(req.params.as_ref()) {
+        Ok(m) => m.is_some(),
+        Err(e) => return Some(JsonRpcResponse::error(id, e)),
+    };
+
+    if req.method == "server/discover" {
+        if !modern {
+            return Some(JsonRpcResponse::error(
+                id,
+                JsonRpcError::new(
+                    INVALID_PARAMS,
+                    "server/discover needs the protocol version and client capabilities in _meta",
+                ),
+            ));
+        }
+        return Some(JsonRpcResponse::success(
+            id,
+            stamp_modern(json!({
+                "supportedVersions": MODERN_PROTOCOL_VERSIONS,
+                "capabilities": capabilities(),
+            })),
+        ));
+    }
+
+    let mut resp = dispatch(req, id).await?;
+    if modern {
+        resp.result = resp.result.map(stamp_modern);
+    }
+    Some(resp)
+}
+
+/// One set of capabilities for `initialize` and `server/discover`, so the two
+/// eras cannot advertise different things.
+fn capabilities() -> ServerCapabilities {
+    ServerCapabilities {
+        tools: Some(ToolsCapability {
+            list_changed: Some(false),
+        }),
+        resources: Some(ResourcesCapability {
+            subscribe: Some(false),
+            list_changed: Some(false),
+        }),
+    }
+}
+
+async fn dispatch(req: JsonRpcRequest, id: Option<serde_json::Value>) -> Option<JsonRpcResponse> {
     match req.method.as_str() {
         "initialize" => {
             let requested = req
@@ -38,15 +89,7 @@ pub async fn handle_message(line: &str) -> Option<JsonRpcResponse> {
                 .and_then(serde_json::Value::as_str);
             let result = InitializeResult {
                 protocol_version: super::protocol::negotiate_version(requested).to_string(),
-                capabilities: ServerCapabilities {
-                    tools: Some(ToolsCapability {
-                        list_changed: Some(false),
-                    }),
-                    resources: Some(ResourcesCapability {
-                        subscribe: Some(false),
-                        list_changed: Some(false),
-                    }),
-                },
+                capabilities: capabilities(),
                 server_info: ServerInfo {
                     name: "gtunnel".to_string(),
                     version: env!("CARGO_PKG_VERSION").to_string(),

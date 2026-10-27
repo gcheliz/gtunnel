@@ -611,7 +611,8 @@ something the user keeps.
 
 | Part | Behaviour |
 |---|---|
-| Revisions | `initialize` answers the `protocolVersion` the client sent when it is `2025-11-25`, `2025-06-18` or `2024-11-05`; a missing, unknown or newer one gets `2025-11-25` |
+| Revisions | `2026-07-28` is served statelessly: a request whose `_meta` carries `io.modelcontextprotocol/protocolVersion` and `io.modelcontextprotocol/clientCapabilities` needs no handshake, and `server/discover` lists the versions, capabilities and server identity. Every such result gains `resultType: "complete"` and `_meta["io.modelcontextprotocol/serverInfo"]`. An unknown version in that `_meta` is `-32022` with the supported list, a missing capabilities object is `-32602` |
+| Legacy revisions | `initialize` answers the `protocolVersion` the client sent when it is `2025-11-25`, `2025-06-18` or `2024-11-05`; a missing, unknown or newer one gets `2025-11-25`. A request without the modern `_meta` is served exactly as before |
 | Titles and annotations | Every tool has a `title` and all four hints. `readOnlyHint` is true for `gtunnel_list_tunnels`, `gtunnel_get_status`, `gtunnel_get_logs`, `gtunnel_list_accounts` and `gtunnel_doctor`; `destructiveHint` is true for `gtunnel_stop_tunnel`, `gtunnel_restart_tunnel`, `gtunnel_delete_tunnel`, `gtunnel_rename_tunnel`, `gtunnel_move_tunnel` and `gtunnel_expose_tunnel` |
 | Structured output | `gtunnel_list_tunnels`, `gtunnel_get_status`, `gtunnel_run_tunnel`, `gtunnel_expose_tunnel`, `gtunnel_list_accounts` and `gtunnel_doctor` return `structuredContent` and declare an `outputSchema`. The list and the doctor wrap their array as `{"tunnels": [...]}` and `{"findings": [...]}`; the `content[0].text` of every tool is unchanged |
 | Failures | A failed call under an `outputSchema` returns the `{"error": {"kind", "message"}}` object, which each schema also admits |

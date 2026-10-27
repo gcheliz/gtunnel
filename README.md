@@ -201,7 +201,7 @@ with every flag and its output: [docs/commands.md](docs/commands.md).
 | Piece | What it gives an agent |
 |---|---|
 | `.agents/skills/gtunnel/SKILL.md` | A guide in the open Agent Skills format: tunnel naming, target routing through a bastion, account scoping, and the checks to run before reporting a tunnel works |
-| `gtunnel mcp` | A JSON-RPC 2.0 stdio server in the binary: 14 tools and 2 resources (`gtunnel://tunnels`, `gtunnel://accounts`), protocol revision 2025-11-25 negotiated down to 2024-11-05, with titles, read-only and destructive annotations, and a schema-checked `structuredContent` on the six JSON tools |
+| `gtunnel mcp` | A JSON-RPC 2.0 stdio server in the binary: 14 tools and 2 resources (`gtunnel://tunnels`, `gtunnel://accounts`), protocol revision 2026-07-28 served statelessly, and 2025-11-25, 2025-06-18 and 2024-11-05 through `initialize`, with titles, read-only and destructive annotations, and a schema-checked `structuredContent` on the six JSON tools |
 | `gtunnel mcp --validate` | Validates every tool schema and exits non-zero on a bad one. `npx @modelcontextprotocol/inspector gtunnel mcp` inspects them interactively |
 
 A `.mcp.json` in the workspace root registers the server:

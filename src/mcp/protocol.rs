@@ -13,6 +13,21 @@ pub const INTERNAL_ERROR: i32 = -32603;
 /// handshake path instead of guessing at one we do not serve (#149).
 pub const SUPPORTED_PROTOCOL_VERSIONS: [&str; 3] = ["2025-11-25", "2025-06-18", "2024-11-05"];
 
+/// The stateless revision. It is not in `SUPPORTED_PROTOCOL_VERSIONS` on
+/// purpose: that list answers `initialize`, and a stateless request has no
+/// handshake to counter-offer in. The era is told apart by a request carrying
+/// this revision in `_meta`, never by a method name, so a legacy client sees
+/// no change (#149).
+pub const MODERN_PROTOCOL_VERSIONS: [&str; 1] = ["2026-07-28"];
+
+/// The revision is not valid JSON-RPC, so it has its own code rather than
+/// borrowing `INVALID_PARAMS`: a client reads `data.supported` and retries.
+pub const UNSUPPORTED_PROTOCOL_VERSION: i32 = -32022;
+
+pub const META_PROTOCOL_VERSION: &str = "io.modelcontextprotocol/protocolVersion";
+pub const META_CLIENT_CAPABILITIES: &str = "io.modelcontextprotocol/clientCapabilities";
+pub const META_SERVER_INFO: &str = "io.modelcontextprotocol/serverInfo";
+
 /// Echo the requested revision when we speak it, otherwise offer our latest.
 /// The spec lets the server counter-offer, and the client decides whether to
 /// continue, so this never fails on a missing or odd `protocolVersion`.
@@ -21,6 +36,62 @@ pub fn negotiate_version(requested: Option<&str>) -> &'static str {
         .and_then(|r| SUPPORTED_PROTOCOL_VERSIONS.iter().find(|v| **v == r))
         .copied()
         .unwrap_or(SUPPORTED_PROTOCOL_VERSIONS[0])
+}
+
+/// Checks the `_meta` of a request that opted into the stateless era.
+/// `Ok(None)` means the request is legacy and must be served untouched;
+/// `Ok(Some(version))` is a modern request this server speaks.
+pub fn modern_version(params: Option<&Value>) -> Result<Option<&'static str>, JsonRpcError> {
+    let Some(meta) = params
+        .and_then(|p| p.get("_meta"))
+        .and_then(Value::as_object)
+    else {
+        return Ok(None);
+    };
+    let Some(version) = meta.get(META_PROTOCOL_VERSION) else {
+        return Ok(None);
+    };
+    let Some(requested) = version.as_str() else {
+        return Err(JsonRpcError::new(
+            INVALID_PARAMS,
+            format!("'{META_PROTOCOL_VERSION}' must be a string"),
+        ));
+    };
+    let Some(supported) = MODERN_PROTOCOL_VERSIONS.iter().find(|v| **v == requested) else {
+        return Err(JsonRpcError::with_data(
+            UNSUPPORTED_PROTOCOL_VERSION,
+            "Unsupported protocol version",
+            serde_json::json!({"supported": MODERN_PROTOCOL_VERSIONS, "requested": requested}),
+        ));
+    };
+    if !meta
+        .get(META_CLIENT_CAPABILITIES)
+        .is_some_and(Value::is_object)
+    {
+        return Err(JsonRpcError::new(
+            INVALID_PARAMS,
+            format!("Missing '{META_CLIENT_CAPABILITIES}' in _meta"),
+        ));
+    }
+    Ok(Some(supported))
+}
+
+/// Stamps a modern result: `resultType` and the server identity, merged into
+/// any `_meta` the result already has.
+pub fn stamp_modern(mut result: Value) -> Value {
+    if let Some(obj) = result.as_object_mut() {
+        obj.insert("resultType".into(), "complete".into());
+        let meta = obj
+            .entry("_meta")
+            .or_insert_with(|| Value::Object(Default::default()));
+        if let Some(meta) = meta.as_object_mut() {
+            meta.insert(
+                META_SERVER_INFO.into(),
+                serde_json::json!({"name": "gtunnel", "version": env!("CARGO_PKG_VERSION")}),
+            );
+        }
+    }
+    result
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -301,5 +372,48 @@ mod failure_tests {
             json["structuredContent"]["error"]["message"],
             "stop: Tunnel 'x' not found"
         );
+    }
+}
+
+#[cfg(test)]
+mod modern_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn params(meta: Value) -> Value {
+        json!({ "_meta": meta })
+    }
+
+    #[test]
+    fn a_request_without_the_version_key_is_legacy() {
+        assert_eq!(modern_version(None), Ok(None));
+        assert_eq!(modern_version(Some(&json!({}))), Ok(None));
+        let p = params(json!({"progressToken": 1}));
+        assert_eq!(modern_version(Some(&p)), Ok(None));
+    }
+
+    #[test]
+    fn a_complete_modern_request_is_accepted() {
+        let p = params(json!({META_PROTOCOL_VERSION: "2026-07-28", META_CLIENT_CAPABILITIES: {}}));
+        assert_eq!(modern_version(Some(&p)), Ok(Some("2026-07-28")));
+    }
+
+    #[test]
+    fn an_unknown_modern_version_lists_only_modern_ones() {
+        let p = params(json!({META_PROTOCOL_VERSION: "2025-11-25", META_CLIENT_CAPABILITIES: {}}));
+        let err = modern_version(Some(&p)).unwrap_err();
+        assert_eq!(err.code, UNSUPPORTED_PROTOCOL_VERSION);
+        assert_eq!(
+            err.data,
+            Some(json!({"supported": ["2026-07-28"], "requested": "2025-11-25"}))
+        );
+    }
+
+    #[test]
+    fn stamping_merges_into_an_existing_meta() {
+        let out = stamp_modern(json!({"_meta": {"keep": 1}}));
+        assert_eq!(out["resultType"], "complete");
+        assert_eq!(out["_meta"]["keep"], 1);
+        assert_eq!(out["_meta"][META_SERVER_INFO]["name"], "gtunnel");
     }
 }
