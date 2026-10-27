@@ -5,7 +5,9 @@ use super::app::{
     AccountEdit, EditTunnel, MoveTunnel, NewAccount, NewTunnel, Op, OpResult, RenameTunnel,
     TunnelEntry, TunnelKind, TunnelMode,
 };
-use crate::commands::access::{delete_tunnel, restart_tunnel, start_tunnel, stop_tunnel, Started};
+use crate::commands::access::{
+    delete_tunnel, restart_tunnel, start_tunnel, stop_by_name, stop_tunnel, Started,
+};
 use crate::commands::{account, relocate};
 use crate::commands::{find_tunnel, resolve};
 use crate::config::load_config;
@@ -298,9 +300,12 @@ pub async fn execute(account: &str, op: Op) -> OpResult {
 // that state when the op returns, whether it worked or not
 fn pending_row(op: &Op) -> Option<String> {
     match op {
-        Op::Start(n) | Op::Stop(n) | Op::Restart(n) | Op::Delete(n) | Op::ToggleAutoStart(n) => {
-            Some(n.clone())
-        }
+        Op::Start(n)
+        | Op::Stop(n)
+        | Op::StopRun(n)
+        | Op::Restart(n)
+        | Op::Delete(n)
+        | Op::ToggleAutoStart(n) => Some(n.clone()),
         _ => None,
     }
 }
@@ -312,6 +317,10 @@ async fn run(account: &str, op: &Op) -> Result<String> {
             .map(|s| running_line(&s)),
         Op::Stop(name) => {
             stop_tunnel(Some(account), name).await?;
+            Ok(format!("{name} stopped"))
+        }
+        Op::StopRun(name) => {
+            stop_by_name(Some(account), name).await?;
             Ok(format!("{name} stopped"))
         }
         Op::Restart(name) => restart_tunnel(Some(account), name)

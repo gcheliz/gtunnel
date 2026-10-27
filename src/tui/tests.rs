@@ -1802,3 +1802,29 @@ fn the_instance_picker_says_loading_before_the_list_and_nothing_matches_after() 
     assert!(answered.contains("nothing matches"), "{answered}");
     assert!(!answered.contains("loading instances"), "{answered}");
 }
+
+// A run is in the ephemeral list and not in `tunnels.toml`, so the op that
+// stops a managed tunnel would look it up and fail with not found
+#[test]
+fn stopping_a_run_sends_the_op_that_ends_a_run() {
+    let mut app = app_with_two();
+    app.entries[0].kind = TunnelKind::Ephemeral;
+    assert_eq!(
+        app.handle_key(key(KeyCode::Char('S'))),
+        Some(Op::StopRun("db".to_string()))
+    );
+}
+
+// A run has no service to reinstall, so there is nothing to restart
+#[test]
+fn restarting_a_run_is_refused_and_says_to_import_it() {
+    let mut app = app_with_two();
+    app.entries[0].kind = TunnelKind::Ephemeral;
+    assert_eq!(app.handle_key(key(KeyCode::Char('R'))), None);
+    assert_eq!(
+        app.status.as_deref(),
+        Some("db is a run: import it with m before restarting it")
+    );
+    assert!(app.status_error);
+    assert!(app.entries[0].pending.is_none());
+}
