@@ -33,7 +33,7 @@ Sleep 3s
 # agent opened (its tag and detail pane show when it stops), an IAP process
 # gtunnel did not start, a public URL with load-balancer traffic, and an
 # ephemeral URL behind IAP sign-in. The header rule shows an available update
-Sleep 1500ms
+Sleep 4s
 Down
 Sleep 2000ms
 Down
