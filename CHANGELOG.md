@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.64](https://github.com/gcheliz/gtunnel/compare/v0.1.63...v0.1.64) - 2026-10-27
+
+### Fixed
+
+- *(fsutil)* back off from 1 ms when polling a held lock ([#164](https://github.com/gcheliz/gtunnel/pull/164))
+
 ## [0.1.63](https://github.com/gcheliz/gtunnel/compare/v0.1.62...v0.1.63) - 2026-10-27
 
 ### Added
