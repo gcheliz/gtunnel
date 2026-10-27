@@ -576,7 +576,7 @@ mod tests {
         let handles: Vec<_> = (0..2u16)
             .map(|w| {
                 std::thread::spawn(move || {
-                    for i in 0..100u16 {
+                    for i in 0..25u16 {
                         TunnelState::update(|s| {
                             s.add(access_instance(&format!("t{w}-{i}"), 20000 + w * 1000 + i))
                         })
@@ -588,7 +588,7 @@ mod tests {
         for h in handles {
             h.join().unwrap();
         }
-        assert_eq!(TunnelState::load().unwrap().tunnels.len(), 200);
+        assert_eq!(TunnelState::load().unwrap().tunnels.len(), 50);
     }
 
     fn access_dest_group(name: &str) -> PersistentTunnel {

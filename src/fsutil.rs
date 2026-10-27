@@ -13,6 +13,17 @@ use std::time::{Duration, Instant};
 // wedged holder is reported rather than waited on
 pub const LOCK_DEADLINE: Duration = Duration::from_secs(5);
 
+// A holder releases and re-takes the lock within microseconds, so a waiter
+// that always sleeps the full cap almost never wakes to a free lock. Starting
+// short and doubling lets a waiter in after a short hold, and the cap bounds
+// polling during a long one
+const FIRST_POLL: Duration = Duration::from_millis(1);
+const MAX_POLL: Duration = Duration::from_millis(20);
+
+fn next_poll(wait: Duration) -> Duration {
+    (wait * 2).min(MAX_POLL)
+}
+
 fn open_private(path: &Path) -> std::io::Result<File> {
     let mut options = OpenOptions::new();
     options.write(true).create(true).truncate(false);
@@ -73,6 +84,7 @@ pub fn lock_exclusive(path: &Path, deadline: Duration) -> Result<Lock> {
     }
     let file = open_private(path).with_context(|| format!("Failed to open {}", path.display()))?;
     let started = Instant::now();
+    let mut wait = FIRST_POLL;
     loop {
         match file.try_lock() {
             Ok(()) => return Ok(Lock(file)),
@@ -84,7 +96,8 @@ pub fn lock_exclusive(path: &Path, deadline: Duration) -> Result<Lock> {
         if started.elapsed() >= deadline {
             bail!("{} is held by another gtunnel process", path.display());
         }
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(wait);
+        wait = next_poll(wait);
     }
 }
 
@@ -122,5 +135,17 @@ mod tests {
         let _held = lock_exclusive(&lock_path, LOCK_DEADLINE).unwrap();
         let err = lock_exclusive(&lock_path, Duration::from_millis(100)).unwrap_err();
         assert!(err.to_string().contains("tunnels.lock"), "{err}");
+    }
+
+    #[test]
+    fn the_poll_interval_starts_short_and_doubles_to_a_cap() {
+        let mut wait = FIRST_POLL;
+        let mut seen = vec![wait];
+        for _ in 0..8 {
+            wait = next_poll(wait);
+            seen.push(wait);
+        }
+        let ms: Vec<u128> = seen.iter().map(Duration::as_millis).collect();
+        assert_eq!(ms, [1, 2, 4, 8, 16, 20, 20, 20, 20]);
     }
 }
