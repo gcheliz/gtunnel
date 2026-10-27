@@ -362,3 +362,20 @@ The costs: gcloud's reverse forward is up for a few seconds before the hostname 
 which serves nothing; a record written by 0.1.42 or older has no token and is judged by its
 pid alone until it ends; and the TTL lives in the run process, so a run process killed by
 SIGKILL still leaves gcloud with nothing to end it.
+
+## 19. A joined account-and-name string belongs to one tunnel
+
+**Status:** Accepted, 2026-10-27
+
+Log files, run records and the systemd unit are named `<account>-<name>`. Account `prod` with
+tunnel `eu-api` and account `prod-eu` with tunnel `api` both join to `prod-eu-api`, so two
+different tunnels would write one file (#132).
+
+| Choice | Reason |
+|---|---|
+| Refuse the second name, for declared tunnels and for runs | The refusal costs one rename and changes no existing file |
+| Keep `-` as the separator | A new separator renames every log and systemd unit on upgrade |
+| Build every such name through `state::label_of` and `ephemeral::record_path` | One join, so the check and the writer cannot disagree |
+
+The launchd label joins with `.` and is unaffected. A dead run does not block the name,
+because it holds nothing.
