@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.58](https://github.com/gcheliz/gtunnel/compare/v0.1.57...v0.1.58) - 2026-10-27
+
+### Documentation
+
+- *(usage)* name the two modes, split the command reference, add the config reference ([#155](https://github.com/gcheliz/gtunnel/pull/155))
+
 ## [0.1.57](https://github.com/gcheliz/gtunnel/compare/v0.1.56...v0.1.57) - 2026-10-27
 
 ### Documentation
