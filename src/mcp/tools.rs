@@ -5,7 +5,9 @@ use super::protocol::{
     JsonRpcError, ResourceContent, ResourceDefinition, ResourceReadResult, ToolCallResult,
     ToolDefinition, INTERNAL_ERROR, INVALID_PARAMS,
 };
-use crate::commands::access::{cmd_add, cmd_delete, cmd_restart, cmd_start, cmd_stop};
+use crate::commands::access::{
+    add_tunnel, delete_tunnel, restart_tunnel, start_tunnel, stop_tunnel, AddRequest,
+};
 use crate::commands::resolve;
 use crate::config::load_config;
 use crate::daemon;
@@ -287,34 +289,30 @@ pub async fn execute_tool(
             let tunnel_name = get_str("name")
                 .ok_or_else(|| JsonRpcError::new(INVALID_PARAMS, "Missing 'name'"))?;
             let account = get_str("account");
-            cmd_start(account, tunnel_name)
-                .await
-                .map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
-            Ok(ToolCallResult::text(format!(
-                "Started tunnel '{tunnel_name}'"
-            )))
+            // A failed tool is a result the model can read and act on, not a
+            // protocol fault: `{e:#}` keeps the whole cause chain
+            Ok(match start_tunnel(account, tunnel_name).await {
+                Ok(_) => ToolCallResult::text(format!("Started tunnel '{tunnel_name}'")),
+                Err(e) => ToolCallResult::error(format!("{e:#}")),
+            })
         }
         "gtunnel_stop_tunnel" => {
             let tunnel_name = get_str("name")
                 .ok_or_else(|| JsonRpcError::new(INVALID_PARAMS, "Missing 'name'"))?;
             let account = get_str("account");
-            cmd_stop(account, tunnel_name)
-                .await
-                .map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
-            Ok(ToolCallResult::text(format!(
-                "Stopped tunnel '{tunnel_name}'"
-            )))
+            Ok(match stop_tunnel(account, tunnel_name).await {
+                Ok(()) => ToolCallResult::text(format!("Stopped tunnel '{tunnel_name}'")),
+                Err(e) => ToolCallResult::error(format!("{e:#}")),
+            })
         }
         "gtunnel_restart_tunnel" => {
             let tunnel_name = get_str("name")
                 .ok_or_else(|| JsonRpcError::new(INVALID_PARAMS, "Missing 'name'"))?;
             let account = get_str("account");
-            cmd_restart(account, tunnel_name)
-                .await
-                .map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
-            Ok(ToolCallResult::text(format!(
-                "Restarted tunnel '{tunnel_name}'"
-            )))
+            Ok(match restart_tunnel(account, tunnel_name).await {
+                Ok(_) => ToolCallResult::text(format!("Restarted tunnel '{tunnel_name}'")),
+                Err(e) => ToolCallResult::error(format!("{e:#}")),
+            })
         }
         "gtunnel_get_status" => {
             let tunnel_name = get_str("name")
@@ -414,9 +412,8 @@ pub async fn execute_tool(
             let start = get_bool("start");
             let account = get_str("account");
 
-            cmd_add(
-                account,
-                tunnel_name,
+            let req = AddRequest {
+                name: tunnel_name,
                 target,
                 via,
                 zone,
@@ -425,24 +422,24 @@ pub async fn execute_tool(
                 region,
                 network,
                 start,
-            )
-            .await
-            .map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
-
-            Ok(ToolCallResult::text(format!(
-                "Added tunnel '{tunnel_name}' for target '{target}'"
-            )))
+            };
+            // The record is saved before a start is tried, so an error here
+            // may describe a tunnel that exists: the text says what failed
+            Ok(match add_tunnel(account, req).await {
+                Ok(_) => ToolCallResult::text(format!(
+                    "Added tunnel '{tunnel_name}' for target '{target}'"
+                )),
+                Err(e) => ToolCallResult::error(format!("{e:#}")),
+            })
         }
         "gtunnel_delete_tunnel" => {
             let tunnel_name = get_str("name")
                 .ok_or_else(|| JsonRpcError::new(INVALID_PARAMS, "Missing 'name'"))?;
             let account = get_str("account");
-            cmd_delete(account, tunnel_name)
-                .await
-                .map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
-            Ok(ToolCallResult::text(format!(
-                "Deleted tunnel '{tunnel_name}'"
-            )))
+            Ok(match delete_tunnel(account, tunnel_name).await {
+                Ok(()) => ToolCallResult::text(format!("Deleted tunnel '{tunnel_name}'")),
+                Err(e) => ToolCallResult::error(format!("{e:#}")),
+            })
         }
         "gtunnel_list_accounts" => {
             let config =

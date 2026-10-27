@@ -259,3 +259,22 @@ that reaches users.
 The costs: the commit prefix is load-bearing, so a `feat` typed as a `chore` ships nothing;
 and a standing secret must be rotated before it expires, or the train fails at the tag job
 with an error naming it.
+
+## 15. A command is a core that returns a result and a printer that prints it
+
+**Status:** Accepted, 2026-10-27
+
+`start`, `stop`, `restart`, `add` and `delete` were functions that printed their outcome and
+returned `Ok`. The MCP server called them, so their `println!` landed on the JSON-RPC stdout
+and broke the client's parser, and a start that failed printed "failed to start" and returned
+`Ok`, so the CLI exited 0, MCP reported success and the TUI said "starting".
+
+Each now has a core in `commands/access.rs` that returns a typed result or an error, and a
+`cmd_*` that prints it. The CLI, the MCP server and the TUI call the core, so the three
+surfaces cannot disagree about what happened. A start that did not come up is the error
+`StartFailed`, whose text is the same everywhere. `add` with a start saves the record first and
+returns that error afterwards, so the record stays, as it did on the CLI.
+
+The costs: a start now takes the three-second settle in the TUI too, and the CLI keeps the
+failure lines on stdout but now exits 1, so a script that ignored the status starts seeing
+failures it used to miss.

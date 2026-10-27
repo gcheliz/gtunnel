@@ -51,19 +51,41 @@ pub fn parse_access_target(target: &str) -> Result<(String, u16)> {
     Ok((host.to_string(), port))
 }
 
-#[allow(clippy::too_many_arguments)]
-pub async fn cmd_add(
-    account: Option<&str>,
-    name: &str,
-    target: &str,
-    via: Option<&str>,
-    zone: Option<&str>,
-    local_port: Option<u16>,
-    dest_group: Option<&str>,
-    region: Option<&str>,
-    network: Option<&str>,
-    start: bool,
-) -> Result<()> {
+/// What `add` needs, named so the CLI, the MCP server and the TUI build the same
+/// request instead of passing ten positional arguments in the same order.
+pub struct AddRequest<'a> {
+    pub name: &'a str,
+    pub target: &'a str,
+    pub via: Option<&'a str>,
+    pub zone: Option<&'a str>,
+    pub local_port: Option<u16>,
+    pub dest_group: Option<&'a str>,
+    pub region: Option<&'a str>,
+    pub network: Option<&'a str>,
+    pub start: bool,
+}
+
+pub struct Added {
+    pub name: String,
+    pub display_url: String,
+    pub display_target: String,
+    pub started: Option<Started>,
+}
+
+// The record and the service, without the start: the CLI prints the added line
+// between the two, so a start that fails still leaves it on screen
+async fn save_tunnel(account: Option<&str>, req: &AddRequest<'_>) -> Result<Added> {
+    let AddRequest {
+        name,
+        target,
+        via,
+        zone,
+        local_port,
+        dest_group,
+        region,
+        network,
+        ..
+    } = *req;
     validate_tunnel_name(name)?;
     let (config, acct) = resolve(account)?;
     let mut state = TunnelState::load()?;
@@ -127,16 +149,59 @@ pub async fn cmd_add(
 
     let spec = daemon::service_spec(&config, &tunnel)?;
     daemon::install(&spec).await?;
+    Ok(Added {
+        name: tunnel.name.clone(),
+        display_url: tunnel.display_url(),
+        display_target: tunnel.display_target(),
+        started: None,
+    })
+}
+
+/// The record is saved before the start is tried and stays when it fails, so a
+/// failed `start: true` is an error about a tunnel that now exists, not about
+/// one that was never made.
+pub async fn add_tunnel(account: Option<&str>, req: AddRequest<'_>) -> Result<Added> {
+    let mut added = save_tunnel(account, &req).await?;
+    if req.start {
+        added.started = Some(start_tunnel(account, req.name).await?);
+    }
+    Ok(added)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn cmd_add(
+    account: Option<&str>,
+    name: &str,
+    target: &str,
+    via: Option<&str>,
+    zone: Option<&str>,
+    local_port: Option<u16>,
+    dest_group: Option<&str>,
+    region: Option<&str>,
+    network: Option<&str>,
+    start: bool,
+) -> Result<()> {
+    let req = AddRequest {
+        name,
+        target,
+        via,
+        zone,
+        local_port,
+        dest_group,
+        region,
+        network,
+        start,
+    };
+    let added = save_tunnel(account, &req).await?;
     println!(
         "{} {}  {} -> {}",
         TunnelStatus::Stopped.symbol(),
-        tunnel.name,
-        tunnel.display_url(),
-        tunnel.display_target()
+        added.name,
+        added.display_url,
+        added.display_target
     );
-
     if start {
-        cmd_start(account, name).await?;
+        print_started(&start_tunnel(account, name).await.map_err(print_failed)?);
     }
     Ok(())
 }
@@ -167,7 +232,63 @@ pub(crate) async fn verify_instance_with_client(
     }
 }
 
-pub async fn cmd_start(account: Option<&str>, name: &str) -> Result<()> {
+pub struct Started {
+    pub name: String,
+    pub url: String,
+}
+
+/// A tunnel that did not come up. The text is what a person reads on the CLI
+/// and in the TUI status line, and what an MCP client gets as the tool's error,
+/// so it carries the hint and the way to the log itself.
+#[derive(Debug)]
+pub struct StartFailed {
+    pub name: String,
+    pub hint: Option<String>,
+}
+
+impl std::fmt::Display for StartFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} failed to start", self.name)?;
+        if let Some(hint) = &self.hint {
+            write!(f, "\n  {hint}")?;
+        }
+        write!(f, "\n  Logs: gtunnel logs {}", self.name)
+    }
+}
+
+impl std::error::Error for StartFailed {}
+
+/// A failed start the CLI has already put on screen. `main` exits 1 on it
+/// without printing again; anything else that reaches it, such as the TUI
+/// creating a public tunnel through `cmd_expose`, still reads the text.
+#[derive(Debug)]
+pub struct Printed(pub StartFailed);
+
+impl std::fmt::Display for Printed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::error::Error for Printed {}
+
+// The CLI keeps the lines a failed start always printed, glyph included, on
+// stdout where a script reading `gtunnel start` already looks for them; only
+// the exit code changes
+fn print_failed(e: anyhow::Error) -> anyhow::Error {
+    match e.downcast::<StartFailed>() {
+        Ok(failed) => {
+            println!("{} {failed}", TunnelStatus::Error.symbol());
+            Printed(failed).into()
+        }
+        Err(other) => other,
+    }
+}
+
+/// Returns only once the job has had `START_SETTLE` to fail, because a job that
+/// was handed to the service manager has not yet started anything: an `Ok` here
+/// means the tunnel was running when looked at, not that the request was sent.
+pub async fn start_tunnel(account: Option<&str>, name: &str) -> Result<Started> {
     let (config, acct) = resolve(account)?;
     let state = TunnelState::load()?;
     let tunnel = find_tunnel(&state, name, &acct.name)?;
@@ -190,20 +311,30 @@ pub async fn cmd_start(account: Option<&str>, name: &str) -> Result<()> {
     daemon::start(&spec.label).await?;
 
     tokio::time::sleep(START_SETTLE).await;
-    let status = daemon::status(&spec.label).await;
-    if status == TunnelStatus::Error {
-        println!("{} {name} failed to start", status.symbol());
-        if let Some(hint) = last_hint(&tunnel)? {
-            println!("  {hint}");
+    if daemon::status(&spec.label).await == TunnelStatus::Error {
+        return Err(StartFailed {
+            name: name.to_string(),
+            hint: last_hint(&tunnel)?,
         }
-        println!("  Logs: gtunnel logs {name}");
-        return Ok(());
+        .into());
     }
+    Ok(Started {
+        name: name.to_string(),
+        url: tunnel.display_url(),
+    })
+}
+
+fn print_started(started: &Started) {
     println!(
-        "{} {name}  {}",
+        "{} {}  {}",
         TunnelStatus::Running.symbol(),
-        tunnel.display_url()
+        started.name,
+        started.url
     );
+}
+
+pub async fn cmd_start(account: Option<&str>, name: &str) -> Result<()> {
+    print_started(&start_tunnel(account, name).await.map_err(print_failed)?);
     Ok(())
 }
 
@@ -219,7 +350,7 @@ fn last_hint(t: &PersistentTunnel) -> Result<Option<String>> {
         .find_map(|line| diagnose_log_line(line).map(|hint| hint.to_string())))
 }
 
-pub async fn cmd_stop(account: Option<&str>, name: &str) -> Result<()> {
+pub async fn stop_tunnel(account: Option<&str>, name: &str) -> Result<()> {
     let (_, acct) = resolve(account)?;
     let state = TunnelState::load()?;
     let tunnel = find_tunnel(&state, name, &acct.name)?;
@@ -227,6 +358,11 @@ pub async fn cmd_stop(account: Option<&str>, name: &str) -> Result<()> {
     if let Ok(log) = tunnel.log_path() {
         let _ = daemon::log_event(&log, "stopped by gtunnel");
     }
+    Ok(())
+}
+
+pub async fn cmd_stop(account: Option<&str>, name: &str) -> Result<()> {
+    stop_tunnel(account, name).await?;
     println!("{} {name} stopped", TunnelStatus::Stopped.symbol());
     Ok(())
 }
@@ -270,15 +406,20 @@ pub async fn cmd_auto_start(account: Option<&str>, name: &str, wanted: Option<bo
     Ok(())
 }
 
-pub async fn cmd_restart(account: Option<&str>, name: &str) -> Result<()> {
+pub async fn restart_tunnel(account: Option<&str>, name: &str) -> Result<Started> {
     let (_, acct) = resolve(account)?;
     let state = TunnelState::load()?;
     let tunnel = find_tunnel(&state, name, &acct.name)?;
     let _ = daemon::stop(&daemon::platform_label(&acct.name, &tunnel.name)).await;
-    cmd_start(account, name).await
+    start_tunnel(account, name).await
 }
 
-pub async fn cmd_delete(account: Option<&str>, name: &str) -> Result<()> {
+pub async fn cmd_restart(account: Option<&str>, name: &str) -> Result<()> {
+    print_started(&restart_tunnel(account, name).await.map_err(print_failed)?);
+    Ok(())
+}
+
+pub async fn delete_tunnel(account: Option<&str>, name: &str) -> Result<()> {
     let (_, acct) = resolve(account)?;
     let mut state = TunnelState::load()?;
     let tunnel = find_tunnel(&state, name, &acct.name)?;
@@ -301,6 +442,11 @@ pub async fn cmd_delete(account: Option<&str>, name: &str) -> Result<()> {
     daemon::remove_log(&log_path)?;
     state.remove_for_account(name, &acct.name);
     state.save()?;
+    Ok(())
+}
+
+pub async fn cmd_delete(account: Option<&str>, name: &str) -> Result<()> {
+    delete_tunnel(account, name).await?;
     println!("Deleted {name}");
     Ok(())
 }
@@ -491,6 +637,27 @@ mod new_tunnel_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_start_renders_the_hint_and_the_logs_line() {
+        let e = StartFailed {
+            name: "db".into(),
+            hint: Some("IAP refused the connection".into()),
+        };
+        assert_eq!(
+            e.to_string(),
+            "db failed to start\n  IAP refused the connection\n  Logs: gtunnel logs db"
+        );
+    }
+
+    #[test]
+    fn a_failed_start_without_a_hint_has_two_lines() {
+        let e = StartFailed {
+            name: "db".into(),
+            hint: None,
+        };
+        assert_eq!(e.to_string(), "db failed to start\n  Logs: gtunnel logs db");
+    }
 
     #[test]
     fn access_target_splits_host_and_port() {

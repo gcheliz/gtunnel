@@ -5,6 +5,7 @@ use super::app::{
     AccountEdit, EditTunnel, MoveTunnel, NewAccount, NewTunnel, Op, OpResult, RenameTunnel,
     TunnelEntry, TunnelKind, TunnelMode,
 };
+use crate::commands::access::{delete_tunnel, restart_tunnel, start_tunnel, stop_tunnel, Started};
 use crate::commands::{account, relocate};
 use crate::commands::{find_tunnel, resolve};
 use crate::config::load_config;
@@ -151,20 +152,6 @@ fn clear_log(account: &str, name: &str) -> Result<String> {
     Ok(format!("{name} log cleared"))
 }
 
-// A stop has nothing left to fail: the line is best effort, and the tunnel is
-// stopped either way
-fn log_stopped(account: &str, name: &str) {
-    let Ok(state) = TunnelState::load() else {
-        return;
-    };
-    let Some(tunnel) = state.find_for_account(name, account) else {
-        return;
-    };
-    if let Ok(path) = tunnel.log_path() {
-        let _ = daemon::log_event(&path, "stopped by gtunnel");
-    }
-}
-
 pub async fn probe_health(tunnel: &PersistentTunnel) -> HealthStatus {
     match &tunnel.spec {
         TunnelSpec::Access { local_port, .. } => {
@@ -253,17 +240,20 @@ pub async fn execute(account: &str, op: Op) -> OpResult {
 
 async fn run(account: &str, op: &Op) -> Result<String> {
     match op {
-        Op::Start(name) => start(account, name).await,
+        Op::Start(name) => start_tunnel(Some(account), name)
+            .await
+            .map(|s| running_line(&s)),
         Op::Stop(name) => {
-            daemon::stop(&daemon::platform_label(account, name)).await?;
-            log_stopped(account, name);
+            stop_tunnel(Some(account), name).await?;
             Ok(format!("{name} stopped"))
         }
-        Op::Restart(name) => {
-            let _ = daemon::stop(&daemon::platform_label(account, name)).await;
-            start(account, name).await
+        Op::Restart(name) => restart_tunnel(Some(account), name)
+            .await
+            .map(|s| running_line(&s)),
+        Op::Delete(name) => {
+            delete_tunnel(Some(account), name).await?;
+            Ok(format!("deleted {name}"))
         }
-        Op::Delete(name) => delete(account, name).await,
         Op::ToggleAutoStart(name) => toggle_auto_start(account, name).await,
         Op::Import(name) => import(account, name).await,
         Op::ClearLog(name) => clear_log(account, name),
@@ -348,19 +338,21 @@ async fn create(new: &NewTunnel) -> Result<String> {
     match new.mode {
         TunnelMode::Access => {
             let (target, via) = add_arguments(new);
-            crate::commands::access::cmd_add(
+            crate::commands::access::add_tunnel(
                 Some(&new.account),
-                &new.name,
-                &target,
-                via.as_deref(),
-                Some(&new.zone),
-                Some(new.local_port),
-                None,
-                None,
-                None,
-                true,
+                crate::commands::access::AddRequest {
+                    name: &new.name,
+                    target: &target,
+                    via: via.as_deref(),
+                    zone: Some(&new.zone),
+                    local_port: Some(new.local_port),
+                    dest_group: None,
+                    region: None,
+                    network: None,
+                    start: true,
+                },
             )
-            .await?
+            .await?;
         }
         TunnelMode::Public => {
             crate::commands::expose::cmd_expose(
@@ -426,49 +418,10 @@ async fn edit_tunnel(edit: &EditTunnel) -> Result<String> {
     Ok(format!("{} updated", edit.name))
 }
 
-async fn start(account: &str, name: &str) -> Result<String> {
-    let (config, acct) = resolve(Some(account))?;
-    let state = TunnelState::load()?;
-    let tunnel = find_tunnel(&state, name, &acct.name)?;
-    if tunnel.is_expose() {
-        let client = GcpClient::for_account(&acct);
-        routes::ensure_route(&client, &acct, &tunnel).await?;
-    }
-    let spec = daemon::service_spec(&config, &tunnel)?;
-    daemon::install(&spec).await?;
-    // A tunnel that started is started whether or not its log took the line
-    let _ = daemon::log_event(
-        &spec.log_path,
-        &format!("starting {name} on {}", tunnel.display_url()),
-    );
-    daemon::start(&spec.label).await?;
-    Ok(format!("{name} starting"))
-}
-
-async fn delete(account: &str, name: &str) -> Result<String> {
-    let (_, acct) = resolve(Some(account))?;
-    let mut state = TunnelState::load()?;
-    let tunnel = find_tunnel(&state, name, &acct.name)?;
-
-    // The relay route goes first: a backend left behind keeps serving a 503
-    if tunnel.is_expose() {
-        let expose = acct
-            .expose
-            .clone()
-            .context("This account has no relay, but the tunnel is an Expose tunnel")?;
-        let client = GcpClient::for_account(&acct);
-        routes::remove_route(&client, &acct, &expose, &tunnel).await?;
-    }
-
-    let label = daemon::platform_label(&acct.name, name);
-    let log_path = tunnel.log_path()?;
-    let _ = daemon::stop(&label).await;
-    daemon::uninstall(&label).await?;
-    // The log goes with the tunnel: nothing is left to own it
-    daemon::remove_log(&log_path)?;
-    state.remove_for_account(name, &acct.name);
-    state.save()?;
-    Ok(format!("deleted {name}"))
+// What the status line says once the core has seen the tunnel running; a tunnel
+// that failed comes back as the core's error, whose text `execute` shows
+fn running_line(started: &Started) -> String {
+    format!("{} running on {}", started.name, started.url)
 }
 
 async fn toggle_auto_start(account: &str, name: &str) -> Result<String> {

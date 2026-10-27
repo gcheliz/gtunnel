@@ -26,6 +26,19 @@ esac
 exit 0
 "#;
 
+// Login must still pass, or `start` stops at the login check before it ever
+// starts a job; only the tunnel itself fails
+const FAILING_STUB: &str = r#"#!/bin/sh
+case "$1 $2" in
+  "auth print-access-token")
+    echo stub-token
+    exit 0
+    ;;
+esac
+echo "ERROR: boom" >&2
+exit 1
+"#;
+
 const CONFIG: &str = r#"selected_account = "demo"
 
 [[accounts]]
@@ -58,6 +71,12 @@ impl Harness {
 
     fn new() -> Self {
         Self::with_stub(STUB)
+    }
+
+    // A gcloud that dies at once, so a started tunnel's job exits inside the
+    // settle window and its status reads as an error
+    fn failing_gcloud() -> Self {
+        Self::with_stub(FAILING_STUB)
     }
 
     fn with_stub(stub: &str) -> Self {
@@ -100,6 +119,10 @@ impl Harness {
             .output()
             .expect("run gtunnel")
     }
+}
+
+fn stdout(out: &Output) -> String {
+    String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
 fn stderr(out: &Output) -> String {
@@ -198,4 +221,20 @@ fn delete_does_not_require_gcp_login() {
         !err.contains("needs a logged-in Google account"),
         "stderr: {err}"
     );
+}
+
+// The job is a launchd one, so the test needs a macOS user session
+#[cfg(target_os = "macos")]
+#[test]
+fn start_exits_non_zero_when_the_tunnel_failed_to_start() {
+    let h = Harness::failing_gcloud();
+    let out = h.run(&["start", "db"]);
+    // The job stays loaded in the user's launchd domain after the test
+    h.run(&["stop", "db"]);
+    let (so, se) = (stdout(&out), stderr(&out));
+    assert_eq!(out.status.code(), Some(1), "stdout: {so}\nstderr: {se}");
+    // The lines a failed start always printed, where scripts already read them
+    assert!(so.contains("✗ db failed to start"), "stdout: {so}");
+    assert!(so.contains("Logs: gtunnel logs db"), "stdout: {so}");
+    assert!(!se.contains("failed to start"), "printed twice: {se}");
 }

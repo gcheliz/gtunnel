@@ -11,6 +11,18 @@ const STUB: &str = r#"#!/bin/sh
 exit 0
 "#;
 
+// Login passes, so a start gets as far as the job; only the tunnel itself fails
+const FAILING_STUB: &str = r#"#!/bin/sh
+case "$1 $2" in
+  "auth print-access-token")
+    echo stub-token
+    exit 0
+    ;;
+esac
+echo "ERROR: boom" >&2
+exit 1
+"#;
+
 const CONFIG: &str = r#"selected_account = "demo"
 
 [[accounts]]
@@ -38,13 +50,21 @@ zone = "europe-west1-b"
 
 impl Harness {
     fn new() -> Self {
+        Self::with_stub(STUB)
+    }
+
+    fn failing_gcloud() -> Self {
+        Self::with_stub(FAILING_STUB)
+    }
+
+    fn with_stub(stub: &str) -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
         fs::create_dir_all(root.join("bin")).unwrap();
         fs::create_dir_all(root.join("config")).unwrap();
 
         let gcloud = root.join("bin/gcloud");
-        fs::write(&gcloud, STUB).unwrap();
+        fs::write(&gcloud, stub).unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -263,4 +283,91 @@ fn mcp_stdio_parse_error_returns_parse_error() {
     let line = stdout.lines().next().expect("response line");
     let resp: serde_json::Value = serde_json::from_str(line).expect("valid json response");
     assert_eq!(resp["error"]["code"], -32700); // PARSE_ERROR
+}
+
+// Every line of stdout is a frame: a stray `println!` from a command core would
+// break the client's parser, so one that is not a JSON-RPC 2.0 object fails here
+fn frames(stdout: &str) -> Vec<serde_json::Value> {
+    stdout
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|line| {
+            let v: serde_json::Value = serde_json::from_str(line)
+                .unwrap_or_else(|e| panic!("stdout line is not JSON ({e}): {line}"));
+            assert_eq!(v["jsonrpc"], "2.0", "not a JSON-RPC 2.0 object: {line}");
+            v
+        })
+        .collect()
+}
+
+#[test]
+fn mutating_tools_write_only_json_rpc_to_stdout() {
+    let h = Harness::new();
+    let input = concat!(
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}"#,
+        "\n",
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"gtunnel_add_tunnel","arguments":{"name":"k8s","target":"10.0.0.10:443","via":"bastion","start":false}}}"#,
+        "\n",
+        r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"gtunnel_stop_tunnel","arguments":{"name":"db"}}}"#,
+        "\n",
+        r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"gtunnel_delete_tunnel","arguments":{"name":"k8s"}}}"#,
+        "\n",
+    );
+    let (stdout, stderr, ok) = h.run_mcp_pipe(input);
+    assert!(ok, "stderr: {stderr}");
+    let frames = frames(&stdout);
+    assert_eq!(frames.len(), 4, "{stdout}");
+    for f in &frames[1..] {
+        assert!(f.get("result").is_some(), "{f}");
+        assert_ne!(f["result"]["isError"], serde_json::json!(true), "{f}");
+    }
+}
+
+#[test]
+fn a_tool_failure_carries_is_error_and_the_cause_chain() {
+    let h = Harness::new();
+    let input = concat!(
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"gtunnel_delete_tunnel","arguments":{"name":"nope"}}}"#,
+        "\n",
+    );
+    let (stdout, _, _) = h.run_mcp_pipe(input);
+    let frames = frames(&stdout);
+    assert_eq!(
+        frames[0]["result"]["isError"],
+        serde_json::json!(true),
+        "{stdout}"
+    );
+    let text = frames[0]["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("nope"), "{text}");
+}
+
+// The job is a launchd one, so the test needs a macOS user session. Its tunnel
+// is not `k8s`: tests run in parallel and a label is shared by name, so the
+// other tests' delete of `k8s` would unload this job mid-start
+#[cfg(target_os = "macos")]
+#[test]
+fn add_with_failed_start_keeps_the_record_and_reports_the_failure() {
+    let h = Harness::failing_gcloud();
+    let add = concat!(
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"gtunnel_add_tunnel","arguments":{"name":"redis","target":"10.0.0.10:443","via":"bastion","start":true}}}"#,
+        "\n",
+    );
+    let (stdout, _, _) = h.run_mcp_pipe(add);
+    let tunnels = fs::read_to_string(h.dir.path().join("config/tunnels.toml")).unwrap();
+    // The failed start leaves a loaded job in the user's launchd domain
+    let del = concat!(
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"gtunnel_delete_tunnel","arguments":{"name":"redis"}}}"#,
+        "\n",
+    );
+    h.run_mcp_pipe(del);
+
+    let frames = frames(&stdout);
+    assert_eq!(
+        frames[0]["result"]["isError"],
+        serde_json::json!(true),
+        "{stdout}"
+    );
+    let text = frames[0]["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("redis failed to start"), "{text}");
+    assert!(tunnels.contains("name = \"redis\""), "{tunnels}");
 }
