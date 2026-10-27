@@ -47,7 +47,7 @@ Each entry in `accounts`:
 |---|---|---|---|
 | `name` | string | yes | What you type after `--account`, and the first half of the service label |
 | `gcloud_configuration` | string | yes | The gcloud configuration whose credentials and project gtunnel uses |
-| `project` | string | yes | The GCP project every API call targets. Typed: `init` offers the gcloud configuration's project as the default, and nothing lists the projects you can reach |
+| `project` | string | yes | The GCP project every API call targets. Picked or typed: `init` and the TUI's edit dialog list the projects the account can see and accept a typed id as well, with the gcloud configuration's project as the default |
 | `default_zone` | string | yes | The zone assumed when `add` is given an instance and no `--zone`. Typed |
 | `impersonate_service_account` | string | no | A service account to impersonate; omitted entirely when unset. The logged-in user needs `roles/iam.serviceAccountTokenCreator` on it |
 | `expose` | table | no | The account's relay, written by `relay up` and removed by `relay down` |

@@ -17,6 +17,22 @@ Configuration number [1]: Account name [default]: Project [example-dev-1a2b]:
 Service account to impersonate (optional) []: Default zone: Error: A default zone is required
 ```
 
+The project step lists the projects the logged-in account can see, one numbered row each
+as `N. <project id>  <name>`, the gcloud configuration's own project marked `(default)`.
+The prompt is `Project (number or id)`: a number picks that row, and anything else is taken
+as the project id you typed. Typing stays possible whatever the list holds, so a project it
+does not show still works.
+
+| The list | What `init` does |
+|---|---|
+| Has rows | Prints them, asks `Project (number or id)` |
+| Is empty, or the call fails | Prints `Could not list projects: <cause>` once, then asks `Project` as a typed field; the transcript above is this path |
+
+The list is fetched with the configuration's own credentials, and only projects in the
+`ACTIVE` state are offered, up to 5,000. The cause is one line: a `403` means the account
+lacks `resourcemanager.projects.get` or the Cloud Resource Manager API is not enabled, see
+[troubleshooting.md](troubleshooting.md#could-not-list-projects).
+
 An account stores a gcloud configuration name, a project, a default zone, an optional
 service account to impersonate, and the relay once one exists. gtunnel never stores a
 credential: every token comes from `gcloud auth print-access-token` at the moment it is used.
