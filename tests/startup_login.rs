@@ -88,6 +88,7 @@ impl Harness {
             .env("HOME", root)
             .env("GTUNNEL_CONFIG_DIR", root.join("config"))
             .env("GTUNNEL_NO_NOTIFY", "1")
+            .env("GTUNNEL_NO_DISCOVERY", "1")
             .env("STUB_DIR", self.stub())
             .stdin(Stdio::null())
             .output()
