@@ -237,7 +237,12 @@ One merge to `main` is one release. `release.yml` runs a train on the merge comm
 
 Every merge that writes a changelog line, `feat`, `fix`, `perf`, `refactor` or `docs`,
 cuts a release (`release_commits` in `release-plz.toml`). A merge of tests, CI or chores
-alone writes no line and changes nothing a user gets, so it changes no version.
+alone writes no line and changes nothing a user gets, so it changes no version. A merge
+that changes only `Cargo.lock` is invisible to that filter, because release-plz drops
+lockfile-only commits from the history it reads; it releases instead through the commit
+release-plz adds when the binary's locked dependencies differ from the last tag, which the
+filter names. A later merge on top of an unreleased lockfile change hides it again, so the
+update then waits for the next release.
 
 The bump is pushed with `RELEASE_TOKEN`, a fine-grained token with Contents: write on
 this repository only. A push made with the workflow's own token starts no workflows, so

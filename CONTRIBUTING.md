@@ -160,10 +160,18 @@ not after the first stable release.
 | `feat!`, or a `BREAKING CHANGE:` trailer | minor; it becomes major at 1.0 | under its own prefix |
 | `docs` | patch | Documentation |
 | `test`, `ci`, `chore`, `build` | none | none |
+| any prefix, changing only `Cargo.lock` | patch | Dependencies |
 
 Every row that writes a changelog line releases on merge, with nothing to dispatch. The
-last row writes none and changes nothing a user gets, so it releases nothing; its commits
-reach users with the next release.
+`test` to `build` row writes none and changes nothing a user gets, so it releases nothing;
+its commits reach users with the next release.
+
+A lockfile-only merge, such as a Dependabot cargo update, is the exception to reading the
+title: release-plz ignores `Cargo.lock` when it attributes commits, so it never sees the
+prefix. When the merge is the only change since the last tag, it notices the locked
+dependencies changed and releases them under Dependencies. The one way to lose it is a
+second merge landing on top before it is released, for example after a failed release run;
+the update then reaches users with the next release.
 
 **The pull request title is the commit message.** `main` takes squash merges, so the title
 is the only subject that reaches the history and the only one release-plz reads. A branch

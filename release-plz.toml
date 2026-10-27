@@ -24,7 +24,12 @@ changelog_update = true
 # users without anyone dispatching anything. Tests, CI and chores write no line
 # and change nothing a user gets; releasing them would ship identical binaries
 # under a new number with empty notes.
-release_commits = "^(feat|fix|perf|refactor|docs)"
+#
+# A commit that changes only Cargo.lock never reaches this regex: release-plz drops
+# it from the package's history whatever its subject says. When the locked
+# dependencies of the binary differ from the last tag, it adds a commit of its own
+# instead, titled as in the second alternative, so that one releases too.
+release_commits = "^(feat|fix|perf|refactor|docs)|^chore: update Cargo\\.lock dependencies$"
 
 [changelog]
 header = """# Changelog
@@ -42,6 +47,9 @@ commit_parsers = [
   { message = "^perf", group = "Performance" },
   { message = "^refactor", group = "Changed" },
   { message = "^docs", group = "Documentation" },
+  # The commit release-plz adds for a lockfile-only update, see `release_commits`.
+  # It must come before the `^chore` skip, or the release has no notes to publish.
+  { message = "^chore: update Cargo\\.lock dependencies", group = "Dependencies" },
   { message = "^test", skip = true },
   { message = "^ci", skip = true },
   { message = "^chore", skip = true },
