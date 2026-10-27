@@ -183,6 +183,9 @@ pub fn normalize_local_target(target: &str) -> Result<String> {
     }
     match without_path.rsplit_once(':') {
         Some((host, port)) if !host.is_empty() && port.parse::<u16>().is_ok() => {
+            if port.parse::<u16>() == Ok(0) {
+                bail!("Invalid local target '{target}': port 0 is not a service");
+            }
             Ok(format!("{host}:{port}"))
         }
         _ => bail!(
@@ -710,6 +713,10 @@ mod tests {
         );
         assert!(normalize_local_target("").is_err());
         assert!(normalize_local_target("localhost").is_err());
+        let zero = normalize_local_target("localhost:0")
+            .unwrap_err()
+            .to_string();
+        assert!(zero.contains("port 0 is not a service"), "{zero}");
     }
 
     // Review Focus 1 and 3: the log is the only place these failures surface
