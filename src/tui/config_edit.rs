@@ -7,7 +7,7 @@ use anyhow::{anyhow, bail, Context, Result};
 
 use crate::config::Config;
 use crate::state::{validate_target, validate_tunnel_name, TunnelSpec, TunnelState};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// What `$VISUAL` and `$EDITOR` resolve to, as a program and its arguments.
@@ -111,6 +111,11 @@ pub fn validate_config(text: &str) -> Result<Config> {
 /// tunnel for an account the config does not have is refused for the same
 /// reason: nothing could start it. A semantic error names the line of the
 /// tunnel's `[[tunnels]]` header when the file can be matched back to it.
+///
+/// Two tunnels may not share a local port, in any account: the listener binds
+/// on this machine whatever the account, so the second one would crash-loop
+/// the moment it started. An Expose tunnel has no local listener and is
+/// skipped, as `TunnelState::used_local_ports` skips it.
 pub fn validate_tunnels(text: &str, config: &Config) -> Result<TunnelState> {
     let state: TunnelState = parse(text)?;
     // The i-th table is the i-th header in the usual layout; a file written as
@@ -126,6 +131,7 @@ pub fn validate_tunnels(text: &str, config: &Config) -> Result<TunnelState> {
         _ => String::new(),
     };
     let mut seen = HashSet::new();
+    let mut ports: HashMap<u16, (&str, &str)> = HashMap::new();
     for (i, t) in state.tunnels.iter().enumerate() {
         if let Err(e) = validate_tunnel_name(&t.name) {
             bail!("{}{e}", at(i));
@@ -149,6 +155,20 @@ pub fn validate_tunnels(text: &str, config: &Config) -> Result<TunnelState> {
                 at(i),
                 t.name,
                 t.account_name
+            );
+        }
+        if let TunnelSpec::Access { local_port, .. } = &t.spec
+            && let Some((first, first_account)) =
+                ports.insert(*local_port, (t.name.as_str(), t.account_name.as_str()))
+        {
+            bail!(
+                "{}tunnels '{}' ({}) and '{}' ({}) both use local port {}",
+                at(i),
+                first,
+                first_account,
+                t.name,
+                t.account_name,
+                local_port
             );
         }
     }
@@ -219,7 +239,8 @@ pub fn summarise(old: &TunnelState, new: &TunnelState) -> Summary {
     summary
 }
 
-/// A private copy of `path` for the editor to work on, in the same directory.
+/// A private copy of `path` for the editor to work on, and the bytes it was
+/// copied from.
 ///
 /// The editor never sees the real file. A half-valid `tunnels.toml` breaks the
 /// CLI and the daemon the moment it is saved, so the real file is replaced only
@@ -229,26 +250,77 @@ pub fn summarise(old: &TunnelState, new: &TunnelState) -> Summary {
 /// makes it atomic, and it keeps the `.toml` ending so the editor highlights
 /// it. It is owner-only because `config.toml` is. A missing original stages as
 /// an empty file, since a first `tunnels.toml` is a legitimate thing to write.
-pub fn stage(path: &Path) -> Result<PathBuf> {
+///
+/// The snapshot is what turns the save into a compare-and-swap: without it the
+/// only thing `commit` could do is win against whoever wrote in between. It is
+/// the raw bytes and not a hash, since the files are a few KB and bytes cannot
+/// collide.
+pub fn stage(path: &Path) -> Result<Staged> {
     let dir = path.parent().context("the file has no directory")?;
     let stem = path
         .file_stem()
         .and_then(|s| s.to_str())
         .context("the file has no name")?;
     // The process id keeps two gtunnels from editing one copy
-    let staged = dir.join(format!("{stem}.edit-{}.toml", std::process::id()));
-    let text = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-        Err(e) => return Err(e).with_context(|| format!("Failed to read {}", path.display())),
-    };
-    std::fs::write(&staged, text)
-        .with_context(|| format!("Failed to write {}", staged.display()))?;
+    let copy = dir.join(format!("{stem}.edit-{}.toml", std::process::id()));
+    let original = read_if_present(path)?;
+    std::fs::write(&copy, original.as_deref().unwrap_or_default())
+        .with_context(|| format!("Failed to write {}", copy.display()))?;
     // `write` only applies a mode when it creates the file, so a leftover copy
     // from a crash would keep whatever mode it had
-    set_mode(&staged, 0o600)?;
-    Ok(staged)
+    set_mode(&copy, 0o600)?;
+    Ok(Staged {
+        path: copy,
+        original,
+    })
 }
+
+/// `None` is a file that does not exist, which is not the same snapshot as an
+/// empty one: a `tunnels.toml` created meanwhile must refuse the save.
+fn read_if_present(path: &Path) -> Result<Option<Vec<u8>>> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("Failed to read {}", path.display())),
+    }
+}
+
+/// An edit copy and the file it was taken from, as it was.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Staged {
+    pub path: PathBuf,
+    original: Option<Vec<u8>>,
+}
+
+impl Staged {
+    /// What the editor was handed: lossy UTF-8, empty when the file was absent.
+    pub fn original_text(&self) -> String {
+        String::from_utf8_lossy(self.original.as_deref().unwrap_or_default()).into_owned()
+    }
+
+    /// Takes `now` as the file the edit is based on. After a refusal the user
+    /// has seen what changed and may choose to replace it; a write after this
+    /// point is still caught, because the next `commit` compares with `now`.
+    pub fn rebase(&mut self, now: Option<Vec<u8>>) {
+        self.original = now;
+    }
+}
+
+/// The file on disk is not the one the edit started from.
+#[derive(Debug)]
+pub struct Changed {
+    pub file: String,
+    /// The file as `commit` found it, for the caller to re-base on
+    pub now: Option<Vec<u8>>,
+}
+
+impl std::fmt::Display for Changed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} changed since you opened it", self.file)
+    }
+}
+
+impl std::error::Error for Changed {}
 
 #[cfg(unix)]
 fn set_mode(path: &Path, mode: u32) -> Result<()> {
@@ -275,27 +347,54 @@ fn mode_of(_path: &Path) -> Option<u32> {
     None
 }
 
-/// Replaces `path` with the staged copy in one rename.
+/// Replaces `path` with the staged copy in one rename, if `path` is still what
+/// the copy was taken from.
+///
+/// Every other writer of `tunnels.toml` holds `tunnels.lock` from its read to
+/// its write (`TunnelState::update`), and of `config.toml` `config.lock`
+/// (`update_config`), so the editor's rename must too, and the
+/// snapshot is what makes the save refuse instead of silently winning: a file
+/// that differs from it, or that appeared since, is `Changed` and nothing is
+/// renamed. The lock is held only from the re-read to the rename, never while
+/// the editor runs.
 ///
 /// It does not validate: the caller decides whether the text is fit, because
 /// which rules apply depends on which file it is. `config.toml` ends at 0600
 /// whatever mode the editor left, since editors that write by rename reset it;
 /// any other file keeps the mode it had.
-pub fn commit(staged: &Path, path: &Path) -> Result<()> {
-    let wanted = if path.file_name().is_some_and(|n| n == "config.toml") {
+pub fn commit(staged: &Staged, path: &Path) -> Result<()> {
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
+    let _lock = match name {
+        "tunnels.toml" => Some(crate::state::lock_tunnels()?),
+        "config.toml" => Some(crate::config::lock_config()?),
+        _ => None,
+    };
+    let now = read_if_present(path)?;
+    if now != staged.original {
+        return Err(Changed {
+            file: name.to_string(),
+            now,
+        }
+        .into());
+    }
+    let wanted = if name == "config.toml" {
         Some(0o600)
     } else {
         mode_of(path)
     };
     if let Some(mode) = wanted {
-        set_mode(staged, mode)?;
+        set_mode(&staged.path, mode)?;
     }
     // The bytes are on disk before the name points at them, or a crash between
     // the two would leave the real file empty
-    std::fs::File::open(staged)
+    std::fs::File::open(&staged.path)
         .and_then(|f| f.sync_all())
-        .with_context(|| format!("Failed to flush {}", staged.display()))?;
-    std::fs::rename(staged, path).with_context(|| format!("Failed to replace {}", path.display()))
+        .with_context(|| format!("Failed to flush {}", staged.path.display()))?;
+    std::fs::rename(&staged.path, path)
+        .with_context(|| format!("Failed to replace {}", path.display()))
 }
 
 /// Removes the staged copy. A copy that is already gone is not an error: the
@@ -307,6 +406,47 @@ pub fn discard(staged: &Path) -> Result<()> {
         }
         _ => Ok(()),
     }
+}
+
+/// Removes the edit copies of gtunnels that are no longer running, and returns
+/// what it removed.
+///
+/// A crash or a closed terminal skips `discard`, and the process id in the
+/// name is what tells an abandoned copy from another TUI's work in progress:
+/// a live pid's copy is kept, and so is this process's own, which the page may
+/// be holding after a refused edit. A recycled pid only delays the removal.
+/// Only `{config,tunnels}.edit-<digits>.toml` matches, so nothing a user
+/// parked in the directory is ever taken for a copy.
+pub fn remove_stale_copies(dir: &Path, alive: impl Fn(u32) -> bool) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut removed = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = copy_pid(&name.to_string_lossy()) else {
+            continue;
+        };
+        if pid == std::process::id() || alive(pid) {
+            continue;
+        }
+        let path = entry.path();
+        if std::fs::remove_file(&path).is_ok() {
+            removed.push(path);
+        }
+    }
+    removed
+}
+
+fn copy_pid(name: &str) -> Option<u32> {
+    let digits = name
+        .strip_prefix("config.edit-")
+        .or_else(|| name.strip_prefix("tunnels.edit-"))?
+        .strip_suffix(".toml")?;
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
 }
 
 #[cfg(test)]
@@ -527,6 +667,60 @@ mod tests {
     }
 
     #[test]
+    fn two_tunnels_on_one_local_port_are_refused_naming_both() {
+        let cfg = config("dev", &["dev"]);
+        let text = text_of(vec![
+            tunnel("db", "dev", 15432),
+            tunnel("cache", "dev", 15432),
+        ]);
+        let second_header = text
+            .lines()
+            .enumerate()
+            .filter(|(_, l)| l.trim() == "[[tunnels]]")
+            .nth(1)
+            .map(|(i, _)| i + 1)
+            .unwrap();
+        let msg = validate_tunnels(&text, &cfg)
+            .expect_err("one port")
+            .to_string();
+        assert_eq!(
+            msg,
+            format!(
+                "line {second_header}: tunnels 'db' (dev) and 'cache' (dev) both use local port 15432"
+            )
+        );
+    }
+
+    #[test]
+    fn one_port_across_accounts_is_still_one_port() {
+        let cfg = config("dev", &["dev", "prod"]);
+        let text = text_of(vec![
+            tunnel("db", "dev", 15432),
+            tunnel("db", "prod", 15432),
+        ]);
+        let msg = validate_tunnels(&text, &cfg)
+            .expect_err("machine-wide")
+            .to_string();
+        assert!(msg.contains("'db' (dev) and 'db' (prod)"), "{msg}");
+    }
+
+    #[test]
+    fn an_expose_tunnel_never_collides_on_local_port() {
+        // An Expose spec has no IAP listener: `used_local_ports` skips it, so must this rule
+        let cfg = config("dev", &["dev"]);
+        let mut public = tunnel("site", "dev", 0);
+        public.spec = TunnelSpec::Expose {
+            local_target: "localhost:15432".into(),
+            domain: "example.com".into(),
+            hostname: "site.example.com".into(),
+            relay_port: 30001,
+            private: false,
+        };
+        let text = text_of(vec![tunnel("db", "dev", 15432), public]);
+        assert!(validate_tunnels(&text, &cfg).is_ok());
+    }
+
+    #[test]
     fn a_tunnel_for_an_account_the_config_lacks_is_refused() {
         let cfg = config("dev", &["dev"]);
         let text = text_of(vec![tunnel("db", "staging", 15432)]);
@@ -615,11 +809,16 @@ mod tests {
         std::fs::write(&real, "original\n").unwrap();
 
         let staged = stage(&real).expect("stage");
-        assert_ne!(staged, real);
-        assert_eq!(staged.parent(), real.parent(), "same directory");
-        assert_eq!(staged.extension().unwrap(), "toml", "{staged:?}");
-        assert_eq!(std::fs::read_to_string(&staged).unwrap(), "original\n");
-        assert_eq!(mode(&staged), 0o600);
+        assert_ne!(staged.path, real);
+        assert_eq!(staged.path.parent(), real.parent(), "same directory");
+        assert_eq!(
+            staged.path.extension().unwrap(),
+            "toml",
+            "{:?}",
+            staged.path
+        );
+        assert_eq!(std::fs::read_to_string(&staged.path).unwrap(), "original\n");
+        assert_eq!(mode(&staged.path), 0o600);
         assert_eq!(std::fs::read_to_string(&real).unwrap(), "original\n");
     }
 
@@ -628,7 +827,7 @@ mod tests {
         let dir = crate::config::testing::TempConfigDir::new();
         let real = dir.path().join("tunnels.toml");
         let staged = stage(&real).expect("stage");
-        assert_eq!(std::fs::read_to_string(&staged).unwrap(), "");
+        assert_eq!(std::fs::read_to_string(&staged.path).unwrap(), "");
         assert!(!real.exists(), "staging must not create the real file");
     }
 
@@ -638,11 +837,11 @@ mod tests {
         let real = dir.path().join("tunnels.toml");
         std::fs::write(&real, "before\n").unwrap();
         let staged = stage(&real).unwrap();
-        std::fs::write(&staged, "after\n").unwrap();
+        std::fs::write(&staged.path, "after\n").unwrap();
 
         commit(&staged, &real).expect("commit");
         assert_eq!(std::fs::read_to_string(&real).unwrap(), "after\n");
-        assert!(!staged.exists(), "a rename leaves no copy behind");
+        assert!(!staged.path.exists(), "a rename leaves no copy behind");
     }
 
     #[test]
@@ -652,8 +851,8 @@ mod tests {
         std::fs::write(&real, "before\n").unwrap();
         chmod(&real, 0o644);
         let staged = stage(&real).unwrap();
-        std::fs::write(&staged, "after\n").unwrap();
-        chmod(&staged, 0o644);
+        std::fs::write(&staged.path, "after\n").unwrap();
+        chmod(&staged.path, 0o644);
 
         commit(&staged, &real).unwrap();
         assert_eq!(mode(&real), 0o600);
@@ -666,7 +865,7 @@ mod tests {
         std::fs::write(&real, "before\n").unwrap();
         chmod(&real, 0o644);
         let staged = stage(&real).unwrap();
-        std::fs::write(&staged, "after\n").unwrap();
+        std::fs::write(&staged.path, "after\n").unwrap();
 
         commit(&staged, &real).unwrap();
         assert_eq!(mode(&real), 0o644);
@@ -679,9 +878,185 @@ mod tests {
         std::fs::write(&real, "keep\n").unwrap();
         let staged = stage(&real).unwrap();
 
-        discard(&staged).expect("discard");
-        assert!(!staged.exists());
-        discard(&staged).expect("a second discard is not an error");
+        discard(&staged.path).expect("discard");
+        assert!(!staged.path.exists());
+        discard(&staged.path).expect("a second discard is not an error");
         assert_eq!(std::fs::read_to_string(&real).unwrap(), "keep\n");
+    }
+
+    #[test]
+    fn commit_refuses_when_the_file_changed_after_staging_and_both_versions_survive() {
+        let dir = crate::config::testing::TempConfigDir::new();
+        let real = dir.path().join("tunnels.toml");
+        std::fs::write(&real, text_of(vec![tunnel("db", "dev", 15432)])).unwrap();
+        let staged = stage(&real).unwrap();
+        TunnelState::update(|s| s.add(tunnel("cache", "dev", 16379))).unwrap();
+        std::fs::write(&staged.path, text_of(vec![tunnel("db", "dev", 15999)])).unwrap();
+
+        let err = commit(&staged, &real).expect_err("a concurrent write");
+        let changed = err.downcast_ref::<Changed>().expect("typed");
+        assert_eq!(err.to_string(), "tunnels.toml changed since you opened it");
+        let on_disk = std::fs::read_to_string(&real).unwrap();
+        assert!(
+            on_disk.contains("cache") && on_disk.contains("15432"),
+            "{on_disk}"
+        );
+        assert_eq!(changed.now.as_deref(), Some(on_disk.as_bytes()));
+        assert!(
+            std::fs::read_to_string(&staged.path)
+                .unwrap()
+                .contains("15999"),
+            "the edit is kept"
+        );
+    }
+
+    #[test]
+    fn commit_refuses_when_a_missing_file_appeared_after_staging() {
+        let dir = crate::config::testing::TempConfigDir::new();
+        let real = dir.path().join("tunnels.toml");
+        let staged = stage(&real).unwrap();
+        TunnelState::update(|s| s.add(tunnel("cache", "dev", 16379))).unwrap();
+        std::fs::write(&staged.path, "# my edit\n").unwrap();
+
+        let err = commit(&staged, &real).expect_err("the file appeared");
+        assert!(err.downcast_ref::<Changed>().is_some(), "{err:#}");
+        assert!(std::fs::read_to_string(&real).unwrap().contains("cache"));
+    }
+
+    #[test]
+    fn commit_waits_for_the_tunnels_lock() {
+        let dir = crate::config::testing::TempConfigDir::new();
+        let real = dir.path().join("tunnels.toml");
+        std::fs::write(&real, "before\n").unwrap();
+        let staged = stage(&real).unwrap();
+        std::fs::write(&staged.path, "after\n").unwrap();
+
+        let lock = crate::state::lock_tunnels().unwrap();
+        let holder = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            drop(lock);
+        });
+        let started = std::time::Instant::now();
+        commit(&staged, &real).expect("commit once the lock is free");
+        assert!(
+            started.elapsed() >= std::time::Duration::from_millis(150),
+            "{:?}",
+            started.elapsed()
+        );
+        holder.join().unwrap();
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), "after\n");
+    }
+
+    #[test]
+    fn the_snapshot_is_what_was_staged_and_rebase_replaces_it() {
+        let dir = crate::config::testing::TempConfigDir::new();
+        let real = dir.path().join("tunnels.toml");
+        std::fs::write(&real, "a\n").unwrap();
+        let mut staged = stage(&real).unwrap();
+        assert_eq!(staged.original_text(), "a\n");
+        staged.rebase(Some(b"b\n".to_vec()));
+        assert_eq!(staged.original_text(), "b\n");
+
+        std::fs::remove_file(&real).unwrap();
+        assert_eq!(stage(&real).unwrap().original_text(), "");
+    }
+
+    fn touch(dir: &Path, name: &str) {
+        std::fs::write(dir.join(name), "x\n").unwrap();
+    }
+
+    #[test]
+    fn a_copy_left_by_a_dead_gtunnel_is_removed() {
+        let dir = crate::config::testing::TempConfigDir::new();
+        touch(dir.path(), "tunnels.edit-41.toml");
+        touch(dir.path(), "config.edit-42.toml");
+        touch(dir.path(), "tunnels.toml");
+
+        let mut removed = remove_stale_copies(dir.path(), |_| false);
+        removed.sort();
+        assert_eq!(
+            removed,
+            [
+                dir.path().join("config.edit-42.toml"),
+                dir.path().join("tunnels.edit-41.toml")
+            ]
+        );
+        assert!(!dir.path().join("tunnels.edit-41.toml").exists());
+        assert!(!dir.path().join("config.edit-42.toml").exists());
+        assert!(dir.path().join("tunnels.toml").exists());
+    }
+
+    #[test]
+    fn a_copy_of_a_live_gtunnel_and_our_own_are_kept() {
+        let dir = crate::config::testing::TempConfigDir::new();
+        let own = format!("tunnels.edit-{}.toml", std::process::id());
+        touch(dir.path(), "tunnels.edit-41.toml");
+        touch(dir.path(), &own);
+
+        // Our own copy is dead to `alive` and still kept; 41 is kept because it is alive
+        assert!(remove_stale_copies(dir.path(), |p| p == 41).is_empty());
+        assert!(dir.path().join("tunnels.edit-41.toml").exists());
+        assert!(dir.path().join(own).exists());
+    }
+
+    #[test]
+    fn files_that_only_look_like_copies_are_left_alone() {
+        let dir = crate::config::testing::TempConfigDir::new();
+        let names = [
+            "tunnels.edit-abc.toml",
+            "notes.edit-41.toml",
+            "tunnels.edit-41.toml.bak",
+            "tunnels.41.new",
+            "tunnels.edit-.toml",
+        ];
+        for name in names {
+            touch(dir.path(), name);
+        }
+        assert!(remove_stale_copies(dir.path(), |_| false).is_empty());
+        for name in names {
+            assert!(dir.path().join(name).exists(), "{name}");
+        }
+    }
+
+    #[test]
+    fn commit_refuses_a_config_that_changed_after_staging() {
+        let dir = crate::config::testing::TempConfigDir::new();
+        let mut config = config("dev", &["dev", "prod"]);
+        crate::config::save_config(&config).unwrap();
+        let real = dir.path().join("config.toml");
+        let staged = stage(&real).unwrap();
+        crate::config::update_config(|c| c.select_account("prod")).unwrap();
+        config.selected_account = "dev".to_string();
+        std::fs::write(&staged.path, toml::to_string_pretty(&config).unwrap()).unwrap();
+
+        let err = commit(&staged, &real).expect_err("account select wrote meanwhile");
+        assert!(err.downcast_ref::<Changed>().is_some(), "{err:#}");
+        assert_eq!(err.to_string(), "config.toml changed since you opened it");
+        let on_disk = std::fs::read_to_string(&real).unwrap();
+        assert!(on_disk.contains("selected_account = \"prod\""), "{on_disk}");
+        assert_eq!(mode(&real), 0o600);
+    }
+
+    #[test]
+    fn commit_waits_for_the_config_lock() {
+        let dir = crate::config::testing::TempConfigDir::new();
+        let real = dir.path().join("config.toml");
+        std::fs::write(&real, "before\n").unwrap();
+        let staged = stage(&real).unwrap();
+        std::fs::write(&staged.path, "after\n").unwrap();
+
+        let lock = crate::config::lock_config().unwrap();
+        let holder = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            drop(lock);
+        });
+        let started = std::time::Instant::now();
+        commit(&staged, &real).expect("commit once the lock is free");
+        assert!(
+            started.elapsed() >= std::time::Duration::from_millis(150),
+            "{:?}",
+            started.elapsed()
+        );
+        holder.join().unwrap();
     }
 }

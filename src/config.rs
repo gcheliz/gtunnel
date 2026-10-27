@@ -243,14 +243,20 @@ pub fn update_or_init_config<T>(f: impl FnOnce(&mut Config) -> Result<T>) -> Res
     locked_config_update(|| Ok(load_config().unwrap_or_default()), f)
 }
 
+// Held from the read to the write by every writer of config.toml; the TUI's
+// config page takes it around its final rename for the same reason
+pub fn lock_config() -> Result<crate::fsutil::Lock> {
+    crate::fsutil::lock_exclusive(
+        &config_dir()?.join("config.lock"),
+        crate::fsutil::LOCK_DEADLINE,
+    )
+}
+
 fn locked_config_update<T>(
     load: impl FnOnce() -> Result<Config>,
     f: impl FnOnce(&mut Config) -> Result<T>,
 ) -> Result<T> {
-    let _lock = crate::fsutil::lock_exclusive(
-        &config_dir()?.join("config.lock"),
-        crate::fsutil::LOCK_DEADLINE,
-    )?;
+    let _lock = lock_config()?;
     let mut config = load()?;
     let value = f(&mut config)?;
     save_config(&config)?;

@@ -175,8 +175,7 @@ impl TunnelState {
     // save would otherwise drop one another's tunnel. The closure must not
     // await or start a daemon, since the lock is held until it returns.
     pub fn update<T>(f: impl FnOnce(&mut TunnelState) -> Result<T>) -> Result<T> {
-        let _lock =
-            crate::fsutil::lock_exclusive(&tunnels_lock_path()?, crate::fsutil::LOCK_DEADLINE)?;
+        let _lock = lock_tunnels()?;
         let mut state = Self::load()?;
         let value = f(&mut state)?;
         state.save()?;
@@ -282,6 +281,12 @@ pub fn tunnels_path() -> Result<PathBuf> {
 
 pub fn tunnels_lock_path() -> Result<PathBuf> {
     Ok(config::config_dir()?.join("tunnels.lock"))
+}
+
+// The lock every writer of tunnels.toml holds from its read to its write; the
+// TUI's config page takes it around its final rename for the same reason
+pub fn lock_tunnels() -> Result<crate::fsutil::Lock> {
+    crate::fsutil::lock_exclusive(&tunnels_lock_path()?, crate::fsutil::LOCK_DEADLINE)
 }
 
 pub fn ensure_logs_dir() -> Result<PathBuf> {

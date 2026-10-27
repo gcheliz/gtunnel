@@ -71,7 +71,7 @@ Specify the release version and substitute your machine's file: `gtunnel-macos-a
 `gtunnel-macos-intel`, `gtunnel-linux-amd64` or `gtunnel-linux-arm64`.
 
 ```
-VERSION="v0.1.43"
+VERSION="v0.1.44"
 F="gtunnel-macos-arm64-${VERSION}.tar.gz"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F.sha256"
@@ -83,7 +83,7 @@ so they run on any glibc.
 
 ```
 $ gtunnel --version
-gtunnel 0.1.43
+gtunnel 0.1.44
 ```
 
 #### Proving where the binary came from
@@ -406,7 +406,7 @@ after the text has passed the rules for that file:
 | File | What has to be true |
 |---|---|
 | `config.toml` | parses, has at least one account, and `selected_account` names one of them |
-| `tunnels.toml` | parses, every name is valid as for `gtunnel add`, no name repeats within an account, and every tunnel's account is in `config.toml` |
+| `tunnels.toml` | parses, every name is valid as for `gtunnel add`, no name repeats within an account, no two tunnels share a local port (in any account), and every tunnel's account is in `config.toml` |
 
 A file that passes is committed (`config.toml` ends at mode 0600 whatever the editor did),
 the copy is removed, and the list is reloaded without restarting the TUI: accounts, projects,
@@ -421,6 +421,10 @@ line (`not saved: line 16: key with no value, expected `=``), and the keys becom
 `e edit again` and `Esc discard`: `e` reopens the same copy, so the work is not lost, and `Esc`
 removes it. `Tab` does nothing while a refused edit waits. An editor that exits non-zero, as
 `:cq` does in vim, cancels the edit and leaves the file as it was.
+
+A file that changed since `e` opened it is refused too, with `not saved: tunnels.toml changed since you opened it` (or `config.toml`): another gtunnel, the CLI or the MCP server wrote it while the editor was open. The edit stays on the page and in its copy, and a second save replaces that change, so the choice is yours; a further write in between is refused again. The save takes the same lock the commands do, so it never lands in the middle of one. Leaving the text as it was is not a save, so it cannot overwrite the other change either: it reports `no changes to tunnels.toml`.
+
+A copy left by a gtunnel that is no longer running, after a crash or a closed terminal, is removed when the page opens; the copy of another running gtunnel is kept.
 
 Running tunnels keep their old settings until `R` restarts them: a launchd job is rewritten
 only on a restart, so the page and the status line both say so.
@@ -1126,7 +1130,7 @@ Every other command prints a one-line hint when a cached check found a newer ver
 
 ```
 $ gtunnel list
-gtunnel v9.9.9 is available (current: v0.1.43). Run `gtunnel update`.
+gtunnel v9.9.9 is available (current: v0.1.44). Run `gtunnel update`.
 ```
 
 The check runs at most once a day, in the background, and never blocks a command. A

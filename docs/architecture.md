@@ -172,7 +172,8 @@ separate switch, with `loginctl enable-linger` deciding whether it survives a lo
 |---|---|
 | `<config>/config.toml` | Accounts, default account, relay and domains per account |
 | `<config>/tunnels.toml` | Persistent tunnels |
-| `<config>/tunnels.lock`, `<config>/config.lock` | Empty files whose only job is to be locked. A command that changes `tunnels.toml` or `config.toml` holds the matching lock from its read to its write, so two gtunnels cannot drop each other's change. Safe to delete when no gtunnel is running |
+| `<config>/tunnels.lock`, `<config>/config.lock` | Empty files whose only job is to be locked. A command or the TUI's config page that changes `tunnels.toml` or `config.toml` holds the matching lock from its read to its write, so two gtunnels cannot drop each other's change. Safe to delete when no gtunnel is running |
+| `<config>/tunnels.edit-<pid>.toml`, `<config>/config.edit-<pid>.toml` | The config page's private copy of the file being edited. Removed on save or `Esc`, and on the next page open once its gtunnel is gone |
 | `<config>/run/<account>-<name>.json` | One record per live `gtunnel run` |
 | `<config>/run/<label>.ready` | Written by a tunnel's supervisor once its log reports the listener; what `start` waits for |
 | `<config>/run/probes/` | One file per local port gtunnel is probing, so the supervisor leaves gtunnel's own health checks out of the `conn` lines |
