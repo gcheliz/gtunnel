@@ -38,3 +38,5 @@ edges:
 - from: lb, to: relay, label: "named port"
 - from: relay, to: svc, label: "reverse SSH", style: dashed
 :::
+
+The landing page tour in `site/index.html` places its hotspots as percentages of this PNG at 2294x801, so a regeneration means re-measuring them there and updating the size check in `.github/workflows/pages.yml`.

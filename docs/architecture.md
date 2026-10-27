@@ -120,17 +120,7 @@ reaching another tunnel.
 
 ### What `relay up` creates and `relay down` removes
 
-```mermaid
-flowchart TB
-  up["gtunnel relay up"] --> acct["Per account, once"]
-  acct --> net["Global address, forwarding rule, HTTPS proxy,<br/>URL map, default backend, health check"]
-  acct --> vm["Relay VM, instance group,<br/>firewall gt-ACCT-iap-ssh and gt-ACCT-lb-hc"]
-  acct --> cm["Certificate map gt-ACCT-certs"]
-  dom["gtunnel domains add"] --> cert["Per domain: certificate, DNS authorization,<br/>two certificate-map entries (apex and wildcard)"]
-  exp["gtunnel expose / run --public"] --> route["Per tunnel: backend service, named port,<br/>URL-map host rule, Cloud DNS A record"]
-  cert -.-> cm
-  route -.-> net
-```
+![What relay up creates: on your laptop, gtunnel relay up creates the per-account resources once (HTTPS front end with global address, forwarding rule and HTTPS proxy; URL map with default backend and health check; relay VM and its instance group; firewall rules gt-ACCT-iap-ssh and gt-ACCT-lb-hc; certificate map gt-ACCT-certs), gtunnel domains add creates the per-domain certificate, DNS authorization and apex and wildcard certificate-map entries, and gtunnel expose or run --public creates the per-tunnel backend service and named port, URL-map host rule and Cloud DNS A record with TTL 60, all in GCP example-prod-3c4d; the certificate-map entries are added to the certificate map and the host rule to the URL map](images/architecture/gtunnel-relay-resources.png)
 
 Everything above except the DNS record carries `description: gtunnel:<account>`. A Cloud DNS
 record has no description field, so gtunnel treats one as its own only while it still holds a
@@ -145,20 +135,7 @@ services first. It never touches the Cloud DNS managed zone, which is yours.
 
 ## Process model
 
-```mermaid
-flowchart TB
-  cli["gtunnel CLI / TUI"] --> state["tunnels.toml<br/>config.toml"]
-  cli --> svc["launchd plist / systemd --user unit<br/>one per tunnel"]
-  svc --> sup["gtunnel __supervise"]
-  sup --> proc["gcloud child process"]
-  sup --> log["logs/&lt;account&gt;-&lt;name&gt;.log"]
-  cli -.reads.-> log
-  cli -.polls.-> api["Compute, DNS, Certificate Manager,<br/>IAP, Monitoring REST APIs"]
-  wd["launchd StartInterval / systemd timer<br/>one for the machine"] --> once["gtunnel watch --once"]
-  once -.probes.-> svc
-  once --> brk["breakers.toml"]
-  once --> log
-```
+![Process model: on your laptop the gtunnel CLI / TUI reads and writes tunnels.toml and config.toml, installs one per-tunnel service (launchd plist / systemd unit) that runs gtunnel __supervise, which runs the gcloud child process and writes the tunnel log logs/&lt;account&gt;-&lt;name&gt;.log; the CLI reads that log and polls the Compute, Cloud DNS, Certificate Manager, IAP and Monitoring REST APIs in GCP; one machine watchdog (launchd StartInterval / systemd timer) runs gtunnel watch --once, which probes each service, writes breakers.toml and writes the log](images/architecture/gtunnel-process-model.png)
 
 | Concern | Decision |
 |---|---|
@@ -177,20 +154,7 @@ flowchart TB
 
 One diagram for both platforms: the shape is the same and only the manager differs.
 
-```mermaid
-flowchart TB
-  add["gtunnel add"] --> rec["tunnels.toml<br/>name, account, target, local port"]
-  rec --> start["gtunnel start, or s in the TUI"]
-  start --> write["Write the definition<br/>label com.gtunnel.ACCOUNT.NAME"]
-  write --> mac["macOS: CONFIG/agents/LABEL.plist<br/>launchctl bootstrap"]
-  write --> lin["Linux: ~/.config/systemd/user/LABEL.service<br/>systemctl --user start"]
-  mac --> proc["gcloud child process"]
-  lin --> proc
-  proc -->|"exits non-zero"| again["KeepAlive, or Restart=on-failure RestartSec=5"]
-  again --> proc
-  mac -.->|"A toggles auto-start"| la["~/Library/LaunchAgents/LABEL.plist<br/>present = starts at login"]
-  lin -.->|"A toggles auto-start"| en["systemctl --user enable<br/>plus loginctl enable-linger"]
-```
+![Service lifecycle: gtunnel add records the tunnel in tunnels.toml (name, account, target, local port), gtunnel start or s in the TUI writes the definition labelled com.gtunnel.ACCOUNT.NAME, then on macOS launchctl bootstrap loads CONFIG/agents/LABEL.plist and on Linux systemctl --user start loads ~/.config/systemd/user/LABEL.service; both run the gcloud child process, which on a non-zero exit is restarted by KeepAlive or Restart=on-failure RestartSec=5; A toggles auto-start, which on macOS is ~/Library/LaunchAgents/LABEL.plist starting at login and on Linux is systemctl --user enable plus loginctl enable-linger](images/architecture/gtunnel-service-lifecycle.png)
 
 The two auto-start mechanisms are not symmetric, and the asymmetry is deliberate. On macOS
 the flag *is* the file: launchd loads everything in `~/Library/LaunchAgents` at login, and a
@@ -225,17 +189,7 @@ and `~/.config/gtunnel` on Linux), and `GTUNNEL_CONFIG_DIR` overrides it.
 
 ### The account and config model
 
-```mermaid
-flowchart TB
-  cfg["config.toml"] --> accts["accounts<br/>gcloud configuration, project, zone"]
-  cfg --> def["default_account"]
-  accts --> relay["relay, per account<br/>VM, zone, load balancer"]
-  accts --> doms["domains, per account"]
-  tun["tunnels.toml"] --> t1["name + account_name<br/>dev / kubernetes"]
-  tun --> t2["name + account_name<br/>prod / kubernetes"]
-  t1 --> f1["agents/com.gtunnel.dev.kubernetes.plist<br/>logs/dev-kubernetes.log<br/>localhost:8443"]
-  t2 --> f2["agents/com.gtunnel.prod.kubernetes.plist<br/>logs/prod-kubernetes.log<br/>localhost:8444"]
-```
+![The account and config model: tunnels.toml holds dev / kubernetes and prod / kubernetes, each identified by name plus account_name, and each derives its own artifacts: launchd plist com.gtunnel.dev.kubernetes, log logs/dev-kubernetes.log and localhost:8443 for dev, and com.gtunnel.prod.kubernetes, logs/prod-kubernetes.log and localhost:8444 for prod; config.toml holds accounts (gcloud configuration, project, zone) and default_account, and each account has its relay (VM, zone, load balancer) and its domains](images/architecture/gtunnel-config-model.png)
 
 A tunnel is identified by its name **and** its account, never by name alone, which is what
 lets `kubernetes` exist once per account. Every artifact derived from a tunnel carries the
