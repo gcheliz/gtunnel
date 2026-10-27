@@ -93,7 +93,7 @@ every step: [docs/usage.md](docs/usage.md#getting-set-up).
 | Linux, arm64 | `gtunnel-linux-arm64-v<version>.tar.gz` |
 
 ```
-VERSION="v0.2.1"
+VERSION="v0.2.2"
 F="gtunnel-macos-arm64-${VERSION}.tar.gz"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F.sha256"

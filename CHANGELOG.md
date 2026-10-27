@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.2](https://github.com/gcheliz/gtunnel/compare/v0.2.1...v0.2.2) - 2026-10-27
+
+### Added
+
+- *(mcp)* serve revision 2026-07-28 statelessly beside initialize ([#169](https://github.com/gcheliz/gtunnel/pull/169))
+
 ## [0.2.1](https://github.com/gcheliz/gtunnel/compare/v0.2.0...v0.2.1) - 2026-10-27
 
 ### Added
