@@ -7,7 +7,21 @@ pub const METHOD_NOT_FOUND: i32 = -32601;
 pub const INVALID_PARAMS: i32 = -32602;
 pub const INTERNAL_ERROR: i32 = -32603;
 
-pub const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
+/// Newest first, so `[0]` is what an unknown or missing request falls back to.
+/// A client newer than this list gets the latest we speak rather than an
+/// error: a client that also knows the stateless era then stays on the
+/// handshake path instead of guessing at one we do not serve (#149).
+pub const SUPPORTED_PROTOCOL_VERSIONS: [&str; 3] = ["2025-11-25", "2025-06-18", "2024-11-05"];
+
+/// Echo the requested revision when we speak it, otherwise offer our latest.
+/// The spec lets the server counter-offer, and the client decides whether to
+/// continue, so this never fails on a missing or odd `protocolVersion`.
+pub fn negotiate_version(requested: Option<&str>) -> &'static str {
+    requested
+        .and_then(|r| SUPPORTED_PROTOCOL_VERSIONS.iter().find(|v| **v == r))
+        .copied()
+        .unwrap_or(SUPPORTED_PROTOCOL_VERSIONS[0])
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonRpcRequest {
@@ -120,9 +134,52 @@ pub struct InitializeResult {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ToolDefinition {
     pub name: String,
+    /// What a client's approval prompt shows instead of the `gtunnel_` id.
+    pub title: String,
     pub description: String,
     #[serde(rename = "inputSchema")]
     pub input_schema: Value,
+    pub annotations: ToolAnnotations,
+    /// Only the tools that answer in JSON declare one; a text answer has no
+    /// shape to promise. It always admits the error envelope as well, because
+    /// the spec holds every structured result to the schema, a failure included.
+    #[serde(
+        rename = "outputSchema",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub output_schema: Option<Value>,
+}
+
+/// All four hints are always emitted: the spec defaults `destructiveHint` and
+/// `openWorldHint` to true, so leaving one out would mislabel a read-only or
+/// local-only tool as destructive and open-world to a client that trusts them.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ToolAnnotations {
+    #[serde(rename = "readOnlyHint")]
+    pub read_only_hint: bool,
+    #[serde(rename = "destructiveHint")]
+    pub destructive_hint: bool,
+    #[serde(rename = "idempotentHint")]
+    pub idempotent_hint: bool,
+    #[serde(rename = "openWorldHint")]
+    pub open_world_hint: bool,
+}
+
+impl ToolAnnotations {
+    pub const fn new(
+        read_only: bool,
+        destructive: bool,
+        idempotent: bool,
+        open_world: bool,
+    ) -> Self {
+        Self {
+            read_only_hint: read_only,
+            destructive_hint: destructive,
+            idempotent_hint: idempotent,
+            open_world_hint: open_world,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -152,6 +209,16 @@ impl ToolCallResult {
             }],
             is_error: None,
             structured_content: None,
+        }
+    }
+
+    /// A JSON answer. `text` is what agents already parse out of `content[0]`
+    /// and stays byte for byte as it was; `structured` is the same data as the
+    /// object the spec requires, which differs only where the text is an array.
+    pub fn json(text: &impl Serialize, structured: Value) -> Self {
+        Self {
+            structured_content: Some(structured),
+            ..Self::text(serde_json::to_string_pretty(text).unwrap_or_default())
         }
     }
 
@@ -196,6 +263,25 @@ pub struct ResourceContent {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ResourceReadResult {
     pub contents: Vec<ResourceContent>,
+}
+
+#[cfg(test)]
+mod negotiation_tests {
+    use super::*;
+
+    #[test]
+    fn a_supported_version_is_echoed() {
+        for v in ["2025-11-25", "2025-06-18", "2024-11-05"] {
+            assert_eq!(negotiate_version(Some(v)), v);
+        }
+    }
+
+    #[test]
+    fn anything_else_gets_the_latest() {
+        for v in [None, Some(""), Some("1900-01-01"), Some("2026-07-28")] {
+            assert_eq!(negotiate_version(v), "2025-11-25");
+        }
+    }
 }
 
 #[cfg(test)]

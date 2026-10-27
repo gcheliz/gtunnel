@@ -150,18 +150,46 @@ fn mcp_validate_flag_exits_successfully() {
 #[test]
 fn mcp_stdio_initialize_handshake() {
     let h = Harness::new();
-    let req = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}"#;
+    for version in ["2024-11-05", "2025-06-18", "2025-11-25"] {
+        let req = format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"protocolVersion":"{version}"}}}}"#
+        );
+        let (stdout, stderr, success) = h.run_mcp_pipe(&format!("{req}\n"));
+        assert!(success, "stderr: {stderr}");
+
+        let line = stdout.lines().next().expect("response line");
+        let resp: serde_json::Value = serde_json::from_str(line).expect("valid json response");
+        assert_eq!(resp["jsonrpc"], "2.0");
+        assert_eq!(resp["id"], 1);
+        assert_eq!(resp["result"]["protocolVersion"], version);
+        assert_eq!(resp["result"]["serverInfo"]["name"], "gtunnel");
+        assert!(resp["result"]["capabilities"]["tools"].is_object());
+        assert!(resp["result"]["capabilities"]["resources"].is_object());
+    }
+}
+
+#[test]
+fn initialize_without_params_answers_the_latest() {
+    let h = Harness::new();
+    let req = r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#;
     let (stdout, stderr, success) = h.run_mcp_pipe(&format!("{req}\n"));
     assert!(success, "stderr: {stderr}");
 
     let line = stdout.lines().next().expect("response line");
     let resp: serde_json::Value = serde_json::from_str(line).expect("valid json response");
-    assert_eq!(resp["jsonrpc"], "2.0");
-    assert_eq!(resp["id"], 1);
-    assert_eq!(resp["result"]["protocolVersion"], "2024-11-05");
-    assert_eq!(resp["result"]["serverInfo"]["name"], "gtunnel");
-    assert!(resp["result"]["capabilities"]["tools"].is_object());
-    assert!(resp["result"]["capabilities"]["resources"].is_object());
+    assert_eq!(resp["result"]["protocolVersion"], "2025-11-25");
+}
+
+#[test]
+fn initialize_from_a_newer_client_answers_the_latest() {
+    let h = Harness::new();
+    let req = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2026-07-28"}}"#;
+    let (stdout, stderr, success) = h.run_mcp_pipe(&format!("{req}\n"));
+    assert!(success, "stderr: {stderr}");
+
+    let line = stdout.lines().next().expect("response line");
+    let resp: serde_json::Value = serde_json::from_str(line).expect("valid json response");
+    assert_eq!(resp["result"]["protocolVersion"], "2025-11-25");
 }
 
 #[test]
@@ -188,6 +216,238 @@ fn mcp_stdio_tools_list_returns_eleven_tools() {
     assert!(tool_names.contains(&"gtunnel_list_accounts"));
     assert!(tool_names.contains(&"gtunnel_doctor"));
     assert!(tool_names.contains(&"gtunnel_run_tunnel"));
+}
+
+fn listed_tools() -> Vec<serde_json::Value> {
+    let h = Harness::new();
+    let req = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#;
+    let (stdout, stderr, success) = h.run_mcp_pipe(&format!("{req}\n"));
+    assert!(success, "stderr: {stderr}");
+    let line = stdout.lines().next().expect("response line");
+    let resp: serde_json::Value = serde_json::from_str(line).expect("valid json response");
+    resp["result"]["tools"].as_array().expect("tools").clone()
+}
+
+#[test]
+fn every_tool_carries_a_title_and_all_four_hints() {
+    for tool in listed_tools() {
+        let name = tool["name"].as_str().unwrap();
+        let title = tool["title"].as_str().unwrap_or("");
+        assert!(!title.is_empty(), "{name} has no title");
+        for hint in [
+            "readOnlyHint",
+            "destructiveHint",
+            "idempotentHint",
+            "openWorldHint",
+        ] {
+            assert!(
+                tool["annotations"][hint].is_boolean(),
+                "{name} lacks boolean {hint}"
+            );
+        }
+    }
+}
+
+#[test]
+fn read_only_and_destructive_tools_say_so() {
+    let read_only = [
+        "gtunnel_list_tunnels",
+        "gtunnel_get_status",
+        "gtunnel_get_logs",
+        "gtunnel_list_accounts",
+        "gtunnel_doctor",
+    ];
+    let destructive = [
+        "gtunnel_stop_tunnel",
+        "gtunnel_restart_tunnel",
+        "gtunnel_delete_tunnel",
+    ];
+    for tool in listed_tools() {
+        let name = tool["name"].as_str().unwrap();
+        let a = &tool["annotations"];
+        assert_eq!(
+            a["readOnlyHint"].as_bool().unwrap(),
+            read_only.contains(&name),
+            "readOnlyHint of {name}"
+        );
+        assert_eq!(
+            a["destructiveHint"].as_bool().unwrap(),
+            destructive.contains(&name),
+            "destructiveHint of {name}"
+        );
+    }
+}
+
+// The hints are four positional bools, so a swap of the last two compiles and
+// passes every other test; this pins each tool to its row
+#[test]
+fn every_tool_carries_its_idempotent_and_open_world_hints() {
+    let expected = [
+        ("gtunnel_list_tunnels", true, false),
+        ("gtunnel_get_status", true, false),
+        ("gtunnel_get_logs", true, false),
+        ("gtunnel_list_accounts", true, false),
+        ("gtunnel_doctor", true, true),
+        ("gtunnel_start_tunnel", true, true),
+        ("gtunnel_stop_tunnel", true, false),
+        ("gtunnel_restart_tunnel", true, true),
+        ("gtunnel_add_tunnel", false, true),
+        ("gtunnel_run_tunnel", false, true),
+        ("gtunnel_delete_tunnel", false, false),
+    ];
+    let tools = listed_tools();
+    for (name, idempotent, open_world) in expected {
+        let tool = tools
+            .iter()
+            .find(|t| t["name"] == name)
+            .unwrap_or_else(|| panic!("{name} is listed"));
+        let a = &tool["annotations"];
+        assert_eq!(a["idempotentHint"], idempotent, "idempotentHint of {name}");
+        assert_eq!(a["openWorldHint"], open_world, "openWorldHint of {name}");
+    }
+}
+
+/// `tools/list` and one `tools/call` in a single process, so the schema the
+/// server advertised is the one its own answer is held to.
+fn call_with_schema(
+    h: &Harness,
+    tool: &str,
+    args: serde_json::Value,
+) -> (Option<serde_json::Value>, serde_json::Value) {
+    let list = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
+    let call = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {"name": tool, "arguments": args},
+    });
+    let (stdout, stderr, success) = h.run_mcp_pipe(&format!("{list}\n{call}\n"));
+    assert!(success, "stderr: {stderr}");
+    let mut lines = stdout.lines();
+    let listed: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+    let called: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+    let schema = listed["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == tool)
+        .and_then(|t| t.get("outputSchema").cloned());
+    (schema, called["result"].clone())
+}
+
+fn assert_conforms(schema: &Option<serde_json::Value>, result: &serde_json::Value) {
+    let schema = schema.as_ref().expect("the tool declares an outputSchema");
+    let validator = jsonschema::validator_for(schema).expect("a valid schema");
+    let structured = &result["structuredContent"];
+    assert!(
+        validator.is_valid(structured),
+        "structuredContent does not match its outputSchema: {structured}"
+    );
+}
+
+#[test]
+fn list_accounts_structured_output_matches_its_schema() {
+    let h = Harness::new();
+    let (schema, result) = call_with_schema(&h, "gtunnel_list_accounts", serde_json::json!({}));
+    assert_conforms(&schema, &result);
+    assert_eq!(result["structuredContent"]["selected_account"], "demo");
+}
+
+#[test]
+fn list_tunnels_structured_output_matches_its_schema() {
+    let h = Harness::new();
+    let (schema, result) = call_with_schema(&h, "gtunnel_list_tunnels", serde_json::json!({}));
+    assert_conforms(&schema, &result);
+    assert_eq!(result["structuredContent"]["tunnels"][0]["name"], "db");
+}
+
+#[test]
+fn list_tunnels_with_no_tunnels_is_an_empty_array() {
+    let h = Harness::new();
+    fs::write(h.dir.path().join("config/tunnels.toml"), "").unwrap();
+    let (schema, result) = call_with_schema(&h, "gtunnel_list_tunnels", serde_json::json!({}));
+    assert_conforms(&schema, &result);
+    assert_eq!(
+        result["structuredContent"],
+        serde_json::json!({"tunnels": []})
+    );
+}
+
+#[test]
+fn get_status_of_a_stopped_tunnel_matches_its_schema() {
+    let h = Harness::new();
+    let (schema, result) =
+        call_with_schema(&h, "gtunnel_get_status", serde_json::json!({"name": "db"}));
+    assert_conforms(&schema, &result);
+    assert!(result["structuredContent"]["probe_latency_ms"].is_null());
+}
+
+#[test]
+fn doctor_structured_output_matches_its_schema() {
+    let h = Harness::new();
+    let (schema, result) = call_with_schema(&h, "gtunnel_doctor", serde_json::json!({}));
+    assert_conforms(&schema, &result);
+    assert!(result["structuredContent"]["findings"].is_array());
+}
+
+#[test]
+fn a_failed_json_tool_still_matches_its_schema() {
+    let h = Harness::new();
+    let (schema, result) = call_with_schema(
+        &h,
+        "gtunnel_list_tunnels",
+        serde_json::json!({"account": "nope"}),
+    );
+    assert_eq!(result["isError"], true);
+    assert_eq!(result["structuredContent"]["error"]["kind"], "not_found");
+    assert_conforms(&schema, &result);
+}
+
+#[test]
+fn json_tool_text_is_unchanged() {
+    let h = Harness::new();
+    let (_, result) = call_with_schema(&h, "gtunnel_list_tunnels", serde_json::json!({}));
+    let text = result["content"][0]["text"].as_str().unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert!(parsed.is_array(), "the text stays the bare array: {text}");
+    // Byte for byte what the text was before structured output: the row's own
+    // field order, which a re-serialised `Value` would sort away
+    let expected = r#"[
+  {
+    "status": "stopped",
+    "name": "db",
+    "mode": "access",
+    "url": "localhost:15432",
+    "target": "postgres-1:5432 (europe-west1-b)",
+    "account": "demo",
+    "auto_start": false,
+    "unmanaged": false,
+    "run": false,
+    "local_port": 15432,
+    "health": "unknown"
+  }
+]"#;
+    assert_eq!(text, expected);
+}
+
+#[test]
+fn text_tools_declare_no_output_schema() {
+    for tool in listed_tools() {
+        let name = tool["name"].as_str().unwrap();
+        let text_only = [
+            "gtunnel_start_tunnel",
+            "gtunnel_stop_tunnel",
+            "gtunnel_restart_tunnel",
+            "gtunnel_get_logs",
+            "gtunnel_add_tunnel",
+            "gtunnel_delete_tunnel",
+        ];
+        assert_eq!(
+            tool.get("outputSchema").is_some(),
+            !text_only.contains(&name),
+            "outputSchema presence of {name}"
+        );
+    }
 }
 
 #[test]
