@@ -39,6 +39,67 @@ fn xml_escape(s: &str) -> String {
         .replace('>', "&gt;")
 }
 
+/// The file the plist sends the job's output to, which is how a plist says
+/// whose it is: gtunnel writes it as `<config_dir>/logs/<label>.log`, so two
+/// config directories never share one.
+pub fn plist_log_path(text: &str) -> Option<PathBuf> {
+    let after = text.split("<key>StandardOutPath</key>").nth(1)?;
+    let value = after.split("<string>").nth(1)?.split("</string>").next()?;
+    // The inverse of `xml_escape`, with `&amp;` last so `&amp;lt;` stays `&lt;`
+    Some(PathBuf::from(
+        value
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&amp;", "&"),
+    ))
+}
+
+/// Whether the job launchd has loaded under a label came from this config dir.
+///
+/// The `gui/<uid>` domain is shared by every config directory on the machine,
+/// so a label proves nothing: a throwaway config and the real one can both
+/// name `com.gtunnel.dev.db`. The `path` line of `launchctl print` says which
+/// plist the loaded job came from; only that answers whose job it is.
+/// `owned_agent` is the LaunchAgents copy, passed only when its own contents
+/// already tied it to this config dir.
+pub fn loaded_job_is_ours(
+    print: &str,
+    config_dir: &std::path::Path,
+    owned_agent: Option<&std::path::Path>,
+) -> bool {
+    let Some(path) = print
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("path = "))
+    else {
+        return false;
+    };
+    let path = std::path::Path::new(path.trim());
+    super::is_within(path, config_dir) || owned_agent == Some(path)
+}
+
+/// Remove an orphan without reaching a job that belongs to another config dir.
+///
+/// Unlike [`uninstall`], the boot-out is conditional and so is the deletion of
+/// the LaunchAgents copy; the config dir's own plist is always this config's.
+pub async fn uninstall_orphan(label: &str, config_dir: &std::path::Path) -> Result<()> {
+    let agent = agent_path(label)?;
+    let owned_agent = std::fs::read_to_string(&agent)
+        .ok()
+        .filter(|text| plist_log_path(text).is_some_and(|log| super::is_within(&log, config_dir)))
+        .map(|_| agent.clone());
+    let loaded = print_service(label).await;
+    if loaded.is_some_and(|p| loaded_job_is_ours(&p, config_dir, owned_agent.as_deref())) {
+        let _ = launchctl(&["bootout", &format!("{}/{}", domain_target(), label)]).await;
+    }
+    for path in std::iter::once(plist_path(label)?).chain(owned_agent) {
+        if path.exists() {
+            std::fs::remove_file(&path)
+                .with_context(|| format!("Failed to remove {}", path.display()))?;
+        }
+    }
+    Ok(())
+}
+
 /// Where the watchdog writes what it did. One file for the machine, beside
 /// the tunnels' own logs.
 pub fn watchdog_log() -> Result<PathBuf> {

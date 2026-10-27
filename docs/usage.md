@@ -1093,7 +1093,9 @@ account dev:
 
 A service with no record is machine-wide, so it is filed under `gtunnel:` like the watchdog.
 It is a `com.gtunnel.*` plist (macOS) or `gtunnel-*.service` unit (Linux) whose label no
-record in any account produces; the watchdog is never reported:
+record in any account produces and that belongs to this config directory: it sits in
+`<config dir>/agents`, or its log path is under `<config dir>/logs/`. A service another
+config directory installed is never reported, and neither is the watchdog:
 
 ```
 $ gtunnel doctor
@@ -1108,10 +1110,11 @@ gtunnel:
 | `-a`, `--all` | Check every account, not only the selected one |
 | `--json` | Print the findings as a JSON array of `account`, `description` and `fixable` |
 
-`--fix` removes stale local records, services no record owns (a plist or unit left behind by
-a removed tunnel, which would otherwise keep its port at login), dead ephemeral records and
-per-tunnel relay leftovers no live tunnel claims, reconciles auto-start to what `tunnels.toml` says, and installs a
-missing watchdog; [troubleshooting.md](troubleshooting.md#leftovers) lists each finding. It
+`--fix` removes stale local records, services of this config directory that no record owns
+(a plist or unit left behind by a removed tunnel, which would otherwise keep its port at
+login), dead ephemeral records and per-tunnel relay leftovers no live tunnel claims,
+reconciles auto-start to what `tunnels.toml` says, and installs a missing watchdog;
+[troubleshooting.md](troubleshooting.md#leftovers) lists each finding. It
 re-checks the claim immediately before each removal, so a tunnel started during the scan is
 left alone. Findings it cannot fix, such as a missing firewall rule, are printed with the
 exact command that fixes them.
