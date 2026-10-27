@@ -61,6 +61,7 @@ service-lifecycle diagrams, the account model, and every resource name.
 | An authenticated configuration | `gcloud init` then `gcloud auth login` | `gcloud config list` |
 | `roles/iap.tunnelResourceAccessor` | [cloud.google.com/iap/docs/using-tcp-forwarding](https://cloud.google.com/iap/docs/using-tcp-forwarding#grant-permission) on the instance, destination group or project | `gtunnel doctor` |
 | A firewall rule for `35.235.240.0/20` | `gtunnel doctor` prints the exact `gcloud compute firewall-rules create` for the port you are tunnelling to | `gtunnel doctor` |
+| Rust 1.88 or newer and a C compiler, for the cargo routes only | [rustup](https://rustup.rs) on macOS and Linux; `xcode-select --install` on macOS, `build-essential` or `gcc` on Linux ([docs/usage.md](docs/usage.md#building-from-source)) | `cargo --version`, `cc --version` |
 
 Public mode additionally needs a [Cloud DNS](https://cloud.google.com/dns/docs/zones)
 managed zone you control and the IAM in
