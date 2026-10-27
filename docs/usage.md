@@ -357,7 +357,8 @@ Metrics redraws every 5 seconds, and its `active` is the most client connections
 port carried since the last redraw, not the number open at the instant it drew. The count is
 sampled twice a second: a `kubectl` call holds its socket for a few hundred milliseconds, so
 a figure read once every 5 seconds landed between requests and reported 0 under real
-traffic. The tunnel's log records the same number, and only when it changes.
+traffic. The count is for the screen only: the tunnel's log records each connection itself,
+with its source port (see [Connections in the log](#connections-in-the-log)).
 
 ### The config page
 
@@ -640,6 +641,26 @@ A tunnel's log opens with the tunnel's own name and target, and gtunnel adds a l
 own for every start, stop and clear. A tunnel reached through a jump host prints nothing
 else while it is healthy, so without those lines its log was empty whether it had just
 started, failed, or never existed at all.
+
+#### Connections in the log
+
+At log level `info` or `debug` the supervisor writes one line when a client connects and one
+when it leaves, in the same shape for an IAP tunnel and a jump tunnel. The source port is the
+client's local port, so it names the process: `lsof -nP -iTCP:54321` finds it while it is open.
+
+```
+2026-10-27T10:15:02Z gtunnel: conn iap-7 open
+2026-10-27T10:15:14Z gtunnel: conn iap-7 from 127.0.0.1:54321 closed after 12.0s
+```
+
+| Rule | Why |
+|---|---|
+| The open is written after two seconds, or with the close if that comes first | gtunnel's own health probe connects and closes in milliseconds; its source port is only known at the close |
+| A probe by gtunnel writes no line | `tcp_probe` records its source port in `run/probes/<port>` before it closes, and the supervisor drops the matching close. A probe by anything else, `nc -z` included, is a connection |
+| At most 60 connection lines a minute | a client that reconnects in a loop would bury the lines that explain a failure; the rest become `gtunnel: conn ... N more in the last minute` |
+| A jump tunnel counts only ssh channels, an instance tunnel only IAP connections | a jump tunnel's ssh rides on gcloud's own IAP connection to the bastion, which is the tunnel and never closes |
+| `quiet` writes none | and ssh and gcloud print none at that level either |
+| Only the supervisor writes them | the TUI never appends to a tunnel's log, so two open TUIs, or none, give the same log |
 
 Starting a public tunnel re-creates its backend, host rule, named port and DNS record if any
 of them went missing, so `gtunnel restart <name>` is the fix for a tunnel that comes up

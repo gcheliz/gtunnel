@@ -221,7 +221,12 @@ async fn main() -> Result<()> {
                 mcp::server::run().await
             }
         }
-        Some(Commands::Supervise { argv }) => commands::supervise::run(argv).await,
+        Some(Commands::Supervise {
+            port,
+            ready_file,
+            conns,
+            argv,
+        }) => commands::supervise::run(argv, port, ready_file, conns).await,
     };
 
     if !quiet {

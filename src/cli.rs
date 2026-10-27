@@ -352,6 +352,18 @@ source and --to the destination."
     // Internal command: supervise child process, filtering and timestamping output
     #[command(name = "__supervise", hide = true)]
     Supervise {
+        // The tunnel's local port, so a gtunnel health probe of it can be
+        // told from a client. Absent on a unit written by an older gtunnel,
+        // which then simply logs no connection lines it cannot attribute.
+        #[arg(long)]
+        port: Option<u16>,
+        // Written when the listener is up; removed when the supervisor
+        // starts and when it exits.
+        #[arg(long)]
+        ready_file: Option<std::path::PathBuf>,
+        // Which transport's connections are clients; see `logfilter::Backend`
+        #[arg(long, value_enum)]
+        conns: Option<crate::logfilter::Backend>,
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         argv: Vec<String>,
     },
@@ -562,6 +574,55 @@ mod tests {
 
     fn parse(args: &[&str]) -> Cli {
         Cli::try_parse_from(args).expect("should parse")
+    }
+
+    // A unit written before the port and ready-file flags existed must still
+    // parse, or an upgrade would leave every installed tunnel unable to start
+    #[test]
+    fn the_supervisor_parses_with_and_without_its_newer_flags() {
+        let old = parse(&["gtunnel", "__supervise", "--", "gcloud", "compute", "ssh"]);
+        match old.command.expect("command") {
+            Commands::Supervise {
+                port,
+                ready_file,
+                conns,
+                argv,
+            } => {
+                assert_eq!((port, ready_file, conns), (None, None, None));
+                assert_eq!(argv, ["gcloud", "compute", "ssh"]);
+            }
+            other => panic!("expected Supervise, got {other:?}"),
+        }
+        let new = parse(&[
+            "gtunnel",
+            "__supervise",
+            "--log-level",
+            "debug",
+            "--port",
+            "8443",
+            "--ready-file",
+            "/tmp/x.ready",
+            "--conns",
+            "ssh",
+            "--",
+            "gcloud",
+            "--verbosity=debug",
+        ]);
+        assert_eq!(new.log_level, Some(crate::loglevel::LogLevel::Debug));
+        match new.command.expect("command") {
+            Commands::Supervise {
+                port,
+                ready_file,
+                conns,
+                argv,
+            } => {
+                assert_eq!(conns, Some(crate::logfilter::Backend::Ssh));
+                assert_eq!(port, Some(8443));
+                assert_eq!(ready_file, Some("/tmp/x.ready".into()));
+                assert_eq!(argv, ["gcloud", "--verbosity=debug"]);
+            }
+            other => panic!("expected Supervise, got {other:?}"),
+        }
     }
 
     // `watch` is two things under one word: the loop a person runs in a
