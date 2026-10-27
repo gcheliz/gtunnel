@@ -218,12 +218,12 @@ pub fn normalize_local_target(target: &str) -> Result<String> {
 pub fn diagnose_log_line(line: &str) -> Option<&'static str> {
     const TABLE: &[(&str, &str)] = &[
         (
-            "4003",
+            "[4003:",
             "IAP cannot reach the target port. Allow 35.235.240.0/20 to it in a firewall rule \
              (run: gtunnel doctor).",
         ),
         (
-            "4033",
+            "[4033:",
             "Not authorized for IAP tunnelling. Grant roles/iap.tunnelResourceAccessor.",
         ),
         (
@@ -252,7 +252,7 @@ pub fn diagnose_log_line(line: &str) -> Option<&'static str> {
             "Install NumPy for gcloud to speed up IAP tunnels (see docs/troubleshooting.md).",
         ),
         (
-            "4004",
+            "[4004:",
             "IAP asked gcloud to reauthenticate; gcloud resumes the session on its own. If it \
              repeats, check the account's credentials (run: gtunnel doctor).",
         ),
@@ -817,6 +817,29 @@ mod tests {
         assert!(diagnose_log_line("Testing if tunnel connection works.").is_none());
         assert!(diagnose_log_line("Listening on port [15432].").is_none());
         assert!(diagnose_log_line("").is_none());
+    }
+
+    // A port or URL that merely contains the digits is not an IAP close code
+    #[test]
+    fn diagnose_log_line_matches_close_codes_exactly() {
+        for line in [
+            "Listening on port [14004].",
+            "Listening on port [14003].",
+            "Listening on port [14033].",
+            "Client closed connection from 127.0.0.1:54004",
+            "Reconnecting with URL ['wss://tunnel.cloudproxy.app/v4/reconnect?sid=a4003b']",
+        ] {
+            assert!(diagnose_log_line(line).is_none(), "{line}");
+        }
+    }
+
+    // gcloud prints this on every call when the configuration was never
+    // created; it is noise, not a refusal or an error to explain
+    #[test]
+    fn a_missing_configuration_warning_is_not_a_refusal_or_a_failure() {
+        let line = "WARNING: Could not open the configuration file: [/home/you/.config/gcloud/configurations/config_ci].";
+        assert!(diagnose_log_line(line).is_none());
+        assert!(!crate::probe::is_refusal(line));
     }
 
     #[test]

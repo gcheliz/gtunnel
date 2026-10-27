@@ -287,7 +287,15 @@ Account 'ci' saved to /workspace/gtunnel
 ```
 
 The name after `--configuration` need not exist: gcloud accepts a configuration it has not
-seen (checked with gcloud 590, `gcloud --configuration=ci config list` exits 0).
+seen (checked with gcloud 590, `gcloud --configuration=ci config list` exits 0). It creates
+nothing, though, and warns on each call that reads it, so every tunnel's log carries:
+
+```
+WARNING: Could not open the configuration file: [<gcloud config dir>/configurations/config_ci].
+```
+
+The warning is harmless. To silence it, create the configuration once, without making it the
+active one: `gcloud config configurations create ci --no-activate`.
 
 ### Name a credential file
 

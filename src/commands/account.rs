@@ -277,8 +277,10 @@ pub struct AddOptions {
     pub credential_file: Option<std::path::PathBuf>,
 }
 
-// Build an account from flags, with no gcloud call. gcloud creates a named
-// configuration on first use, so the name need not exist yet.
+// Build an account from flags, with no gcloud call. The configuration name
+// need not exist: gcloud still runs with it, but creates nothing and warns
+// "Could not open the configuration file" on every call. gtunnel does not
+// create it, because a gcloud configuration is the user's to make.
 fn account_from_flags(configuration: &str, name: &str, opts: &AddOptions) -> Result<Account> {
     let project = opts
         .project
