@@ -30,6 +30,7 @@ ratatui = "0.30"
 crossterm = "0.29"
 libc = "0.2"
 humantime = "2"
+clap_complete = { version = "4.6.11", features = ["unstable-dynamic"] }
 
 [dev-dependencies]
 wiremock = "0.6"

@@ -158,7 +158,7 @@ pub enum Commands {
     #[command(about = "Start a stopped tunnel")]
     Start {
         // Tunnel name
-        #[arg(help = "Tunnel name")]
+        #[arg(help = "Tunnel name", add = clap_complete::engine::ArgValueCompleter::new(crate::commands::completions::tunnel_names))]
         name: String,
     },
 
@@ -166,7 +166,7 @@ pub enum Commands {
     #[command(about = "Stop a running tunnel")]
     Stop {
         // Tunnel name
-        #[arg(help = "Tunnel name")]
+        #[arg(help = "Tunnel name", add = clap_complete::engine::ArgValueCompleter::new(crate::commands::completions::tunnel_names))]
         name: String,
     },
 
@@ -174,7 +174,7 @@ pub enum Commands {
     #[command(about = "Show or set whether a tunnel starts at login")]
     Autostart {
         // Tunnel name
-        #[arg(help = "Tunnel name")]
+        #[arg(help = "Tunnel name", add = clap_complete::engine::ArgValueCompleter::new(crate::commands::completions::tunnel_names))]
         name: String,
         #[arg(long, help = "Start this tunnel at login", conflicts_with = "off")]
         on: bool,
@@ -186,7 +186,7 @@ pub enum Commands {
     #[command(about = "Restart a tunnel (stop, rewrite the service, start)")]
     Restart {
         // Tunnel name
-        #[arg(help = "Tunnel name")]
+        #[arg(help = "Tunnel name", add = clap_complete::engine::ArgValueCompleter::new(crate::commands::completions::tunnel_names))]
         name: String,
     },
 
@@ -194,7 +194,7 @@ pub enum Commands {
     #[command(about = "View logs for a tunnel")]
     Logs {
         // Tunnel name
-        #[arg(help = "Tunnel name")]
+        #[arg(help = "Tunnel name", add = clap_complete::engine::ArgValueCompleter::new(crate::commands::completions::tunnel_names))]
         name: String,
 
         // Follow log output (like tail -f)
@@ -217,7 +217,7 @@ pub enum Commands {
     #[command(about = "Delete a tunnel")]
     Delete {
         // Tunnel name
-        #[arg(help = "Tunnel name")]
+        #[arg(help = "Tunnel name", add = clap_complete::engine::ArgValueCompleter::new(crate::commands::completions::tunnel_names))]
         name: String,
     },
 
@@ -225,7 +225,7 @@ pub enum Commands {
     #[command(about = "Rename a tunnel and move its service and log with it")]
     Rename {
         // Current tunnel name
-        #[arg(help = "Current tunnel name")]
+        #[arg(help = "Current tunnel name", add = clap_complete::engine::ArgValueCompleter::new(crate::commands::completions::tunnel_names))]
         old: String,
 
         // New tunnel name
@@ -241,7 +241,7 @@ source and --to the destination."
     )]
     Move {
         // Tunnel name
-        #[arg(help = "Tunnel name")]
+        #[arg(help = "Tunnel name", add = clap_complete::engine::ArgValueCompleter::new(crate::commands::completions::tunnel_names))]
         name: String,
 
         // Destination account
@@ -357,6 +357,17 @@ source and --to the destination."
         validate: bool,
     },
 
+    // Print the script that makes the shell complete gtunnel commands
+    #[command(
+        about = "Print a shell completion script",
+        long_about = "Print a shell completion script for bash, zsh or fish. The script asks \
+gtunnel on each TAB, so tunnel names complete as well as commands."
+    )]
+    Completions {
+        #[arg(value_enum, help = "Shell to print the script for")]
+        shell: crate::commands::completions::Shell,
+    },
+
     // Internal command: supervise child process, filtering and timestamping output
     #[command(name = "__supervise", hide = true)]
     Supervise {
@@ -411,6 +422,8 @@ impl Commands {
             | Commands::Update { .. }
             | Commands::Doctor { .. }
             | Commands::Mcp { .. }
+            // Prints text and reads no account: it must work before `init`
+            | Commands::Completions { .. }
             | Commands::Supervise { .. }
             // Runs from an agent with no terminal: a login prompt here would
             // hang the watchdog forever rather than fail
@@ -931,7 +944,8 @@ mod tests {
                 "{name} must not need a login"
             );
         }
-        let skip_with_args: [&[&str]; 4] = [
+        let skip_with_args: [&[&str]; 5] = [
+            &["gtunnel", "completions", "zsh"],
             &["gtunnel", "delete", "db"],
             &["gtunnel", "rename", "old", "new"],
             &["gtunnel", "autostart", "db"],

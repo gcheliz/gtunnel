@@ -53,6 +53,7 @@ dashboard that shows whether each one is carrying traffic.
 | Multiple accounts | One gcloud configuration, project and zone per account; `;` cycles them in the TUI |
 | MCP server and agent skill | `gtunnel mcp` is a stdio MCP server with 11 tools and 2 resources; `.agents/skills/gtunnel/SKILL.md` guides an agent through the CLI |
 | `--json` output | `list`, `doctor` and `account list` print machine-readable JSON |
+| Shell completions | `gtunnel completions <shell>` for bash, zsh or fish completes commands and tunnel names; install lines in [docs/usage.md](docs/usage.md#shell-completions) |
 | Self-update | `gtunnel update` replaces the binary with the latest release; `--check` only reports. A Homebrew install is pointed at `brew upgrade` |
 
 [docs/architecture.md](docs/architecture.md) has the topology for both modes, the jump and

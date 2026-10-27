@@ -774,7 +774,9 @@ pub(crate) fn status_style(status: TunnelStatus, health: HealthStatus) -> Style 
     match status {
         TunnelStatus::Running => match health {
             HealthStatus::Healthy => Style::default().fg(theme::OK),
-            HealthStatus::Unhealthy => Style::default().fg(theme::BAD),
+            HealthStatus::Unhealthy | HealthStatus::AuthExpired | HealthStatus::CrashLooping => {
+                Style::default().fg(theme::BAD)
+            }
             HealthStatus::Checking | HealthStatus::Unknown => Style::default().fg(theme::WARN),
         },
         TunnelStatus::Stopped => Style::default().fg(theme::MUTED),
@@ -1053,7 +1055,7 @@ fn render_tunnels(f: &mut Frame, app: &App, area: Rect) {
                     Style::default().fg(theme::FLAG),
                 ),
                 Span::styled(
-                    if entry.health == HealthStatus::Unhealthy {
+                    if entry.health.is_failing() {
                         "\u{26a0}"
                     } else {
                         " "
@@ -1579,8 +1581,15 @@ fn metrics_lines(entry: &TunnelEntry, width: usize) -> Vec<Line<'static>> {
         inline("restarts"),
         value(metrics.restarts.to_string()),
         inline("   health"),
-        value(entry.health.symbol().to_string()),
+        value(format!(
+            "{} {}",
+            entry.health.symbol(),
+            entry.health.label()
+        )),
     ]));
+    if let Some(action) = entry.health.action() {
+        lines.push(Line::from(vec![inline("fix"), value(action.to_string())]));
+    }
 
     if entry.tunnel.is_expose() {
         let (total, classes) = match &metrics.lb {

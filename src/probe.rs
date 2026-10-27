@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use crate::config::Config;
 use crate::daemon;
@@ -20,6 +20,13 @@ pub enum HealthStatus {
     Healthy,
     Unhealthy,
     Checking,
+    /// The probe failed and the log says gcloud's credentials expired. Naming
+    /// it matters because the fix is one command the user runs, and a generic
+    /// failure sends them to the log to find that out.
+    AuthExpired,
+    /// The service keeps restarting. Each restart can look healthy for a
+    /// moment, so this outranks a passing probe: the loop is the finding.
+    CrashLooping,
 }
 
 impl HealthStatus {
@@ -29,7 +36,114 @@ impl HealthStatus {
             HealthStatus::Healthy => "\u{2713}",
             HealthStatus::Unhealthy => "\u{2717}",
             HealthStatus::Checking => "\u{2026}",
+            HealthStatus::AuthExpired => "\u{2297}",
+            HealthStatus::CrashLooping => "\u{21bb}",
         }
+    }
+
+    /// The words for Details, where the symbol alone would have to be learned.
+    pub fn label(&self) -> &'static str {
+        match self {
+            HealthStatus::Unknown => "unknown",
+            HealthStatus::Healthy => "healthy",
+            HealthStatus::Unhealthy => "unhealthy",
+            HealthStatus::Checking => "checking",
+            HealthStatus::AuthExpired => "auth expired",
+            HealthStatus::CrashLooping => "crash loop",
+        }
+    }
+
+    /// What the reader does next, for the states that have one.
+    pub fn action(&self) -> Option<&'static str> {
+        match self {
+            HealthStatus::AuthExpired => Some("gcloud auth login"),
+            HealthStatus::CrashLooping => Some("check the log"),
+            _ => None,
+        }
+    }
+
+    /// Whether this is a verdict that something is wrong, as opposed to one
+    /// that is good or not yet known.
+    pub fn is_failing(&self) -> bool {
+        matches!(
+            self,
+            HealthStatus::Unhealthy | HealthStatus::AuthExpired | HealthStatus::CrashLooping
+        )
+    }
+}
+
+/// A line that says gcloud's credentials expired. Not `[4033:`: that is IAP
+/// refusing an identity that logged in fine, and logging in again changes
+/// nothing, so it stays a plain failure.
+pub fn is_credential_failure(line: &str) -> bool {
+    line.contains("Reauthentication required") || line.contains("gcloud auth login")
+}
+
+/// How recently the log must have been written for a credential line in it to
+/// speak for now. Re-authenticating does not rewrite the log, so without a
+/// bound an old line would keep naming a problem the user already fixed.
+pub const CREDENTIAL_WINDOW: Duration = Duration::from_secs(120);
+const CREDENTIAL_TAIL_BYTES: u64 = 8 * 1024;
+
+pub fn log_is_recent(modified: SystemTime, now: SystemTime) -> bool {
+    now.duration_since(modified)
+        .map_or(true, |age| age <= CREDENTIAL_WINDOW)
+}
+
+/// What a probe that got no answer is called, given the tunnel's log. Only a
+/// failure is classified: a tunnel that answers is healthy whatever the log
+/// remembers.
+pub fn failed_health(log_path: &Path) -> HealthStatus {
+    let recent = std::fs::metadata(log_path)
+        .and_then(|m| m.modified())
+        .is_ok_and(|m| log_is_recent(m, SystemTime::now()));
+    if recent
+        && daemon::read_tail(log_path, CREDENTIAL_TAIL_BYTES)
+            .lines()
+            .any(is_credential_failure)
+    {
+        HealthStatus::AuthExpired
+    } else {
+        HealthStatus::Unhealthy
+    }
+}
+
+/// Restarts within `CRASH_WINDOW` that make a service a crash loop.
+pub const CRASH_RESTARTS: u32 = 3;
+pub const CRASH_WINDOW: Duration = Duration::from_secs(120);
+
+/// Restart counts seen between metrics rounds. The count only ever grows, so a
+/// loop is the growth across the window, not the total: a tunnel that
+/// restarted forty times last week is not looping now. Memory only, and `now`
+/// is a parameter, as in `breaker`, so a test does not wait out two minutes.
+#[derive(Debug, Clone, Default)]
+pub struct RestartWatch {
+    samples: VecDeque<(SystemTime, u32)>,
+}
+
+impl RestartWatch {
+    pub fn observe(&mut self, now: SystemTime, restarts: u32) -> bool {
+        // A lower count means the service was reinstalled: the old samples
+        // belong to a run that no longer exists
+        if self
+            .samples
+            .back()
+            .is_some_and(|(_, last)| restarts < *last)
+        {
+            self.samples.clear();
+        }
+        self.samples.push_back((now, restarts));
+        // Keep one sample from before the window as the baseline it grew from
+        while self.samples.len() > 1
+            && self
+                .samples
+                .get(1)
+                .is_some_and(|(at, _)| now.duration_since(*at).is_ok_and(|d| d > CRASH_WINDOW))
+        {
+            self.samples.pop_front();
+        }
+        let base = self.samples.front().map_or(restarts, |(_, n)| *n);
+        restarts - base >= CRASH_RESTARTS
     }
 }
 
@@ -111,7 +225,7 @@ async fn probe_connection(addr: &str, timeout: Duration) -> Close {
 const PROBE_TTL_SECS: u64 = 60;
 
 fn unix_now() -> u64 {
-    std::time::SystemTime::now()
+    SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
@@ -1330,5 +1444,116 @@ LISTEN 0      128    127.0.0.1:15432     0.0.0.0:*
         }
         assert_eq!(history.samples(), &[2, 3, 4]);
         assert_eq!(history.peak(), 4);
+    }
+
+    // Only the credential entries of the diagnosis table are auth-expired. A
+    // 4033 is a refusal too, but granting a role is the fix, not logging in
+    #[test]
+    fn what_counts_as_expired_credentials() {
+        for (line, expected) in [
+            ("ERROR: Reauthentication required.", true),
+            ("Please run: gcloud auth login", true),
+            (
+                "ERROR: (gcloud) There was a problem refreshing your current auth tokens",
+                false,
+            ),
+            (
+                "Error: [4033: 'not authorized'] Insufficient Permission",
+                false,
+            ),
+            (
+                "Error while connecting [4003: 'failed to connect to backend']",
+                false,
+            ),
+            ("Testing if tunnel connection works.", false),
+            ("", false),
+        ] {
+            assert_eq!(is_credential_failure(line), expected, "{line}");
+        }
+    }
+
+    #[test]
+    fn a_failed_probe_names_expired_credentials_only_for_a_recent_log() {
+        let dir = std::env::temp_dir().join(format!("gt-auth-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("t.log");
+        std::fs::write(&log, "started\nERROR: Reauthentication required.\n").unwrap();
+        assert_eq!(failed_health(&log), HealthStatus::AuthExpired);
+        std::fs::write(&log, "Error: [4033: 'not authorized']\n").unwrap();
+        assert_eq!(failed_health(&log), HealthStatus::Unhealthy);
+        assert_eq!(
+            failed_health(&dir.join("missing.log")),
+            HealthStatus::Unhealthy
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_old_credential_line_does_not_outlive_the_window() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
+        let fresh = now - Duration::from_secs(30);
+        let stale = now - CREDENTIAL_WINDOW - Duration::from_secs(1);
+        assert!(log_is_recent(fresh, now));
+        assert!(!log_is_recent(stale, now));
+        // A clock that ran backwards is not a reason to hide the message
+        assert!(log_is_recent(now + Duration::from_secs(5), now));
+    }
+
+    #[test]
+    fn the_new_states_have_one_cell_symbols_and_a_label() {
+        for h in [HealthStatus::AuthExpired, HealthStatus::CrashLooping] {
+            assert_eq!(h.symbol().chars().count(), 1, "{h:?}");
+            assert!(!h.label().is_empty());
+        }
+        assert_eq!(
+            HealthStatus::AuthExpired.action(),
+            Some("gcloud auth login")
+        );
+        assert_eq!(HealthStatus::CrashLooping.action(), Some("check the log"));
+        assert_eq!(HealthStatus::Healthy.action(), None);
+    }
+
+    fn t(secs: u64) -> SystemTime {
+        SystemTime::UNIX_EPOCH + Duration::from_secs(secs)
+    }
+
+    // (seconds, restarts reported) per round, and whether it loops after it
+    #[test]
+    fn three_restarts_inside_the_window_is_a_crash_loop() {
+        type Round = (u64, u32, bool);
+        let cases: &[(&str, &[Round])] = &[
+            ("steady", &[(0, 0, false), (5, 0, false), (10, 0, false)]),
+            (
+                "two is not enough",
+                &[(0, 0, false), (5, 1, false), (10, 2, false)],
+            ),
+            (
+                "three in a row",
+                &[(0, 0, false), (5, 1, false), (10, 3, true)],
+            ),
+            (
+                "a count older than the window",
+                &[(0, 0, false), (60, 2, false), (200, 4, false)],
+            ),
+            ("a long history alone", &[(0, 40, false), (5, 40, false)]),
+            (
+                "loop then calm",
+                &[(0, 0, false), (5, 3, true), (200, 3, false)],
+            ),
+            (
+                "counter reset by a reinstall",
+                &[(0, 9, false), (5, 0, false), (10, 1, false)],
+            ),
+        ];
+        for (name, rounds) in cases {
+            let mut watch = RestartWatch::default();
+            for (secs, restarts, expected) in *rounds {
+                assert_eq!(
+                    watch.observe(t(*secs), *restarts),
+                    *expected,
+                    "{name} at {secs}s"
+                );
+            }
+        }
     }
 }
