@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.27](https://github.com/gcheliz/gtunnel/compare/v0.1.26...v0.1.27) - 2026-10-27
+
+### Added
+
+- *(tui)* show an available update in the header rule ([#76](https://github.com/gcheliz/gtunnel/pull/76))
+
 ## [0.1.26](https://github.com/gcheliz/gtunnel/compare/v0.1.25...v0.1.26) - 2026-10-27
 
 ### Fixed
