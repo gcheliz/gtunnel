@@ -33,6 +33,6 @@ jobs:
             | grep -qE '^(feat|fix|perf|refactor|docs|ci|chore|test|build|style|revert)(\([a-z0-9._-]+\))?!?: [^ ]'; then
             echo "ok: $TITLE"
           else
-            echo "::error::PR title is not a conventional commit: '$TITLE'. The squash merge uses it as the commit message, and release-plz only releases feat, fix, perf, refactor and docs."
+            echo "::error::PR title is not a conventional commit: '$TITLE'. The squash merge uses it as the commit message, and release-plz only releases feat, fix, perf and refactor."
             exit 1
           fi
