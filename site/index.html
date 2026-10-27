@@ -89,11 +89,17 @@ code { color: var(--text); }
 .js .tabs { display: flex; }
 .tabs button { min-height: 44px; padding: 0 16px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font-family: var(--mono); font-size: 13px; cursor: pointer; }
 .tabs button[aria-selected="true"] { background: var(--line); color: var(--text); }
-.cmd { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; background: var(--raised); border: 1px solid var(--line); border-radius: 12px; padding: 8px 8px 8px 18px; }
-.cmd code { flex: 1 1 220px; min-width: 0; overflow-wrap: anywhere; font-size: 14px; }
+.cmd { position: relative; background: var(--raised); border: 1px solid var(--line); border-radius: 12px; padding: 16px 62px 16px 18px; min-height: 68px; }
+.cmd code { display: block; min-width: 0; overflow-wrap: anywhere; font-size: 14px; line-height: 1.6; }
 .cmd .p, .prompt { color: var(--cyan); }
-.cmd button { display: none; flex: none; min-width: 84px; min-height: 44px; border: 0; border-radius: 8px; background: var(--text); color: var(--ground); font-family: var(--sans); font-weight: 600; font-size: 14px; cursor: pointer; }
-.js .cmd button { display: inline-block; }
+.cmd button { display: none; position: absolute; top: 11px; right: 11px; width: 44px; height: 44px; padding: 0; align-items: center; justify-content: center; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--muted); cursor: pointer; }
+.js .cmd button { display: inline-flex; }
+.cmd button:hover { color: var(--text); border-color: var(--dim); }
+.cmd button svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.cmd button .ok { display: none; }
+.cmd button[data-copied] { color: var(--green); }
+.cmd button[data-copied] .ic { display: none; }
+.cmd button[data-copied] .ok { display: block; }
 .surfaces { display: flex; flex-wrap: wrap; gap: 4px 8px; margin-left: -12px; font-family: var(--mono); font-size: 13px; font-weight: 700; }
 .surfaces a { display: inline-flex; align-items: center; min-height: 44px; padding: 0 12px; color: var(--text); text-decoration: none; }
 .surfaces a::before { content: "●"; margin-right: 8px; color: var(--dot); }
@@ -209,12 +215,17 @@ footer a:hover { color: var(--text); }
   .tools { grid-template-columns: minmax(0, 1fr); row-gap: 24px; }
   .res .div { display: none; }
   .numbers .wrap { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .numbers .n { border-left: 0; padding-left: 0; }
+  .numbers .n { border-left: 0; padding: 20px 16px 20px 0; }
+  .numbers .n:nth-child(even) { border-left: 1px solid var(--line); padding-left: 20px; padding-right: 0; }
+  .numbers .n:nth-child(n+3) { border-top: 1px solid var(--line-soft); }
 }
 @media (max-width: 520px) {
-  .numbers .wrap { grid-template-columns: minmax(0, 1fr); }
+  .numbers .n { padding-top: 16px; padding-bottom: 16px; }
+  .numbers .n:nth-child(even) { padding-left: 16px; }
+  .big { font-size: 36px; }
   .actions .button { flex: 1 1 100%; justify-content: center; }
   .code { padding: 14px; padding-right: 72px; font-size: 13px; }
+  .code, .close .oneline { white-space: pre-wrap; overflow-wrap: anywhere; }
   .modes dd { font-size: 12px; }
   .modes dd::before { display: none; }
   .mcp-lines { font-size: 12px; padding: 16px 0; }
@@ -255,8 +266,8 @@ GitHub</a>
 <button type="button" role="tab" aria-selected="false" aria-controls="install-cmd-box" tabindex="-1" data-cmd="gh release download -R gcheliz/gtunnel -p '*macos-arm64*'">release binary</button>
 </div>
 <div class="cmd" id="install-cmd-box" role="tabpanel">
-<code><span class="p">$ </span><span id="install-cmd">cargo install --git https://github.com/gcheliz/gtunnel</span></code>
-<button type="button" id="copy" aria-label="Copy install command">Copy</button>
+<code><span class="p">$ </span><span id="install-cmd">cargo install --git https://<wbr>github.com/<wbr>gcheliz/<wbr>gtunnel</span></code>
+<button type="button" id="copy" aria-label="Copy install command" title="Copy"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg><svg class="ok" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg></button>
 </div>
 </div>
 <nav class="surfaces" aria-label="Surfaces">
@@ -489,11 +500,30 @@ function tablist(list, onPick) {
   var copy = document.getElementById('copy');
   var tabs = document.querySelectorAll('.install [role="tab"]');
   tablist(document.querySelector('.install [role="tablist"]'), function (i) {
-    cmd.textContent = tabs[i].dataset.cmd;
-    copy.textContent = 'Copy';
+    // A <wbr> after each slash lets a narrow screen break the URL at a path
+    // segment; textContent, which the copy button reads, is unchanged.
+    cmd.textContent = '';
+    tabs[i].dataset.cmd.split('/').forEach(function (part, n) {
+      if (n) { cmd.appendChild(document.createTextNode('/')); if (part) { cmd.appendChild(document.createElement('wbr')); } }
+      cmd.appendChild(document.createTextNode(part));
+    });
+    reset();
   });
+  var timer;
+  function reset() {
+    clearTimeout(timer);
+    copy.removeAttribute('data-copied');
+    copy.title = 'Copy';
+    copy.setAttribute('aria-label', 'Copy install command');
+  }
   copy.addEventListener('click', function () {
-    var done = function () { copy.textContent = 'Copied'; };
+    var done = function () {
+      copy.setAttribute('data-copied', '');
+      copy.title = 'Copied';
+      copy.setAttribute('aria-label', 'Copied');
+      clearTimeout(timer);
+      timer = setTimeout(reset, 1600);
+    };
     if (navigator.clipboard) {
       navigator.clipboard.writeText(cmd.textContent).then(done, function () {});
     }
