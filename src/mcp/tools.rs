@@ -38,10 +38,19 @@ fn output_schema(success_properties: Value, success_required: &[&str]) -> Value 
         "type": "object",
         "properties": properties,
         "anyOf": [
-            {"required": success_required},
-            {"required": ["error"]}
+            required_branch(success_required),
+            required_branch(&["error"])
         ]
     })
+}
+
+/// An `anyOf` branch that names its required keys in its own `properties` too:
+/// Ajv's `strictRequired` refuses a `required` key the same subschema does not
+/// declare, and a client that opts into strict mode then fails `tools/list`.
+fn required_branch(keys: &[&str]) -> Value {
+    let stubs: serde_json::Map<String, Value> =
+        keys.iter().map(|k| (k.to_string(), json!({}))).collect();
+    json!({"required": keys, "properties": stubs})
 }
 
 fn nullable(ty: &str) -> Value {
@@ -894,5 +903,26 @@ mod schema_tests {
     fn a_payload_with_neither_shape_is_rejected() {
         let validator = jsonschema::validator_for(&schema_of("gtunnel_list_accounts")).unwrap();
         assert!(!validator.is_valid(&json!({"unrelated": true})));
+    }
+
+    // Ajv `strictRequired`: a client in strict mode fails `tools/list` on a
+    // branch that requires a key its own `properties` does not name
+    #[test]
+    fn every_any_of_branch_declares_the_keys_it_requires() {
+        for tool in all_tools() {
+            let Some(schema) = tool.output_schema else {
+                continue;
+            };
+            for branch in schema["anyOf"].as_array().unwrap() {
+                for key in branch["required"].as_array().unwrap() {
+                    let key = key.as_str().unwrap();
+                    assert!(
+                        branch["properties"].get(key).is_some(),
+                        "{} requires {key} without declaring it",
+                        tool.name
+                    );
+                }
+            }
+        }
     }
 }

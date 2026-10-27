@@ -278,6 +278,35 @@ fn read_only_and_destructive_tools_say_so() {
     }
 }
 
+// The hints are four positional bools, so a swap of the last two compiles and
+// passes every other test; this pins each tool to its row
+#[test]
+fn every_tool_carries_its_idempotent_and_open_world_hints() {
+    let expected = [
+        ("gtunnel_list_tunnels", true, false),
+        ("gtunnel_get_status", true, false),
+        ("gtunnel_get_logs", true, false),
+        ("gtunnel_list_accounts", true, false),
+        ("gtunnel_doctor", true, true),
+        ("gtunnel_start_tunnel", true, true),
+        ("gtunnel_stop_tunnel", true, false),
+        ("gtunnel_restart_tunnel", true, true),
+        ("gtunnel_add_tunnel", false, true),
+        ("gtunnel_run_tunnel", false, true),
+        ("gtunnel_delete_tunnel", false, false),
+    ];
+    let tools = listed_tools();
+    for (name, idempotent, open_world) in expected {
+        let tool = tools
+            .iter()
+            .find(|t| t["name"] == name)
+            .unwrap_or_else(|| panic!("{name} is listed"));
+        let a = &tool["annotations"];
+        assert_eq!(a["idempotentHint"], idempotent, "idempotentHint of {name}");
+        assert_eq!(a["openWorldHint"], open_world, "openWorldHint of {name}");
+    }
+}
+
 /// `tools/list` and one `tools/call` in a single process, so the schema the
 /// server advertised is the one its own answer is held to.
 fn call_with_schema(
@@ -381,7 +410,24 @@ fn json_tool_text_is_unchanged() {
     let text = result["content"][0]["text"].as_str().unwrap();
     let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
     assert!(parsed.is_array(), "the text stays the bare array: {text}");
-    assert_eq!(parsed, result["structuredContent"]["tunnels"]);
+    // Byte for byte what the text was before structured output: the row's own
+    // field order, which a re-serialised `Value` would sort away
+    let expected = r#"[
+  {
+    "status": "stopped",
+    "name": "db",
+    "mode": "access",
+    "url": "localhost:15432",
+    "target": "postgres-1:5432 (europe-west1-b)",
+    "account": "demo",
+    "auto_start": false,
+    "unmanaged": false,
+    "run": false,
+    "local_port": 15432,
+    "health": "unknown"
+  }
+]"#;
+    assert_eq!(text, expected);
 }
 
 #[test]
