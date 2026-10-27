@@ -219,6 +219,7 @@ Publishing a local service needs a Cloud DNS managed zone and a one-off relay pe
 | `reset` | Remove all local configuration | no |
 | `demo` | TUI with synthetic data | no |
 | `update` | Check for and install a new version | no |
+| `completions` | Print a shell completion script | no |
 
 ## Startup
 
@@ -1102,6 +1103,41 @@ gtunnel v9.9.9 is available (current: v0.1.40). Run `gtunnel update`.
 The check runs at most once a day, in the background, and never blocks a command. A
 downloaded binary and one in `~/.cargo/bin` replace themselves after verifying the published
 SHA-256; a Homebrew install is detected and pointed at `brew upgrade gtunnel` instead.
+
+## Shell completions
+
+`gtunnel completions <bash|zsh|fish>` prints a script that completes commands, flags and
+tunnel names. Press TAB after `gtunnel start ` and the selected account's tunnels are offered;
+`add` and `expose`, which take a name that does not exist yet, offer nothing.
+
+| Shell | Install |
+|---|---|
+| zsh | `mkdir -p ~/.zsh/completions && gtunnel completions zsh > ~/.zsh/completions/_gtunnel`, then put `fpath=(~/.zsh/completions $fpath)` before `compinit` in `~/.zshrc` |
+| bash | `mkdir -p ~/.local/share/bash-completion/completions && gtunnel completions bash > ~/.local/share/bash-completion/completions/gtunnel` (needs the `bash-completion` package) |
+| fish | `gtunnel completions fish > ~/.config/fish/completions/gtunnel.fish` |
+
+Open a new shell afterwards. The script is a thin caller: on each TAB it runs `gtunnel`
+again to ask what fits, so the binary on `PATH` must be the one that printed it. Regenerate the
+file after `gtunnel update` or `brew upgrade`.
+
+```text
+$ gtunnel completions zsh | head -9
+#compdef gtunnel
+function _clap_dynamic_completer_gtunnel() {
+    local _CLAP_COMPLETE_INDEX=$(expr $CURRENT - 1)
+    local _CLAP_IFS=$'\n'
+
+    local completions=("${(@f)$( \
+        _CLAP_IFS="$_CLAP_IFS" \
+        _CLAP_COMPLETE_INDEX="$_CLAP_COMPLETE_INDEX" \
+        COMPLETE="zsh" \
+```
+
+| Property | Behaviour |
+|---|---|
+| Needs a login or a config | No. `completions` prints text and works before `gtunnel init` |
+| Account | The selected account. `--account` on the same line is not applied to the names offered |
+| No config, or a broken one | No names are offered and nothing is printed to the terminal |
 
 ## Model Context Protocol (MCP) and AI Agent Integration
 
