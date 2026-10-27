@@ -511,13 +511,15 @@ gtunnel add <NAME> <HOST:PORT> --dest-group G --region R --network N [-s]
 | Flag | Effect |
 |---|---|
 | `-z`, `--zone` | Zone of the instance; the account default otherwise |
-| `--local-port` | Fixed local port; otherwise one is allocated from 15000-15999, stable per name |
+| `--local-port` | Fixed local port; otherwise one is allocated from 15000-15999, stable per name, skipping any a saved tunnel or a live run holds |
 | `--via` | Reach a host the instance can reach, rather than a port of the instance |
 | `--dest-group` | Target an IAP destination group instead of an instance |
 | `-s`, `--start` | Install the service and start it immediately |
 
 The local port is derived from the tunnel name, so the same name gets the same port on
-every machine unless it is taken.
+every machine unless it is taken. A port held by a live `gtunnel run`, in any account,
+counts as taken: an explicit `--local-port` for it is refused with `Local port P is already
+used by the run 'NAME'`, and the automatic choice moves on to the next free one.
 
 gcloud reads any argument that starts with a dash as an option, so `add` refuses one. An
 instance is a GCE name (up to 63 lowercase letters, digits and dashes, starting with a letter),
