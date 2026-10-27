@@ -387,6 +387,11 @@ project is refused with the command that sets one,
 `gcloud config set project <id> --configuration=<name>`. A typed name the list lacks is taken,
 and the text field stays when there is no configuration or gcloud cannot list them.
 
+While a list is on its way, the field or picker says so with a spinner, e.g.
+`loading configurations...`, and the instance picker says `nothing matches` only once the
+list has answered. The accounts page shows the operation it is running, e.g. `add sandbox`,
+until the result replaces it.
+
 Every form field has a line under its label saying what the value is for, and the dialog
 title counts the steps: `New account 1/2`, `Edit account 2/2`, `New access tunnel 3/5`,
 `New public URL 2/3`. On a short terminal the description goes first, so the field always
@@ -411,9 +416,11 @@ Case matters in three pairs: `s`/`S` start and stop, `a`/`A` add and auto-start,
 refresh and restart. The footer shows only what the selected tunnel can do, so it never has
 both halves of a pair on screen; the keymap page states the difference. When the selected
 tunnel has failed, `R restart` leads the footer in the warning colour. An account with no
-tunnels shows `no tunnels in this account` under the list header, and the footer offers `a`
-and `m`; until the first load has answered, and after `;` until the new account's has, the
-row says `loading` instead. A first load that fails puts its error on the status line and
+tunnels shows `no tunnels in this account` under the list header, and the footer offers
+`a add`; until the first load has answered, and after `;` until the new account's has, the
+row says `loading` instead. `m import` appears only on a selected ephemeral run, a
+`gtunnel run` started in a terminal: it turns that run into a managed tunnel with its own
+service, so it outlives the terminal. A first load that fails puts its error on the status line and
 replaces `loading` with `could not load tunnels`, until a load succeeds. The
 keymap page is two columns from 92 cells inside its frame and one below that. On a
 terminal too short for it, the page scrolls: `j` `k` and the arrows move a row, `PgUp` and

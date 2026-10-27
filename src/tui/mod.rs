@@ -173,7 +173,8 @@ async fn demo_loop(
             }
             Msg::Tick => {
                 app.force_refresh = false;
-                if app.spinner.is_running() {
+                // A list being waited on draws a spinner frame too, so it must advance
+                if app.spinner.is_running() || app.list_loading.is_some() {
                     app.spinner.tick();
                 }
             }
@@ -362,7 +363,8 @@ async fn event_loop(
                 }
             }
             Msg::Tick => {
-                if app.spinner.is_running() {
+                // A list being waited on draws a spinner frame too, so it must advance
+                if app.spinner.is_running() || app.list_loading.is_some() {
                     app.spinner.tick();
                 }
                 if app.force_refresh {
@@ -438,10 +440,7 @@ async fn event_loop(
                     app.logs = lines;
                 }
             }
-            Msg::Instances(instances) => {
-                app.instances = instances;
-                app.instance_selected = 0;
-            }
+            Msg::Instances(instances) => app.instances_arrived(instances),
             Msg::InstancesFailed(reason) => app.instances_failed(&reason),
             Msg::Projects(account, projects) => app.projects_arrived(&account, projects),
             Msg::ProjectsFailed(account, reason) => app.projects_failed(&account, &reason),

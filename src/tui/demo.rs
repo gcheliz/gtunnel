@@ -278,13 +278,15 @@ impl App {
     // one configuration has no project, so the refusal can be shown too.
     pub fn answer_demo_lists(&mut self) {
         if std::mem::take(&mut self.want_instances) {
-            self.instances = ["bastion", "cache-vm", "db-vm"]
-                .map(|name| InstanceChoice {
-                    name: name.to_string(),
-                    zone: self.default_zone.clone(),
-                })
-                .to_vec();
-            self.instance_selected = 0;
+            let zone = self.default_zone.clone();
+            self.instances_arrived(
+                ["bastion", "cache-vm", "db-vm"]
+                    .map(|name| InstanceChoice {
+                        name: name.to_string(),
+                        zone: zone.clone(),
+                    })
+                    .to_vec(),
+            );
         }
         if std::mem::take(&mut self.want_configurations) {
             self.configurations_arrived(vec![

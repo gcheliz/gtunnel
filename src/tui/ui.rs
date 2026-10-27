@@ -668,6 +668,11 @@ const ACTIONS_RUNNING: &[Action] = &[
     Action::of("L"),
 ];
 
+// A run started with `gtunnel run`: it has no service to stop, restart or log
+// to, so the footer offers what does work on it, led by the key that gives
+// it one
+const ACTIONS_EPHEMERAL: &[Action] = &[Action::of("m"), Action::of("c"), Action::of("o")];
+
 const ACTIONS_STOPPED: &[Action] = &[
     Action::of("s"),
     Action::of("e"),
@@ -681,8 +686,6 @@ const ACTIONS_ERROR: &[Action] = &[
     Action::of("d"),
     Action::of("L"),
 ];
-
-const ACTIONS_EMPTY: &[Action] = &[Action::of("m")];
 
 /// Someone else's `gcloud` process. Every tunnel action refuses on it, and the
 /// running set offered five of them, so the footer named five keys that did
@@ -720,7 +723,7 @@ pub fn footer_most() -> usize {
         ACTIONS_RUNNING,
         ACTIONS_STOPPED,
         ACTIONS_ERROR,
-        ACTIONS_EMPTY,
+        ACTIONS_EPHEMERAL,
         ACTIONS_UNMANAGED,
     ]
     .iter()
@@ -1757,13 +1760,16 @@ pub fn footer_groups(
         // A stranger's process answers to whoever started it, whatever state
         // it is in, so its kind decides the footer before its status does
         (Some((_, TunnelKind::External)), _) => ACTIONS_UNMANAGED,
+        (Some((_, TunnelKind::Ephemeral)), _) => ACTIONS_EPHEMERAL,
         (Some((TunnelStatus::Running, _)), _) => ACTIONS_RUNNING,
         (Some((TunnelStatus::Stopped, _)), _) => ACTIONS_STOPPED,
         (Some((TunnelStatus::Error, _)), _) => ACTIONS_ERROR,
-        // No tunnels at all: the only useful actions are the ones that make one
-        (None, false) => ACTIONS_EMPTY,
-        // Tunnels exist but nothing is selected, so nothing is contextual
-        (None, true) => &[],
+        // Nothing selected, so nothing is contextual. An empty account once
+        // offered `m import`, but import acts on a selected ephemeral run and
+        // an empty account has none, so the key did nothing; the way to fill
+        // one is `a add`, which the program group carries in every state.
+        // While a load is pending after `;`, that offer also flashed.
+        (None, _) => &[],
     };
     (contextual, ACTIONS_PROGRAM)
 }
@@ -1892,14 +1898,11 @@ pub fn footer_line(
 
 fn render_help_bar(f: &mut Frame, area: Rect, app: &App) {
     let selected = app.selected_entry().map(|e| (e.status, e.kind));
-    // An empty list before the first load answers, as after every `;`, is not
-    // an empty account: it offers nothing contextual rather than `m import`
-    let empty_and_known = app.entries.is_empty() && app.loaded;
     f.render_widget(
         Paragraph::new(footer_line_with_flash(
             area.width,
             selected,
-            !empty_and_known,
+            !app.entries.is_empty(),
             app.flash_message(),
         )),
         area,
@@ -2808,14 +2811,25 @@ fn render_accounts(f: &mut Frame, app: &App) {
         dialog_width(widest, "Accounts"),
         |w, room| {
             let keys = account_key_rows(w);
-            let notice: Vec<Line<'static>> = app
-                .account_notice
-                .iter()
-                .flat_map(|n| {
-                    let colour = if n.ok { theme::OK } else { theme::BAD };
-                    wrapped_indent(&n.text, 2, w, Style::default().fg(colour))
-                })
-                .collect();
+            // The spinner's own place is the logs title, behind this page, so
+            // the page says what is running until the notice replaces it
+            let running = app
+                .spinner
+                .message
+                .as_ref()
+                .filter(|_| app.spinner.is_running())
+                .map(|m| format!("{} {m}", app.spinner.frame()));
+            let notice: Vec<Line<'static>> = match running {
+                Some(running) => wrapped_indent(&running, 2, w, Style::default().fg(theme::MUTED)),
+                None => app
+                    .account_notice
+                    .iter()
+                    .flat_map(|n| {
+                        let colour = if n.ok { theme::OK } else { theme::BAD };
+                        wrapped_indent(&n.text, 2, w, Style::default().fg(colour))
+                    })
+                    .collect(),
+            };
             // The rows have the first claim on the frame, as the picker's do: a
             // page that shows its keys and no accounts has stopped being a list
             let visible = room.saturating_sub(keys.len() + notice.len()).max(1);
@@ -2915,6 +2929,16 @@ fn render_prompt(f: &mut Frame, app: &App, mode: InputMode) {
                 Style::default().fg(theme::BAD),
             ));
         }
+        // Kept with the field, not shed with the description: it says the
+        // field is about to change under the cursor
+        if let Some(loading) = loading_line(app, mode) {
+            field.extend(wrapped_indent(
+                &loading,
+                0,
+                width,
+                Style::default().fg(theme::MUTED),
+            ));
+        }
         let hint = wrapped_indent(PROMPT_HINT, 2, width, Style::default().fg(theme::MUTED));
         // What goes first when the terminal is short: the blank rows, then the
         // description, then the hint, then the end of a prompt that wraps. The
@@ -2930,6 +2954,20 @@ fn render_prompt(f: &mut Frame, app: &App, mode: InputMode) {
                 lines
             })
     });
+}
+
+/// What a field or picker says while its list is on the way, when the list
+/// being waited on is this field's. The frame advances with the spinner.
+fn loading_line(app: &App, mode: InputMode) -> Option<String> {
+    let what = app.list_loading?;
+    let mine = matches!(
+        (what, mode),
+        ("configurations", InputMode::AccountConfiguration)
+            | ("projects", InputMode::AccountProject)
+            | ("zones", InputMode::AccountZone)
+            | ("instances", InputMode::AddInstance)
+    );
+    mine.then(|| format!("{} loading {what}...", app.spinner.frame()))
 }
 
 fn picker_row(row: &str, selected: bool) -> Line<'static> {
@@ -2953,6 +2991,8 @@ struct Picker<'a> {
     selected: usize,
     // Why the dialog came back, drawn where the dialog covers the status line
     error: Option<&'a str>,
+    // Said in place of `nothing matches` while the rows are still on their way
+    loading: Option<String>,
 }
 
 /// A dialog whose row list is taller than the dialog: the header is fixed and
@@ -2969,6 +3009,7 @@ fn render_picker(f: &mut Frame, p: Picker) {
         rows,
         selected,
         error,
+        loading,
     } = p;
     let total = rows.len();
     let counter = if total > 0 {
@@ -3020,7 +3061,8 @@ fn render_picker(f: &mut Frame, p: Picker) {
         let visible = room.saturating_sub(head.len());
         let mut lines = head;
         if total == 0 {
-            lines.push(Line::styled("  nothing matches", muted));
+            let said = loading.unwrap_or_else(|| "nothing matches".to_string());
+            lines.push(Line::styled(format!("  {said}"), muted));
         } else {
             let start = (selected.min(total - 1) + 1).saturating_sub(visible);
             lines.extend(
@@ -3051,6 +3093,7 @@ fn render_instance_picker(f: &mut Frame, app: &App) {
             rows,
             selected: app.instance_selected,
             error: app.draft_error.as_deref(),
+            loading: loading_line(app, InputMode::AddInstance),
         },
     );
 }
@@ -3075,6 +3118,7 @@ fn render_project_picker(f: &mut Frame, app: &App) {
             rows,
             selected: app.project_selected,
             error: app.draft_error.as_deref(),
+            loading: None,
         },
     );
 }
@@ -3091,6 +3135,7 @@ fn render_zone_picker(f: &mut Frame, app: &App) {
             rows,
             selected: app.zone_selected,
             error: app.draft_error.as_deref(),
+            loading: None,
         },
     );
 }
@@ -3120,6 +3165,7 @@ fn render_configuration_picker(f: &mut Frame, app: &App) {
             rows,
             selected: app.configuration_selected,
             error: app.draft_error.as_deref(),
+            loading: None,
         },
     );
 }
@@ -3138,6 +3184,7 @@ fn render_account_picker(f: &mut Frame, app: &App) {
             rows: app.other_accounts(),
             selected: app.move_selected,
             error: app.draft_error.as_deref(),
+            loading: None,
         },
     );
 }
@@ -3153,6 +3200,7 @@ fn render_domain_picker(f: &mut Frame, app: &App) {
             rows: app.domains.clone(),
             selected: app.domain_selected,
             error: app.draft_error.as_deref(),
+            loading: None,
         },
     );
 }

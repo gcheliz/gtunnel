@@ -1764,11 +1764,11 @@ fn frame(app: &App, width: u16, height: u16) -> String {
     rows_text(terminal.backend().buffer())
 }
 
-// After `;` the list is empty until the new account's load answers. That is
-// not an empty account, so the footer must not offer what an empty one does:
-// `m import` flashed on every switch
+// An empty list, whether still loading after `;` or loaded and empty, has no
+// row for `m import` to act on, so the footer never offers it there: it was a
+// dead key in an empty account and flashed on every account switch
 #[test]
-fn the_footer_offers_import_only_once_the_account_is_known_to_be_empty() {
+fn an_empty_list_never_offers_import_loading_or_loaded() {
     let mut app = App::new("dev");
     assert!(!app.loaded);
     let waiting = frame(&app, 120, 30);
@@ -1778,5 +1778,27 @@ fn the_footer_offers_import_only_once_the_account_is_known_to_be_empty() {
     app.loaded = true;
     let empty = frame(&app, 120, 30);
     assert!(empty.contains("no tunnels in this account"), "{empty}");
-    assert!(empty.contains("m import"), "{empty}");
+    assert!(!empty.contains("m import"), "{empty}");
+    assert!(empty.contains("a add"), "{empty}");
+}
+
+// Before the instances arrive the picker is waiting, not empty: `nothing
+// matches` read as a project with no instances
+#[test]
+fn the_instance_picker_says_loading_before_the_list_and_nothing_matches_after() {
+    let mut app = App::new("dev");
+    app.handle_key(key(KeyCode::Char('a')));
+    app.handle_key(key(KeyCode::Char('1')));
+    for c in "postgres".chars() {
+        app.handle_key(key(KeyCode::Char(c)));
+    }
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(app.input_mode, InputMode::AddInstance);
+    let waiting = frame(&app, 120, 30);
+    assert!(waiting.contains("loading instances"), "{waiting}");
+    assert!(!waiting.contains("nothing matches"), "{waiting}");
+    app.instances_arrived(Vec::new());
+    let answered = frame(&app, 120, 30);
+    assert!(answered.contains("nothing matches"), "{answered}");
+    assert!(!answered.contains("loading instances"), "{answered}");
 }

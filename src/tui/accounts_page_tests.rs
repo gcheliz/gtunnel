@@ -454,3 +454,52 @@ fn a_failed_zone_list_keeps_the_text_field() {
     let said = app.draft_error.clone().expect("a reason beside the field");
     assert!(said.contains("Type the zone instead"), "{said}");
 }
+
+// A field whose list is on its way says so, so the person neither waits on a
+// blank field nor is surprised when it turns into a picker under the cursor
+#[test]
+fn a_field_says_its_list_is_loading_until_the_list_answers() {
+    let mut app = page_app();
+    app.handle_key(key(KeyCode::Char('a')));
+    let page = rows(&app, 100, 30).join("\n");
+    assert!(page.contains("loading configurations"), "{page}");
+    app.configurations_failed("gcloud is not installed");
+    let page = rows(&app, 100, 30).join("\n");
+    assert!(!page.contains("loading configurations"), "{page}");
+
+    let mut app = page_app();
+    app.handle_key(key(KeyCode::Char('e')));
+    let page = rows(&app, 100, 30).join("\n");
+    assert!(page.contains("loading projects"), "{page}");
+    app.handle_key(key(KeyCode::Enter));
+    let page = rows(&app, 100, 30).join("\n");
+    assert!(page.contains("loading zones"), "{page}");
+    app.zones_arrived("dev", "example-dev-1a2b", zones());
+    let page = rows(&app, 100, 30).join("\n");
+    assert!(!page.contains("loading zones"), "{page}");
+}
+
+// Esc ends the wait with the dialog, so the next dialog starts with no
+// leftover loading line
+#[test]
+fn closing_a_dialog_ends_its_loading_line() {
+    let mut app = page_app();
+    app.handle_key(key(KeyCode::Char('a')));
+    app.handle_key(key(KeyCode::Esc));
+    assert_eq!(app.list_loading, None);
+}
+
+// The spinner runs in the logs pane title, behind the page; the page itself
+// says what is running until the notice replaces it
+#[test]
+fn the_accounts_page_shows_the_operation_it_is_running() {
+    let mut app = page_app();
+    app.handle_key(key(KeyCode::Char('a')));
+    retype(&mut app, "work");
+    app.handle_key(key(KeyCode::Enter));
+    retype(&mut app, "sandbox");
+    assert!(app.handle_key(key(KeyCode::Enter)).is_some());
+    assert_eq!(app.input_mode, InputMode::Accounts);
+    let page = rows(&app, 100, 30).join("\n");
+    assert!(page.contains("add sandbox"), "{page}");
+}

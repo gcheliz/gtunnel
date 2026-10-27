@@ -773,6 +773,10 @@ pub struct App {
     pub want_configurations: bool,
     // Set when the edit dialog reaches the zone, so the loop fetches the zones
     pub want_zones: bool,
+    // Which list the open dialog is waiting on, so its field or picker says
+    // so: an empty picker read as "no instances" and a plain field gave no
+    // sign it was about to become a picker. Cleared when that list answers.
+    pub list_loading: Option<&'static str>,
     // Which wording the edit dialog uses: an Expose tunnel edits its local
     // target, an Access one its `remote:local` ports
     pub edit_is_expose: bool,
@@ -862,6 +866,7 @@ impl App {
             want_projects: false,
             want_configurations: false,
             want_zones: false,
+            list_loading: None,
             edit_is_expose: false,
             force_refresh: false,
             follow_up_at: None,
@@ -924,8 +929,19 @@ impl App {
     // The picker covers the status line, so while it is open the reason goes
     // inside the dialog; the status line carries it for after the dialog closes.
     // It is an error about the account's list, not about what was typed.
+    pub fn instances_arrived(&mut self, instances: Vec<InstanceChoice>) {
+        self.instances = instances;
+        self.instance_selected = 0;
+        if self.list_loading == Some("instances") {
+            self.list_loading = None;
+        }
+    }
+
     pub fn instances_failed(&mut self, reason: &str) {
         let message = format!("{LIST_FAILURE}{reason}");
+        if self.list_loading == Some("instances") {
+            self.list_loading = None;
+        }
         if self.input_mode == InputMode::AddInstance {
             self.draft_error = Some(format!("{message}. Type the instance name instead"));
         }
@@ -945,6 +961,7 @@ impl App {
         if !self.awaiting_projects_for(account) {
             return;
         }
+        self.list_loading = None;
         if list.is_empty() {
             self.projects_failed(account, "no project is visible to this account");
             return;
@@ -983,6 +1000,7 @@ impl App {
         if !self.awaiting_projects_for(account) {
             return;
         }
+        self.list_loading = None;
         let message = format!("{PROJECT_LIST_FAILURE}{reason}");
         self.draft_error = Some(format!("{message}. Type the project instead"));
         self.set_status(message);
@@ -995,6 +1013,7 @@ impl App {
         if self.input_mode != InputMode::AccountConfiguration {
             return;
         }
+        self.list_loading = None;
         if list.is_empty() {
             self.configurations_failed("no gcloud configuration found. Run `gcloud init`");
             return;
@@ -1021,6 +1040,7 @@ impl App {
         if !self.awaiting_zones_for(account, project) {
             return;
         }
+        self.list_loading = None;
         if list.is_empty() {
             self.zones_failed(account, project, "the project has no zone");
             return;
@@ -1050,6 +1070,7 @@ impl App {
         if !self.awaiting_zones_for(account, project) {
             return;
         }
+        self.list_loading = None;
         let message = format!("{ZONE_LIST_FAILURE}{reason}");
         self.draft_error = Some(format!("{message}. Type the zone instead"));
         self.set_status(message);
@@ -1064,6 +1085,7 @@ impl App {
             .cloned()
             .unwrap_or_default();
         self.want_zones = true;
+        self.list_loading = Some("zones");
         self.zones_list.clear();
         self.input_mode = InputMode::AccountZone;
     }
@@ -1073,6 +1095,7 @@ impl App {
         if self.input_mode != InputMode::AccountConfiguration {
             return;
         }
+        self.list_loading = None;
         let message = format!("{CONFIGURATION_LIST_FAILURE}{reason}");
         self.draft_error = Some(format!("{message}. Type the configuration instead"));
         self.set_status(message);
@@ -1264,6 +1287,7 @@ impl App {
         self.draft_error = None;
         self.account_notice = None;
         self.want_configurations = true;
+        self.list_loading = Some("configurations");
         self.configurations_list.clear();
         self.input_mode = InputMode::AccountConfiguration;
     }
@@ -1282,6 +1306,7 @@ impl App {
         self.draft_error = None;
         self.account_notice = None;
         self.want_projects = true;
+        self.list_loading = Some("projects");
         self.projects_list.clear();
         self.input_mode = InputMode::AccountProject;
     }
@@ -1880,6 +1905,7 @@ impl App {
         self.input.clear();
         self.draft_error = None;
         self.confirm_message = None;
+        self.list_loading = None;
         // The account a move picked belongs to that move: the next one asks
         // again, and a stale answer here would send a tunnel somewhere
         // nobody chose
@@ -2253,6 +2279,7 @@ impl App {
                 self.input_mode = match self.draft.mode {
                     TunnelMode::Access => {
                         self.want_instances = true;
+                        self.list_loading = Some("instances");
                         self.instance_selected = 0;
                         InputMode::AddInstance
                     }
