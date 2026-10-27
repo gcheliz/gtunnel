@@ -322,6 +322,8 @@ fn every_tool_carries_its_idempotent_and_open_world_hints() {
         ("gtunnel_add_tunnel", false, true),
         ("gtunnel_run_tunnel", false, true),
         ("gtunnel_delete_tunnel", false, false),
+        ("gtunnel_rename_tunnel", false, true),
+        ("gtunnel_move_tunnel", false, true),
     ];
     let tools = listed_tools();
     for (name, idempotent, open_world) in expected {
