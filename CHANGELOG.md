@@ -3,6 +3,16 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.1.51](https://github.com/gcheliz/gtunnel/compare/v0.1.50...v0.1.51) - 2026-10-27
+
+### Documentation
+
+- *(site)* promote the tool as TUI, CLI and MCP and drop the architecture tour ([#141](https://github.com/gcheliz/gtunnel/pull/141))
+
+### Fixed
+
+- *(state)* refuse a tunnel whose file names another account's tunnel already holds ([#140](https://github.com/gcheliz/gtunnel/pull/140))
+
 ## [0.1.50](https://github.com/gcheliz/gtunnel/compare/v0.1.49...v0.1.50) - 2026-10-27
 
 ### Fixed

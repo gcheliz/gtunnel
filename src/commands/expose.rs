@@ -248,6 +248,7 @@ pub async fn cmd_expose(
     if state.find_for_account(name, &acct.name).is_some() {
         bail!("Tunnel '{name}' already exists for account '{}'", acct.name);
     }
+    state.check_label(&acct.name, name)?;
 
     let relay_port = allocate_port(
         name,

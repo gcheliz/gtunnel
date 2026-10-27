@@ -61,7 +61,7 @@ impl EphemeralRecord {
     }
 
     pub fn path(&self) -> Result<PathBuf> {
-        Ok(run_dir()?.join(format!("{}-{}.json", self.account_name, self.name)))
+        record_path(&self.account_name, &self.name)
     }
 
     pub fn save(&self) -> Result<()> {
@@ -324,14 +324,38 @@ pub fn live_run_local_ports() -> Result<std::collections::HashMap<u16, String>> 
     Ok(used)
 }
 
+/// The record file of a run. The name is built from `state::label_of`, the same
+/// join the log and service names use, so a fix can never delete a path the
+/// writer did not use.
+pub fn record_path(account: &str, name: &str) -> Result<PathBuf> {
+    Ok(run_dir()?.join(format!("{}.json", crate::state::label_of(account, name))))
+}
+
 /// The refusal both `gtunnel run` and the MCP launch give. A second run of a
 /// name would overwrite the first one's record file, leaving a process nothing
 /// can see or stop, and the first to exit would delete the other's record; a
 /// managed tunnel of that name would share its log and its public hostname.
 pub fn check_run_name(state: &TunnelState, account: &str, name: &str) -> Result<()> {
-    let live = list_ephemeral()?
-        .into_iter()
-        .any(|(r, alive)| alive && r.account_name == account && r.name == name);
+    let mut live = false;
+    let label = crate::state::label_of(account, name);
+    for (r, alive) in list_ephemeral()? {
+        if !alive {
+            continue;
+        }
+        if r.account_name == account && r.name == name {
+            live = true;
+        } else if r.account_name != account
+            && crate::state::label_of(&r.account_name, &r.name) == label
+        {
+            // Two accounts whose joined strings meet write one record and one log
+            return Err(GtunnelError::usage(format!(
+                "A run named '{name}' on account '{account}' would share its record and log \
+                 with run '{}' on account '{}' (both are '{label}'); choose another name",
+                r.name, r.account_name
+            ))
+            .into());
+        }
+    }
     if live {
         return Err(GtunnelError::usage(format!(
             "A run named '{name}' is already live for account '{account}'"
@@ -1077,6 +1101,39 @@ mod tests {
         .save()
         .unwrap();
         check_run_name(&TunnelState::default(), "dev", "old").expect("stale record");
+    }
+
+    #[test]
+    fn a_run_whose_joined_name_another_accounts_live_run_holds_is_refused() {
+        let _temp = TempConfigDir::new();
+        EphemeralRecord {
+            pid: std::process::id(),
+            pid_start: crate::proc::start_token(std::process::id()),
+            account_name: "prod-eu".to_string(),
+            ..record("api")
+        }
+        .save()
+        .unwrap();
+        let err = check_run_name(&TunnelState::default(), "prod", "eu-api").unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "A run named 'eu-api' on account 'prod' would share its record and log with \
+             run 'api' on account 'prod-eu' (both are 'prod-eu-api'); choose another name"
+        );
+        assert_eq!(crate::error::kind_of(&err), crate::error::ErrorKind::Usage);
+    }
+
+    #[test]
+    fn a_dead_run_of_another_account_does_not_block_the_joined_name() {
+        let _temp = TempConfigDir::new();
+        EphemeralRecord {
+            pid: 999_999,
+            account_name: "prod-eu".to_string(),
+            ..record("api")
+        }
+        .save()
+        .unwrap();
+        check_run_name(&TunnelState::default(), "prod", "eu-api").expect("dead record");
     }
 
     #[test]

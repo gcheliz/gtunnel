@@ -6,7 +6,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 
 use crate::config::Config;
-use crate::state::{validate_target, validate_tunnel_name, TunnelSpec, TunnelState};
+use crate::state::{label_of, validate_target, validate_tunnel_name, TunnelSpec, TunnelState};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -140,6 +140,7 @@ pub fn validate_tunnels(
         _ => String::new(),
     };
     let mut seen = HashSet::new();
+    let mut labels: HashMap<String, (&str, &str)> = HashMap::new();
     let mut ports: HashMap<u16, (&str, &str)> = HashMap::new();
     for (i, t) in state.tunnels.iter().enumerate() {
         if let Err(e) = validate_tunnel_name(&t.name) {
@@ -164,6 +165,20 @@ pub fn validate_tunnels(
                 at(i),
                 t.name,
                 t.account_name
+            );
+        }
+        let label = label_of(&t.account_name, &t.name);
+        if let Some((first, first_account)) =
+            labels.insert(label.clone(), (t.name.as_str(), t.account_name.as_str()))
+        {
+            bail!(
+                "{}tunnels '{}' ({}) and '{}' ({}) would share the file name '{}'",
+                at(i),
+                first,
+                first_account,
+                t.name,
+                t.account_name,
+                label
             );
         }
         if let TunnelSpec::Access { local_port, .. } = &t.spec
@@ -627,6 +642,27 @@ mod tests {
             .unwrap()
             .tunnels
             .is_empty());
+    }
+
+    #[test]
+    fn two_accounts_holding_one_joined_name_are_refused_with_its_line() {
+        let cfg = config("prod", &["prod", "prod-eu"]);
+        let text = text_of(vec![
+            tunnel("api", "prod-eu", 15432),
+            tunnel("eu-api", "prod", 15433),
+        ]);
+        let second_header = text
+            .lines()
+            .enumerate()
+            .filter(|(_, l)| l.trim() == "[[tunnels]]")
+            .nth(1)
+            .map(|(i, _)| i + 1)
+            .unwrap();
+        let msg = validate_tunnels(&text, &cfg, &HashMap::new())
+            .expect_err("clash")
+            .to_string();
+        assert!(msg.contains("'prod-eu-api'"), "{msg}");
+        assert!(msg.contains(&format!("line {second_header}")), "{msg}");
     }
 
     #[test]

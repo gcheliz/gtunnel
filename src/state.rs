@@ -80,10 +80,30 @@ pub struct PersistentTunnel {
     pub spec: TunnelSpec,
 }
 
+/// The one place the account and the name are joined. Both names may hold
+/// dashes, so `prod` + `eu-api` and `prod-eu` + `api` join to the same string;
+/// every caller that needs the joined name goes through here so the clash
+/// check and the log and service names cannot disagree about it.
+pub fn label_of(account: &str, name: &str) -> String {
+    format!("{account}-{name}")
+}
+
+/// The one text of the label clash, so `add`, the early reads and relocate
+/// refuse in the same words.
+pub(crate) fn clash_message(account: &str, name: &str, other: &PersistentTunnel) -> String {
+    format!(
+        "Tunnel '{name}' on account '{account}' would share its log and service with \
+         tunnel '{}' on account '{}' (both are '{}'); choose another name",
+        other.name,
+        other.account_name,
+        other.label()
+    )
+}
+
 impl PersistentTunnel {
     // Account-qualified base name; daemon backends derive their service label from it
     pub fn label(&self) -> String {
-        format!("{}-{}", self.account_name, self.name)
+        label_of(&self.account_name, &self.name)
     }
 
     pub fn log_path(&self) -> Result<PathBuf> {
@@ -208,7 +228,28 @@ impl TunnelState {
                 tunnel.account_name
             );
         }
+        self.check_label(&tunnel.account_name, &tunnel.name)?;
         self.tunnels.push(tunnel);
+        Ok(())
+    }
+
+    /// Tunnels on other accounts whose joined name equals this one's. They would
+    /// write the same log file and, on Linux, the same systemd unit. The launchd
+    /// label is `com.gtunnel.<account>.<name>`, so macOS cannot collide here.
+    pub fn label_holders(&self, account: &str, name: &str) -> Vec<&PersistentTunnel> {
+        let label = label_of(account, name);
+        self.tunnels
+            .iter()
+            .filter(|t| t.account_name != account && t.label() == label)
+            .collect()
+    }
+
+    /// The refusal `add` and the early reads before gcloud share. It names the
+    /// first holder only because one name is enough to act on.
+    pub fn check_label(&self, account: &str, name: &str) -> Result<()> {
+        if let Some(other) = self.label_holders(account, name).first() {
+            bail!("{}", clash_message(account, name, other));
+        }
         Ok(())
     }
 
@@ -490,6 +531,43 @@ mod tests {
                 local_port: local,
             },
         }
+    }
+
+    #[test]
+    fn a_tunnel_whose_joined_name_another_account_holds_is_refused() {
+        let mut state = TunnelState::default();
+        let mut api = access_instance("api", 15432);
+        api.account_name = "prod-eu".to_string();
+        state.add(api).unwrap();
+
+        let mut eu_api = access_instance("eu-api", 15433);
+        eu_api.account_name = "prod".to_string();
+        let err = state.add(eu_api).expect_err("same joined name");
+        assert_eq!(
+            err.to_string(),
+            "Tunnel 'eu-api' on account 'prod' would share its log and service with \
+             tunnel 'api' on account 'prod-eu' (both are 'prod-eu-api'); choose another name"
+        );
+        assert_eq!(state.tunnels.len(), 1);
+    }
+
+    #[test]
+    fn the_clash_is_refused_in_either_order() {
+        let mut state = TunnelState::default();
+        let mut eu_api = access_instance("eu-api", 15433);
+        eu_api.account_name = "prod".to_string();
+        state.add(eu_api).unwrap();
+        let mut api = access_instance("api", 15432);
+        api.account_name = "prod-eu".to_string();
+        assert!(state.add(api).is_err());
+    }
+
+    #[test]
+    fn names_in_one_account_never_clash() {
+        let mut state = TunnelState::default();
+        state.add(access_instance("eu-api", 15432)).unwrap();
+        state.add(access_instance("api", 15433)).unwrap();
+        assert!(state.label_holders("dev", "eu-api").is_empty());
     }
 
     #[test]
