@@ -28,6 +28,7 @@ exit 0
 
 // Login must still pass, or `start` stops at the login check before it ever
 // starts a job; only the tunnel itself fails
+#[cfg(target_os = "macos")]
 const FAILING_STUB: &str = r#"#!/bin/sh
 case "$1 $2" in
   "auth print-access-token")
@@ -75,6 +76,7 @@ impl Harness {
 
     // A gcloud that dies at once, so a started tunnel's job exits inside the
     // settle window and its status reads as an error
+    #[cfg(target_os = "macos")]
     fn failing_gcloud() -> Self {
         Self::with_stub(FAILING_STUB)
     }
@@ -121,6 +123,7 @@ impl Harness {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn stdout(out: &Output) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }

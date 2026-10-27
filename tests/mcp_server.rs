@@ -12,6 +12,7 @@ exit 0
 "#;
 
 // Login passes, so a start gets as far as the job; only the tunnel itself fails
+#[cfg(target_os = "macos")]
 const FAILING_STUB: &str = r#"#!/bin/sh
 case "$1 $2" in
   "auth print-access-token")
@@ -53,6 +54,7 @@ impl Harness {
         Self::with_stub(STUB)
     }
 
+    #[cfg(target_os = "macos")]
     fn failing_gcloud() -> Self {
         Self::with_stub(FAILING_STUB)
     }
