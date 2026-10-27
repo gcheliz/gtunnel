@@ -1,5 +1,16 @@
 # Usage
 
+[Home](../README.md) / Usage / [Commands](commands.md) / [Configuration](configuration.md) / [Architecture](architecture.md) / [Troubleshooting](troubleshooting.md)
+
+Contents:
+
+- [Getting set up](#getting-set-up)
+- [Concepts](#concepts)
+- [Command map](#command-map)
+- [Startup](#startup)
+- [The TUI](#the-tui)
+- [Model Context Protocol (MCP) and AI Agent Integration](#model-context-protocol-mcp-and-ai-agent-integration)
+
 Getting set up, the concepts, startup, the TUI and the MCP server. The commands are in
 [commands.md](commands.md) and the files in [configuration.md](configuration.md). Outputs were captured from a real run unless the
 section says the opposite.
@@ -112,7 +123,8 @@ github-hosted
 ```
 
 The workflow, the tag and the commit that produced the binary, on a GitHub-hosted runner.
-Attestations begin with v0.1.1; v0.1.0 predates them.
+This sample was captured from v0.1.1, so the tag and commit are those of that release; yours name
+the file you downloaded. Attestations begin with v0.1.1; v0.1.0 predates them.
 
 #### Building from source
 
@@ -555,7 +567,7 @@ Model Context Protocol (MCP) server.
 Located at `.agents/skills/gtunnel/SKILL.md` using the open Agent Skills standard. It automatically
 guides AI agents (Claude Code, Gemini CLI, etc.) on:
 
-- Enforcing tunnel naming conventions (`<platform>` or `<platform>-<service>`, never account/env suffixes).
+- Enforcing the tunnel naming rule in [Naming a tunnel](commands.md#naming-a-tunnel).
 - Routing client-side protocols through one bastion tunnel (e.g. MongoDB Compass over SSH) rather than one tunnel per backend host.
 - Scoping commands to the correct GCP account.
 - Performing mandatory pre-completion verification: checking daemon status, inspecting logs for IAP error codes (such as `4033`), and probing local listening ports.

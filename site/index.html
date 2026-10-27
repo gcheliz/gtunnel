@@ -277,7 +277,7 @@ GitHub</a>
 <div class="n"><span class="big c-cyan">0</span><span class="label">inbound firewall rules</span></div>
 <div class="n"><span class="big c-green">0</span><span class="label">credentials stored by gtunnel</span></div>
 <div class="n"><span class="big c-amber">2</span><span class="label">modes: access, expose</span></div>
-<div class="n"><span class="big c-blue">11</span><span class="label">MCP tools for your agent</span></div>
+<div class="n"><span class="big c-blue">14</span><span class="label">MCP tools for your agent</span></div>
 </div>
 </section>
 
@@ -310,9 +310,9 @@ GitHub</a>
 <div class="col">
 <span class="kicker c-blue">MCP</span>
 <h2 class="h2" id="mcp-title">Ask your agent. <span class="c-blue">It opens the tunnel.</span></h2>
-<p class="body"><code>gtunnel mcp</code> is built into the binary. Add it to your client's config and it can list, start, stop and run tunnels for you.</p>
+<p class="body"><code>gtunnel mcp</code> is built into the binary. Add it to your client's config and it can list, start, stop, run, add, delete, rename, move and expose tunnels for you.</p>
 <div class="figures">
-<div><span class="big c-blue">11</span><span class="label">tools</span></div>
+<div><span class="big c-blue">14</span><span class="label">tools</span></div>
 <div class="rule"></div>
 <div><span class="big c-blue">2</span><span class="label">live resources</span></div>
 </div>
@@ -344,7 +344,7 @@ GitHub</a>
 </div>
 
 <div class="col" style="gap: 20px">
-<div class="tools-head"><span class="kicker">THE 11 TOOLS</span><span>Every name starts with <code>gtunnel_</code></span></div>
+<div class="tools-head"><span class="kicker">THE 14 TOOLS</span><span>Every name starts with <code>gtunnel_</code></span></div>
 <div class="tools">
 <div class="tgroup">
 <h3>OBSERVE <span>5</span></h3>
@@ -365,11 +365,14 @@ GitHub</a>
 </ul>
 </div>
 <div class="tgroup mk">
-<h3>CREATE AND REMOVE <span>3</span></h3>
+<h3>CREATE AND REMOVE <span>6</span></h3>
 <ul>
 <li><code>add_tunnel</code><span>a persistent Access tunnel</span></li>
 <li><code>run_tunnel</code><span>closes itself on its TTL</span></li>
 <li><code>delete_tunnel</code><span>stop and remove it</span></li>
+<li><code>rename_tunnel</code><span>rename it, service and log follow</span></li>
+<li><code>move_tunnel</code><span>to another account</span></li>
+<li><code>expose_tunnel</code><span>a local service at an HTTPS URL</span></li>
 </ul>
 </div>
 </div>

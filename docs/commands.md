@@ -1,5 +1,25 @@
 # Command reference
 
+[Home](../README.md) / [Usage](usage.md) / Commands / [Configuration](configuration.md) / [Architecture](architecture.md) / [Troubleshooting](troubleshooting.md)
+
+Contents:
+
+- [init](#init)
+- [add](#add)
+- [expose](#expose)
+- [run](#run)
+- [start, stop, restart, autostart, logs, list, delete](#start-stop-restart-autostart-logs-list-delete)
+- [rename and move](#rename-and-move)
+- [zones and domains](#zones-and-domains)
+- [relay](#relay)
+- [account](#account)
+- [watch](#watch)
+- [doctor](#doctor)
+- [reset](#reset)
+- [update](#update)
+- [Errors and exit codes](#errors-and-exit-codes)
+- [Shell completions](#shell-completions)
+
 Every command, its flags and its real output. The two modes, the target kinds and the
 lifetime axis are defined once in [Concepts](usage.md#concepts); the files and environment
 variables are in [configuration.md](configuration.md).
@@ -739,8 +759,8 @@ Update available: v0.1.34 -> v0.1.35
 Run `gtunnel update` to install.
 ```
 
-Captured from a v0.1.34 build while v0.1.35 was the latest release. On the latest release the
-second line is `gtunnel v<version> is already the latest version.` instead.
+A format sample: the versions are those of the day it was captured and differ on every run. On
+the latest release the second line is `gtunnel v<version> is already the latest version.` instead.
 
 Every other command prints a one-line hint when a cached check found a newer version: see
 [Update hint](usage.md#update-hint).
