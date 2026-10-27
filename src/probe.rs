@@ -75,8 +75,8 @@ const REFUSAL_SETTLE: Duration = Duration::from_millis(250);
 pub fn is_refusal(line: &str) -> bool {
     const NEEDLES: &[&str] = &[
         "Error while connecting",
-        "4003",
-        "4033",
+        "[4003:",
+        "[4033:",
         "Reauthentication required",
         "gcloud auth login",
         "open failed",
@@ -784,6 +784,7 @@ mod tests {
             ("Too many open files", false),
             ("Install NumPy for gcloud", false),
             ("conn 127.0.0.1:50000 closed", false),
+            ("conn 127.0.0.1:4033 closed", false),
             ("Testing if tunnel connection works.", false),
             ("", false),
         ];
