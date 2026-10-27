@@ -684,6 +684,8 @@ Error: Tunnel 'nope' not found for account 'dev'
 wins when both exist. A run launched by an MCP client has a log, `logs/run-<account>-<name>.log`;
 a run started in a terminal prints there instead and has none, so `logs` says so:
 `Run 'name' has no log: it was started from a terminal, which has its output`.
+Each launch starts the log fresh, and the log stays after the run ends, so `logs` reads a finished
+run until its name is launched again.
 
 ```
 $ gtunnel autostart db           # ask
