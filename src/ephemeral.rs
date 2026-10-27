@@ -23,6 +23,10 @@ pub struct EphemeralRecord {
     pub pid: u32,
     pub spec: TunnelSpec,
     pub started_at: u64,
+    /// Seconds the run was told to live. Absent for a run with no `--ttl`, and
+    /// for every record an older version wrote, so those still parse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_secs: Option<u64>,
 }
 
 pub fn run_dir() -> Result<PathBuf> {
@@ -32,6 +36,22 @@ pub fn run_dir() -> Result<PathBuf> {
 }
 
 impl EphemeralRecord {
+    /// The run as a tunnel, so the TUI, `list` and the MCP server render it
+    /// with the same code as a declared one instead of each rebuilding it.
+    pub fn as_tunnel(&self) -> PersistentTunnel {
+        PersistentTunnel {
+            name: self.name.clone(),
+            account_name: self.account_name.clone(),
+            auto_start: false,
+            spec: self.spec.clone(),
+        }
+    }
+
+    /// Unix seconds at which the TTL ends the run; None when it has no TTL.
+    pub fn expires_at(&self) -> Option<u64> {
+        self.ttl_secs.map(|ttl| self.started_at + ttl)
+    }
+
     pub fn path(&self) -> Result<PathBuf> {
         Ok(run_dir()?.join(format!("{}-{}.json", self.account_name, self.name)))
     }
@@ -112,6 +132,60 @@ pub fn list_ephemeral() -> Result<Vec<(EphemeralRecord, bool)>> {
     }
     out.sort_by(|a, b| a.0.name.cmp(&b.0.name));
     Ok(out)
+}
+
+/// The longest a run may be told to live. A TTL is a safety net for a tunnel
+/// nobody is watching, so an unbounded one defeats its purpose; a day is
+/// already longer than any session this is meant for.
+pub const MAX_TTL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+/// `90s`, `30m` or `2h`; a bare integer is minutes, because the MCP tool and
+/// the people asking for "an hour or so" both think in minutes. Zero is
+/// refused: a run that ends at once is a mistake, not a request.
+pub fn parse_ttl(text: &str) -> Result<std::time::Duration> {
+    let text = text.trim();
+    let (digits, unit) = match text.chars().last() {
+        Some('s') => (&text[..text.len() - 1], 1u64),
+        Some('m') => (&text[..text.len() - 1], 60),
+        Some('h') => (&text[..text.len() - 1], 3600),
+        _ => (text, 60),
+    };
+    let invalid = || format!("Invalid TTL '{text}': use 90s, 30m or 2h (a bare number is minutes)");
+    if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
+        bail!("{}", invalid());
+    }
+    let amount: u64 = digits.parse().with_context(invalid)?;
+    let secs = amount
+        .checked_mul(unit)
+        .with_context(|| format!("TTL '{text}' is too large"))?;
+    if secs == 0 {
+        bail!("TTL must be longer than zero");
+    }
+    let ttl = std::time::Duration::from_secs(secs);
+    if ttl > MAX_TTL {
+        bail!("TTL '{text}' is longer than the 24h maximum");
+    }
+    Ok(ttl)
+}
+
+// With no TTL the arm never fires, so the select treats it like any other
+// run that waits for a signal
+async fn ttl_elapsed(ttl: Option<std::time::Duration>) {
+    match ttl {
+        Some(ttl) => tokio::time::sleep(ttl).await,
+        None => std::future::pending().await,
+    }
+}
+
+/// The runs of one account whose process is still there. A dead record is a
+/// run that is gone but may still own a route, which is `doctor`'s business and
+/// not something to list as a tunnel you can connect to.
+pub fn live_runs(account: &str) -> Result<Vec<EphemeralRecord>> {
+    Ok(list_ephemeral()?
+        .into_iter()
+        .filter(|(record, alive)| *alive && record.account_name == account)
+        .map(|(record, _)| record)
+        .collect())
 }
 
 const NAME_ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
@@ -204,6 +278,7 @@ fn start_child(
     tunnel: &PersistentTunnel,
     spec: TunnelSpec,
     name: &str,
+    ttl: Option<std::time::Duration>,
 ) -> Result<(tokio::process::Child, EphemeralRecord)> {
     let level = crate::loglevel::current();
     let argv = match expose_config {
@@ -233,6 +308,7 @@ fn start_child(
         pid,
         spec,
         started_at: now_secs(),
+        ttl_secs: ttl.map(|t| t.as_secs()),
     };
     if let Err(e) = record.save() {
         let _ = child.start_kill();
@@ -248,6 +324,7 @@ pub async fn cmd_run(
     local_port: Option<u16>,
     public: bool,
     domain: Option<&str>,
+    ttl: Option<std::time::Duration>,
 ) -> Result<()> {
     let (name, target) = match args {
         [target] => (generated_name(), target.clone()),
@@ -319,7 +396,15 @@ pub async fn cmd_run(
         routes::add_route(&client, &acct, expose, &tunnel).await?;
     }
 
-    let started = start_child(&gcloud_path, &acct, &expose_config, &tunnel, spec, &name);
+    let started = start_child(
+        &gcloud_path,
+        &acct,
+        &expose_config,
+        &tunnel,
+        spec,
+        &name,
+        ttl,
+    );
     let (mut child, record) = match started {
         Ok(started) => started,
         Err(e) => {
@@ -341,7 +426,13 @@ pub async fn cmd_run(
         tunnel.display_url(),
         tunnel.display_target()
     );
-    println!("Ctrl+C to stop");
+    match ttl {
+        Some(ttl) => println!(
+            "Stops by itself in {}, or Ctrl+C",
+            humantime::format_duration(ttl)
+        ),
+        None => println!("Ctrl+C to stop"),
+    }
 
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -382,6 +473,10 @@ pub async fn cmd_run(
         }
         _ = stop_signal() => {
             println!();
+        }
+        // The same exit as Ctrl+C, so the route and the record go the same way
+        _ = ttl_elapsed(ttl) => {
+            println!("TTL reached, stopping");
         }
     }
 
@@ -451,6 +546,7 @@ mod tests {
             pid: std::process::id(),
             spec: spec(),
             started_at: 1_700_000_000,
+            ttl_secs: None,
         };
         record.save().expect("save");
 
@@ -485,6 +581,7 @@ mod tests {
             pid: 0,
             spec: spec(),
             started_at: 1_700_000_000,
+            ttl_secs: None,
         };
         record.save().expect("save");
         let found = list_ephemeral().expect("list");
@@ -542,6 +639,7 @@ mod tests {
                 private: false,
             },
             started_at: 1_700_000_000,
+            ttl_secs: None,
         };
         record.save().expect("save");
 
@@ -563,12 +661,88 @@ mod tests {
             pid: 999_999,
             spec: spec(),
             started_at: 1_700_000_000,
+            ttl_secs: None,
         };
         record.save().expect("save");
 
         let found = list_ephemeral().expect("list");
         assert_eq!(found.len(), 1);
         assert!(!found[0].1, "pid 999999 should not be running");
+    }
+
+    #[test]
+    fn an_old_record_without_ttl_secs_still_parses() {
+        let old = r#"{"name":"gt-old","account_name":"dev","pid":42,"started_at":1700000000,
+"spec":{"mode":"access","target":{"kind":"instance","instance":"my-vm","zone":"z"},"remote_port":5432,"local_port":15000}}"#;
+        let record: EphemeralRecord = serde_json::from_str(old).expect("parse");
+        assert_eq!(record.ttl_secs, None);
+        assert_eq!(record.expires_at(), None);
+        let json = serde_json::to_string(&record).unwrap();
+        assert!(!json.contains("ttl_secs"), "{json}");
+    }
+
+    #[test]
+    fn a_record_with_a_ttl_expires_at_start_plus_ttl() {
+        let record = EphemeralRecord {
+            name: "gt-ttl".to_string(),
+            account_name: "dev".to_string(),
+            pid: 1,
+            spec: spec(),
+            started_at: 1_700_000_000,
+            ttl_secs: Some(90),
+        };
+        assert_eq!(record.expires_at(), Some(1_700_000_090));
+    }
+
+    #[test]
+    fn live_runs_skips_dead_records_and_other_accounts() {
+        let _temp = TempConfigDir::new();
+        let mk = |name: &str, account: &str, pid: u32| EphemeralRecord {
+            name: name.to_string(),
+            account_name: account.to_string(),
+            pid,
+            spec: spec(),
+            started_at: 1_700_000_000,
+            ttl_secs: None,
+        };
+        mk("alive", "dev", std::process::id()).save().unwrap();
+        mk("dead", "dev", 999_999).save().unwrap();
+        mk("other", "prod", std::process::id()).save().unwrap();
+        let names: Vec<String> = live_runs("dev")
+            .unwrap()
+            .into_iter()
+            .map(|r| r.name)
+            .collect();
+        assert_eq!(names, ["alive"]);
+    }
+
+    #[test]
+    fn a_ttl_reads_seconds_minutes_and_hours() {
+        assert_eq!(parse_ttl("90s").unwrap(), Duration::from_secs(90));
+        assert_eq!(parse_ttl("30m").unwrap(), Duration::from_secs(1800));
+        assert_eq!(parse_ttl("2h").unwrap(), Duration::from_secs(7200));
+        assert_eq!(parse_ttl(" 5s ").unwrap(), Duration::from_secs(5));
+    }
+
+    #[test]
+    fn a_bare_ttl_is_minutes() {
+        assert_eq!(parse_ttl("45").unwrap(), Duration::from_secs(45 * 60));
+    }
+
+    #[test]
+    fn a_ttl_of_zero_or_nonsense_is_refused() {
+        for bad in ["0", "0s", "0m", "", "m", "-5m", "1.5h", "10d", "abc", "5 m"] {
+            assert!(parse_ttl(bad).is_err(), "{bad:?} should be refused");
+        }
+    }
+
+    #[test]
+    fn a_ttl_past_a_day_is_refused_and_a_day_is_not() {
+        assert!(parse_ttl("24h").is_ok());
+        assert!(parse_ttl("1440m").is_ok());
+        assert!(parse_ttl("86401s").is_err());
+        assert!(parse_ttl("25h").is_err());
+        assert!(parse_ttl("99999999999999999999h").is_err(), "overflow");
     }
 
     #[test]
@@ -610,6 +784,7 @@ mod tests {
                 private: false,
             },
             started_at: 1_700_000_000,
+            ttl_secs: None,
         };
         record.save().expect("save");
 
@@ -632,6 +807,7 @@ mod tests {
                 private: false,
             },
             started_at: 1_700_000_000,
+            ttl_secs: None,
         };
         record.save().expect("save");
 

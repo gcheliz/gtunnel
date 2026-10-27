@@ -41,12 +41,7 @@ pub async fn load_entries(account: &str) -> Result<(Vec<TunnelEntry>, HashSet<u1
             continue;
         }
         entries.push(TunnelEntry::new(
-            PersistentTunnel {
-                name: record.name.clone(),
-                account_name: record.account_name.clone(),
-                auto_start: false,
-                spec: record.spec.clone(),
-            },
+            record.as_tunnel(),
             if alive {
                 TunnelStatus::Running
             } else {

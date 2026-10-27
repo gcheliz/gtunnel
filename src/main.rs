@@ -104,7 +104,9 @@ async fn main() -> Result<()> {
             local_port,
             public,
             domain,
+            ttl,
         }) => {
+            let ttl = ttl.as_deref().map(ephemeral::parse_ttl).transpose()?;
             ephemeral::cmd_run(
                 account,
                 &run_args,
@@ -112,6 +114,7 @@ async fn main() -> Result<()> {
                 local_port,
                 public,
                 domain.as_deref(),
+                ttl,
             )
             .await
         }

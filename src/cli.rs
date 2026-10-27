@@ -144,6 +144,14 @@ pub enum Commands {
         // Domain to publish under (Expose mode)
         #[arg(short, long, help = "Domain to publish under (Expose mode)")]
         domain: Option<String>,
+
+        // Stop by itself after this long, exactly as Ctrl+C would
+        #[arg(
+            long,
+            value_name = "DURATION",
+            help = "Stop by itself after this long: 90s, 30m or 2h (a bare number is minutes, max 24h)"
+        )]
+        ttl: Option<String>,
     },
 
     // Start a stopped tunnel

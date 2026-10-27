@@ -1010,6 +1010,7 @@ mod tests {
                     private: false,
                 },
                 started_at: 0,
+                ttl_secs: None,
             },
             alive,
         )

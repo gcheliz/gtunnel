@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>gtunnel — private GCP, one localhost away</title>
-<meta name="description" content="A TUI-first manager for GCP Identity-Aware Proxy tunnels: a private port to a VM in your VPC, or a public HTTPS URL in front of your laptop. No open ports, no stored credentials.">
+<meta name="description" content="Tunnels to GCP VMs with no public IP, through Identity-Aware Proxy, or a public HTTPS URL in front of your laptop. No open ports, no stored credentials, one binary.">
 <meta property="og:title" content="gtunnel — private GCP, one localhost away">
-<meta property="og:description" content="A TUI-first manager for GCP Identity-Aware Proxy tunnels. No open ports, no stored credentials, one binary.">
+<meta property="og:description" content="Tunnels to VMs with no public IP, through IAP. One binary, nothing to expose.">
 <meta property="og:image" content="https://gcheliz.github.io/gtunnel/demo-tui.gif">
 <meta property="og:url" content="https://gcheliz.github.io/gtunnel/">
 <meta name="theme-color" content="#0E0E10">
@@ -26,363 +26,399 @@
   --muted: #A1A1AA;
   --dim: #8B8B94;
   --cyan: #4DD0E1;
-  --blue: #4285F4;
-  --red: #EA4335;
-  --yellow: #FBBC04;
-  --green: #34A853;
+  --access: #8AB4F8;
+  --public: #81C995;
+  --fly: #FDD663;
   --mono: 'JetBrains Mono', Menlo, monospace;
   --sans: Inter, system-ui, sans-serif;
-  --section-y: clamp(48px, 6vw, 72px);
-  --stack-gap: clamp(24px, 3vw, 32px);
+  --header: 61px;
 }
 * { box-sizing: border-box; }
+/* a hidden tab panel stays hidden whatever display its class gives it */
+[hidden] { display: none !important; }
 html { -webkit-text-size-adjust: 100%; }
 body { margin: 0; background: var(--ground); color: var(--text); font-family: var(--sans); font-size: 16px; line-height: 1.6; }
 a { color: var(--cyan); }
 a:hover { color: #B2EBF2; }
 img { max-width: 100%; }
+button { font: inherit; }
 code, pre { font-family: var(--mono); }
 code { color: var(--text); }
-.wrap { max-width: 1160px; margin: 0 auto; padding-left: 24px; padding-right: 24px; }
-.mono { font-family: var(--mono); }
-.muted { color: var(--muted); margin: 0; }
-.eyebrow { font-family: var(--mono); font-size: 13px; letter-spacing: 2px; }
-.h2 { margin: 0; font-family: var(--mono); font-weight: 800; line-height: 1.1; letter-spacing: -1px; }
-.code {
-  margin: 0; background: var(--ground); border: 1px solid var(--line-soft); border-radius: 10px;
-  padding: 16px; font-size: 13px; line-height: 1.7; color: var(--text);
-  white-space: pre-wrap; overflow-wrap: anywhere;
-}
-.prompt { color: var(--cyan); }
-.comment { color: var(--dim); }
-.figure { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 16px; }
-.caption { margin: 14px 0 0; text-align: center; font-size: 14px; color: var(--dim); }
-.caption code { color: var(--muted); }
-.panel { border: 1px solid var(--line); border-radius: 20px; padding: clamp(28px, 5vw, 56px); }
-.split { display: flex; flex-wrap: wrap; gap: 48px; align-items: flex-start; }
-.split > * { min-width: 0; display: flex; flex-direction: column; gap: 20px; }
-.points { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 24px; }
-.point { display: flex; flex-direction: column; gap: 6px; }
-.point h3 { margin: 0; font-size: 16px; font-weight: 600; }
-.point p { margin: 0; color: var(--muted); font-size: 15px; }
+:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+.wrap { max-width: 1120px; margin: 0 auto; padding-left: 24px; padding-right: 24px; }
+.kicker { font-family: var(--mono); font-size: 12px; letter-spacing: 1px; }
+.h2 { margin: 0; font-family: var(--mono); font-weight: 800; font-size: 32px; line-height: 1.15; letter-spacing: -0.5px; }
+.lead { margin: 0; font-size: 18px; line-height: 1.5; color: var(--muted); }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.chips li { font-size: 13px; line-height: 1.4; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--line); }
+.chips.dim li { color: var(--muted); }
+.facts { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.facts li { font-size: 13px; padding: 6px 10px; border-radius: 8px; background: var(--raised); color: var(--muted); }
+.code { margin: 0; overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; font-size: 14px; line-height: 1.7; color: var(--text); white-space: pre; }
+.code .c { color: var(--dim); }
+.card { min-width: 0; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); padding: 22px; display: flex; flex-direction: column; gap: 14px; }
+.card .code { background: var(--ground); border: 0; border-radius: 10px; padding: 14px 16px; font-size: 13px; line-height: 1.6; }
+.card .note { margin: 0; font-size: 13px; color: var(--dim); }
+.figure { margin: 0; min-width: 0; }
+.figure img { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
+.figure figcaption { margin-top: 10px; font-size: 13px; color: var(--dim); }
+.button { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 20px; border-radius: 10px; text-decoration: none; font-weight: 600; }
+.button.primary { background: var(--cyan); color: var(--ground); }
+.button.primary:hover { color: var(--ground); background: #B2EBF2; }
+.button.ghost { border: 1px solid var(--line-strong); color: var(--text); }
+.more { font-size: 14px; display: inline-flex; align-items: center; min-height: 44px; }
+
+/* tabs: one pattern for install, Use it and the tour */
+.tabs { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px; border-radius: 12px; background: var(--surface); border: 1px solid var(--line); }
+.tabs button { min-height: 44px; padding: 0 16px; border: 0; border-radius: 8px; cursor: pointer; font-size: 14px; background: transparent; color: var(--muted); }
+.tabs button[aria-selected="true"] { background: var(--line); color: var(--text); }
+html:not(.js) .needs-js { display: none; }
 
 /* header */
-.nav { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; padding-top: 24px; padding-bottom: 24px; }
-.nav a.home { display: flex; align-items: center; min-height: 44px; }
-.nav a.home img { display: block; height: 68px; width: auto; }
-.nav nav { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.nav nav a { color: var(--muted); text-decoration: none; padding: 10px 12px; font-size: 15px; }
-.nav nav a:hover { color: var(--text); }
-.nav nav a.star { display: inline-flex; align-items: center; gap: 8px; color: var(--ground); background: var(--text); border-radius: 8px; padding: 10px 16px; font-weight: 600; }
+.site-header { position: sticky; top: 0; z-index: 5; background: rgba(14, 14, 16, 0.92); border-bottom: 1px solid var(--line-soft); }
+@supports (backdrop-filter: blur(8px)) { .site-header { backdrop-filter: blur(8px); } }
+.bar { display: flex; align-items: center; gap: 8px 28px; min-height: 60px; }
+.brand { font-family: var(--mono); font-weight: 800; font-size: 18px; color: var(--text); text-decoration: none; margin-right: auto; display: inline-flex; align-items: center; min-height: 44px; }
+.brand:hover { color: var(--text); }
+.sections { display: flex; align-items: center; gap: 28px; }
+.sections a { font-size: 14px; color: var(--muted); text-decoration: none; display: inline-flex; align-items: center; min-height: 44px; border-bottom: 2px solid transparent; white-space: nowrap; }
+.sections a:hover, .sections a[aria-current="true"] { color: var(--text); }
+.sections a[aria-current="true"] { border-bottom-color: var(--cyan); }
+.github { font-family: var(--mono); font-size: 13px; color: var(--ground); background: var(--cyan); text-decoration: none; padding: 0 14px; min-height: 44px; display: inline-flex; align-items: center; border-radius: 8px; }
+.github:hover { color: var(--ground); background: #B2EBF2; }
+main section { scroll-margin-top: calc(var(--header) + 8px); }
 
 /* hero */
-.hero { padding-top: 56px; padding-bottom: 24px; display: flex; flex-direction: column; align-items: center; text-align: center; gap: 28px; }
-.badge { display: inline-flex; align-items: center; gap: 10px; border: 1px solid var(--line); border-radius: 999px; padding: 6px 14px; font-family: var(--mono); font-size: 13px; color: var(--muted); text-decoration: none; }
-.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
-.hero h1 { margin: 0; font-family: var(--mono); font-weight: 800; font-size: clamp(40px, 7vw, 84px); line-height: 1.02; letter-spacing: -2px; max-width: 980px; }
-.hero .lead { margin: 0; max-width: 640px; font-size: clamp(17px, 2vw, 20px); color: var(--muted); }
-.install { width: 100%; max-width: 680px; display: flex; flex-direction: column; gap: 12px; }
-.tabs { display: flex; gap: 4px; align-self: center; background: var(--raised); border: 1px solid var(--line); border-radius: 10px; padding: 4px; }
-.tabs button { min-height: 36px; padding: 0 14px; border: 0; border-radius: 7px; cursor: pointer; font-family: var(--mono); font-size: 13px; background: transparent; color: var(--muted); }
-.tabs button[aria-selected="true"] { background: var(--line); color: var(--text); }
-.cmd { display: flex; align-items: center; gap: 12px; background: var(--raised); border: 1px solid var(--line); border-radius: 12px; padding: 8px 8px 8px 20px; text-align: left; }
-.cmd code { flex: 1 1 auto; min-width: 0; font-size: 15px; white-space: normal; overflow-wrap: anywhere; }
-.cmd button { flex: none; min-width: 88px; min-height: 44px; border: 0; border-radius: 8px; background: var(--text); color: var(--ground); font-family: var(--sans); font-weight: 600; font-size: 14px; cursor: pointer; }
-.install .hint { margin: 0; font-size: 14px; color: var(--dim); }
-.install .hint code { color: var(--muted); }
+.hero { padding-top: 56px; padding-bottom: 48px; display: flex; flex-wrap: wrap; gap: 40px; align-items: center; }
+.hero-copy { flex: 1 1 420px; min-width: 0; display: flex; flex-direction: column; gap: 20px; }
+.hero h1 { margin: 0; font-family: var(--mono); font-weight: 800; font-size: 52px; line-height: 1.05; letter-spacing: -1.5px; }
+.hero .figure { flex: 1 1 460px; }
+.install { display: flex; flex-direction: column; gap: 10px; }
+.install .tabs { align-self: flex-start; }
+.install .tabs button { font-family: var(--mono); font-size: 13px; }
+.cmd { display: flex; align-items: center; gap: 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 6px 6px 6px 16px; }
+.cmd code { flex: 1 1 auto; min-width: 0; overflow-x: auto; white-space: nowrap; font-size: 14px; }
+.cmd code .p { color: var(--dim); }
+.cmd button { flex: 0 0 auto; min-height: 44px; padding: 0 16px; border-radius: 8px; border: 1px solid var(--line-strong); background: var(--raised); color: var(--text); cursor: pointer; }
+.hint { font-size: 13px; color: var(--dim); margin: 0; }
 
-/* principles */
-.principles { border-top: 1px solid var(--line-soft); border-bottom: 1px solid var(--line-soft); }
-.principles .wrap { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 0 32px; }
-.principles .item { padding: 32px 0; display: flex; flex-direction: column; gap: 10px; }
-.principles h2 { margin: 0; font-family: var(--mono); font-size: 22px; font-weight: 700; }
+/* sections */
+.block { padding-top: 48px; padding-bottom: 48px; border-top: 1px solid var(--line-soft); display: flex; flex-direction: column; gap: 24px; }
+.head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 16px; }
+.split { display: flex; flex-wrap: wrap; gap: 32px; align-items: center; }
+.block.split { flex-direction: row; }
+.stack { min-width: 0; display: flex; flex-direction: column; gap: 16px; }
 
-/* modes */
-.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); gap: 24px; }
-.card { border: 1px solid var(--line); border-radius: 16px; padding: 32px; background: var(--surface); display: flex; flex-direction: column; gap: 24px; min-width: 0; }
-.card h3 { margin: 0 0 8px; font-family: var(--mono); font-size: 20px; }
-.flow { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-family: var(--mono); font-size: 13px; }
-.flow span { border: 1px solid var(--line-strong); border-radius: 8px; padding: 8px 12px; }
-.flow .arrow { border: 0; padding: 0; }
+.use-panel { display: flex; flex-wrap: wrap; gap: 24px; align-items: stretch; }
+.use-panel + .use-panel { margin-top: 24px; }
+.js .use-panel + .use-panel { margin-top: 0; }
+.use-panel .stack { flex: 1 1 360px; gap: 14px; }
+.use-panel .line { margin: 0; font-size: 20px; line-height: 1.45; }
+.use-panel .more { margin-top: auto; }
+.use-panel .code { flex: 1 1 460px; min-width: 0; padding: 20px 22px; }
+.use-panel .figure { flex: 1 1 100%; }
+.access .kicker { color: var(--access); }
+.public .kicker { color: var(--public); }
 
-/* features */
-.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 16px; overflow: hidden; }
-.grid > div { background: var(--ground); padding: 28px; display: flex; flex-direction: column; gap: 8px; }
-.grid h3 { margin: 0; font-size: 17px; font-weight: 600; }
-.grid p { margin: 0; color: var(--muted); font-size: 15px; }
+.prompts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); gap: 16px; }
+.prompt { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); padding: 18px 20px; display: flex; flex-direction: column; gap: 12px; }
+.prompt q { font-size: 16px; }
+.calls { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.calls li { font-family: var(--mono); font-size: 12px; padding: 5px 9px; border-radius: 6px; background: var(--ground); border: 1px solid var(--line); color: var(--cyan); }
+.tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.tools .label { width: 64px; font-size: 12px; color: var(--dim); }
+.tools code { font-size: 12px; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--line); color: var(--muted); }
 
-.chips { display: flex; flex-wrap: wrap; gap: 8px; font-family: var(--mono); font-size: 12px; color: var(--muted); }
-.chips span { border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; }
-
-.cta { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 32px; background: var(--surface); }
-.button { display: inline-flex; align-items: center; min-height: 48px; padding: 0 22px; border-radius: 10px; text-decoration: none; font-weight: 600; }
-.button.primary { background: var(--text); color: var(--ground); }
-.button.primary:hover { color: var(--ground); }
-.button.ghost { border: 1px solid var(--line-strong); color: var(--text); }
-
-/* follow the packet */
-.tour { --accent: var(--blue); --ring: rgba(66, 133, 244, 0.33); }
-.tour.public { --accent: var(--green); --ring: rgba(52, 168, 83, 0.33); }
-.tour-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 24px; }
-.tour .tabs { align-self: auto; flex-wrap: wrap; }
-.tour .tabs button { min-height: 44px; padding: 0 16px; }
-.diagram-box { display: flex; flex-direction: column; gap: 12px; }
-.diagram-scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 16px; background: #FFFFFF; }
-.diagram { position: relative; min-width: 900px; }
+/* how it works */
+.tour { --accent: var(--access); --ring: rgba(138, 180, 248, 0.33); }
+.tour.public { --accent: var(--public); --ring: rgba(129, 201, 149, 0.33); }
+.diagram-scroll { overflow-x: auto; border-radius: 14px; border: 1px solid var(--line); background: #FFFFFF; }
+.diagram { position: relative; min-width: 760px; }
 .diagram img { display: block; width: 100%; height: auto; }
-.tour.js .diagram img { opacity: 0.55; }
 .spot {
-  position: absolute; transform: translate(-50%, -50%); width: 34px; height: 34px; padding: 0;
-  border-radius: 50%; border: 3px solid #FFFFFF; background: var(--line-strong); color: #FFFFFF;
+  position: absolute; transform: translate(-50%, -50%); width: 44px; height: 44px; padding: 0;
+  border-radius: 50%; border: 2px solid var(--accent); background: var(--ground); color: var(--text);
   font-family: var(--mono); font-weight: 800; font-size: 15px; cursor: pointer;
 }
-.spot::after { content: ''; position: absolute; inset: -8px; border-radius: 50%; }
-.spot[aria-current="step"] { width: 44px; height: 44px; background: var(--accent); color: var(--ground); box-shadow: 0 0 0 10px var(--ring); }
-.zoom { align-self: flex-end; min-height: 44px; padding: 0 18px; font-size: 14px; }
-.tour-body { display: flex; flex-wrap: wrap; gap: 24px; align-items: stretch; }
-.tour-card { flex: 1 1 480px; min-width: 0; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); padding: 28px; display: flex; flex-direction: column; gap: 14px; }
-.tour-card .live { display: flex; flex-direction: column; gap: 14px; }
-.tour-card .title { display: flex; align-items: center; gap: 12px; }
-.tour-card .num { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 50%; background: var(--accent); color: var(--ground); font-family: var(--mono); font-weight: 800; font-size: 14px; }
-.tour-card h3 { margin: 0; font-family: var(--mono); font-size: 20px; }
-.tour-card p { margin: 0; color: var(--muted); }
-.hop { align-self: flex-start; max-width: 100%; overflow-wrap: anywhere; font-size: 13px; background: var(--ground); border: 1px solid var(--line-soft); border-radius: 8px; padding: 8px 12px; }
-.tour-nav { display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto; padding-top: 8px; }
-.tour-nav button { min-height: 44px; padding: 0 18px; border-radius: 10px; font-family: var(--sans); font-weight: 600; font-size: 14px; cursor: pointer; }
-.tour-nav .back { border: 1px solid var(--line-strong); background: transparent; color: var(--text); }
-.tour-nav .next { border: 0; background: var(--text); color: var(--ground); }
-.path { flex: 1 1 380px; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+.spot[aria-current="step"] { background: var(--accent); color: var(--ground); border: 3px solid var(--ground); box-shadow: 0 0 0 4px var(--ring); }
+.stepbar { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+.stepbar button { min-width: 44px; min-height: 44px; border-radius: 8px; border: 1px solid var(--line-strong); background: var(--raised); color: var(--text); cursor: pointer; }
+.stepbar .live { flex: 1 1 300px; min-width: 0; display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
+.stepbar .count { font-family: var(--mono); font-size: 13px; color: var(--dim); white-space: nowrap; }
+.stepbar .title { font-family: var(--mono); font-weight: 700; color: var(--accent); white-space: nowrap; }
+.stepbar .body { color: var(--muted); font-size: 15px; }
+.paths { display: flex; flex-wrap: wrap; gap: 24px; }
+.path { flex: 1 1 380px; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
 .path h3 { margin: 0; font-family: var(--mono); font-size: 16px; }
-.steps { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; }
-.step { width: 100%; min-height: 44px; display: flex; align-items: center; gap: 12px; padding: 8px 14px; border: 1px solid var(--line-soft); border-radius: 10px; background: transparent; color: var(--muted); font-family: var(--sans); font-size: 14px; text-align: left; cursor: pointer; }
-.step .n { flex: none; width: 18px; font-family: var(--mono); font-weight: 700; }
-.step[aria-current="step"] { border-color: var(--accent); background: var(--raised); color: var(--text); }
-.detail { padding: 8px 14px 16px 44px; display: flex; flex-direction: column; gap: 8px; }
-.detail p { margin: 0; color: var(--muted); font-size: 15px; }
-.tour:not(.js) [role="tablist"], .tour:not(.js) .tour-card { display: none; }
-.tour.js .path { flex: 0 1 380px; }
-@media (max-width: 900px) { .tour.js .path { flex-basis: 100%; } }
-.tour.js .path h3, .tour.js .detail { display: none; }
+.steps { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.steps li { display: flex; gap: 12px; align-items: flex-start; padding: 12px; border-radius: 10px; background: var(--surface); border: 1px solid var(--line-soft); }
+.steps .n { flex: 0 0 auto; width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-family: var(--mono); font-weight: 800; font-size: 13px; background: var(--access); color: var(--ground); }
+.path.public .n { background: var(--public); }
+.steps .t { display: block; font-family: var(--mono); font-weight: 700; font-size: 14px; }
+.steps .d { display: block; font-size: 14px; color: var(--muted); line-height: 1.4; }
+.tour-links { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px; }
+.zoom { min-height: 44px; padding: 0 18px; font-size: 14px; }
+/* with the script, the bar tells the steps one at a time; the lists stay for
+   phones, where the bar would be a line of text under a diagram too small to point at */
+.tour.js .paths, .tour.js .path h3 { display: none; }
+.tour:not(.js) .stepbar, .tour:not(.js) .spot { display: none; }
 .tour [hidden] { display: none; }
+@media (max-width: 599px) {
+  .diagram { min-width: 0; }
+  .tour.js .spot, .tour.js .stepbar { display: none; }
+  .tour.js .paths { display: flex; }
+}
 .zoom-dialog { width: calc(100vw - 32px); max-width: none; max-height: calc(100vh - 32px); padding: 0; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); color: var(--text); }
 .zoom-dialog::backdrop { background: rgba(0, 0, 0, 0.8); }
 .zoom-bar { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 8px 8px 8px 20px; font-family: var(--mono); font-size: 13px; color: var(--muted); }
-.zoom-bar button { min-width: 88px; min-height: 44px; border: 0; border-radius: 8px; background: var(--text); color: var(--ground); font-family: var(--sans); font-weight: 600; font-size: 14px; cursor: pointer; }
+.zoom-bar button { min-width: 88px; min-height: 44px; border: 0; border-radius: 8px; background: var(--text); color: var(--ground); font-weight: 600; font-size: 14px; cursor: pointer; }
 .zoom-full { overflow: auto; max-height: calc(100vh - 100px); background: #FFFFFF; }
 .zoom-full img { display: block; max-width: none; width: 2294px; height: auto; }
+
+.install-cta { padding-bottom: 56px; }
+.install-cta .stack { flex: 1 1 420px; gap: 14px; }
+.actions { display: flex; flex-wrap: wrap; gap: 12px; }
+
+footer { border-top: 1px solid var(--line-soft); }
+footer .wrap { padding-top: 20px; padding-bottom: 20px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 24px; font-size: 13px; color: var(--dim); }
+footer .wrap > span { margin-right: auto; }
+footer a { display: inline-flex; align-items: center; min-height: 44px; }
+
 @media (prefers-reduced-motion: no-preference) {
-  .spot { transition: width 0.2s, height 0.2s, background-color 0.2s, box-shadow 0.2s; }
+  html { scroll-behavior: smooth; }
+  .spot { transition: background-color 0.2s, box-shadow 0.2s; }
   .diagram-scroll { scroll-behavior: smooth; }
 }
 
-footer { border-top: 1px solid var(--line-soft); }
-footer .wrap { padding-top: 32px; padding-bottom: 32px; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 16px; font-size: 14px; color: var(--dim); }
-footer nav { display: flex; flex-wrap: wrap; gap: 20px; }
-footer a { color: var(--muted); }
-
-section.block { padding-block: var(--section-y); display: flex; flex-direction: column; gap: var(--stack-gap); }
-section.tail { padding-bottom: var(--section-y); }
+/* phone: the section links take a second row of their own and scroll inside it */
+@media (max-width: 760px) {
+  :root { --header: 97px; }
+  .wrap { padding-left: 16px; padding-right: 16px; }
+  .bar { flex-wrap: wrap; gap: 0 12px; min-height: 52px; }
+  .brand { font-size: 17px; }
+  .sections { order: 3; flex: 1 1 100%; gap: 4px; overflow-x: auto; margin: 0 -12px; padding: 0 12px 8px; }
+  .sections a { font-size: 13px; padding: 0 12px; border-radius: 999px; border-bottom: 0; }
+  .sections a[aria-current="true"] { background: var(--line); }
+  .hero { padding-top: 28px; padding-bottom: 24px; gap: 16px; }
+  .hero-copy { gap: 16px; }
+  .hero h1 { font-size: 34px; line-height: 1.08; letter-spacing: -1px; }
+  .hero .lead { font-size: 16px; }
+  .hero .figure, .use-panel .code, .use-panel .stack, .install-cta .stack { flex-basis: 100%; }
+  .block { padding-top: 24px; padding-bottom: 24px; gap: 14px; }
+  .h2 { font-size: 24px; }
+  .lead { font-size: 16px; }
+  .chips li { font-size: 12px; padding: 5px 10px; }
+  .use-panel .line { font-size: 17px; }
+  .code { padding: 14px 16px; font-size: 13px; }
+  .tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-self: stretch; }
+  .install .tabs { align-self: stretch; }
+  .tools .label { width: 100%; }
+  .actions .button { flex: 1 1 100%; min-height: 48px; }
+  .install-cta { padding-bottom: 28px; }
+  footer .wrap > span { width: 100%; }
+}
 </style>
 </head>
 <body>
 
-<header class="wrap nav">
-<a class="home" href="#top" aria-label="gtunnel home"><img src="logo.svg" alt="gtunnel" width="163" height="68"></a>
-<nav aria-label="Primary">
-<a href="https://github.com/gcheliz/gtunnel/blob/main/docs/usage.md">Docs</a>
-<a href="https://github.com/gcheliz/gtunnel/blob/main/docs/architecture.md">Architecture</a>
-<a href="https://github.com/gcheliz/gtunnel/releases/latest">Releases</a>
-<a class="star" href="https://github.com/gcheliz/gtunnel">
-<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.1 8.3 22 9.3 17 14.1 18.2 21 12 17.8 5.8 21 7 14.1 2 9.3 8.9 8.3 12 2"></polygon></svg>
-Star on GitHub</a>
+<header class="site-header">
+<div class="wrap bar">
+<a class="brand" href="#top">gtunnel</a>
+<nav class="sections" aria-label="Sections">
+<a href="#use">Use it</a>
+<a href="#fly">On the fly</a>
+<a href="#agents">Agents</a>
+<a href="#how">How it works</a>
+<a href="#install">Install</a>
+<a href="https://github.com/gcheliz/gtunnel/tree/main/docs">Docs</a>
 </nav>
+<a class="github" href="https://github.com/gcheliz/gtunnel">GitHub</a>
+</div>
 </header>
 
-<main id="top">
+<main>
 
-<section class="wrap hero">
-<a class="badge" href="https://github.com/gcheliz/gtunnel/releases/latest"><span class="dot"></span>v<span data-gtunnel-version>0.1.35</span> · MIT · macOS + Linux</a>
-<h1>Private GCP,<br>one localhost away.</h1>
-<p class="lead">A TUI-first manager for Identity-Aware Proxy tunnels. Reach a VM inside your VPC, or put a public HTTPS URL in front of your laptop. No open ports, no stored credentials, one binary.</p>
+<section class="wrap hero" id="top" aria-labelledby="title">
+<div class="hero-copy">
+<h1 id="title">Private GCP, one localhost away.</h1>
+<p class="lead">Tunnels to VMs with no public IP, through IAP. One binary, nothing to expose.</p>
+<ul class="chips">
+<li>No open ports</li>
+<li>No stored keys</li>
+<li>Survives the terminal</li>
+</ul>
 <div class="install">
-<div class="tabs" role="tablist" aria-label="Install method">
-<button type="button" role="tab" aria-selected="true" data-cmd="cargo install --git https://github.com/gcheliz/gtunnel">cargo</button>
-<button type="button" role="tab" aria-selected="false" data-cmd="gh release download -R gcheliz/gtunnel -p '*macos-arm64*'">release binary</button>
+<div class="tabs needs-js" role="tablist" aria-label="Install method">
+<button type="button" role="tab" aria-selected="true" aria-controls="install-cmd-box" data-cmd="cargo install --git https://github.com/gcheliz/gtunnel">cargo</button>
+<button type="button" role="tab" aria-selected="false" aria-controls="install-cmd-box" tabindex="-1" data-cmd="gh release download -R gcheliz/gtunnel -p '*macos-arm64*'">release binary</button>
 </div>
-<div class="cmd">
-<code><span class="prompt">$ </span><span id="install-cmd">cargo install --git https://github.com/gcheliz/gtunnel</span></code>
-<button type="button" id="copy" aria-label="Copy install command">Copy</button>
+<div class="cmd" id="install-cmd-box" role="tabpanel">
+<code><span class="p">$ </span><span id="install-cmd">cargo install --git https://github.com/gcheliz/gtunnel</span></code>
+<button type="button" id="copy" class="needs-js" aria-label="Copy install command">Copy</button>
 </div>
-<p class="hint">Needs the Google Cloud SDK on your <code>PATH</code>. Then <code>gtunnel init</code> and <code>gtunnel doctor</code>.</p>
-</div>
-</section>
-
-<section class="wrap" aria-label="The dashboard" style="padding-top: 24px; padding-bottom: var(--section-y)">
-<img class="figure" src="demo-tui.gif" alt="The real gtunnel TUI running gtunnel demo: tunnel list, edit and add choosers, accounts page, key map, animated" width="1500" height="880" style="max-width: 880px; margin: 0 auto; border-radius: 14px">
-<p class="caption">The real TUI, recorded from <code>gtunnel demo</code>. It shows whether a tunnel is carrying traffic, not just whether a process is alive.</p>
-</section>
-
-<section class="principles">
-<div class="wrap">
-<div class="item">
-<span class="mono" style="font-size: 13px; color: var(--red)">01</span>
-<h2>Nothing exposed</h2>
-<p class="muted">No inbound firewall rule, no public IP on the target, no agent on the VM. IAP authorises every connection against your own Google identity.</p>
-</div>
-<div class="item">
-<span class="mono" style="font-size: 13px; color: var(--yellow)">02</span>
-<h2>Nothing stored</h2>
-<p class="muted">gtunnel keeps no credential. Every token comes from <code>gcloud</code> at connect time, and access mode creates nothing in GCP.</p>
-</div>
-<div class="item">
-<span class="mono" style="font-size: 13px; color: var(--green)">03</span>
-<h2>Survives the terminal</h2>
-<p class="muted">Tunnels run as launchd or systemd <code>--user</code> services: restart on failure, optional start at login, one log each.</p>
+<p class="hint">Or a prebuilt binary from <a href="https://github.com/gcheliz/gtunnel/releases/latest">the latest release</a>.</p>
 </div>
 </div>
-</section>
-
-<section class="wrap block">
-<div style="display: flex; flex-direction: column; gap: 12px; max-width: 640px">
-<span class="eyebrow" style="color: var(--cyan)">TWO MODES, ONE BINARY</span>
-<h2 class="h2" style="font-size: clamp(30px, 4vw, 44px)">In to your VPC. Out to the internet.</h2>
-</div>
-<div class="cards">
-<article class="card">
-<div>
-<h3>Access</h3>
-<p class="muted">A private port on localhost reaches a VM port through IAP. Add <code>--via</code> to jump to a host only that VM can see, like a private GKE control plane.</p>
-</div>
-<div class="flow">
-<span>localhost:15432</span>
-<span class="arrow" aria-hidden="true" style="color: var(--blue)">——▶</span>
-<span style="border-color: var(--blue); color: #8AB4F8">IAP</span>
-<span class="arrow" aria-hidden="true" style="color: var(--blue)">——▶</span>
-<span>my-vm:5432</span>
-</div>
-<pre class="code"><span class="prompt">$</span> gtunnel add db my-vm:5432 -s
-<span class="prompt">$</span> psql -h localhost -p 15432</pre>
-</article>
-<article class="card">
-<div>
-<h3>Public</h3>
-<p class="muted">A public HTTPS URL on your own domain in front of a service on your laptop, through a relay VM and a global HTTPS load balancer.</p>
-</div>
-<div class="flow">
-<span>api.example.com</span>
-<span class="arrow" aria-hidden="true" style="color: var(--green)">——▶</span>
-<span style="border-color: var(--green); color: #81C995">relay</span>
-<span class="arrow" aria-hidden="true" style="color: var(--green)">——▶</span>
-<span>localhost:3000</span>
-</div>
-<pre class="code"><span class="prompt">$</span> gtunnel relay up
-<span class="prompt">$</span> gtunnel expose web 3000</pre>
-</article>
-</div>
-
-<div class="panel split" style="margin-top: -8px">
-<div style="flex: 1 1 420px">
-<span class="eyebrow" style="color: var(--yellow)">ON THE FLY</span>
-<h2 class="h2" style="font-size: clamp(28px, 3.6vw, 40px)">Need it for five minutes?<br>Just run it.</h2>
-<p class="muted" style="max-width: 520px"><code>gtunnel run</code> opens a tunnel in the foreground and closes it with Ctrl+C. Nothing to declare first, nothing left behind after.</p>
-<pre class="code" style="background: var(--surface); padding: 18px; font-size: 14px"><span class="comment"># prints the local port</span>
-<span class="prompt">$</span> gtunnel run my-vm:5432
-
-<span class="comment"># the same, under a name</span>
-<span class="prompt">$</span> gtunnel run db my-vm:5432
-
-<span class="comment"># https://gt-&lt;random&gt;.&lt;domain&gt;</span>
-<span class="prompt">$</span> gtunnel run --public 3000</pre>
-</div>
-<div class="points" style="flex: 1 1 360px; gap: 28px">
-<div class="point">
-<h3>One command, no setup</h3>
-<p>Give it a target. The name is optional and a free local port is picked for you.</p>
-</div>
-<div class="point">
-<h3>Leaves nothing behind</h3>
-<p>No entry in your tunnel list, no service installed. Every route it opened is torn down on exit, Ctrl+C and crashes included.</p>
-</div>
-<div class="point">
-<h3>Still visible</h3>
-<p>While it runs, <code>list</code>, the TUI and <code>doctor</code> see it like any other tunnel.</p>
-</div>
-<div class="point">
-<h3>Share a URL in seconds</h3>
-<p><code>--public</code> puts a throwaway HTTPS address in front of localhost for a demo or a webhook.</p>
-</div>
-</div>
-</div>
-
-<figure style="margin: 0">
-<img class="figure" src="demo-access.gif" alt="A terminal recording of an access tunnel's life: gtunnel add, start, stop and delete, animated" width="1500" height="500">
-<figcaption class="caption">An access tunnel from <code>add</code> to <code>delete</code>, every line as gtunnel prints it.</figcaption>
+<figure class="figure">
+<img src="demo-tui.gif" alt="The gtunnel dashboard listing tunnels with their state, latency and connections" width="1500" height="880">
 </figure>
 </section>
 
-<section class="wrap block tour" id="tour" aria-labelledby="tour-title">
-<div class="tour-head">
-<div style="display: flex; flex-direction: column; gap: 12px; max-width: 700px">
-<span class="eyebrow" style="color: var(--cyan)">FOLLOW THE PACKET</span>
-<h2 class="h2" id="tour-title" style="font-size: clamp(30px, 4vw, 44px)">Where a connection goes, hop by hop.</h2>
+<section class="wrap block" id="use" aria-labelledby="use-title">
+<div class="head">
+<h2 class="h2" id="use-title">Use it</h2>
+<div class="tabs needs-js" role="tablist" aria-label="Ways to use gtunnel" data-tabs>
+<button type="button" role="tab" id="use-tab-access" aria-controls="use-access" aria-selected="true">Access</button>
+<button type="button" role="tab" id="use-tab-public" aria-controls="use-public" aria-selected="false" tabindex="-1">Public</button>
 </div>
-<div class="tabs" role="tablist" aria-label="Path">
-<button type="button" role="tab" id="tour-tab-access" aria-controls="tour-access" aria-selected="true">Access: laptop → VM</button>
-<button type="button" role="tab" id="tour-tab-public" aria-controls="tour-public" aria-selected="false">Public: internet → laptop</button>
+</div>
+<div class="use-panel access" id="use-access" role="tabpanel" aria-labelledby="use-tab-access">
+<div class="stack">
+<span class="kicker">IN TO YOUR VPC</span>
+<p class="line">Reach a private VM port from localhost, through IAP.</p>
+<ul class="facts">
+<li>No public IP</li>
+<li>Your Google login</li>
+<li>Restarts on its own</li>
+</ul>
+<a class="more" href="https://github.com/gcheliz/gtunnel/blob/main/docs/usage.md">Access and jump tunnels in the guide</a>
+</div>
+<pre class="code">$ gtunnel add db my-vm:5432 --local-port 15432 -s
+$ psql -h localhost -p 15432</pre>
+<figure class="figure">
+<img src="demo-access.gif" alt="A terminal recording of an access tunnel's life: gtunnel add, start, stop and delete, animated" width="1500" height="500" loading="lazy">
+<figcaption>An access tunnel from <code>add</code> to <code>delete</code>, every line as gtunnel prints it.</figcaption>
+</figure>
+</div>
+<div class="use-panel public" id="use-public" role="tabpanel" aria-labelledby="use-tab-public">
+<div class="stack">
+<span class="kicker">OUT TO THE INTERNET</span>
+<p class="line">Put localhost:3000 on an HTTPS hostname, without opening a port.</p>
+<ul class="facts">
+<li>Managed certificate</li>
+<li>Sign-in optional</li>
+<li>Relay has no public IP</li>
+</ul>
+<a class="more" href="https://github.com/gcheliz/gtunnel/blob/main/docs/usage.md">Public tunnels in the guide</a>
+</div>
+<pre class="code">$ gtunnel relay up
+$ gtunnel expose web 3000
+  https://web.example.com</pre>
+</div>
+</section>
+
+<section class="wrap block split" id="fly" aria-labelledby="fly-title">
+<div class="stack" style="flex: 1 1 400px">
+<span class="kicker" style="color: var(--fly)">ON THE FLY</span>
+<h2 class="h2" id="fly-title">Need it for five minutes? Just run it.</h2>
+<p class="lead">One command opens a tunnel; Ctrl+C closes it. Nothing to set up, nothing left behind.</p>
+<pre class="code"><span class="c"># prints the local port</span>
+$ gtunnel run my-vm:5432
+<span class="c"># stops itself after 30 minutes</span>
+$ gtunnel run my-vm:5432 --ttl 30m
+<span class="c"># a throwaway HTTPS address</span>
+$ gtunnel run --public 3000</pre>
+<ul class="chips">
+<li>Picks a free port</li>
+<li>Cleans up on crash</li>
+<li>Visible in list and the dashboard</li>
+</ul>
+</div>
+<figure class="figure" style="flex: 1 1 520px">
+<img src="demo-run.gif" alt="A terminal recording: gtunnel run db my-vm:5432 prints the local port, Ctrl+C closes the tunnel, and gtunnel list shows nothing left behind, animated" width="1500" height="500" loading="lazy">
+<figcaption>A tunnel from run to Ctrl+C, every line as gtunnel prints it.</figcaption>
+</figure>
+</section>
+
+<section class="wrap block" id="agents" aria-labelledby="agents-title">
+<div class="stack" style="gap: 12px; max-width: 760px">
+<span class="kicker" style="color: var(--cyan)">AGENTS AND AUTOMATION</span>
+<h2 class="h2" id="agents-title">Let your agent handle the tunnel.</h2>
+<p class="lead"><code>gtunnel mcp</code> is an MCP server built into the binary. Claude Code, Gemini CLI, Cursor or Claude Desktop can list, open, start, stop and debug tunnels from the chat.</p>
+</div>
+<div class="prompts">
+<div class="prompt">
+<q>Why is the db tunnel failing?</q>
+<ul class="calls" aria-label="Tools it calls"><li>get_status</li><li>get_logs</li><li>doctor</li></ul>
+</div>
+<div class="prompt">
+<q>Give me postgres on my-vm for 30 minutes.</q>
+<ul class="calls" aria-label="Tools it calls"><li>run_tunnel</li></ul>
+</div>
+</div>
+<div class="split" style="gap: 16px; align-items: stretch">
+<div class="card" style="flex: 1 1 520px">
+<span class="kicker" style="color: var(--dim)">AGENTS - .mcp.json</span>
+<pre class="code">{
+  "mcpServers": {
+    "gtunnel": { "command": "gtunnel", "args": ["mcp"] }
+  }
+}</pre>
+<div class="tools"><span class="label">Read</span><code>list_tunnels</code><code>get_status</code><code>get_logs</code><code>list_accounts</code><code>doctor</code></div>
+<div class="tools"><span class="label">Change</span><code>run_tunnel</code><code>add_tunnel</code><code>start_tunnel</code><code>stop_tunnel</code><code>restart_tunnel</code><code>delete_tunnel</code></div>
+<p class="note">Plus an agent skill with naming and routing rules, in the Agent Skills format.</p>
+</div>
+<div class="card" style="flex: 1 1 360px">
+<span class="kicker" style="color: var(--dim)">SCRIPTS AND CI</span>
+<pre class="code" style="line-height: 1.7">$ gtunnel list --json
+$ gtunnel doctor --json
+$ gtunnel start db || exit 1</pre>
+<p style="margin: 0; font-size: 14px; color: var(--muted); line-height: 1.5">JSON on list, account list and doctor. A start that fails exits 1.</p>
+<a class="more" style="margin-top: auto" href="https://github.com/gcheliz/gtunnel/blob/main/docs/usage.md">MCP and JSON in the guide</a>
+</div>
+</div>
+</section>
+
+<section class="wrap block tour" id="how" aria-labelledby="how-title">
+<div class="head">
+<h2 class="h2" id="how-title">How it works</h2>
+<div class="tabs needs-js" role="tablist" aria-label="Connection path">
+<button type="button" role="tab" id="tour-tab-access" aria-controls="tour-access" aria-selected="true">Access</button>
+<button type="button" role="tab" id="tour-tab-public" aria-controls="tour-public" aria-selected="false" tabindex="-1">Public</button>
 </div>
 </div>
 
-<div class="diagram-box">
 <div class="diagram-scroll">
 <div class="diagram">
 <img src="architecture.png" alt="gtunnel topology. On your laptop, your client dials localhost:15432 and gtunnel carries it through an IAP tunnel to IAP in the GCP project, which reaches my-vm on TCP 5432 inside the VPC. For public mode, visitors look up web.example.com in Cloud DNS, whose A record points at the HTTPS load balancer, optionally gated by IAP sign-in; a named port sends the request to the relay VM, and reverse SSH brings it back to the local service on localhost:3000. An MCP client drives gtunnel over stdio." width="2294" height="801">
 </div>
 </div>
-<a class="button ghost zoom" id="tour-zoom" href="architecture.png" target="_blank" rel="noopener">Full screen</a>
-</div>
 
-<div class="tour-body">
-<div class="tour-card">
+<div class="stepbar">
+<button type="button" class="back" aria-label="Previous step">&lt;</button>
 <div class="live" aria-live="polite" aria-atomic="true">
-<div class="title"><span class="num" aria-hidden="true"></span><h3></h3></div>
-<p></p>
-<code class="hop"></code>
+<span class="count"></span>
+<span class="title"></span>
+<span class="body"></span>
 </div>
-<div class="tour-nav">
-<button type="button" class="back">← Back</button>
-<button type="button" class="next">Next hop →</button>
+<button type="button" class="next" aria-label="Next step">&gt;</button>
+</div>
+
+<div class="paths">
+<div class="path access" id="tour-access" role="tabpanel" aria-labelledby="tour-tab-access" data-path="access">
+<h3>Access</h3>
+<ol class="steps">
+<li data-x="7.9" data-y="25.3"><span class="n">1</span><span><span class="t">Your client</span><span class="d">psql connects to localhost:15432.</span></span></li>
+<li data-x="25.8" data-y="36.9"><span class="n">2</span><span><span class="t">gtunnel</span><span class="d">A supervised gcloud child carries the bytes.</span></span></li>
+<li data-x="61.4" data-y="43.8"><span class="n">3</span><span><span class="t">IAP</span><span class="d">Checks your Google identity at the edge.</span></span></li>
+<li data-x="80.7" data-y="43.8"><span class="n">4</span><span><span class="t">my-vm</span><span class="d">Answers on 5432. No public IP, ever.</span></span></li>
+</ol>
+</div>
+<div class="path public" id="tour-public" role="tabpanel" aria-labelledby="tour-tab-public" data-path="public">
+<h3>Public</h3>
+<ol class="steps">
+<li data-x="26.7" data-y="71.1"><span class="n">1</span><span><span class="t">Visitor</span><span class="d">Opens https://web.example.com.</span></span></li>
+<li data-x="46.8" data-y="63.9"><span class="n">2</span><span><span class="t">Cloud DNS</span><span class="d">Resolves to the load balancer.</span></span></li>
+<li data-x="60" data-y="63.9"><span class="n">3</span><span><span class="t">HTTPS LB</span><span class="d">Terminates TLS; a host rule picks the tunnel.</span></span></li>
+<li data-x="80.7" data-y="55.4"><span class="n">4</span><span><span class="t">Relay VM</span><span class="d">Forwards into the reverse tunnel.</span></span></li>
+<li data-x="7.9" data-y="36.3"><span class="n">5</span><span><span class="t">localhost:3000</span><span class="d">Your service answers.</span></span></li>
+</ol>
 </div>
 </div>
 
-<div class="path" id="tour-access" role="tabpanel" aria-labelledby="tour-tab-access" data-path="access">
-<h3>Access: laptop → VM</h3>
-<ol class="steps">
-<li data-x="7.9" data-y="25.3"><button type="button" class="step"><span class="n">1</span><span class="t">Your client dials localhost</span></button>
-<div class="detail"><p>psql, kubectl or Compass connects to a local port. As far as the client knows, the database is on your laptop.</p><code class="hop">psql -h localhost -p 15432</code></div></li>
-<li data-x="25.8" data-y="36.9"><button type="button" class="step"><span class="n">2</span><span class="t">gtunnel owns that port</span></button>
-<div class="detail"><p>A launchd or systemd --user service runs gcloud for this tunnel, restarts it on failure, and writes one log for it.</p><code class="hop">com.gtunnel.dev.db</code></div></li>
-<li data-x="61.4" data-y="43.8"><button type="button" class="step"><span class="n">3</span><span class="t">IAP checks who you are</span></button>
-<div class="detail"><p>Identity-Aware Proxy authorises the connection against your Google identity. The token comes from gcloud at connect time; gtunnel stores none.</p><code class="hop">35.235.240.0/20</code></div></li>
-<li data-x="80.7" data-y="43.8"><button type="button" class="step"><span class="n">4</span><span class="t">The VM answers, with no public IP</span></button>
-<div class="detail"><p>The only rule the VPC needs lets the IAP range reach the target port. Access mode creates nothing in GCP.</p><code class="hop">my-vm:5432</code></div></li>
-</ol>
-</div>
-
-<div class="path" id="tour-public" role="tabpanel" aria-labelledby="tour-tab-public" data-path="public">
-<h3>Public: internet → laptop</h3>
-<ol class="steps">
-<li data-x="26.7" data-y="71.1"><button type="button" class="step"><span class="n">1</span><span class="t">A visitor opens your URL</span></button>
-<div class="detail"><p>Anyone on the internet requests a hostname on your own domain, served over HTTPS.</p><code class="hop">https://web.example.com</code></div></li>
-<li data-x="46.8" data-y="63.9"><button type="button" class="step"><span class="n">2</span><span class="t">Cloud DNS points at the balancer</span></button>
-<div class="detail"><p>gtunnel writes an A record, TTL 60, to the global address of the account’s load balancer.</p><code class="hop">web.example.com. A gt-prod-ip</code></div></li>
-<li data-x="60" data-y="63.9"><button type="button" class="step"><span class="n">3</span><span class="t">The load balancer picks the tunnel</span></button>
-<div class="detail"><p>It terminates TLS with a managed certificate, matches the host rule, and with expose --private asks for IAP sign-in first.</p><code class="hop">host rule → gt-prod-web</code></div></li>
-<li data-x="80.7" data-y="55.4"><button type="button" class="step"><span class="n">4</span><span class="t">The relay VM forwards it</span></button>
-<div class="detail"><p>A named port selects this tunnel’s relay port. The relay has no public IP either: only the balancer reaches it.</p><code class="hop">named port gt-web → 30001</code></div></li>
-<li data-x="7.9" data-y="36.3"><button type="button" class="step"><span class="n">5</span><span class="t">Reverse SSH lands on localhost</span></button>
-<div class="detail"><p>Your laptop holds a reverse SSH tunnel out to the relay, so the request arrives at the service on your machine.</p><code class="hop">localhost:3000</code></div></li>
-</ol>
-</div>
+<div class="tour-links">
+<a class="button ghost zoom" id="tour-zoom" href="architecture.png" target="_blank" rel="noopener">Full screen</a>
+<a class="more" href="https://github.com/gcheliz/gtunnel/blob/main/docs/architecture.md">Full architecture</a>
 </div>
 
 <dialog class="zoom-dialog" id="tour-dialog" aria-label="gtunnel topology, full size" hidden>
@@ -391,66 +427,21 @@ Star on GitHub</a>
 </dialog>
 </section>
 
-<section class="wrap tail">
-<div class="panel split" style="background: var(--surface)">
-<div style="flex: 1 1 440px">
-<span class="eyebrow" style="color: var(--blue)">FOR AI AGENTS</span>
-<h2 class="h2" style="font-size: clamp(28px, 3.6vw, 40px)">Let your agent<br>open the tunnel.</h2>
-<p class="muted" style="max-width: 520px"><code>gtunnel mcp</code> is a Model Context Protocol server built into the binary. Claude Code, Gemini CLI, Cursor or Claude Desktop can list, start, stop and debug your tunnels without you leaving the chat.</p>
-<div class="points">
-<div class="point">
-<h3>10 tools, 2 live resources</h3>
-<p>Tunnels and accounts as resources, plus logs, status and doctor as tools.</p>
+<section class="wrap block split install-cta" id="install" aria-labelledby="install-title">
+<div class="stack">
+<h2 class="h2" id="install-title">Stop opening ports.</h2>
+<ul class="chips dim">
+<li>Access tunnels</li>
+<li>Jump tunnels</li>
+<li>Public tunnels</li>
+<li>Live dashboard</li>
+<li>Managed services</li>
+<li>Multiple accounts</li>
+</ul>
 </div>
-<div class="point">
-<h3>An agent skill</h3>
-<p>Naming rules, target routing and account scoping, in the open Agent Skills format.</p>
-</div>
-<div class="point">
-<h3>JSON everywhere</h3>
-<p><code>list</code>, <code>account list</code> and <code>doctor</code> take <code>--json</code> for scripts.</p>
-</div>
-</div>
-</div>
-<div style="flex: 1 1 340px; gap: 16px">
-<span class="mono" style="font-size: 13px; color: var(--dim)">.mcp.json</span>
-<pre class="code" style="padding: 18px; font-size: 14px">{
-  "mcpServers": {
-    "gtunnel": {
-      "command": <span style="color: var(--green)">"gtunnel"</span>,
-      "args": [<span style="color: var(--green)">"mcp"</span>]
-    }
-  }
-}</pre>
-<div class="chips">
-<span>list_tunnels</span><span>add_tunnel</span><span>start_tunnel</span><span>stop_tunnel</span><span>restart_tunnel</span><span>delete_tunnel</span><span>get_status</span><span>get_logs</span><span>list_accounts</span><span>doctor</span>
-</div>
-</div>
-</div>
-</section>
-
-<section class="wrap tail" style="display: flex; flex-direction: column; gap: 40px">
-<h2 class="h2" style="font-size: clamp(26px, 3vw, 34px)">Everything here ships today.</h2>
-<div class="grid">
-<div><h3>Access tunnels</h3><p>A local port reaches a VM port through IAP. Creates nothing in GCP.</p></div>
-<div><h3>Jump tunnels</h3><p>Reach a host only one instance can reach, through that instance.</p></div>
-<div><h3>Public tunnels</h3><p>An HTTPS URL on your Cloud DNS zone in front of localhost.</p></div>
-<div><h3>Live dashboard</h3><p>Status, latency, connections, load-balancer traffic and per-tunnel logs.</p></div>
-<div><h3>Managed services</h3><p>launchd and systemd <code>--user</code>, with restart and auto-start at login.</p></div>
-<div><h3>Multiple accounts</h3><p>One gcloud configuration, project and zone per account. Same tunnel names in each.</p></div>
-</div>
-</section>
-
-<section class="wrap tail">
-<div class="panel cta">
-<div style="flex: 1 1 420px; display: flex; flex-direction: column; gap: 12px">
-<h2 class="h2" style="font-size: clamp(28px, 4vw, 40px)">Stop opening ports.<br>Start tunnelling.</h2>
-<p class="muted">Signed release binaries for Apple Silicon, Intel, and static Linux amd64 and arm64, each with a checksum and a build attestation.</p>
-</div>
-<div style="display: flex; flex-wrap: wrap; gap: 12px">
-<a class="button primary" href="https://github.com/gcheliz/gtunnel/releases/latest">Download v<span data-gtunnel-version>0.1.35</span></a>
-<a class="button ghost" href="https://github.com/gcheliz/gtunnel/blob/main/docs/usage.md#getting-set-up">Read the guide</a>
-</div>
+<div class="actions">
+<a class="button primary" href="https://github.com/gcheliz/gtunnel/releases/latest">Download</a>
+<a class="button ghost" href="https://github.com/gcheliz/gtunnel/blob/main/docs/usage.md">Read the guide</a>
 </div>
 </section>
 
@@ -458,26 +449,50 @@ Star on GitHub</a>
 
 <footer>
 <div class="wrap">
-<span class="mono">gtunnel v<span data-gtunnel-version>0.1.35</span> · MIT licensed · written in Rust</span>
-<nav aria-label="Footer">
-<a href="https://github.com/gcheliz/gtunnel">GitHub</a>
-<a href="https://github.com/gcheliz/gtunnel/blob/main/docs/troubleshooting.md">Troubleshooting</a>
-<a href="https://github.com/gcheliz/gtunnel/blob/main/SECURITY.md">Security</a>
-</nav>
+<span>gtunnel v<span data-gtunnel-version>0.1.35</span>. MIT licensed. macOS + Linux.</span>
+<a href="https://github.com/gcheliz/gtunnel/tree/main/docs">Docs</a>
+<a href="https://github.com/gcheliz/gtunnel/blob/main/docs/architecture.md">Architecture</a>
+<a href="https://github.com/gcheliz/gtunnel/releases">Releases</a>
 </div>
 </footer>
 
 <script>
+document.documentElement.classList.add('js');
+
+// One tablist pattern for the page: click or arrow keys pick a tab, only the
+// selected tab is in the tab order, and onPick says what the choice shows
+function tablist(list, onPick) {
+  var tabs = Array.prototype.slice.call(list.querySelectorAll('[role="tab"]'));
+  function pick(i, focus) {
+    tabs.forEach(function (t, k) {
+      t.setAttribute('aria-selected', k === i ? 'true' : 'false');
+      t.tabIndex = k === i ? 0 : -1;
+    });
+    if (focus) { tabs[i].focus(); }
+    onPick(i);
+  }
+  tabs.forEach(function (tab, i) {
+    tab.addEventListener('click', function () { pick(i, false); });
+    tab.addEventListener('keydown', function (e) {
+      var n = tabs.length;
+      var to = null;
+      if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { to = (i + 1) % n; }
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { to = (i + n - 1) % n; }
+      if (e.key === 'Home') { to = 0; }
+      if (e.key === 'End') { to = n - 1; }
+      if (to !== null) { e.preventDefault(); e.stopPropagation(); pick(to, true); }
+    });
+  });
+  return pick;
+}
+
 (function () {
   var cmd = document.getElementById('install-cmd');
   var copy = document.getElementById('copy');
-  var tabs = document.querySelectorAll('.install .tabs button');
-  tabs.forEach(function (tab) {
-    tab.addEventListener('click', function () {
-      tabs.forEach(function (t) { t.setAttribute('aria-selected', t === tab ? 'true' : 'false'); });
-      cmd.textContent = tab.dataset.cmd;
-      copy.textContent = 'Copy';
-    });
+  var tabs = document.querySelectorAll('.install [role="tab"]');
+  tablist(document.querySelector('.install [role="tablist"]'), function (i) {
+    cmd.textContent = tabs[i].dataset.cmd;
+    copy.textContent = 'Copy';
   });
   copy.addEventListener('click', function () {
     var done = function () { copy.textContent = 'Copied'; };
@@ -488,12 +503,53 @@ Star on GitHub</a>
 })();
 
 (function () {
-  var tour = document.getElementById('tour');
-  var tabs = tour.querySelectorAll('[role="tab"]');
+  var panels = document.querySelectorAll('#use [role="tabpanel"]');
+  var pick = tablist(document.querySelector('#use [role="tablist"]'), function (i) {
+    panels.forEach(function (p, k) { p.hidden = k !== i; });
+  });
+  pick(0, false);
+})();
+
+// Scroll-spy: the nav link of the section in view carries aria-current
+(function () {
+  if (!('IntersectionObserver' in window)) { return; }
+  var links = {};
+  document.querySelectorAll('.sections a[href^="#"]').forEach(function (a) {
+    links[a.getAttribute('href').slice(1)] = a;
+  });
+  var visible = {};
+  function mark() {
+    var current = null;
+    document.querySelectorAll('main section[id]').forEach(function (s) {
+      if (visible[s.id]) { current = s.id; }
+    });
+    Object.keys(links).forEach(function (id) {
+      if (id === current) {
+        links[id].setAttribute('aria-current', 'true');
+        var nav = links[id].parentNode;
+        // on a phone the links scroll sideways: keep the current one in view
+        if (nav.scrollWidth > nav.clientWidth) {
+          nav.scrollLeft = links[id].offsetLeft - nav.offsetLeft - nav.clientWidth / 2 + links[id].offsetWidth / 2;
+        }
+      } else {
+        links[id].removeAttribute('aria-current');
+      }
+    });
+  }
+  // a band across the upper part of the viewport, under the sticky header
+  var io = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) { visible[e.target.id] = e.isIntersecting; });
+    mark();
+  }, { rootMargin: '-20% 0px -55% 0px' });
+  document.querySelectorAll('main section[id]').forEach(function (s) { io.observe(s); });
+})();
+
+(function () {
+  var tour = document.getElementById('how');
   var panels = tour.querySelectorAll('.path');
   var box = tour.querySelector('.diagram-scroll');
   var diagram = tour.querySelector('.diagram');
-  var card = tour.querySelector('.tour-card');
+  var bar = tour.querySelector('.stepbar');
   var path = 0;
   var step = 0;
   var spots = [];
@@ -510,7 +566,6 @@ Star on GitHub</a>
       spot.style.top = li.dataset.y + '%';
       spot.setAttribute('aria-label', 'Step ' + (i + 1) + ': ' + title);
       spot.addEventListener('click', function () { show(p, i, true); });
-      li.querySelector('.step').addEventListener('click', function () { show(p, i, true); });
       diagram.appendChild(spot);
       spots[p].push(spot);
     });
@@ -519,12 +574,10 @@ Star on GitHub</a>
   // scroll only the diagram box, and only on a visitor's action: on load it
   // would pan away from the start of the diagram
   function show(p, i, scroll) {
-    var items = panels[p].querySelectorAll('li');
-    var item = items[i];
+    var item = panels[p].querySelectorAll('li')[i];
     path = p;
     step = i;
     tour.classList.toggle('public', panels[p].dataset.path === 'public');
-    tabs.forEach(function (t, k) { t.setAttribute('aria-selected', k === p ? 'true' : 'false'); });
     panels.forEach(function (panel, k) { panel.hidden = k !== p; });
     spots.forEach(function (list, k) {
       list.forEach(function (s, j) {
@@ -532,38 +585,37 @@ Star on GitHub</a>
         if (k === p && j === i) { s.setAttribute('aria-current', 'step'); } else { s.removeAttribute('aria-current'); }
       });
     });
-    items.forEach(function (li, j) {
-      var b = li.querySelector('.step');
-      if (j === i) { b.setAttribute('aria-current', 'step'); } else { b.removeAttribute('aria-current'); }
-    });
-    card.querySelector('.num').textContent = i + 1;
-    card.querySelector('h3').textContent = item.querySelector('.t').textContent;
-    card.querySelector('p').textContent = item.querySelector('.detail p').textContent;
-    card.querySelector('.hop').textContent = item.querySelector('.detail .hop').textContent;
-    if (scroll) { box.scrollLeft = spots[p][i].offsetLeft - box.clientWidth / 2; }
+    bar.querySelector('.count').textContent = (i + 1) + ' / ' + spots[p].length;
+    bar.querySelector('.title').textContent = item.querySelector('.t').textContent;
+    bar.querySelector('.body').textContent = item.querySelector('.d').textContent;
+    if (scroll && box.scrollWidth > box.clientWidth) {
+      box.scrollLeft = spots[p][i].offsetLeft - box.clientWidth / 2;
+    }
   }
 
-  function back() { show(path, Math.max(step - 1, 0), true); }
+  function back() { show(path, (step + spots[path].length - 1) % spots[path].length, true); }
   function next() { show(path, (step + 1) % spots[path].length, true); }
 
-  tabs.forEach(function (tab, p) {
-    tab.addEventListener('click', function () { show(p, 0, true); });
-  });
-  card.querySelector('.back').addEventListener('click', back);
-  card.querySelector('.next').addEventListener('click', next);
+  tablist(tour.querySelector('[role="tablist"]'), function (p) { show(p, 0, true); });
+  bar.querySelector('.back').addEventListener('click', back);
+  bar.querySelector('.next').addEventListener('click', next);
 
   var dialog = document.getElementById('tour-dialog');
   if (typeof dialog.showModal === 'function') {
     dialog.hidden = false;
-    document.getElementById('tour-zoom').addEventListener('click', function (e) {
-      e.preventDefault();
-      dialog.showModal();
+    var open = function (e) { e.preventDefault(); dialog.showModal(); };
+    document.getElementById('tour-zoom').addEventListener('click', open);
+    // on a phone the diagram is too small to point at, so a tap zooms it
+    diagram.querySelector('img').addEventListener('click', function (e) {
+      if (window.matchMedia('(max-width: 599px)').matches) { open(e); }
     });
     dialog.querySelector('.close').addEventListener('click', function () { dialog.close(); });
   }
 
+  // arrow keys step through the path, except inside the tablist, which owns them
   tour.addEventListener('keydown', function (e) {
     if (dialog.open || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) { return; }
+    if (e.target.closest && e.target.closest('[role="tablist"]')) { return; }
     if (e.key === 'ArrowLeft') { e.preventDefault(); back(); }
     if (e.key === 'ArrowRight') { e.preventDefault(); next(); }
   });

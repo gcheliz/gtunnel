@@ -29,8 +29,8 @@ cargo run -- demo
 
 ## The gate
 
-CI runs six checks on every pull request. Run them before you push and you will not be
-surprised:
+Every pull request runs these checks; `main` requires all of them. Run the commands before
+you push and you will not be surprised:
 
 | Command | What fails it |
 |---|---|
@@ -40,6 +40,8 @@ surprised:
 | `cargo audit --deny warnings` | a dependency with an advisory |
 | `cargo check --locked --all-targets` on 1.89 | anything that needs a newer compiler than declared |
 | `zizmor --offline .github/workflows` | an unpinned action or a template injection |
+| Verify documentation versions (Linux test job) | an install snippet, `--version` sample or landing-page marker that does not quote the version in `Cargo.toml` |
+| `pr-title` | a pull request title that is not a conventional commit subject, since the squash uses it as the message on `main` |
 
 All checks must be green and the branch must be up to date with `main` before a
 pull request can merge. Enable auto-merge and GitHub will do it for you when they pass.
@@ -138,8 +140,8 @@ fix: stop the relay probe from counting a closed port as healthy
 docs: the relay port range is open until you close it
 ```
 
-`feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `ci`. The prefix is load-bearing: it
-drives the version bump and the changelog entry.
+`feat`, `fix`, `perf`, `refactor`, `docs`, `build`, `test`, `chore`, `ci`. The prefix is
+load-bearing: it drives the version bump and the changelog entry.
 
 The body explains the constraint that made the change necessary. The reviewer reads the
 diff; the message explains it.

@@ -29,9 +29,12 @@ If `gtunnel_*` MCP tools are available in the current environment, prioritize th
 - `gtunnel_get_status`: Inspect runtime status, process PID, restart count, and active probe latency.
 - `gtunnel_get_logs`: Read recent daemon stdout/stderr log lines.
 - `gtunnel_add_tunnel`: Create and register a persistent access tunnel.
+- `gtunnel_run_tunnel`: Open a short-lived access tunnel that closes by itself after `ttl_minutes` (1 to 480, required). Never public. `gtunnel_stop_tunnel` closes it early.
 - `gtunnel_delete_tunnel`: Delete a tunnel and remove its daemon configuration.
 - `gtunnel_list_accounts`: List configured GCP accounts and the active selection.
 - `gtunnel_doctor`: Run diagnostic checks on prerequisites, permissions, and daemon configurations.
+
+Routing: for short-lived access (a query, a one-off check) prefer `gtunnel_run_tunnel`: it needs no cleanup. Use `gtunnel_add_tunnel` only for something the user keeps. Choose the TTL for the task at hand, not the maximum.
 
 ### 2. Fallback: Shell Commands
 If MCP tools are not configured, use the CLI directly:
@@ -39,7 +42,7 @@ If MCP tools are not configured, use the CLI directly:
 - Start tunnel: `gtunnel start <name>`
 - Stop tunnel: `gtunnel stop <name>`
 - Restart tunnel: `gtunnel restart <name>`
-- Status check: `gtunnel status <name>`
+- Status check: `gtunnel list --json` (one row per tunnel, with `status`)
 - Read logs: `gtunnel logs <name> --lines <N>`
 - Add tunnel: `gtunnel add <name> <target> [flags]`
 - Delete tunnel: `gtunnel delete <name>`
@@ -93,11 +96,11 @@ gtunnel add k8s-api 10.0.0.10:443 --via bastion
 
 ### 4. Client-Side Routing (MongoDB Compass and Bastion Forwarding)
 - Create one tunnel to the bastion rather than separate tunnels per backend host or database shard.
-- For MongoDB Atlas / Compass access, forward to the bastion SSH port (port 2222 in dev, port 2223 in prod):
+- For MongoDB Compass, forward a local port to the bastion's SSH port:
   ```bash
-  gtunnel add mongodb bastion:22 -p 2222
+  gtunnel add mongodb bastion:22 --local-port 10022
   ```
-- Configure MongoDB Compass to use an SSH Tunnel via `localhost:2222` with your SSH identity key. Never configure Compass as an SSL Proxy, and avoid pinning replica-set member hostnames.
+- Configure MongoDB Compass to use an SSH Tunnel via `localhost:10022` with your SSH identity key, and put the cluster URI in Compass. Never configure Compass as an SSL Proxy, and avoid pinning replica-set member hostnames.
 
 ## Account Scoping
 
@@ -119,20 +122,14 @@ gtunnel isolates configurations, state, and daemon plists/services per account:
 ## Port Allocation
 
 ### Automatic Allocation
-If `--port` is omitted during tunnel creation, gtunnel automatically assigns an available local port.
+If `--local-port` is omitted, gtunnel derives a free local port from the tunnel name, in 15000-15999.
 
-### Standard Port Conventions
+### Same Name, Different Port per Account
+Both accounts' tunnels run on one machine, so the same tunnel name takes a different `--local-port` in each account:
 
-| Platform | Dev Port | Prod Port | Purpose |
-|----------|----------|-----------|---------|
-| Kubernetes | 8443 | 8444 | Kubernetes API server |
-| MongoDB / Bastion | 2222 | 2223 | Bastion SSH jump host |
-| Redis (single instance) | 3379 | - | Dev Redis |
-| Redis Session | - | 3380 | Prod session store |
-| Redis Cache | - | 3381 | Prod cache |
-| Redis Locker | - | 3382 | Prod distributed locks |
-| Redis Realtime | - | 3383 | Prod pub/sub |
-| Redis Storage | - | 3384 | Prod persistent store |
+| Tunnel | Account `dev` | Account `prod` |
+|--------|---------------|----------------|
+| `k8s` | `--local-port 8443` | `--local-port 8444` |
 
 ## Verification Protocol Before Completion
 
@@ -141,7 +138,7 @@ Never assume a tunnel is operational. Before reporting completion of tunnel crea
 ### Step 1: Daemon State Verification
 Read `isError` on every mutating MCP result before anything else: `true` means the call failed, whatever the text says, and a start that did not come up is one. Then check that the daemon status reports `running`:
 - MCP: Call `gtunnel_get_status` and verify `"status": "running"` and non-zero PID.
-- CLI: Run `gtunnel list` or `gtunnel status <name>` and verify state is `running`.
+- CLI: Run `gtunnel list --json` and verify the tunnel's row has `"status": "running"`.
 
 ### Step 2: Log Inspection
 Inspect the last 10 log lines to ensure the connection initialized without errors:
@@ -157,7 +154,7 @@ Confirm the local listener is active and accepting connections:
 ```bash
 nc -z -v -w 3 127.0.0.1 <port>
 ```
-Or verify the active probe output reported by `gtunnel status <name>`.
+Or read `probe_latency_ms` from `gtunnel_get_status` (MCP): a number means the local port accepted a connection.
 
 ## Troubleshooting
 
@@ -169,16 +166,16 @@ gtunnel doctor
 Or via MCP: `gtunnel_doctor`.
 
 ### Supervision & Health Probes (`gtunnel watch`)
-View continuous health check status, reconnect attempts, and probe latencies:
+`gtunnel watch` restarts tunnels that are running but refusing connections:
 ```bash
-gtunnel watch
+gtunnel watch status   # is the watchdog agent installed, where is its log, when was its last pass
+gtunnel watch -v       # the restart loop in the foreground, saying what each pass saw
 ```
+Bare `gtunnel watch` runs the same loop quietly: nothing per pass on screen, and each action written to the tunnel's log. `gtunnel watch install` makes it run without a terminal.
 
 ### Inspecting Daemon Logs
-Access log files directly when detailed debugging is required:
-- macOS: `~/Library/Application Support/gtunnel/logs/<account>.<name>.log`
-- Linux: `~/.config/gtunnel/logs/<account>.<name>.log`
-- Or use `gtunnel logs <name> --lines 50`.
+- Prefer `gtunnel logs <name> --lines 50` (`-f` follows).
+- The file is `<config>/logs/<account>-<name>.log`, where `<config>` is `~/.gtunnel` (or `GTUNNEL_CONFIG_DIR`).
 
 ## Tool Validation & Self-Testing
 
@@ -202,4 +199,4 @@ npx @modelcontextprotocol/inspector gtunnel mcp
 - Confirmation Required: Always obtain confirmation before deleting a tunnel or modifying configuration (`gtunnel delete <name>` or `gtunnel_delete_tunnel`).
 - Data Protection: Never leak real GCP project IDs, internal IP addresses, personal email addresses, or proprietary tokens in generated documentation, logs, or commit messages. Always use placeholders (`example-dev-1a2b`, `you@example.com`, `bastion`, `10.0.0.10`).
 - No Emojis: Plain text only across all commands, documents, and tool responses.
-- Idempotent Modifications: When changing tunnel parameters, delete the existing tunnel first to avoid orphaned launchd/systemd agent configurations, then add the new configuration.
+- Idempotent Modifications: To rename a tunnel use `gtunnel rename <old> <new>`, and to move an Access tunnel to another account `gtunnel move <name> --to <account>`; both carry the service and log along. To change other tunnel parameters, delete the existing tunnel first to avoid orphaned launchd/systemd agent configurations, then add the new configuration.

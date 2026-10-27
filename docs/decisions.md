@@ -199,6 +199,10 @@ The `main` ruleset requires a pull request, allows squash as the only merge meth
 requires all five CI checks with the branch up to date. Deletion and non-fast-forward
 pushes are blocked.
 
+Amended: the ruleset now requires six checks, the five CI ones plus `pr-title`, because a
+squash takes the pull request title as its commit message and the release train reads that
+message.
+
 The cost is that a one-line fix still needs a branch and a wait for CI. The benefit is that
 every commit on `main` is one reviewed idea with a message that explains it, and that no
 commit reaches `main` without the gate having run on that exact tree.
