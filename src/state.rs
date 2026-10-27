@@ -185,6 +185,9 @@ impl TunnelState {
 
     pub fn add(&mut self, tunnel: PersistentTunnel) -> Result<()> {
         validate_tunnel_name(&tunnel.name)?;
+        if let TunnelSpec::Access { target, .. } = &tunnel.spec {
+            validate_target(target)?;
+        }
         if self
             .find_for_account(&tunnel.name, &tunnel.account_name)
             .is_some()
@@ -291,6 +294,89 @@ pub fn validate_tunnel_name(name: &str) -> Result<()> {
             "Invalid tunnel name '{name}': use up to 40 characters, lowercase letters, digits and \
              dashes, starting with a letter and ending with a letter or digit"
         );
+    }
+    Ok(())
+}
+
+// gcloud reads any argv element that starts with a dash as one of its own
+// options, and argv never goes through a shell that could quote it away. An
+// instance, zone or host that came from `add`, a hand-edited tunnels.toml or an
+// agent's tool call is therefore checked before it is placed in a command line:
+// the shapes below are what GCE and DNS allow anyway, so no real value is lost.
+
+// GCE instance names: `[a-z]([-a-z0-9]{0,61}[a-z0-9])?`
+pub fn validate_instance_name(instance: &str) -> Result<()> {
+    let bytes = instance.as_bytes();
+    let ok = !instance.is_empty()
+        && instance.len() <= 63
+        && bytes[0].is_ascii_lowercase()
+        && bytes[bytes.len() - 1] != b'-'
+        && instance
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+    if !ok {
+        bail!(
+            "Invalid instance '{instance}': use up to 63 characters, lowercase letters, digits \
+             and dashes, starting with a letter and ending with a letter or digit"
+        );
+    }
+    Ok(())
+}
+
+// Zones are checked for their alphabet, not their `region-letter` shape, so a
+// zone GCP adds later is not refused by a pattern written today
+pub fn validate_zone(zone: &str) -> Result<()> {
+    let bytes = zone.as_bytes();
+    let ok = !zone.is_empty()
+        && zone.len() <= 63
+        && bytes[0].is_ascii_lowercase()
+        && bytes[bytes.len() - 1] != b'-'
+        && zone
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+    if !ok {
+        bail!(
+            "Invalid zone '{zone}': expected a zone such as europe-west1-b (lowercase letters, \
+             digits and dashes, starting with a letter)"
+        );
+    }
+    Ok(())
+}
+
+// A hostname or an IP literal; the colon is for IPv6
+pub fn validate_host(host: &str) -> Result<()> {
+    let ok = !host.is_empty()
+        && host.len() <= 253
+        && !host.starts_with('-')
+        && host
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':'));
+    if !ok {
+        bail!(
+            "Invalid host '{host}': use a hostname or an IP address (letters, digits, dots, \
+             dashes and colons, not starting with a dash)"
+        );
+    }
+    Ok(())
+}
+
+// Every field of a target that reaches gcloud's argv
+pub fn validate_target(target: &AccessTarget) -> Result<()> {
+    match target {
+        AccessTarget::Instance { instance, zone } => {
+            validate_instance_name(instance)?;
+            validate_zone(zone)?;
+        }
+        AccessTarget::Jump {
+            instance,
+            zone,
+            host,
+        } => {
+            validate_instance_name(instance)?;
+            validate_zone(zone)?;
+            validate_host(host)?;
+        }
+        AccessTarget::DestGroup { host, .. } => validate_host(host)?,
     }
     Ok(())
 }
@@ -542,6 +628,123 @@ mod tests {
         assert!(validate_tunnel_name("").is_err());
         assert!(validate_tunnel_name(&"a".repeat(40)).is_ok());
         assert!(validate_tunnel_name(&"a".repeat(41)).is_err());
+    }
+
+    #[test]
+    fn instance_names_follow_gce_and_never_lead_with_a_dash() {
+        for ok in ["bastion", "my-vm", "a", "vm1", "postgres-1"] {
+            assert!(validate_instance_name(ok).is_ok(), "{ok}");
+        }
+        assert!(validate_instance_name(&"a".repeat(63)).is_ok());
+        for bad in [
+            "",
+            "--command=id",
+            "-vm",
+            "My-VM",
+            "my vm",
+            "my_vm",
+            "1vm",
+            "vm-",
+            "vm;id",
+        ] {
+            assert!(validate_instance_name(bad).is_err(), "{bad:?}");
+        }
+        assert!(validate_instance_name(&"a".repeat(64)).is_err());
+        let err = validate_instance_name("--command=id").unwrap_err();
+        assert!(
+            err.to_string().contains("Invalid instance '--command=id'"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn zones_are_lowercase_labels_that_never_lead_with_a_dash() {
+        for ok in ["europe-west1-b", "us-central1-a", "z"] {
+            assert!(validate_zone(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "",
+            "-x",
+            "--zone=a",
+            "Europe-west1-b",
+            "europe west1-b",
+            "a-",
+        ] {
+            assert!(validate_zone(bad).is_err(), "{bad:?}");
+        }
+        assert!(validate_zone(&"a".repeat(64)).is_err());
+        let err = validate_zone("-x").unwrap_err();
+        assert!(err.to_string().contains("Invalid zone '-x'"), "{err}");
+    }
+
+    #[test]
+    fn hosts_are_names_or_ip_literals_that_never_lead_with_a_dash() {
+        for ok in [
+            "10.0.0.10",
+            "db.internal",
+            "cache.example.internal",
+            "my-vm",
+            "::1",
+            "fd00::10",
+            "Redis.Example.Internal",
+        ] {
+            assert!(validate_host(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "",
+            "-oProxyCommand=id",
+            "-host",
+            "a b",
+            "a\tb",
+            "a/b",
+            "a;id",
+            "a=b",
+        ] {
+            assert!(validate_host(bad).is_err(), "{bad:?}");
+        }
+        assert!(validate_host(&"a".repeat(254)).is_err());
+        let err = validate_host("-oProxyCommand=id").unwrap_err();
+        assert!(
+            err.to_string().contains("Invalid host '-oProxyCommand=id'"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_target_is_checked_field_by_field() {
+        let jump = |instance: &str, zone: &str, host: &str| AccessTarget::Jump {
+            instance: instance.to_string(),
+            zone: zone.to_string(),
+            host: host.to_string(),
+        };
+        assert!(validate_target(&jump("bastion", "europe-west1-b", "10.0.0.10")).is_ok());
+        assert!(validate_target(&jump("--x", "europe-west1-b", "10.0.0.10")).is_err());
+        assert!(validate_target(&jump("bastion", "-x", "10.0.0.10")).is_err());
+        assert!(validate_target(&jump("bastion", "europe-west1-b", "-x")).is_err());
+        let group = |host: &str| AccessTarget::DestGroup {
+            host: host.to_string(),
+            region: "europe-west1".to_string(),
+            group: "prod".to_string(),
+            network: "default".to_string(),
+        };
+        assert!(validate_target(&group("10.0.0.5")).is_ok());
+        assert!(validate_target(&group("-x")).is_err());
+    }
+
+    #[test]
+    fn a_tunnel_with_a_flag_for_an_instance_is_not_added() {
+        let mut state = TunnelState::default();
+        let mut t = access_instance("db", 15432);
+        t.spec = TunnelSpec::Access {
+            target: AccessTarget::Instance {
+                instance: "--command=id".to_string(),
+                zone: "europe-west1-b".to_string(),
+            },
+            remote_port: 22,
+            local_port: 15432,
+        };
+        assert!(state.add(t).is_err());
+        assert!(state.tunnels.is_empty());
     }
 
     #[test]

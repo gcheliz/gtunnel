@@ -71,7 +71,7 @@ Specify the release version and substitute your machine's file: `gtunnel-macos-a
 `gtunnel-macos-intel`, `gtunnel-linux-amd64` or `gtunnel-linux-arm64`.
 
 ```
-VERSION="v0.1.36"
+VERSION="v0.1.37"
 F="gtunnel-macos-arm64-${VERSION}.tar.gz"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F.sha256"
@@ -83,7 +83,7 @@ so they run on any glibc.
 
 ```
 $ gtunnel --version
-gtunnel 0.1.36
+gtunnel 0.1.37
 ```
 
 #### Proving where the binary came from
@@ -492,6 +492,12 @@ gtunnel add <NAME> <HOST:PORT> --dest-group G --region R --network N [-s]
 
 The local port is derived from the tunnel name, so the same name gets the same port on
 every machine unless it is taken.
+
+gcloud reads any argument that starts with a dash as an option, so `add` refuses one. An
+instance is a GCE name (up to 63 lowercase letters, digits and dashes, starting with a letter),
+a zone is lowercase letters, digits and dashes, and a host is a hostname or an IP address. The
+error names the field and the value, and the same rule holds for a hand-edited `tunnels.toml`
+and for the MCP tools.
 
 ### Naming a tunnel
 
@@ -1088,7 +1094,7 @@ Every other command prints a one-line hint when a cached check found a newer ver
 
 ```
 $ gtunnel list
-gtunnel v9.9.9 is available (current: v0.1.36). Run `gtunnel update`.
+gtunnel v9.9.9 is available (current: v0.1.37). Run `gtunnel update`.
 ```
 
 The check runs at most once a day, in the background, and never blocks a command. A
@@ -1155,7 +1161,8 @@ A tool that fails returns a normal result with `isError: true` and the whole cau
 text, such as `db failed to start` and the hint under it. A start that fails is such a failure:
 `gtunnel_add_tunnel` with `start: true` reports it and the tunnel stays in `tunnels.toml`, as
 `gtunnel add -s` leaves it. Only a call with missing or mistyped parameters is a JSON-RPC
-error. Nothing but JSON-RPC frames is ever written to stdout.
+error, and so is an instance, zone or host that gcloud would read as an option. Nothing but
+JSON-RPC frames is ever written to stdout.
 
 #### Live Resources
 
