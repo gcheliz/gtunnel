@@ -488,11 +488,14 @@ pub async fn relay_down(
         let label = daemon::service_spec(cfg, &tunnel)?.label;
         let _ = daemon::stop(&label).await;
         daemon::uninstall(&label).await?;
+        // One removal per tunnel, each under the lock on its own: the
+        // route and service work above awaits, so no lock spans the loop
+        TunnelState::update(|s| {
+            s.remove_for_account(name, &acct.name);
+            Ok(())
+        })?;
         state.remove_for_account(name, &acct.name);
         step(true, &format!("removed tunnel {name}"));
-    }
-    if !live.is_empty() {
-        state.save()?;
     }
 
     drop_resource(

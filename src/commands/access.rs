@@ -88,8 +88,12 @@ async fn save_tunnel(account: Option<&str>, req: &AddRequest<'_>) -> Result<Adde
     } = *req;
     validate_tunnel_name(name)?;
     let (config, acct) = resolve(account)?;
-    let mut state = TunnelState::load()?;
-    if state.find_for_account(name, &acct.name).is_some() {
+    // A plain read to fail fast, before any gcloud call; `add` inside the
+    // locked update below is the check that holds
+    if TunnelState::load()?
+        .find_for_account(name, &acct.name)
+        .is_some()
+    {
         bail!("Tunnel '{name}' already exists for account '{}'", acct.name);
     }
 
@@ -124,28 +128,32 @@ async fn save_tunnel(account: Option<&str>, req: &AddRequest<'_>) -> Result<Adde
         }
     };
 
-    let local_port = match local_port {
-        Some(port) => {
-            if state.used_local_ports().contains(&port) {
-                bail!("Local port {port} is already used by another gtunnel tunnel");
+    // The port choice reads the saved ports, so it belongs under the same lock
+    // as the save; the gcloud checks above are outside it
+    let tunnel = TunnelState::update(|state| {
+        let local_port = match local_port {
+            Some(port) => {
+                if state.used_local_ports().contains(&port) {
+                    bail!("Local port {port} is already used by another gtunnel tunnel");
+                }
+                if !local_port_is_free(port) {
+                    bail!("Local port {port} is already in use on this machine");
+                }
+                port
             }
-            if !local_port_is_free(port) {
-                bail!("Local port {port} is already in use on this machine");
-            }
-            port
-        }
-        None => allocate_port(
-            name,
-            ACCESS_PORT_BASE,
-            ACCESS_PORT_SPAN,
-            &state.used_local_ports(),
-            local_port_is_free,
-        )?,
-    };
+            None => allocate_port(
+                name,
+                ACCESS_PORT_BASE,
+                ACCESS_PORT_SPAN,
+                &state.used_local_ports(),
+                local_port_is_free,
+            )?,
+        };
 
-    let tunnel = new_access_tunnel(name, &acct.name, access_target, remote_port, local_port);
-    state.add(tunnel.clone())?;
-    state.save()?;
+        let tunnel = new_access_tunnel(name, &acct.name, access_target, remote_port, local_port);
+        state.add(tunnel.clone())?;
+        Ok(tunnel)
+    })?;
 
     let spec = daemon::service_spec(&config, &tunnel)?;
     daemon::install(&spec).await?;
@@ -376,14 +384,13 @@ fn auto_start_change(current: bool, wanted: Option<bool>) -> Option<bool> {
 // The record is the side the user edits, so it changes first and the service
 // manager is brought to it
 fn set_record_auto_start(account: &str, name: &str, on: bool) -> Result<PersistentTunnel> {
-    let mut state = TunnelState::load()?;
-    let tunnel = state
-        .find_for_account_mut(name, account)
-        .with_context(|| format!("Tunnel '{name}' not found"))?;
-    tunnel.auto_start = on;
-    let updated = tunnel.clone();
-    state.save()?;
-    Ok(updated)
+    TunnelState::update(|state| {
+        let tunnel = state
+            .find_for_account_mut(name, account)
+            .with_context(|| format!("Tunnel '{name}' not found"))?;
+        tunnel.auto_start = on;
+        Ok(tunnel.clone())
+    })
 }
 
 pub async fn cmd_auto_start(account: Option<&str>, name: &str, wanted: Option<bool>) -> Result<()> {
@@ -421,7 +428,7 @@ pub async fn cmd_restart(account: Option<&str>, name: &str) -> Result<()> {
 
 pub async fn delete_tunnel(account: Option<&str>, name: &str) -> Result<()> {
     let (_, acct) = resolve(account)?;
-    let mut state = TunnelState::load()?;
+    let state = TunnelState::load()?;
     let tunnel = find_tunnel(&state, name, &acct.name)?;
 
     // The relay route goes first: a backend left behind keeps serving a 503
@@ -440,9 +447,11 @@ pub async fn delete_tunnel(account: Option<&str>, name: &str) -> Result<()> {
     daemon::uninstall(&label).await?;
     // The log goes with the tunnel: nothing is left to own it
     daemon::remove_log(&log_path)?;
-    state.remove_for_account(name, &acct.name);
-    state.save()?;
-    Ok(())
+    // Only the record is removed under the lock; the daemon work is done
+    TunnelState::update(|state| {
+        state.remove_for_account(name, &acct.name);
+        Ok(())
+    })
 }
 
 pub async fn cmd_delete(account: Option<&str>, name: &str) -> Result<()> {
@@ -589,7 +598,7 @@ async fn external_rows() -> Vec<ListRow> {
 }
 
 pub async fn cmd_zones(account: Option<&str>, default: Option<&str>) -> Result<()> {
-    let (mut config, acct) = resolve(account)?;
+    let (_, acct) = resolve(account)?;
     let client = GcpClient::for_account(&acct);
     let zones = compute::list_zones(&client, &acct.project).await?;
 
@@ -604,8 +613,10 @@ pub async fn cmd_zones(account: Option<&str>, default: Option<&str>) -> Result<(
     if !zones.iter().any(|z| z == zone) {
         bail!("Zone '{zone}' does not exist in project '{}'", acct.project);
     }
-    config.get_account_mut(Some(&acct.name))?.default_zone = zone.to_string();
-    crate::config::save_config(&config)?;
+    crate::config::update_config(|config| {
+        config.get_account_mut(Some(&acct.name))?.default_zone = zone.to_string();
+        Ok(())
+    })?;
     println!("Default zone for '{}' is now {zone}", acct.name);
     Ok(())
 }

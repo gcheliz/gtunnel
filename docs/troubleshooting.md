@@ -479,6 +479,13 @@ of ownership. gtunnel treats such a record as its own only while it still holds 
 backend, a host rule or a named port for the same tunnel. Any other record aimed at the relay
 is reported with the `gcloud dns record-sets delete` command and left in place.
 
+A command that fails with `<config>/tunnels.lock is held by another gtunnel process` (or
+`config.lock`) waited 5 seconds for another gtunnel to finish saving. Find it with
+`pgrep -fl gtunnel`: a `gtunnel` command left waiting on a prompt or a stopped terminal is the
+usual holder, and ending it releases the lock. A `.lock` file that is left behind is harmless,
+because the lock is held by the process and not by the file; delete it only when no gtunnel
+runs.
+
 To confirm nothing is left in GCP after `relay down`:
 
 ```

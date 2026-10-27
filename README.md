@@ -4,7 +4,7 @@
 
 <p align="center">
   <a href="https://github.com/gcheliz/gtunnel/releases/latest"><img src="https://img.shields.io/github/v/release/gcheliz/gtunnel?color=blue" alt="Latest release"></a>
-  <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/rust-1.88%2B-orange.svg" alt="Rust 1.88 or newer"></a>
+  <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/rust-1.89%2B-orange.svg" alt="Rust 1.89 or newer"></a>
   <a href="Cargo.toml"><img src="https://img.shields.io/badge/edition-2024-orange.svg" alt="Rust 2024 edition"></a>
   <a href="SECURITY.md"><img src="https://img.shields.io/badge/security-policy-green.svg" alt="Security policy"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
@@ -61,7 +61,7 @@ service-lifecycle diagrams, the account model, and every resource name.
 | An authenticated configuration | `gcloud init` then `gcloud auth login` | `gcloud config list` |
 | `roles/iap.tunnelResourceAccessor` | [cloud.google.com/iap/docs/using-tcp-forwarding](https://cloud.google.com/iap/docs/using-tcp-forwarding#grant-permission) on the instance, destination group or project | `gtunnel doctor` |
 | A firewall rule for `35.235.240.0/20` | `gtunnel doctor` prints the exact `gcloud compute firewall-rules create` for the port you are tunnelling to | `gtunnel doctor` |
-| Rust 1.88 or newer and a C compiler, for the cargo routes only | [rustup](https://rustup.rs) on macOS and Linux; `xcode-select --install` on macOS, `build-essential` or `gcc` on Linux ([docs/usage.md](docs/usage.md#building-from-source)) | `cargo --version`, `cc --version` |
+| Rust 1.89 or newer and a C compiler, for the cargo routes only | [rustup](https://rustup.rs) on macOS and Linux; `xcode-select --install` on macOS, `build-essential` or `gcc` on Linux ([docs/usage.md](docs/usage.md#building-from-source)) | `cargo --version`, `cc --version` |
 
 Public mode additionally needs a [Cloud DNS](https://cloud.google.com/dns/docs/zones)
 managed zone you control and the IAM in
@@ -268,7 +268,7 @@ local state only; cloud resources go with `gtunnel relay down`.
 
 Every pull request, and every merge to main before it is released, runs
 [CI](.github/workflows/ci.yml): rustfmt, clippy with `-D warnings`, the test suite,
-`cargo audit --deny warnings`, a `cargo check` on the declared 1.88 floor, and zizmor
+`cargo audit --deny warnings`, a `cargo check` on the declared 1.89 floor, and zizmor
 over the workflows.
 
 ## License

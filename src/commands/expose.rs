@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 
 use super::{confirm, prompt, resolve};
-use crate::config::{save_config, DomainConfig};
+use crate::config::{update_config, DomainConfig};
 use crate::daemon;
 use crate::expose::naming::{hostname_for, Names};
 use crate::expose::{relay, routes};
@@ -25,7 +25,7 @@ pub async fn cmd_relay_up(
     managed_zone: Option<&str>,
     assume_yes: bool,
 ) -> Result<()> {
-    let (mut config, acct) = resolve(account)?;
+    let (_, acct) = resolve(account)?;
     let client = GcpClient::for_account(&acct);
 
     let managed_zone = match managed_zone {
@@ -47,8 +47,10 @@ pub async fn cmd_relay_up(
         managed_zone,
     };
     let expose = relay::relay_up(&client, &acct, &opts).await?;
-    config.get_account_mut(Some(&acct.name))?.expose = Some(expose.clone());
-    save_config(&config)?;
+    update_config(|config| {
+        config.get_account_mut(Some(&acct.name))?.expose = Some(expose.clone());
+        Ok(())
+    })?;
     println!("Relay ready. Default domain: {}", expose.default_domain);
     Ok(())
 }
@@ -78,7 +80,7 @@ async fn pick_managed_zone(client: &GcpClient, project: &str) -> Result<String> 
 }
 
 pub async fn cmd_relay_down(account: Option<&str>, force: bool, assume_yes: bool) -> Result<()> {
-    let (mut config, acct) = resolve(account)?;
+    let (config, acct) = resolve(account)?;
     let client = GcpClient::for_account(&acct);
     let mut state = TunnelState::load()?;
 
@@ -94,8 +96,10 @@ pub async fn cmd_relay_down(account: Option<&str>, force: bool, assume_yes: bool
     }
 
     relay::relay_down(&client, &config, &acct, &mut state, force).await?;
-    config.get_account_mut(Some(&acct.name))?.expose = None;
-    save_config(&config)?;
+    update_config(|config| {
+        config.get_account_mut(Some(&acct.name))?.expose = None;
+        Ok(())
+    })?;
     println!("Relay deleted");
     Ok(())
 }
@@ -139,7 +143,7 @@ pub async fn cmd_domains(
     default: Option<&str>,
     add: Option<&str>,
 ) -> Result<()> {
-    let (mut config, acct) = resolve(account)?;
+    let (_, acct) = resolve(account)?;
     let expose = acct.expose.clone().with_context(|| {
         format!(
             "No relay for account '{}'. Run `gtunnel relay up`",
@@ -150,15 +154,17 @@ pub async fn cmd_domains(
     if let Some(managed_zone) = add {
         let client = GcpClient::for_account(&acct);
         let domain: DomainConfig = relay::add_domain(&client, &acct, managed_zone).await?;
-        let stored = config
-            .get_account_mut(Some(&acct.name))?
-            .expose
-            .as_mut()
-            .context("The relay vanished while the domain was being added")?;
-        if !stored.domains.iter().any(|d| d.domain == domain.domain) {
-            stored.domains.push(domain.clone());
-        }
-        save_config(&config)?;
+        update_config(|config| {
+            let stored = config
+                .get_account_mut(Some(&acct.name))?
+                .expose
+                .as_mut()
+                .context("The relay vanished while the domain was being added")?;
+            if !stored.domains.iter().any(|d| d.domain == domain.domain) {
+                stored.domains.push(domain.clone());
+            }
+            Ok(())
+        })?;
         println!("Domain {} registered", domain.domain);
         return Ok(());
     }
@@ -167,13 +173,15 @@ pub async fn cmd_domains(
         if !expose.domains.iter().any(|d| d.domain == domain) {
             bail!("Domain '{domain}' is not registered. Run `gtunnel domains add`");
         }
-        config
-            .get_account_mut(Some(&acct.name))?
-            .expose
-            .as_mut()
-            .context("The relay vanished while the default domain was being set")?
-            .default_domain = domain.to_string();
-        save_config(&config)?;
+        update_config(|config| {
+            config
+                .get_account_mut(Some(&acct.name))?
+                .expose
+                .as_mut()
+                .context("The relay vanished while the default domain was being set")?
+                .default_domain = domain.to_string();
+            Ok(())
+        })?;
         println!("Default domain for '{}' is now {domain}", acct.name);
         return Ok(());
     }
@@ -234,7 +242,9 @@ pub async fn cmd_expose(
     })?;
     let domain = expose.domain(domain)?.clone();
 
-    let mut state = TunnelState::load()?;
+    // Read to choose a relay port before the route is created; the locked
+    // update below re-checks both the name and the port
+    let state = TunnelState::load()?;
     if state.find_for_account(name, &acct.name).is_some() {
         bail!("Tunnel '{name}' already exists for account '{}'", acct.name);
     }
@@ -261,8 +271,13 @@ pub async fn cmd_expose(
     let client = GcpClient::for_account(&acct);
     routes::add_route(&client, &acct, &expose, &tunnel).await?;
 
-    state.add(tunnel.clone())?;
-    state.save()?;
+    TunnelState::update(|state| {
+        // The route above awaited, so another gtunnel may have taken the port
+        if crate::ephemeral::used_relay_ports(state, &acct.name)?.contains(&relay_port) {
+            bail!("Relay port {relay_port} was taken by another tunnel while the route was created; run `gtunnel doctor` to clear the route, then add the tunnel again");
+        }
+        state.add(tunnel.clone())
+    })?;
     let spec = daemon::service_spec(&config, &tunnel)?;
     daemon::install(&spec).await?;
 
