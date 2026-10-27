@@ -8,6 +8,7 @@ use crate::commands::access::{
     add_tunnel, delete_tunnel, health_word, list_rows_json, probe_local, restart_tunnel,
     start_tunnel, stop_by_name, AddRequest, Stopped,
 };
+use crate::commands::expose::{expose_tunnel, ExposeRequest, Exposed};
 use crate::commands::relocate::{move_tunnel, rename_tunnel};
 use crate::commands::{find_tunnel, resolve};
 use crate::config::load_config;
@@ -119,6 +120,22 @@ fn run_tunnel_schema() -> Value {
             "expires_at": nullable("integer")
         }),
         &["name", "account", "target"],
+    )
+}
+
+fn expose_tunnel_schema() -> Value {
+    output_schema(
+        json!({
+            "name": {"type": "string"},
+            "account": {"type": "string"},
+            "url": {"type": "string"},
+            "target": {"type": "string"},
+            "domain": {"type": "string"},
+            "public": {"type": "boolean"},
+            "certificate_state": {"type": "string"},
+            "started": {"type": "boolean"}
+        }),
+        &["name", "account", "url", "public"],
     )
 }
 
@@ -459,6 +476,43 @@ pub fn all_tools() -> Vec<ToolDefinition> {
             }),
         },
         ToolDefinition {
+            name: "gtunnel_expose_tunnel".to_string(),
+            title: "Expose a local service".to_string(),
+            annotations: ToolAnnotations::new(false,true,false,true),
+            output_schema: Some(expose_tunnel_schema()),
+            description: "Publish a local service at https://<name>.<domain> through the account's relay. Private by default: visitors must sign in with Google (IAP). public: true makes it reachable by anyone on the internet. Needs a relay (gtunnel relay up, CLI only)".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Tunnel name, also the hostname's first label"
+                    },
+                    "target": {
+                        "type": "string",
+                        "description": "Local service to publish: a port (3000) or host:port (localhost:3000)"
+                    },
+                    "domain": {
+                        "type": "string",
+                        "description": "Registered relay domain (defaults to the account's default domain)"
+                    },
+                    "public": {
+                        "type": "boolean",
+                        "description": "true makes the service reachable by anyone; false or omitted keeps it behind Google sign-in. This is the reverse of the CLI, which is public unless --private"
+                    },
+                    "start": {
+                        "type": "boolean",
+                        "description": "Start the tunnel after creating it"
+                    },
+                    "account": {
+                        "type": "string",
+                        "description": "Optional GCP account name"
+                    }
+                },
+                "required": ["name", "target"]
+            }),
+        },
+        ToolDefinition {
             name: "gtunnel_list_accounts".to_string(),
             title: "List accounts".to_string(),
             annotations: ToolAnnotations::new(true,false,true,false),
@@ -537,6 +591,49 @@ fn not_found(state: &TunnelState, name: &str, account: &str) -> ToolCallResult {
             .into(),
         ),
     }
+}
+
+/// The MCP default is the safe one: `public` is read as a strict boolean and a
+/// missing value means private, the reverse of the CLI's public-unless-`--private`.
+/// A string `"true"` is refused rather than coerced, because a wrong guess here
+/// publishes a service to the internet.
+fn expose_request(
+    args: &serde_json::Map<String, Value>,
+) -> Result<ExposeRequest<'_>, JsonRpcError> {
+    let text = |key: &str| args.get(key).and_then(Value::as_str);
+    let public = match args.get("public") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(b)) => *b,
+        Some(_) => {
+            return Err(JsonRpcError::new(
+                INVALID_PARAMS,
+                "Parameter 'public' must be of type boolean",
+            ))
+        }
+    };
+    Ok(ExposeRequest {
+        name: text("name").ok_or_else(|| JsonRpcError::new(INVALID_PARAMS, "Missing 'name'"))?,
+        target: text("target")
+            .ok_or_else(|| JsonRpcError::new(INVALID_PARAMS, "Missing 'target'"))?,
+        domain: text("domain"),
+        private: !public,
+    })
+}
+
+/// The route and record exist by the time a start is tried, so a failed start
+/// must not read as a failed expose: the text says what was created and which
+/// tool finishes the job. `start` is `None` when none was asked for.
+fn expose_result(exposed: &Exposed, start: Option<anyhow::Result<()>>) -> ToolCallResult {
+    if let Some(Err(err)) = start {
+        let err = err.context(format!(
+            "Tunnel '{}' was created at {} but not started; start it with gtunnel_start_tunnel",
+            exposed.name, exposed.url
+        ));
+        return ToolCallResult::failure(&err);
+    }
+    let mut payload = serde_json::to_value(exposed).unwrap_or(Value::Null);
+    payload["started"] = json!(matches!(start, Some(Ok(()))));
+    ToolCallResult::json(&payload, payload.clone())
 }
 
 /// The last `n` lines of `text`, oldest first.
@@ -811,6 +908,23 @@ pub async fn execute_tool(
                 },
             )
         }
+        "gtunnel_expose_tunnel" => {
+            let req = expose_request(map)?;
+            let account = get_str("account");
+            // `start_tunnel`, not `cmd_start`: the core and the start both stay
+            // off stdout, which belongs to the protocol frames
+            Ok(match expose_tunnel(account, &req).await {
+                Ok(exposed) => {
+                    let started = if get_bool("start") {
+                        Some(start_tunnel(account, &exposed.name).await.map(|_| ()))
+                    } else {
+                        None
+                    };
+                    expose_result(&exposed, started)
+                }
+                Err(e) => ToolCallResult::failure(&e),
+            })
+        }
         "gtunnel_list_accounts" => {
             let config =
                 load_config().map_err(|e| JsonRpcError::new(INTERNAL_ERROR, e.to_string()))?;
@@ -1003,5 +1117,85 @@ mod schema_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod expose_tests {
+    use super::*;
+    use crate::commands::expose::Exposed;
+
+    fn args(value: Value) -> serde_json::Map<String, Value> {
+        let mut map = value.as_object().cloned().unwrap();
+        map.entry("name").or_insert(json!("web"));
+        map.entry("target").or_insert(json!("3000"));
+        map
+    }
+
+    fn exposed() -> Exposed {
+        Exposed {
+            name: "web".to_string(),
+            account: "dev".to_string(),
+            url: "https://web.example.com".to_string(),
+            target: "localhost:3000".to_string(),
+            domain: "example.com".to_string(),
+            public: false,
+            certificate_state: "ACTIVE".to_string(),
+        }
+    }
+
+    #[test]
+    fn expose_is_private_unless_public_is_true() {
+        for (given, private) in [
+            (json!({}), true),
+            (json!({"public": false}), true),
+            (json!({"public": true}), false),
+        ] {
+            let map = args(given.clone());
+            let req = expose_request(&map).unwrap();
+            assert_eq!(req.private, private, "{given}");
+        }
+    }
+
+    #[test]
+    fn a_public_that_is_not_a_boolean_is_never_coerced() {
+        let map = args(json!({"public": "true"}));
+        let err = expose_request(&map).err().expect("rejected");
+        assert_eq!(err.code, INVALID_PARAMS);
+    }
+
+    #[test]
+    fn a_failed_start_after_expose_is_a_failure_naming_the_tunnel() {
+        let result = expose_result(&exposed(), Some(Err(anyhow::anyhow!("login expired"))));
+        assert_eq!(result.is_error, Some(true));
+        let text = &result.content[0].text;
+        assert!(text.contains("web"), "{text}");
+        assert!(text.contains("gtunnel_start_tunnel"), "{text}");
+        assert!(text.contains("login expired"), "{text}");
+    }
+
+    #[test]
+    fn a_started_expose_reports_started_and_the_exposed_fields() {
+        let result = expose_result(&exposed(), Some(Ok(())));
+        assert_eq!(result.is_error, None);
+        let structured = result.structured_content.unwrap();
+        assert_eq!(structured["started"], json!(true));
+        assert_eq!(structured["url"], json!("https://web.example.com"));
+        assert_eq!(structured["public"], json!(false));
+
+        let skipped = expose_result(&exposed(), None);
+        assert_eq!(skipped.structured_content.unwrap()["started"], json!(false));
+    }
+
+    #[test]
+    fn an_expose_result_matches_the_expose_schema() {
+        let schema = all_tools()
+            .into_iter()
+            .find(|t| t.name == "gtunnel_expose_tunnel")
+            .and_then(|t| t.output_schema)
+            .expect("the tool declares an outputSchema");
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let ok = expose_result(&exposed(), None).structured_content.unwrap();
+        assert!(validator.is_valid(&ok), "{ok}");
     }
 }

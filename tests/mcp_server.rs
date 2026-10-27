@@ -168,7 +168,7 @@ fn mcp_validate_flag_exits_successfully() {
     let h = Harness::new();
     let (stdout, stderr, success) = h.run(&["mcp", "--validate"]);
     assert!(success, "stderr: {stderr}");
-    assert!(stdout.contains("Validated 13 tools and 2 resources successfully."));
+    assert!(stdout.contains("Validated 14 tools and 2 resources successfully."));
 }
 
 #[test]
@@ -217,7 +217,7 @@ fn initialize_from_a_newer_client_answers_the_latest() {
 }
 
 #[test]
-fn mcp_stdio_tools_list_returns_thirteen_tools() {
+fn mcp_stdio_tools_list_returns_fourteen_tools() {
     let h = Harness::new();
     let req = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#;
     let (stdout, stderr, success) = h.run_mcp_pipe(&format!("{req}\n"));
@@ -226,7 +226,7 @@ fn mcp_stdio_tools_list_returns_thirteen_tools() {
     let line = stdout.lines().next().expect("response line");
     let resp: serde_json::Value = serde_json::from_str(line).expect("valid json response");
     let tools = resp["result"]["tools"].as_array().expect("tools array");
-    assert_eq!(tools.len(), 13);
+    assert_eq!(tools.len(), 14);
 
     let tool_names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     assert!(tool_names.contains(&"gtunnel_list_tunnels"));
@@ -242,6 +242,7 @@ fn mcp_stdio_tools_list_returns_thirteen_tools() {
     assert!(tool_names.contains(&"gtunnel_run_tunnel"));
     assert!(tool_names.contains(&"gtunnel_rename_tunnel"));
     assert!(tool_names.contains(&"gtunnel_move_tunnel"));
+    assert!(tool_names.contains(&"gtunnel_expose_tunnel"));
 }
 
 fn listed_tools() -> Vec<serde_json::Value> {
@@ -289,6 +290,7 @@ fn read_only_and_destructive_tools_say_so() {
         "gtunnel_delete_tunnel",
         "gtunnel_rename_tunnel",
         "gtunnel_move_tunnel",
+        "gtunnel_expose_tunnel",
     ];
     for tool in listed_tools() {
         let name = tool["name"].as_str().unwrap();
@@ -1304,4 +1306,79 @@ fn rename_with_a_non_string_new_name_is_invalid_params() {
     let (stdout, _, _) = h.run_mcp_pipe(&format!("{req}\n"));
     let frames = frames(&stdout);
     assert_eq!(frames[0]["error"]["code"], -32602, "{stdout}");
+}
+
+// The expose tool is private unless told otherwise; these pin its door
+
+// A relay block with placeholder values: enough for the name check, which runs
+// before any GCP call, to be reached
+const RELAY_CONFIG: &str = r#"selected_account = "demo"
+
+[[accounts]]
+name = "demo"
+gcloud_configuration = "work"
+project = "example-dev-1a2b"
+default_zone = "europe-west1-b"
+
+[accounts.expose]
+relay_instance = "gtunnel-relay"
+relay_zone = "europe-west1-b"
+network = "default"
+default_domain = "example.com"
+
+[[accounts.expose.domains]]
+domain = "example.com"
+managed_zone = "example-zone"
+"#;
+
+#[test]
+fn expose_without_a_relay_is_refused_and_changes_nothing() {
+    let h = Harness::new();
+    let before = tunnels_toml(&h);
+    let result = call(
+        &h,
+        "gtunnel_expose_tunnel",
+        r#"{"name":"web","target":"3000"}"#,
+    );
+    assert_eq!(result["isError"], serde_json::json!(true), "{result}");
+    assert!(
+        result_text(&result).contains("gtunnel relay up"),
+        "{result}"
+    );
+    assert_eq!(tunnels_toml(&h), before);
+}
+
+#[test]
+fn expose_with_a_string_public_is_invalid_params() {
+    let h = Harness::build(STUB, RELAY_CONFIG);
+    let req = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"gtunnel_expose_tunnel","arguments":{"name":"web","target":"3000","public":"true"}}}"#;
+    let (stdout, _, _) = h.run_mcp_pipe(&format!("{req}\n"));
+    let frames = frames(&stdout);
+    assert_eq!(frames[0]["error"]["code"], -32602, "{stdout}");
+}
+
+#[test]
+fn expose_of_an_existing_name_is_refused() {
+    let h = Harness::build(STUB, RELAY_CONFIG);
+    let before = tunnels_toml(&h);
+    let result = call(
+        &h,
+        "gtunnel_expose_tunnel",
+        r#"{"name":"db","target":"3000"}"#,
+    );
+    assert_eq!(result["isError"], serde_json::json!(true), "{result}");
+    assert!(result_text(&result).contains("already exists"), "{result}");
+    assert_eq!(tunnels_toml(&h), before);
+}
+
+#[test]
+fn expose_tool_says_public_in_its_description() {
+    let tool = listed_tools()
+        .into_iter()
+        .find(|t| t["name"] == "gtunnel_expose_tunnel")
+        .expect("the expose tool is listed");
+    let description = tool["description"].as_str().unwrap();
+    assert!(description.contains("public: true"), "{description}");
+    assert!(description.contains("anyone"), "{description}");
+    assert!(description.contains("Private by default"), "{description}");
 }
