@@ -371,6 +371,7 @@ pub struct Relocated {
 }
 
 impl Relocated {
+    /// The sentence both the CLI and the MCP tool report, one line per fact
     pub fn message(&self) -> String {
         if self.from == self.to {
             return format!("Renamed {} to {}", self.old, self.new);
@@ -401,6 +402,8 @@ pub async fn cmd_rename(account: Option<&str>, old: &str, new: &str) -> Result<(
     Ok(())
 }
 
+/// Move `name` from the `from` account (the active one when `None`) to `to`.
+/// Prints nothing, so the MCP server can call it on a stdio transport.
 pub async fn move_tunnel(
     name: &str,
     from: Option<&str>,
@@ -449,6 +452,7 @@ pub async fn move_tunnel(
     })
 }
 
+/// Rename `old` to `new` on one account. Prints nothing, like `move_tunnel`.
 pub async fn rename_tunnel(account: Option<&str>, old: &str, new: &str) -> Result<Relocated> {
     let (config, acct) = resolve(account)?;
     let mut state = TunnelState::load()?;
@@ -458,7 +462,7 @@ pub async fn rename_tunnel(account: Option<&str>, old: &str, new: &str) -> Resul
         config,
         acct: acct.clone(),
     };
-    // Same reason as in `cmd_move`: the old name stops on purpose
+    // Same reason as in `move_tunnel`: the old name stops on purpose
     crate::lifecycle::forget(&acct.name, old);
     run_relocate(&ops, &ops, &mut state, &acct.name, &acct.name, old, new).await?;
     Ok(Relocated {
