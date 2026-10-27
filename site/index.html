@@ -60,13 +60,18 @@ code { color: var(--text); }
 .nav { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
 .nav a { display: inline-flex; align-items: center; min-height: 44px; padding: 0 12px; color: var(--muted); text-decoration: none; font-size: 15px; }
 .nav a:hover { color: var(--text); }
-.nav a.github { padding: 0 16px; gap: 8px; border-radius: 8px; background: var(--text); color: var(--ground); font-weight: 600; }
+.nav a.github { position: relative; min-height: 34px; padding: 0 12px; gap: 6px; border-radius: 8px; background: var(--text); color: var(--ground); font-size: 13px; font-weight: 600; }
+/* the visible button is 34px tall; the pseudo-element keeps its hit area at 44px */
+.nav a.github::after { content: ""; position: absolute; inset: -5px; }
+.nav a.github svg { width: 14px; height: 14px; }
 .nav a.github:hover { background: #fff; color: var(--ground); }
 
 /* two-column rows: text 5fr, media 7fr; .flip swaps the sides on wide screens */
 .row { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 40px; align-items: center; }
+.row.even { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 @media (min-width: 961px) {
   .flip { grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); }
+  .flip.even { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .flip > :first-child { order: 2; }
 }
 .section { padding-top: 72px; }
@@ -100,10 +105,17 @@ code { color: var(--text); }
 .frame .bar2 i { width: 10px; height: 10px; border-radius: 50%; background: var(--line-strong); }
 .frame .bar2 span { margin-left: 8px; font-family: var(--mono); font-size: 12px; color: var(--dim); }
 .frame img { display: block; width: 100%; height: auto; }
-/* a media frame that matches the height of its text column; the image fills it from the top left */
-.fill { align-items: stretch; }
-.fill .frame { display: flex; flex-direction: column; }
-.fill .frame img { flex: 1; min-height: 0; height: 100%; object-fit: cover; object-position: left top; }
+/* a recording shown at reading size: the gif is 1500 wide and its terminal text fills the left 560px, so the viewport crops the empty right and bottom */
+.viewport { position: relative; width: 100%; aspect-ratio: 560 / 330; overflow: hidden; border-radius: 8px; background: #141414; }
+.frame .viewport img { position: absolute; left: 0; top: 0; width: 267.9%; max-width: none; height: auto; }
+.frame .pad { padding: 16px; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 16px 16px; }
+.chip { display: inline-flex; align-items: center; gap: 8px; padding: 5px 12px; border: 1px solid var(--line); border-radius: 999px; font-size: 13px; color: var(--muted); }
+.chip i { width: 6px; height: 6px; border-radius: 50%; }
+.frame .bar2.tool { padding: 8px 12px 8px 16px; }
+.frame .bar2 .grow { flex: 1; }
+.frame.mcp { background: var(--ground); box-shadow: 0 40px 100px -40px rgba(138, 180, 248, 0.18); }
+.frame.rec { box-shadow: 0 40px 100px -40px rgba(251, 188, 4, 0.18); }
 
 /* numbers strip */
 .numbers { margin-top: 0; border-top: 1px solid var(--line-soft); border-bottom: 1px solid var(--line-soft); background: var(--surface); }
@@ -115,37 +127,57 @@ code { color: var(--text); }
 .numbers .label, .figures .label { font-size: 14px; color: var(--muted); }
 
 /* CLI */
-.modes { margin: 0; display: flex; flex-direction: column; gap: 14px; }
+.modes { margin: 0; display: flex; flex-direction: column; gap: 10px; }
 .modes div { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 10px; align-items: stretch; }
 .modes dt { grid-column: 1 / -1; font-family: var(--mono); font-size: 12px; letter-spacing: 1px; }
-.modes dd { margin: 0; min-width: 0; display: flex; align-items: center; padding: 10px 14px; background: var(--raised); border: 1px solid var(--line); border-radius: 10px; overflow-wrap: anywhere; font-family: var(--mono); font-size: 14px; }
+.modes dd { margin: 0; min-width: 0; display: flex; align-items: center; padding: 6px 12px; background: var(--raised); border: 1px solid var(--line); border-radius: 10px; overflow-wrap: anywhere; font-family: var(--mono); font-size: 13px; }
+.modes + .body { font-size: 15px; }
 .modes dd::before { content: "$"; margin-right: 10px; color: var(--cyan); }
 
 /* MCP band */
 .band { margin-top: 72px; background: var(--surface); border-top: 1px solid var(--line-soft); border-bottom: 1px solid var(--line-soft); }
-.band .wrap { padding-top: 56px; padding-bottom: 56px; display: flex; flex-direction: column; gap: 40px; }
-.band .row { align-items: stretch; }
-.band .code { display: flex; flex-direction: column; justify-content: center; }
+.band .wrap { padding-top: 56px; padding-bottom: 56px; display: flex; flex-direction: column; gap: 48px; }
 .figures { display: flex; gap: 32px; padding-top: 8px; }
 .figures > div { display: flex; flex-direction: column; gap: 2px; }
 .figures .rule { width: 1px; background: var(--line); }
-.pairs { border-top: 1px solid var(--line); }
-.pair { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 8px 40px; align-items: center; padding: 14px 0; border-bottom: 1px solid var(--line); }
-.pair q { font-size: 17px; font-weight: 500; }
-.pair code { font-size: 13px; color: var(--blue); overflow-wrap: anywhere; }
+.mcp-lines { display: flex; padding: 20px 0; font-family: var(--mono); font-size: 14px; line-height: 1.75; }
+.mcp-lines .n { flex: none; width: 48px; padding-right: 16px; text-align: right; color: #52525B; user-select: none; white-space: pre; }
+.mcp-lines pre { margin: 0; flex: 1; min-width: 0; overflow-x: auto; font: inherit; color: var(--text); }
+.mcp-lines .s { color: var(--green); }
+.tools-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; }
+.tools-head .kicker { color: var(--blue); }
+.tools-head span:last-child { font-size: 13px; color: var(--dim); }
+.tools-head code { color: var(--muted); }
+.tools { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); column-gap: 40px; }
+.tgroup { display: flex; flex-direction: column; min-width: 0; }
+.tgroup h3 { margin: 0; display: flex; justify-content: space-between; align-items: center; padding-bottom: 12px; border-bottom: 2px solid var(--blue); font-family: var(--mono); font-size: 14px; font-weight: 700; letter-spacing: 1px; color: var(--blue); }
+.tgroup h3 span { font-size: 12px; font-weight: 400; color: var(--dim); letter-spacing: 0; }
+.tgroup.go h3 { border-color: var(--green); color: var(--green); }
+.tgroup.mk h3 { border-color: var(--amber); color: var(--amber); }
+.tgroup ul { margin: 0; padding: 0; list-style: none; }
+.tgroup li { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 11px 0; border-bottom: 1px solid var(--line); }
+.tgroup li code { font-size: 13px; }
+.tgroup li span { font-size: 13px; color: var(--muted); text-align: right; }
+.res { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; padding: 14px 18px; background: var(--ground); border: 1px solid var(--line); border-radius: 12px; }
+.res .k { font-family: var(--mono); font-size: 12px; letter-spacing: 1px; color: var(--blue); }
+.res code { font-size: 13px; }
+.res span { font-size: 13px; color: var(--muted); }
+.res .div { width: 1px; height: 18px; background: var(--line); }
 
 /* code panels */
 .snippet { position: relative; min-width: 0; display: flex; }
-.snippet > .code { flex: 1; min-width: 0; padding-right: 96px; }
-.copy-sm { display: none; align-items: center; justify-content: center; min-width: 72px; min-height: 44px; padding: 0 14px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--raised); color: var(--muted); font-family: var(--sans); font-weight: 600; font-size: 13px; cursor: pointer; }
+.snippet > .code { flex: 1; min-width: 0; padding-right: 80px; }
+.copy-sm { display: none; align-items: center; justify-content: center; position: relative; min-width: 56px; min-height: 32px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--raised); color: var(--muted); font-family: var(--sans); font-weight: 600; font-size: 12px; cursor: pointer; }
+/* the visible button is 32px tall; the pseudo-element brings its hit area to 44px */
+.copy-sm::after { content: ""; position: absolute; inset: -6px; }
 .copy-sm:hover { color: var(--text); border-color: var(--dim); }
 .js .copy-sm { display: inline-flex; }
-.snippet .copy-sm { position: absolute; top: 12px; right: 12px; }
-.code { margin: 0; min-width: 0; overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; padding: 24px; font-size: 14px; line-height: 1.8; color: var(--text); background: var(--surface); }
+.snippet .copy-sm { position: absolute; top: 10px; right: 10px; }
+.code { margin: 0; min-width: 0; overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; font-size: 14px; line-height: 1.65; color: var(--text); background: var(--surface); }
 .band .code { background: var(--ground); }
 .code .c { color: var(--dim); }
 .code .s { color: var(--green); }
-.code.start { line-height: 1.9; }
+.code.start { line-height: 1.75; }
 
 /* why */
 .three { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 40px; }
@@ -170,19 +202,26 @@ footer a { display: inline-flex; align-items: center; min-height: 44px; padding:
 footer a:hover { color: var(--text); }
 
 @media (max-width: 960px) {
-  .row { grid-template-columns: minmax(0, 1fr); gap: 32px; }
-  .fill .frame img { flex: none; height: auto; }
+  .row, .row.even { grid-template-columns: minmax(0, 1fr); gap: 32px; }
   .section { padding-top: clamp(56px, 10vw, 72px); }
   .band { margin-top: clamp(56px, 10vw, 72px); }
   .three { grid-template-columns: minmax(0, 1fr); gap: 32px; }
-  .pair { grid-template-columns: minmax(0, 1fr); }
+  .tools { grid-template-columns: minmax(0, 1fr); row-gap: 24px; }
+  .res .div { display: none; }
   .numbers .wrap { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .numbers .n { border-left: 0; padding-left: 0; }
 }
 @media (max-width: 520px) {
   .numbers .wrap { grid-template-columns: minmax(0, 1fr); }
   .actions .button { flex: 1 1 100%; justify-content: center; }
-  .code { padding: 18px; }
+  .code { padding: 14px; padding-right: 72px; font-size: 13px; }
+  .modes dd { font-size: 12px; }
+  .modes dd::before { display: none; }
+  .mcp-lines { font-size: 12px; padding: 16px 0; }
+  .mcp-lines .n { width: 36px; padding-right: 12px; }
+  .frame .pad { padding: 12px; }
+  .chips { padding: 0 12px 12px; }
+  .chip { font-size: 12px; padding: 4px 10px; }
 }
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
@@ -242,7 +281,7 @@ GitHub</a>
 </div>
 </section>
 
-<section class="wrap section row flip fill" id="cli" aria-labelledby="cli-title">
+<section class="wrap section row flip even" id="cli" aria-labelledby="cli-title">
 <div class="col">
 <span class="kicker c-amber">CLI</span>
 <h2 class="h2" id="cli-title">One command per <span class="c-amber">tunnel.</span></h2>
@@ -254,41 +293,92 @@ GitHub</a>
 </dl>
 <p class="body">Public mode needs a relay once per account: <code>gtunnel relay up --managed-zone my-dns-zone</code>.</p>
 </div>
-<figure class="frame">
+<figure class="frame rec">
 <div class="bar2" aria-hidden="true"><i></i><i></i><i></i><span>gtunnel run my-vm:5432 --ttl 30m</span></div>
-<img src="demo-run.gif" alt="A terminal recording: gtunnel run --ttl 30m db my-vm:5432 prints the local port and its stop time, gtunnel list shows the run, Ctrl+C closes it, and the list is empty again, animated" width="1500" height="500" loading="lazy">
+<div class="pad"><div class="viewport"><img src="demo-run.gif" alt="A terminal recording: gtunnel run --ttl 30m db my-vm:5432 prints the local port and its stop time, gtunnel list shows the run, Ctrl+C closes it, and the list is empty again, animated" width="1500" height="500" loading="lazy"></div></div>
+<div class="chips">
+<span class="chip"><i style="background: var(--amber)"></i>Stops by itself in 30m</span>
+<span class="chip"><i style="background: var(--green)"></i>Ctrl+C closes it</span>
+<span class="chip"><i style="background: var(--blue)"></i>The list is empty again</span>
+</div>
 </figure>
 </section>
 
 <section class="band" id="mcp" aria-labelledby="mcp-title">
 <div class="wrap">
-<div class="row">
+<div class="row even">
 <div class="col">
 <span class="kicker c-blue">MCP</span>
 <h2 class="h2" id="mcp-title">Ask your agent. <span class="c-blue">It opens the tunnel.</span></h2>
-<p class="body"><code>gtunnel mcp</code> is built into the binary. Works with Claude Code, Gemini CLI and Claude Desktop.</p>
+<p class="body"><code>gtunnel mcp</code> is built into the binary. Add it to your client's config and it can list, start, stop and run tunnels for you.</p>
 <div class="figures">
 <div><span class="big c-blue">11</span><span class="label">tools</span></div>
 <div class="rule"></div>
 <div><span class="big c-blue">2</span><span class="label">live resources</span></div>
 </div>
 </div>
-<div class="snippet">
-<pre class="code"><code><span class="c"># .mcp.json</span>
-{
+<figure class="frame mcp">
+<div class="bar2 tool"><i></i><i></i><i></i><span class="grow">.mcp.json</span><button type="button" class="copy-sm" data-copy-for="the MCP configuration">Copy</button></div>
+<div class="mcp-lines"><div class="n" aria-hidden="true">1
+2
+3
+4
+5
+6
+7
+8</div><pre>{
   "mcpServers": {
     "gtunnel": {
       "command": <span class="s">"gtunnel"</span>,
       "args": [<span class="s">"mcp"</span>]
     }
   }
-}</code></pre>
-<button type="button" class="copy-sm" data-copy-for="the MCP configuration">Copy</button>
+}</pre></div>
+<div class="chips" style="padding-top: 14px; border-top: 1px solid var(--line-soft)">
+<span style="font-size: 13px; color: var(--dim); align-self: center; margin-right: 4px">Works with</span>
+<span class="chip">Claude Code</span>
+<span class="chip">Gemini CLI</span>
+<span class="chip">Claude Desktop</span>
+</div>
+</figure>
+</div>
+
+<div class="col" style="gap: 20px">
+<div class="tools-head"><span class="kicker">THE 11 TOOLS</span><span>Every name starts with <code>gtunnel_</code></span></div>
+<div class="tools">
+<div class="tgroup">
+<h3>OBSERVE <span>5</span></h3>
+<ul>
+<li><code>list_tunnels</code><span>tunnels and live runs</span></li>
+<li><code>list_accounts</code><span>accounts, active one marked</span></li>
+<li><code>get_status</code><span>pid, health, probe latency</span></li>
+<li><code>get_logs</code><span>recent log lines</span></li>
+<li><code>doctor</code><span>local and GCP checks</span></li>
+</ul>
+</div>
+<div class="tgroup go">
+<h3>CONTROL <span>3</span></h3>
+<ul>
+<li><code>start_tunnel</code><span>start a daemon</span></li>
+<li><code>stop_tunnel</code><span>a tunnel or a live run</span></li>
+<li><code>restart_tunnel</code><span>reinstall and restart</span></li>
+</ul>
+</div>
+<div class="tgroup mk">
+<h3>CREATE AND REMOVE <span>3</span></h3>
+<ul>
+<li><code>add_tunnel</code><span>a persistent Access tunnel</span></li>
+<li><code>run_tunnel</code><span>closes itself on its TTL</span></li>
+<li><code>delete_tunnel</code><span>stop and remove it</span></li>
+</ul>
 </div>
 </div>
-<div class="pairs">
-<div class="pair"><q>Why is the db tunnel failing?</q><code>→ gtunnel_get_status · gtunnel_get_logs · gtunnel_doctor</code></div>
-<div class="pair"><q>Give me postgres on my-vm for 30 minutes.</q><code>→ gtunnel_run_tunnel ttl_minutes: 30</code></div>
+<div class="res">
+<span class="k">2 RESOURCES</span>
+<code>gtunnel://tunnels</code><span>JSON snapshot of every persistent tunnel</span>
+<i class="div"></i>
+<code>gtunnel://accounts</code><span>the selected account and every configured one</span>
+</div>
 </div>
 </div>
 </section>
@@ -411,7 +501,7 @@ function tablist(list, onPick) {
 // left out), a command row copies its command
 (function () {
   function text(btn) {
-    var box = btn.parentNode;
+    var box = btn.closest('figure') || btn.parentNode;
     var pre = box.querySelector('pre');
     if (!pre) { return box.querySelector('dd').textContent; }
     var clone = pre.cloneNode(true);
