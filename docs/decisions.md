@@ -27,7 +27,7 @@ Every token comes from `gcloud auth print-access-token` at connect time
 (`src/gcp/gcloud.rs`). gtunnel holds no refresh token, no service-account key and no
 password, and writes none to disk.
 
-A credential file is referenced by path in `config.toml` and passed to gcloud per call; gtunnel never reads, copies or stores it.
+A credential file is referenced by path in `config.toml` and passed to gcloud per call; gtunnel never copies, stores or logs it, and `doctor` reads it only to check its type and mode.
 
 The cost is a hard dependency on a working `gcloud` on `PATH` and a shell-out per
 connection. In exchange, a stolen `tunnels.toml` is worth nothing, and revoking access is
@@ -331,9 +331,11 @@ provider, once, for every client. `ring` is 1.4 MB smaller than `aws-lc-rs`. The
 post-quantum key exchange, which `aws-lc-rs` offers; gtunnel talks to Google and GitHub
 endpoints that negotiate classical key exchange today.
 
-`panic = "abort"` is safe here: nothing calls `catch_unwind` or inspects a panic, the
-panic hook that `ratatui::init` installs restores the terminal before the process ends, and
-launchd and systemd restart a daemon that dies. A panic is now a crash, not an unwind.
+`panic = "abort"` is safe here: nothing in the release build calls `catch_unwind` or inspects
+a panic. The one guard that does, the `JoinError` fallback in `spawn_round` (`src/tui/mod.rs`),
+runs only in test and debug builds, which unwind; in the release profile a panic ends the
+process before it can fire. The panic hook that `ratatui::init` installs restores the
+terminal before the process ends, and launchd and systemd restart a daemon that dies. A panic is now a crash, not an unwind.
 
 `opt-level` stays 3. `"s"` would shrink the binary further, but the relay and probe paths are
 not benchmarked, so the speed given up is unknown.
