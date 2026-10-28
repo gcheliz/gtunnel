@@ -83,7 +83,7 @@ Specify the release version and substitute your machine's file: `gtunnel-macos-a
 `gtunnel-macos-intel`, `gtunnel-linux-amd64` or `gtunnel-linux-arm64`.
 
 ```
-VERSION="v0.2.25"
+VERSION="v0.2.27"
 F="gtunnel-macos-arm64-${VERSION}.tar.gz"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F.sha256"
@@ -95,7 +95,7 @@ so they run on any glibc.
 
 ```
 $ gtunnel --version
-gtunnel 0.2.25
+gtunnel 0.2.27
 ```
 
 #### Proving where the binary came from
@@ -201,7 +201,7 @@ not about the setup.
 ### 7. Add a tunnel
 
 ```
-gtunnel add db my-vm:5432 --local-port 15432 -s
+gtunnel add db bastion:5432 --local-port 15432 -s
 psql -h localhost -p 15432
 ```
 
@@ -220,8 +220,8 @@ gtunnel has two modes. Everything else is a choice inside one of them.
 
 | Mode | Direction | Command | What it creates in GCP |
 |---|---|---|---|
-| Access | Your laptop reaches a VM, or a host in the VPC | [`add`](commands.md#add) | Nothing: a local process and an IAP connection |
-| Expose | The internet reaches a service on your laptop, through the relay | [`expose`](commands.md#expose) | A relay VM and load balancer, once per account, shared by every tunnel |
+| Access | Your laptop reaches a GCP instance, or a host in the VPC | [`add`](commands.md#add) | Nothing: a local process and an IAP connection |
+| Expose | The internet reaches a service on your laptop, through the relay | [`expose`](commands.md#expose) | A relay instance and load balancer, once per account, shared by every tunnel |
 
 In `tunnels.toml` the mode is `mode = "access"` or `mode = "expose"`
 ([configuration.md](configuration.md#tunnelstoml)).
@@ -243,7 +243,7 @@ kind also needs `roles/iap.tunnelResourceAccessor`
 
 The instance is always yours. In the TUI the add flow picks it from the project's
 instances; `gtunnel add` and `gtunnel run` take it as an argument. For `jump`, `instance`
-is the machine ssh runs on and `host` is the destination it reaches. `bastion`, `my-vm`
+is the machine ssh runs on and `host` is the destination it reaches. `bastion`
 and `10.0.0.10` in the examples are placeholders.
 
 ### Lifetime and visibility
@@ -345,7 +345,7 @@ steps:
 ```
 
 The step needs the `gtunnel` binary on its `PATH`; [Getting set up](#getting-set-up) installs
-it. A tunnel through a VM, or one connection per query, behaves differently under load: read
+it. A tunnel through a GCP instance, or one connection per query, behaves differently under load: read
 [Limits](architecture.md#limits) before pointing a connection pool at one.
 
 ## Command map
@@ -422,7 +422,7 @@ version. [update](commands.md#update) has the check itself.
 
 ```
 $ gtunnel list
-gtunnel v9.9.9 is available (current: v0.2.25). Run `gtunnel update`.
+gtunnel v9.9.9 is available (current: v0.2.27). Run `gtunnel update`.
 ```
 
 ## The TUI
@@ -703,7 +703,7 @@ guides AI agents (Claude Code, Gemini CLI, etc.) on:
 and 2 live resources without requiring an external runtime.
 
 <p align="center">
-  <img src="demo-mcp.gif" alt="Real MCP calls to gtunnel mcp: the tools, gtunnel_run_tunnel opening db on my-vm:5432 for 30 minutes, gtunnel list showing the run and its stop time, gtunnel_stop_tunnel closing it" width="720">
+  <img src="demo-mcp.gif" alt="Real MCP calls to gtunnel mcp: the tools, gtunnel_run_tunnel opening db on bastion:5432 for 30 minutes, gtunnel list showing the run and its stop time, gtunnel_stop_tunnel closing it" width="720">
 </p>
 
 #### Exposed Tools
@@ -731,7 +731,7 @@ server and its only owner is the TTL, and it answers once the run has published 
 
 ```json
 {"name": "gt-4k9x2m", "account": "demo", "url": "localhost:15247", "local_port": 15247,
- "target": "my-vm:5432 (europe-west1-b)", "ttl_minutes": 5, "expires_at": 1793103233}
+ "target": "bastion:5432 (europe-west1-b)", "ttl_minutes": 5, "expires_at": 1793103233}
 ```
 
 | Rule | Why |

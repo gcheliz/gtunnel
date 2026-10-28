@@ -136,7 +136,7 @@ impl Trail {
 
 /// The verdict on one TCP probe: an answer is healthy, and no answer is
 /// whatever the log says it was. Both the metrics probe and the health probe
-/// end here, because a probe costs an IAP connection to the VM and the TUI
+/// end here, because a probe costs an IAP connection to the instance and the TUI
 /// takes health from the metrics probe where one ran; two classifiers would
 /// let the row's verdict depend on which of them happened to run.
 pub fn classify_probe(

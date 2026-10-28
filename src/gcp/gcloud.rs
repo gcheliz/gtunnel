@@ -435,17 +435,81 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn a_missing_credential_file_error_carries_gcloud_s_reason() {
-        if find_gcloud().is_none() {
-            return;
+    // `find_gcloud` reads PATH and nothing else, so PATH is the only seam for
+    // a stand-in. It is process-wide, hence the lock: two tests swapping it
+    // would each see the other's script. The real PATH stays behind the fake
+    // so `sh` and friends still resolve.
+    static PATH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct FakeGcloudOnPath {
+        original: Option<std::ffi::OsString>,
+        _dir: tempfile::TempDir,
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl FakeGcloudOnPath {
+        fn new(body: &str) -> Self {
+            use std::os::unix::fs::PermissionsExt;
+            let guard = PATH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let dir = tempfile::tempdir().expect("tempdir");
+            let script = dir.path().join("gcloud");
+            std::fs::write(&script, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let original = std::env::var_os("PATH");
+            let mut dirs = vec![dir.path().to_path_buf()];
+            dirs.extend(std::env::split_paths(&original.clone().unwrap_or_default()));
+            let joined = std::env::join_paths(dirs).expect("join PATH");
+            // SAFETY: every test that rewrites PATH holds PATH_LOCK through
+            // `_guard`; std serialises its own environment reads against this.
+            unsafe { std::env::set_var("PATH", joined) };
+            Self {
+                original,
+                _dir: dir,
+                _guard: guard,
+            }
         }
+    }
+
+    impl Drop for FakeGcloudOnPath {
+        fn drop(&mut self) {
+            // SAFETY: `_guard` is still held while this body runs.
+            unsafe {
+                match &self.original {
+                    Some(p) => std::env::set_var("PATH", p),
+                    None => std::env::remove_var("PATH"),
+                }
+            }
+        }
+    }
+
+    async fn missing_credential_file_error() -> String {
         let mut acct = account(None);
         acct.credential_file = Some("/nonexistent/ci-key.json".into());
-        let err = ensure_logged_in_with(&acct, false, |_| Ok(false))
+        ensure_logged_in_with(&acct, false, |_| Ok(false))
             .await
-            .expect_err("a missing key cannot sign in");
-        assert!(err.to_string().contains("was not found"), "{err}");
+            .expect_err("a missing key cannot sign in")
+            .to_string()
+    }
+
+    // The wording is gcloud's, so it is pinned in a stand-in: asserting it
+    // against whatever gcloud a runner happens to have made CI flaky
+    #[tokio::test]
+    async fn a_missing_credential_file_error_carries_gcloud_s_reason() {
+        let _fake = FakeGcloudOnPath::new(
+            "echo 'ERROR: (gcloud.auth.print-access-token) File /nonexistent/ci-key.json was not found.' >&2; exit 1",
+        );
+        let err = missing_credential_file_error().await;
+        assert!(err.contains("was not found"), "{err}");
+    }
+
+    // Run by hand against the installed gcloud to catch a change in its wording:
+    // cargo test -- --ignored the_real_gcloud_words_a_missing_credential_file
+    #[tokio::test]
+    #[ignore = "needs the real gcloud on PATH; run by hand"]
+    async fn the_real_gcloud_words_a_missing_credential_file_as_not_found() {
+        assert!(find_gcloud().is_some(), "no gcloud on PATH");
+        let err = missing_credential_file_error().await;
+        assert!(err.contains("was not found"), "{err}");
     }
 
     #[tokio::test]

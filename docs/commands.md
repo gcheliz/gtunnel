@@ -17,6 +17,7 @@ Contents:
 - [doctor](#doctor)
 - [reset](#reset)
 - [update](#update)
+- [mcp](#mcp)
 - [Errors and exit codes](#errors-and-exit-codes)
 - [Shell completions](#shell-completions)
 
@@ -186,7 +187,7 @@ choose. One tunnel per database behind it pins a hostname gtunnel has no reason 
 
 The three target kinds, their engines and what each needs are in
 [Concepts](usage.md#three-kinds-of-access-target). Use `instance` for SSH or a database on the
-VM itself, `--dest-group` for a host IAP can address directly, and `--via` for the rest.
+instance itself, `--dest-group` for a host IAP can address directly, and `--via` for the rest.
 
 An IAP TCP forward lands on a port of the instance itself, so a private endpoint behind a
 bastion needs `--via`: IAP carries an ssh connection and ssh makes the forward from the far
@@ -232,10 +233,10 @@ An ephemeral tunnel in the foreground. It is recorded while it runs so `list`, t
 and on a crash.
 
 ```
-gtunnel run my-vm:5432                 # access, prints the local port
-gtunnel run db my-vm:5432              # access, under a name
+gtunnel run bastion:5432                 # access, prints the local port
+gtunnel run db bastion:5432              # access, under a name
 gtunnel run --public 3000              # https://gt-<random>.<domain>
-gtunnel run my-vm:5432 --ttl 30m       # stops itself after 30 minutes
+gtunnel run bastion:5432 --ttl 30m       # stops itself after 30 minutes
 ```
 
 | | |
@@ -246,7 +247,7 @@ gtunnel run my-vm:5432 --ttl 30m       # stops itself after 30 minutes
 | Stopping | Ctrl+C, SIGTERM, SIGHUP, the TTL and gcloud exiting all end the same way: SIGTERM to gcloud and its children, up to 2 seconds, then SIGKILL |
 
 <p align="center">
-  <img src="demo-run.gif" alt="gtunnel run --ttl 30m db my-vm:5432 prints the local port and its stop time, gtunnel list shows the run with its stop time, Ctrl+C closes it, and the list is empty again" width="720">
+  <img src="demo-run.gif" alt="gtunnel run --ttl 30m db bastion:5432 prints the local port and its stop time, gtunnel list shows the run with its stop time, Ctrl+C closes it, and the list is empty again" width="720">
 </p>
 
 ### run --ttl
@@ -266,7 +267,7 @@ route and the record in `run/` go the same way.
 $ gtunnel list
 STATUS     NAME             MODE    URL                              TARGET
 ○ stopped  db               access  localhost:15432                  postgres-1:5432 (europe-west1-b)
-● running  scratch          access  localhost:15999                  my-vm:5432 (europe-west1-b)  [run, stops at 14:32]
+● running  scratch          access  localhost:15999                  bastion:5432 (europe-west1-b)  [run, stops at 14:32]
 ● running  pid 59670        access  -                                bastion-1:22 (europe-west1-b)  [not managed by gtunnel]
 ```
 
@@ -309,7 +310,7 @@ $ gtunnel list --json
     "name": "scratch",
     "mode": "access",
     "url": "localhost:15999",
-    "target": "my-vm:5432 (europe-west1-b)",
+    "target": "bastion:5432 (europe-west1-b)",
     "account": "demo",
     "auto_start": false,
     "unmanaged": false,
@@ -497,7 +498,7 @@ No relay for account 'dev'. Run `gtunnel relay up`
 ```
 $ gtunnel relay up
 Relay for account 'dev' in europe-west1-b:
-  Global forwarding rule (~USD 18/month) and e2-micro VM (~USD 7/month, free tier in some US regions)
+  Global forwarding rule (~USD 18/month) and e2-micro instance (~USD 7/month, free tier in some US regions)
 Create it? [y/N] [n]: y
 ```
 
@@ -506,7 +507,7 @@ Declining cancels cleanly:
 ```
 $ gtunnel relay up
 Relay for account 'dev' in europe-west1-b:
-  Global forwarding rule (~USD 18/month) and e2-micro VM (~USD 7/month, free tier in some US regions)
+  Global forwarding rule (~USD 18/month) and e2-micro instance (~USD 7/month, free tier in some US regions)
 Create it? [y/N] [n]: Cancelled
 ```
 
@@ -528,7 +529,7 @@ opens nothing.
 | `gt-<account>-lb-hc` | tcp `30000-30999`, the relay ports | the load balancer and its health checkers, `130.211.0.0/22` and `35.191.0.0/16` |
 
 A public tunnel forwards with `ssh -R 0.0.0.0:<relay-port>:<local target>`, so the port
-listens on every interface of the relay VM: the load balancer reaches it from another host.
+listens on every interface of the relay instance: the load balancer reaches it from another host.
 Any other rule on that network that admits `30000-30999` from elsewhere, such as an
 allow-all, lets a client who knows the relay's address connect to the forwarded service
 directly. That skips the load balancer and, with `--private`, the IAP sign-in in front of it.
@@ -909,6 +910,24 @@ Every other command prints a one-line hint when a cached check found a newer ver
 The check runs at most once a day, in the background, and never blocks a command. A
 downloaded binary and one in `~/.cargo/bin` replace themselves after verifying the published
 SHA-256; a Homebrew install is detected and pointed at `brew upgrade gtunnel` instead.
+
+## mcp
+
+```
+$ gtunnel mcp --help
+Run Model Context Protocol (MCP) stdio server
+
+Usage: gtunnel mcp [OPTIONS]
+
+Options:
+      --account <ACCOUNT>  Use a specific account (overrides the default)
+      --validate           Validate tool definitions and exit
+      --log-level <LEVEL>  How much to log: quiet, info or debug (default: info)
+  -h, --help               Print help
+```
+
+`mcp` serves newline-delimited JSON-RPC 2.0 on stdin and stdout, so an MCP client starts it as a
+child process. The tools and the client setup are in [The native MCP Server](usage.md#the-native-mcp-server).
 
 ## Errors and exit codes
 
