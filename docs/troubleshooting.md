@@ -8,6 +8,7 @@ Contents:
 - [What the log says, and what it means](#what-the-log-says-and-what-it-means)
 - [Local port collisions](#local-port-collisions)
 - [gtunnel needs a logged-in Google account](#gtunnel-needs-a-logged-in-google-account)
+- [no zone for account](#no-zone-for-account)
 - [Could not list projects](#could-not-list-projects)
 - [IAP firewall](#iap-firewall)
 - [IAM](#iam)
@@ -385,6 +386,24 @@ A pooled connection that sat idle comes back dead, or a client stalls and then r
 | The log shows `Unable to reconnect within` | The 15 minutes ran out. Restart the tunnel |
 
 The numbers and their sources are in [Limits](architecture.md#limits).
+
+## `no zone for account`
+
+```
+Error: no zone for account 'work': pass --zone, or set a default with gtunnel account edit work --zone <zone>
+```
+
+Exit code 2, before any request is made. `gtunnel init` lets the default zone be skipped, so an
+account can exist without one, and the commands that reach an instance by zone refuse it:
+`add --via`, `add` to an instance, `run` to an instance and `relay up`.
+
+| Fix | Command |
+|---|---|
+| For one command | pass `--zone europe-west1-b` |
+| For the account | `gtunnel account edit work --zone europe-west1-b` |
+| Find a zone | `gtunnel zones` lists the project's zones |
+
+A tunnel through a destination group takes `--region` and needs no zone.
 
 ## Could not list projects
 

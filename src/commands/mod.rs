@@ -185,6 +185,26 @@ pub fn prompt(label: &str, default: Option<&str>) -> Result<String> {
     Ok(value)
 }
 
+/// The zone a command acts in: the flag, else the account's default. An account
+/// saved without a zone is legitimate (`init` lets it be skipped), so the
+/// refusal belongs here, where a zone is consumed, and runs before any GCP
+/// request so a missing zone never reaches the API as an empty path segment.
+pub fn require_zone(acct: &Account, flag: Option<&str>) -> Result<String> {
+    if let Some(zone) = flag {
+        crate::state::validate_zone(zone)?;
+        return Ok(zone.to_string());
+    }
+    if acct.default_zone.is_empty() {
+        return Err(GtunnelError::usage(format!(
+            "no zone for account '{}': pass --zone, or set a default with \
+             gtunnel account edit {} --zone <zone>",
+            acct.name, acct.name
+        ))
+        .into());
+    }
+    Ok(acct.default_zone.clone())
+}
+
 pub fn confirm(question: &str, assume_yes: bool) -> Result<bool> {
     if assume_yes {
         return Ok(true);
@@ -273,6 +293,47 @@ mod tests {
             }
         }
         starts
+    }
+
+    fn zoneless(zone: &str) -> Account {
+        Account {
+            name: "work".to_string(),
+            gcloud_configuration: "work".to_string(),
+            project: "example-dev-1a2b".to_string(),
+            default_zone: zone.to_string(),
+            impersonate_service_account: None,
+            credential_file: None,
+            expose: None,
+        }
+    }
+
+    #[test]
+    fn require_zone_refuses_an_empty_default() {
+        let err = require_zone(&zoneless(""), None).expect_err("no zone anywhere");
+        assert_eq!(crate::error::kind_of(&err), crate::error::ErrorKind::Usage);
+        let msg = err.to_string();
+        assert!(msg.contains("no zone for account 'work'"), "{msg}");
+        assert!(msg.contains("--zone"), "{msg}");
+    }
+
+    #[test]
+    fn require_zone_prefers_the_flag() {
+        let zone = require_zone(&zoneless(""), Some("europe-west1-b")).expect("the flag wins");
+        assert_eq!(zone, "europe-west1-b");
+        let zone = require_zone(&zoneless("europe-west4-a"), Some("europe-west1-b"))
+            .expect("the flag beats the default");
+        assert_eq!(zone, "europe-west1-b");
+    }
+
+    #[test]
+    fn require_zone_uses_the_default() {
+        let zone = require_zone(&zoneless("europe-west1-b"), None).expect("the default");
+        assert_eq!(zone, "europe-west1-b");
+    }
+
+    #[test]
+    fn require_zone_still_validates_a_flag() {
+        require_zone(&zoneless(""), Some("Not A Zone")).expect_err("a bad flag is refused");
     }
 
     #[test]

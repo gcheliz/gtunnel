@@ -179,8 +179,9 @@ Error: gtunnel is not initialized. Run `gtunnel init`.
 gtunnel init
 ```
 
-[init](commands.md#init) shows the prompts. A default zone is required — `gtunnel zones` lists the ones
-in the project.
+[init](commands.md#init) shows the prompts. The default zone is optional: Enter skips it, and
+the commands that reach an instance then need `--zone`. `gtunnel zones` lists the ones in the
+project.
 
 ### 6. Check the ground before the first tunnel
 

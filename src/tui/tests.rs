@@ -965,8 +965,24 @@ fn a_filter_that_matches_none_of_the_listed_instances_accepts_what_was_typed() {
 }
 
 #[test]
+fn typed_instance_without_a_zone_sets_a_draft_error() {
+    let mut app = at_the_name_prompt();
+    app.default_zone = String::new();
+    keys(&mut app, "cache\nbastion\n");
+    assert_eq!(
+        app.input_mode,
+        InputMode::AddInstance,
+        "advanced without a zone"
+    );
+    let error = app.draft_error.as_deref().unwrap_or("");
+    assert!(error.contains("no zone"), "{error}");
+    assert!(app.draft.zone.is_empty(), "a zone-less draft was kept");
+}
+
+#[test]
 fn accepting_a_typed_instance_clears_the_failed_list_error_from_the_status_line() {
     let mut app = at_the_name_prompt();
+    app.default_zone = "europe-west1-b".to_string();
     keys(&mut app, "cache\n");
     app.instances_failed("gcloud exited 1");
     keys(&mut app, "bastion\n");

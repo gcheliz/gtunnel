@@ -2475,6 +2475,17 @@ impl App {
                     // A filter that matches nothing is the person naming an
                     // instance the list lacks, or could not fetch: take it
                     None if !self.input.trim().is_empty() => {
+                        // An account saved without a zone has nothing to
+                        // fill in for an instance the list lacks
+                        if self.default_zone.is_empty() {
+                            self.draft_error = Some(format!(
+                                "no zone for account '{}': pick an instance from the list, \
+                                 or set one with \
+                                 gtunnel account edit {0} --zone <zone>",
+                                self.account
+                            ));
+                            return None;
+                        }
                         (self.input.trim().to_string(), self.default_zone.clone())
                     }
                     None => {
