@@ -242,7 +242,7 @@ that level on the tunnel's start at login.
 
 ## Settings the environment can override
 
-Eight keys of `config.toml` have a variable each. Where they disagree the variable wins, always:
+Twelve keys of `config.toml` have a variable each. Where they disagree the variable wins, always:
 there is no key that opts out, so a value edited in the file that has no effect has one cause,
 and `gtunnel doctor` names it.
 
@@ -256,6 +256,10 @@ and `gtunnel doctor` names it.
 | `watch.probe_timeout` | `GTUNNEL_WATCH_PROBE_TIMEOUT` | none | `"3s"` | a duration above zero |
 | `watch.degraded_after` | `GTUNNEL_WATCH_DEGRADED_AFTER` | none | `2` | a whole number from 1 |
 | `watch.interval` | `GTUNNEL_WATCH_INTERVAL` | none | `"30s"` | a whole number of seconds above zero, as a duration |
+| `logs.max_size` | `GTUNNEL_LOGS_MAX_SIZE` | none | `"8MiB"` | a size above zero |
+| `logs.keep_size` | `GTUNNEL_LOGS_KEEP_SIZE` | none | `"2MiB"` | a size above zero and below `logs.max_size` |
+| `logs.lines_per_minute` | `GTUNNEL_LOGS_LINES_PER_MINUTE` | none | `60` | a whole number from 1 |
+| `logs.auth_exit_window` | `GTUNNEL_LOGS_AUTH_EXIT_WINDOW` | none | `"30s"` | a duration above zero |
 
 | Where | Beats |
 |---|---|
@@ -263,6 +267,9 @@ and `gtunnel doctor` names it.
 | The key in `config.toml` | the default |
 | nothing set | the default above |
 
+Sizes are bytes (`1048576`) or a number with `B`, `KiB`, `MiB` or `GiB`; there are no decimal
+units, so `8MB` is refused instead of meaning two things. A `keep_size` that is not below
+`max_size` fails with exit 2 naming both keys, and the variable that set either.
 Durations are `humantime` text (`500ms`, `20s`, `1m30s`). Booleans take `true`, `false`, `yes`,
 `no`, `on`, `off`, `1` or `0`. The older variables keep working: `GTUNNEL_START_DEADLINE_MS` and
 `GTUNNEL_SERVICE_BOUND_MS` are whole milliseconds, and `GTUNNEL_NO_DISCOVERY` and
@@ -303,6 +310,12 @@ failed = true
 probe_timeout = "3s"
 degraded_after = 2
 interval = "30s"
+
+[logs]
+max_size = "8MiB"
+keep_size = "2MiB"
+lines_per_minute = 60
+auth_exit_window = "30s"
 ```
 
 When a variable gives a value other than the file's, `gtunnel doctor` says so and what to unset:
@@ -399,6 +412,10 @@ skipped, so a second run does nothing. A definition counts as out of date only w
 | `GTUNNEL_WATCH_PROBE_TIMEOUT` | set how long the watchdog waits for a tunnel's local port, e.g. `3s` | a slow tunnel read as wedged |
 | `GTUNNEL_WATCH_DEGRADED_AFTER` | set how many failed probes in a row make a tunnel degraded | a flapping tunnel, or a late alert |
 | `GTUNNEL_WATCH_INTERVAL` | set how often the watchdog looks at every tunnel, e.g. `30s` | `watch` and `watch install` |
+| `GTUNNEL_LOGS_MAX_SIZE` | set the size a tunnel's log may reach before it is trimmed, e.g. `8MiB` | a log that grows too fast or is trimmed too soon |
+| `GTUNNEL_LOGS_KEEP_SIZE` | set what a trim keeps, e.g. `2MiB`; must stay below the maximum | the same |
+| `GTUNNEL_LOGS_LINES_PER_MINUTE` | set how many connection lines a tunnel's log takes a minute | a noisy client, or lines you want to see |
+| `GTUNNEL_LOGS_AUTH_EXIT_WINDOW` | set how long a credential line is held to explain gcloud's exit, e.g. `30s` | a login expiry read as a crash |
 | `GTUNNEL_EDITOR`, then `VISUAL`, then `EDITOR` | choose the editor `e` opens | the TUI's config page |
 | `GTUNNEL_NOTIFICATIONS` | switch desktop notifications on or off (older: `GTUNNEL_NO_NOTIFY`) | tests and diagnostics |
 | `GTUNNEL_DISCOVERY` | switch the look for processes outside gtunnel on or off (older: `GTUNNEL_NO_DISCOVERY`) | tests and diagnostics |
@@ -419,6 +436,10 @@ skipped, so a second run does nothing. A definition counts as out of date only w
 | `GTUNNEL_WATCH_PROBE_TIMEOUT` | `watch` | How long one probe of a tunnel's local port may take before it counts as a failure, as a duration (`3s`). Beats `probe_timeout` under `[watch]`. Default 3s; an empty value counts as unset, and anything else that is not a duration above zero is an error naming the variable |
 | `GTUNNEL_WATCH_DEGRADED_AFTER` | `watch` | Consecutive failed probes before a tunnel is called degraded; a whole number from 1. Beats `degraded_after`. Default 2, the breaker's own run length |
 | `GTUNNEL_WATCH_INTERVAL` | `watch`, `watch install` | How often the watchdog makes a pass, as a whole number of seconds written as a duration (`45s`). Beats `interval`. Default 30s. Installed units keep the value they were written with until `watch install` runs again |
+| `GTUNNEL_LOGS_MAX_SIZE` | every command that writes a tunnel's log, the supervisor | The size a log may reach before gtunnel keeps only its tail, as bytes or with `KiB`, `MiB`, `GiB` (`8MiB`). Beats `max_size` under `[logs]`. Default 8MiB. An empty value counts as unset; anything else that is not a size above zero is an error naming the variable |
+| `GTUNNEL_LOGS_KEEP_SIZE` | the same | What a trim keeps, same units. Beats `keep_size`. Default 2MiB. Must be below the maximum: both keys are named when it is not |
+| `GTUNNEL_LOGS_LINES_PER_MINUTE` | the supervisor | Connection lines written per tunnel per minute; the rest are counted into one line. A whole number from 1. Beats `lines_per_minute`. Default 60 |
+| `GTUNNEL_LOGS_AUTH_EXIT_WINDOW` | the supervisor | How long before gcloud exits a credential-failure line still explains it, as a duration. Beats `auth_exit_window`. Default 30s |
 | `GTUNNEL_RESTART_MAX_RESTARTS` | the supervisor, `start`, `restart` | Fast failures tolerated inside the window; a whole number, `0` disables the budget. Beats `max_restarts` under `[restart]`. An empty value counts as unset; anything else that is not a number in range is an error naming the variable. See [The restart budget](#the-restart-budget) |
 | `GTUNNEL_RESTART_WINDOW` | the supervisor, `start`, `restart` | How long a failure counts, as a duration (`10m`). Beats `window`. Must not be shorter than the base backoff |
 | `GTUNNEL_RESTART_MIN_UPTIME` | the supervisor, `start`, `restart` | How long a run must last to clear the count (`60s`). Beats `min_uptime` |

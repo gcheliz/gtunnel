@@ -377,10 +377,6 @@ pub fn read_tail(path: &std::path::Path, max_bytes: u64) -> String {
     }
 }
 
-/// What a log may reach before it is trimmed, and what survives the trim.
-pub const LOG_CAP: u64 = 8 * 1024 * 1024;
-pub const LOG_KEEP: u64 = 2 * 1024 * 1024;
-
 /// Past `cap`, rewrite the log keeping its last `keep` bytes from a line
 /// boundary, with a first line saying what went. The service's child holds
 /// this file open in append mode, so truncating in place is safe: its next
@@ -440,7 +436,8 @@ pub fn log_event(path: &std::path::Path, message: &str) -> Result<()> {
     // A full disk is a worse failure than a short history, and a log this
     // talkative gets there. A trim that fails changes nothing and is not
     // worth refusing the line over.
-    let _ = trim_log(path, LOG_CAP, LOG_KEEP);
+    let limits = crate::settings::current();
+    let _ = trim_log(path, limits.logs_max_size, limits.logs_keep_size);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)
             .with_context(|| format!("Failed to create {}", dir.display()))?;

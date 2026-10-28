@@ -216,7 +216,7 @@ The `conn` lines are written by the tunnel's own supervisor, which reads gcloud'
 `[N] Connecting with URL` and `[N] Client closed connection from [...]` and ssh's
 `channel N: new` and `channel N: free: ... connect from H port P` and pairs them by id.
 They are there whether or not the TUI is open. A connection gtunnel itself makes to check
-the tunnel's health writes no line, at most 60 lines a minute are written per tunnel, and
+the tunnel's health writes no line, at most 60 lines a minute (`logs.lines_per_minute`) are written per tunnel, and
 the `quiet` level writes none.
 
 A `--via` tunnel never prints `Listening on port`. It runs `gcloud compute ssh
@@ -247,7 +247,7 @@ or two per client connection after that. The level is the lever on that figure.
 | `debug` | substantially more, gcloud's and ssh's internals included | several |
 
 The bound is the same at all three: a log is emptied when its tunnel starts, and past
-8 MiB gtunnel keeps the last 2 MiB and replaces the rest with a first line saying it did.
+8 MiB (`logs.max_size`) gtunnel keeps the last 2 MiB (`logs.keep_size`) and replaces the rest with a first line saying it did.
 The rate of reaching it is not: at `debug` a busy tunnel covers 8 MiB in minutes rather
 than weeks, and the paragraph below is why that matters for a tunnel left unattended.
 
