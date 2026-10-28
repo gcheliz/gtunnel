@@ -17,14 +17,19 @@ use crate::ephemeral::list_ephemeral;
 use crate::expose::routes;
 use crate::gcp::GcpClient;
 use crate::probe::{
-    collect_metrics, collect_unmanaged, failed_health, http_probe, probe_tunnel, HealthStatus,
+    classify_probe, collect_metrics, collect_unmanaged, http_probe, probe_tunnel, HealthStatus,
+    TCP_TIMEOUT,
 };
 use crate::state::{AccessTarget, PersistentTunnel, TunnelSpec, TunnelState, TunnelStatus};
 use std::time::Duration;
 
+// The health dial and the metrics dial are one probe to the TUI, so they wait
+// the same time: a tunnel that answers in 3 s must not be healthy by one round
+// and unhealthy by the other
+const TCP_HEALTH_TIMEOUT: Duration = TCP_TIMEOUT;
+
 // How long an imported run is given to let go of its ports and its route
 const IMPORT_HANDOVER: Duration = Duration::from_secs(10);
-const TCP_HEALTH_TIMEOUT: Duration = Duration::from_secs(2);
 
 // Everything the list shows for one account, read fresh
 pub async fn load_entries(account: &str) -> Result<(Vec<TunnelEntry>, HashSet<u16>)> {
@@ -220,14 +225,10 @@ pub async fn probe_health(tunnel: &PersistentTunnel) -> HealthStatus {
             // No log to read means a silent close is taken as an answer
             let log = tunnel.log_path().unwrap_or_default();
             let addr = format!("127.0.0.1:{local_port}");
-            match probe_tunnel(&addr, TCP_HEALTH_TIMEOUT, &log).await {
-                Some(_) => HealthStatus::Healthy,
-                None => {
-                    let label = daemon::platform_label(&tunnel.account_name, &tunnel.name);
-                    let marker = daemon::auth_marker_path(&label).ok();
-                    failed_health(&log, marker.as_deref())
-                }
-            }
+            let label = daemon::platform_label(&tunnel.account_name, &tunnel.name);
+            let marker = daemon::auth_marker_path(&label).ok();
+            let answer = probe_tunnel(&addr, TCP_HEALTH_TIMEOUT, &log).await;
+            classify_probe(answer, &log, marker.as_deref())
         }
         TunnelSpec::Expose { hostname, .. } => http_probe(&format!("https://{hostname}")).await,
     }
@@ -707,5 +708,53 @@ mod tests {
         .save()
         .unwrap();
         assert!(used_ports(&TunnelState::default()).contains(&17777));
+    }
+
+    // The TUI takes a row's health from the metrics probe when one ran, so the
+    // two must not be able to disagree about the same outcome
+    #[tokio::test]
+    async fn the_metrics_probe_and_the_health_probe_give_the_same_verdict() {
+        use tokio::io::AsyncWriteExt;
+        let config = crate::config::Config::default();
+        // Answers with a banner
+        let answering = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let answering_port = answering.local_addr().expect("addr").port();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = answering.accept().await {
+                let _ = sock.write_all(b"SSH-2.0-OpenSSH_10.0p2\r\n").await;
+            }
+        });
+        // Accepts and never says anything: a stalled tunnel
+        let stalled = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let stalled_port = stalled.local_addr().expect("addr").port();
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((sock, _)) = stalled.accept().await {
+                held.push(sock);
+            }
+        });
+        // Bound and dropped: the connection is refused
+        let refused_port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+            l.local_addr().expect("addr").port()
+        };
+
+        for (what, port, expected) in [
+            ("answered", answering_port, HealthStatus::Healthy),
+            ("refused", refused_port, HealthStatus::Unhealthy),
+            ("timed out", stalled_port, HealthStatus::Unhealthy),
+        ] {
+            let tunnel = access("verdict", port);
+            let from_health = probe_health(&tunnel).await;
+            let from_metrics = collect_unmanaged(&config, &tunnel, std::process::id(), None)
+                .await
+                .health;
+            assert_eq!(from_health, expected, "{what}: the health probe");
+            assert_eq!(from_metrics, Some(from_health), "{what}: the metrics probe");
+        }
     }
 }

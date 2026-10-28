@@ -527,9 +527,15 @@ fn apply_polled(app: &mut App, timers: &mut Timers, msg: Msg) {
                     entry.crash_looping = entry
                         .restart_watch
                         .observe(std::time::SystemTime::now(), m.restarts);
+                    // The probe that timed the hop also says whether it
+                    // answered; the health round skipped this tunnel for it
+                    if let Some(health) = m.health {
+                        entry.health = settled_health(entry.crash_looping, health);
+                    }
                     entry.metrics = Some(m);
                 }
             }
+            announce_round(app);
         }
         Msg::Health(generation, results) => {
             if !timers.health.finish(generation) {
@@ -539,17 +545,23 @@ fn apply_polled(app: &mut App, timers: &mut Timers, msg: Msg) {
                 let Some(entry) = app.entries.iter_mut().find(|e| e.name() == name) else {
                     continue;
                 };
-                entry.health = if entry.crash_looping
-                    && matches!(health, HealthStatus::Healthy | HealthStatus::Unhealthy)
-                {
-                    HealthStatus::CrashLooping
-                } else {
-                    health
-                };
+                entry.health = settled_health(entry.crash_looping, health);
             }
             announce_round(app);
         }
         _ => {}
+    }
+}
+
+// A probe that passed or failed cannot say the service is restarting in a
+// loop, and that is the more useful thing to tell the reader; expired
+// credentials and the other verdicts are kept. One rule for both rounds that
+// carry a verdict, or the same probe would read differently by who sent it.
+fn settled_health(crash_looping: bool, probed: HealthStatus) -> HealthStatus {
+    if crash_looping && matches!(probed, HealthStatus::Healthy | HealthStatus::Unhealthy) {
+        HealthStatus::CrashLooping
+    } else {
+        probed
     }
 }
 
@@ -667,7 +679,8 @@ fn schedule(app: &mut App, timers: &mut Timers, tx: &mpsc::UnboundedSender<Msg>)
         });
     }
 
-    if let Some(round) = metrics_round(app, timers) {
+    let polls = plan_probes(app, timers);
+    if let Some(round) = polls.metrics {
         let tx = tx.clone();
         tokio::spawn(async move {
             let include_lb = round.include_lb;
@@ -685,7 +698,7 @@ fn schedule(app: &mut App, timers: &mut Timers, tx: &mpsc::UnboundedSender<Msg>)
         });
     }
 
-    let targets = health_round(app, timers);
+    let targets = polls.health;
     if !targets.is_empty() {
         let generation = timers.health.begin();
         let tx = tx.clone();
@@ -697,6 +710,35 @@ fn schedule(app: &mut App, timers: &mut Timers, tx: &mpsc::UnboundedSender<Msg>)
             let _ = tx.send(Msg::Health(generation, results));
         });
     }
+}
+
+// The probing one tick starts, decided before any of it runs
+struct Probes {
+    metrics: Option<MetricsRound>,
+    health: Vec<(String, crate::state::PersistentTunnel)>,
+}
+
+/// Which rounds start this tick, and for whom.
+///
+/// A probe costs one IAP connection to the VM, and the metrics probe already
+/// carries a verdict (`TunnelMetrics::health`), so a tunnel the metrics round
+/// starts this tick is left out of the health round instead of being asked
+/// twice. Everything the metrics round does not cover keeps the health probe on
+/// its own clock: a tunnel with no local port of its own, a stopped one is not
+/// probed at all, and a metrics round still in flight leaves every tunnel to
+/// the health round rather than leaving the rows without a verdict.
+fn plan_probes(app: &mut App, timers: &mut Timers) -> Probes {
+    let metrics = metrics_round(app, timers);
+    let mut health = health_round(app, timers);
+    if let Some(round) = &metrics {
+        let covered: std::collections::HashSet<&str> = round
+            .targets
+            .iter()
+            .map(|t| t.tunnel.name.as_str())
+            .collect();
+        health.retain(|(name, _)| !covered.contains(name.as_str()));
+    }
+    Probes { metrics, health }
 }
 
 // Whether any port on screen can have clients at all. The sampler runs ten

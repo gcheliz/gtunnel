@@ -9,7 +9,7 @@ use crate::gcp::{monitoring, GcpClient};
 use crate::state::{PersistentTunnel, TunnelSpec, TunnelStatus};
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(5);
-const TCP_TIMEOUT: Duration = Duration::from_secs(2);
+pub const TCP_TIMEOUT: Duration = Duration::from_secs(2);
 // How many minutes of load balancer traffic one metrics read covers
 pub const LB_WINDOW_MINUTES: u32 = 10;
 
@@ -112,6 +112,22 @@ pub fn failed_health(log_path: &Path, marker: Option<&Path>) -> HealthStatus {
         HealthStatus::AuthExpired
     } else {
         HealthStatus::Unhealthy
+    }
+}
+
+/// The verdict on one TCP probe: an answer is healthy, and no answer is
+/// whatever the log says it was. Both the metrics probe and the health probe
+/// end here, because a probe costs an IAP connection to the VM and the TUI
+/// takes health from the metrics probe where one ran; two classifiers would
+/// let the row's verdict depend on which of them happened to run.
+pub fn classify_probe(
+    answer: Option<Duration>,
+    log_path: &Path,
+    marker: Option<&Path>,
+) -> HealthStatus {
+    match answer {
+        Some(_) => HealthStatus::Healthy,
+        None => failed_health(log_path, marker),
     }
 }
 
@@ -628,6 +644,10 @@ pub struct TunnelMetrics {
     pub restarts: u32,
     pub lb: Option<LbStats>,
     pub available: bool,
+    // What the probe that took `latency` says about the tunnel, so the health
+    // round need not open a second IAP connection to ask again. None when no
+    // probe ran.
+    pub health: Option<HealthStatus>,
 }
 
 pub async fn collect_metrics(
@@ -688,7 +708,11 @@ async fn measure(
             // No log to read means a silent close is taken as an answer
             let log = t.log_path().unwrap_or_default();
             let addr = format!("127.0.0.1:{local_port}");
-            if let Some(rtt) = probe_tunnel(&addr, TCP_TIMEOUT, &log).await {
+            let answer = probe_tunnel(&addr, TCP_TIMEOUT, &log).await;
+            let label = daemon::platform_label(&t.account_name, &t.name);
+            let marker = daemon::auth_marker_path(&label).ok();
+            metrics.health = Some(classify_probe(answer, &log, marker.as_deref()));
+            if let Some(rtt) = answer {
                 metrics.latency = Some(rtt);
             } else {
                 metrics.available = false;
@@ -709,6 +733,7 @@ async fn measure(
             }
             let probe = http_probe(&format!("https://{hostname}")).await;
             metrics.available = metrics.available && probe == HealthStatus::Healthy;
+            metrics.health = Some(probe);
         }
     }
 

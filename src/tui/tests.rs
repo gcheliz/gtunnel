@@ -1886,3 +1886,94 @@ async fn a_stalled_tunnel_does_not_hold_back_the_metrics_of_the_others() {
         "target order, with the empty one dropped"
     );
 }
+
+// The probe is what costs: one IAP websocket to the VM. The metrics probe
+// already carries the verdict, so a tunnel it covers is not asked again.
+#[test]
+fn one_tick_over_a_covered_tunnel_probes_it_once() {
+    let mut app = app_with_two();
+    let mut timers = Timers::due();
+    let polls = plan_probes(&mut app, &mut timers);
+    let metrics: Vec<_> = polls
+        .metrics
+        .iter()
+        .flat_map(|r| r.targets.iter().map(|t| t.tunnel.name.clone()))
+        .collect();
+    let health: Vec<_> = polls.health.iter().map(|(n, _)| n.clone()).collect();
+    for name in ["db", "api"] {
+        let probes = metrics.iter().filter(|n| *n == name).count()
+            + health.iter().filter(|n| *n == name).count();
+        assert_eq!(probes, 1, "{name}: metrics {metrics:?}, health {health:?}");
+    }
+}
+
+#[test]
+fn a_tunnel_the_metrics_round_does_not_cover_keeps_its_health_probe() {
+    let mut app = app_with_two();
+    // Started with --listen-on-stdin: no port to measure, so no metrics probe
+    app.entries.push(TunnelEntry::new(
+        access("pid-1", 0),
+        TunnelStatus::Running,
+        TunnelKind::External,
+    ));
+    let mut timers = Timers::due();
+    let polls = plan_probes(&mut app, &mut timers);
+    let health: Vec<_> = polls.health.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(health, ["pid-1"]);
+}
+
+#[test]
+fn health_still_comes_on_its_own_clock_while_no_metrics_round_runs() {
+    let mut app = app_with_two();
+    let mut timers = Timers::due();
+    let _ = plan_probes(&mut app, &mut timers);
+    // The metrics round is still out when the health clock comes round
+    timers.metrics.last = Instant::now() - app::METRICS_EVERY;
+    timers.health.last = Instant::now() - app::HEALTH_EVERY;
+    let polls = plan_probes(&mut app, &mut timers);
+    assert!(polls.metrics.is_none());
+    let health: Vec<_> = polls.health.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(
+        health,
+        ["db", "api"],
+        "a slow round left the rows unchecked"
+    );
+}
+
+#[test]
+fn a_verdict_in_a_metrics_result_lands_on_the_row() {
+    let mut app = app_with_two();
+    let mut timers = Timers::due();
+    let generation = timers.metrics.begin();
+    let measured = crate::probe::TunnelMetrics {
+        health: Some(HealthStatus::Unhealthy),
+        ..Default::default()
+    };
+    apply_polled(
+        &mut app,
+        &mut timers,
+        Msg::Metrics(generation, vec![("db".to_string(), measured)]),
+    );
+    assert_eq!(app.entries[0].health, HealthStatus::Unhealthy);
+    assert_eq!(app.entries[1].health, HealthStatus::Unknown);
+}
+
+#[test]
+fn a_crash_loop_is_named_over_a_passing_metrics_probe_too() {
+    let mut app = app_with_two();
+    let mut timers = Timers::due();
+    for restarts in [0, 1, 3] {
+        let generation = timers.metrics.begin();
+        let measured = crate::probe::TunnelMetrics {
+            restarts,
+            health: Some(HealthStatus::Healthy),
+            ..Default::default()
+        };
+        apply_polled(
+            &mut app,
+            &mut timers,
+            Msg::Metrics(generation, vec![("db".to_string(), measured)]),
+        );
+    }
+    assert_eq!(app.entries[0].health, HealthStatus::CrashLooping);
+}

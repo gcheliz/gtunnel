@@ -120,6 +120,7 @@ fn metrics(latency: u64, connections: u64, uptime_secs: u64, lb: Option<LbStats>
         restarts: 0,
         lb,
         available: true,
+        health: None,
     }
 }
 
