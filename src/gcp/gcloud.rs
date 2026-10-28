@@ -137,10 +137,39 @@ pub async fn print_access_token(acct: &Account) -> Result<String> {
     // printed, so this is the one place a gcloud failure is reclassified
     let stdout = run_gcloud(&args).await.map_err(|e| {
         GtunnelError::auth(format!(
-            "Could not get a gcloud access token. Run `gcloud auth login` and try again: {e:#}"
+            "Could not get a gcloud access token. {}: {e:#}",
+            auth_advice(acct, is_interactive())
         ))
     })?;
     Ok(stdout.trim().to_string())
+}
+
+// What to do about a missing token depends on where the credentials come from
+// and on whether anyone is there to answer a login. A runner with no terminal
+// must not be told to open a browser, and a credential-file account must not
+// be told to log in at all: that would sign in a person instead of the key.
+pub fn auth_advice(acct: &Account, interactive: bool) -> String {
+    if let Some(file) = &acct.credential_file {
+        return credential_file_advice(&file.display().to_string());
+    }
+    let cfg = &acct.gcloud_configuration;
+    if interactive {
+        format!("Run `gcloud auth login --configuration={cfg}` and try again")
+    } else {
+        format!(
+            "No terminal to log in from. On a workstation run `gcloud auth login \
+             --configuration={cfg}`; on a CI runner, give the runner a service account with \
+             roles/iap.tunnelResourceAccessor, or set credential_file on the account"
+        )
+    }
+}
+
+// Shared with doctor, which has the path as text and no account at hand
+pub fn credential_file_advice(path: &str) -> String {
+    format!(
+        "The credential file {path} gave no token. Check that it exists, is a service-account \
+         key or a workload identity federation file, and that its identity is not disabled"
+    )
 }
 
 // What startup does about credentials, decided apart from the I/O so the
@@ -154,8 +183,10 @@ pub enum AuthStep {
 
 // A browser login cannot finish under cron, a pipe or CI, so without a
 // terminal a failed probe is a failure rather than a prompt nobody can answer
-pub fn next_step(probe_ok: bool, interactive: bool) -> AuthStep {
-    match (probe_ok, interactive) {
+// `can_login` is false for an account that names a credential file: a login
+// would authenticate a person, never the key, so a failed probe is final.
+pub fn next_step(probe_ok: bool, interactive: bool, can_login: bool) -> AuthStep {
+    match (probe_ok, interactive && can_login) {
         (true, _) => AuthStep::Proceed,
         (false, true) => AuthStep::Login,
         (false, false) => AuthStep::Fail,
@@ -216,7 +247,7 @@ where
     F: FnOnce(&str) -> Result<bool>,
 {
     let probe_ok = print_access_token(acct).await.is_ok();
-    match next_step(probe_ok, interactive) {
+    match next_step(probe_ok, interactive, acct.credential_file.is_none()) {
         AuthStep::Proceed => return Ok(()),
         AuthStep::Login => {
             if confirm(&acct.name)? {
@@ -229,10 +260,18 @@ where
         }
         AuthStep::Fail => {}
     }
-    Err(GtunnelError::auth(format!(
-        "gtunnel needs a logged-in Google account for '{}'. Run `gcloud auth login`",
-        acct.name
-    ))
+    let advice = auth_advice(acct, interactive);
+    Err(GtunnelError::auth(if acct.credential_file.is_some() {
+        format!(
+            "gtunnel could not get a token for '{}'. {advice}",
+            acct.name
+        )
+    } else {
+        format!(
+            "gtunnel needs a logged-in Google account for '{}'. {advice}",
+            acct.name
+        )
+    })
     .into())
 }
 
@@ -249,6 +288,7 @@ mod tests {
             project: "my-project".to_string(),
             default_zone: "europe-west1-b".to_string(),
             impersonate_service_account: impersonate.map(str::to_string),
+            credential_file: None,
             expose: None,
         }
     }
@@ -274,18 +314,77 @@ mod tests {
 
     #[test]
     fn a_passing_probe_proceeds_with_or_without_a_terminal() {
-        assert_eq!(next_step(true, true), AuthStep::Proceed);
-        assert_eq!(next_step(true, false), AuthStep::Proceed);
+        assert_eq!(next_step(true, true, true), AuthStep::Proceed);
+        assert_eq!(next_step(true, false, true), AuthStep::Proceed);
     }
 
     #[test]
     fn a_failed_probe_on_a_terminal_starts_the_login() {
-        assert_eq!(next_step(false, true), AuthStep::Login);
+        assert_eq!(next_step(false, true, true), AuthStep::Login);
     }
 
     #[test]
     fn a_failed_probe_without_a_terminal_fails() {
-        assert_eq!(next_step(false, false), AuthStep::Fail);
+        assert_eq!(next_step(false, false, true), AuthStep::Fail);
+    }
+
+    #[test]
+    fn a_credential_file_account_never_logs_in() {
+        assert_eq!(next_step(false, true, false), AuthStep::Fail);
+        assert_eq!(next_step(false, true, true), AuthStep::Login);
+        assert_eq!(next_step(true, false, false), AuthStep::Proceed);
+    }
+
+    #[test]
+    fn advice_without_a_terminal_does_not_send_a_runner_to_a_browser() {
+        let text = auth_advice(&account(None), false);
+        assert!(
+            text.contains("CI runner") && text.contains("credential_file"),
+            "{text}"
+        );
+        assert!(text.contains("--configuration=__gtunnel_test_nonexistent__"));
+    }
+
+    #[test]
+    fn advice_on_a_terminal_names_the_login_for_the_configuration() {
+        assert_eq!(
+            auth_advice(&account(None), true),
+            "Run `gcloud auth login --configuration=__gtunnel_test_nonexistent__` and try again"
+        );
+    }
+
+    #[test]
+    fn advice_for_a_credential_file_names_the_file_not_gcloud_auth_login() {
+        let mut acct = account(None);
+        acct.credential_file = Some("/secrets/ci-key.json".into());
+        for interactive in [true, false] {
+            let text = auth_advice(&acct, interactive);
+            assert!(
+                text.contains("/secrets/ci-key.json") && !text.contains("gcloud auth login"),
+                "{text}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_credential_file_account_fails_without_prompting_even_on_a_terminal() {
+        let mut acct = account(None);
+        acct.credential_file = Some("/nonexistent/ci-key.json".into());
+        let mut prompted = false;
+        let err = ensure_logged_in_with(&acct, true, |_| {
+            prompted = true;
+            Ok(true)
+        })
+        .await
+        .expect_err("a bad key must not fall back to a person's login");
+        assert!(
+            !prompted,
+            "a browser login would sign in a person, not the key"
+        );
+        assert!(
+            err.to_string().contains("/nonexistent/ci-key.json"),
+            "{err}"
+        );
     }
 
     #[tokio::test]

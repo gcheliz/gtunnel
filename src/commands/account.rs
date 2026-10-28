@@ -3,7 +3,8 @@ use anyhow::{bail, Context, Result};
 
 use super::{confirm, prompt};
 use crate::config::{
-    config_dir, load_config, update_config, update_or_init_config, validate_account_name, Account,
+    config_dir, load_config, update_config, update_or_init_config, validate_account_name,
+    validate_credential_file, Account,
 };
 use crate::gcp::projects::{self, Project};
 use crate::gcp::{compute, gcloud, GcpClient};
@@ -56,6 +57,7 @@ pub async fn cmd_init() -> Result<()> {
         project: String::new(),
         default_zone: String::new(),
         impersonate_service_account: None,
+        credential_file: None,
         expose: None,
     };
     let client = GcpClient::for_account(&account);
@@ -260,30 +262,86 @@ fn account_from_configuration(
         project,
         default_zone: found.zone.clone().unwrap_or_default(),
         impersonate_service_account: None,
+        credential_file: None,
+        expose: None,
+    })
+}
+
+/// What `account add` may take besides a configuration. `project` is the
+/// switch: given, the account is built from the flags alone, so it works on a
+/// CI runner where no gcloud configuration was ever made.
+#[derive(Debug, Clone, Default)]
+pub struct AddOptions {
+    pub project: Option<String>,
+    pub zone: Option<String>,
+    pub credential_file: Option<std::path::PathBuf>,
+}
+
+// Build an account from flags, with no gcloud call. The configuration name
+// need not exist: gcloud still runs with it, but creates nothing and warns
+// "Could not open the configuration file" on every call. gtunnel does not
+// create it, because a gcloud configuration is the user's to make.
+fn account_from_flags(configuration: &str, name: &str, opts: &AddOptions) -> Result<Account> {
+    let project = opts
+        .project
+        .clone()
+        .filter(|p| !p.is_empty())
+        .context("--project cannot be empty")?;
+    if let Some(file) = &opts.credential_file {
+        validate_credential_file(file)?;
+    }
+    Ok(Account {
+        name: name.to_string(),
+        gcloud_configuration: configuration.to_string(),
+        project,
+        default_zone: opts.zone.clone().unwrap_or_default(),
+        impersonate_service_account: None,
+        credential_file: opts.credential_file.clone(),
         expose: None,
     })
 }
 
 // The non-interactive counterpart of `init`, for callers that already know which
 // configuration they mean. It is async because listing configurations shells out
-// to gcloud.
-pub async fn cmd_account_add(configuration: &str, name: &str) -> Result<()> {
-    gcloud::require_gcloud()?;
-    let configurations = gcloud::list_configurations().await?;
-    let account = account_from_configuration(&configurations, configuration, name)?;
+// to gcloud, which `--project` makes unnecessary.
+pub async fn cmd_account_add(configuration: &str, name: &str, opts: AddOptions) -> Result<()> {
+    let account = if opts.project.is_some() {
+        account_from_flags(configuration, name, &opts)?
+    } else {
+        gcloud::require_gcloud()?;
+        let configurations = gcloud::list_configurations().await?;
+        let mut account = account_from_configuration(&configurations, configuration, name)?;
+        if let Some(file) = &opts.credential_file {
+            validate_credential_file(file)?;
+            account.credential_file = Some(file.clone());
+        }
+        if let Some(zone) = &opts.zone {
+            account.default_zone = zone.clone();
+        }
+        account
+    };
     update_or_init_config(|config| config.add_account(account))?;
     println!("Account '{name}' saved to {}", config_dir()?.display());
     Ok(())
 }
 
 // Only the fields given change; an empty value is refused so an edit cannot
-// leave an account without the project or zone every command needs.
-pub fn cmd_account_edit(name: &str, project: Option<&str>, zone: Option<&str>) -> Result<()> {
-    if project.is_none() && zone.is_none() {
-        bail!("Nothing to change: pass --project, --zone, or both");
+// leave an account without the project or zone every command needs. The
+// credential file is the one field that may be emptied: "" clears it.
+pub fn cmd_account_edit(
+    name: &str,
+    project: Option<&str>,
+    zone: Option<&str>,
+    credential_file: Option<&str>,
+) -> Result<()> {
+    if project.is_none() && zone.is_none() && credential_file.is_none() {
+        bail!("Nothing to change: pass --project, --zone, or both (or --credential-file)");
     }
     if project == Some("") || zone == Some("") {
         bail!("A project or zone cannot be empty");
+    }
+    if let Some(file) = credential_file.filter(|f| !f.is_empty()) {
+        validate_credential_file(std::path::Path::new(file))?;
     }
     update_config(|config| {
         let account = config.get_account_mut(Some(name))?;
@@ -292,6 +350,9 @@ pub fn cmd_account_edit(name: &str, project: Option<&str>, zone: Option<&str>) -
         }
         if let Some(zone) = zone {
             account.default_zone = zone.to_string();
+        }
+        if let Some(file) = credential_file {
+            account.credential_file = (!file.is_empty()).then(|| file.into());
         }
         Ok(())
     })?;
@@ -313,6 +374,7 @@ mod tests {
             project: "example-dev-1a2b".to_string(),
             default_zone: "europe-west1-b".to_string(),
             impersonate_service_account: None,
+            credential_file: None,
             expose: None,
         }
     }
@@ -382,12 +444,12 @@ mod tests {
     fn editing_an_account_changes_only_the_fields_given() {
         let _dir = TempConfigDir::new();
         save_accounts(&["dev"]);
-        cmd_account_edit("dev", None, Some("europe-west4-a")).expect("edits");
+        cmd_account_edit("dev", None, Some("europe-west4-a"), None).expect("edits");
         let config = load_config().unwrap();
         let a = config.get_account(Some("dev")).unwrap();
         assert_eq!(a.default_zone, "europe-west4-a");
         assert_eq!(a.project, "example-dev-1a2b");
-        cmd_account_edit("dev", Some("example-dev-9z9z"), None).expect("edits");
+        cmd_account_edit("dev", Some("example-dev-9z9z"), None, None).expect("edits");
         let config = load_config().unwrap();
         let a = config.get_account(Some("dev")).unwrap();
         assert_eq!(a.project, "example-dev-9z9z");
@@ -398,9 +460,93 @@ mod tests {
     fn editing_with_nothing_to_change_or_an_empty_value_is_refused() {
         let _dir = TempConfigDir::new();
         save_accounts(&["dev"]);
-        assert!(cmd_account_edit("dev", None, None).is_err());
-        assert!(cmd_account_edit("dev", Some(""), None).is_err());
-        assert!(cmd_account_edit("nope", Some("x"), None).is_err());
+        assert!(cmd_account_edit("dev", None, None, None).is_err());
+        assert!(cmd_account_edit("dev", Some(""), None, None).is_err());
+        assert!(cmd_account_edit("nope", Some("x"), None, None).is_err());
+    }
+
+    #[test]
+    fn add_with_a_project_needs_no_existing_configuration() {
+        let opts = AddOptions {
+            project: Some("example-dev-1a2b".into()),
+            zone: Some("europe-west1-b".into()),
+            credential_file: None,
+        };
+        let acct = account_from_flags("ci", "ci", &opts).expect("builds");
+        assert_eq!(
+            (
+                acct.gcloud_configuration.as_str(),
+                acct.project.as_str(),
+                acct.default_zone.as_str()
+            ),
+            ("ci", "example-dev-1a2b", "europe-west1-b")
+        );
+        assert_eq!(acct.credential_file, None);
+    }
+
+    #[test]
+    fn add_keeps_an_absolute_credential_file() {
+        let opts = AddOptions {
+            project: Some("example-dev-1a2b".into()),
+            zone: None,
+            credential_file: Some("/secrets/ci-key.json".into()),
+        };
+        let acct = account_from_flags("ci", "ci", &opts).expect("builds");
+        assert_eq!(acct.credential_file, Some("/secrets/ci-key.json".into()));
+        assert_eq!(acct.default_zone, "");
+    }
+
+    #[test]
+    fn add_refuses_a_relative_credential_file() {
+        let opts = AddOptions {
+            project: Some("example-dev-1a2b".into()),
+            zone: None,
+            credential_file: Some("key.json".into()),
+        };
+        assert!(account_from_flags("ci", "ci", &opts).is_err());
+    }
+
+    #[test]
+    fn add_refuses_an_empty_project() {
+        let opts = AddOptions {
+            project: Some(String::new()),
+            ..AddOptions::default()
+        };
+        assert!(account_from_flags("ci", "ci", &opts).is_err());
+    }
+
+    #[tokio::test]
+    async fn add_with_a_project_saves_without_calling_gcloud() {
+        let _dir = TempConfigDir::new();
+        let opts = AddOptions {
+            project: Some("example-dev-1a2b".into()),
+            zone: Some("europe-west1-b".into()),
+            credential_file: Some("/secrets/ci-key.json".into()),
+        };
+        cmd_account_add("ci", "ci", opts).await.expect("adds");
+        let config = load_config().unwrap();
+        let a = config.get_account(Some("ci")).unwrap();
+        assert_eq!(a.project, "example-dev-1a2b");
+        assert_eq!(a.credential_file, Some("/secrets/ci-key.json".into()));
+    }
+
+    #[test]
+    fn editing_sets_and_clears_the_credential_file() {
+        let _dir = TempConfigDir::new();
+        save_accounts(&["dev"]);
+        cmd_account_edit("dev", None, None, Some("/secrets/ci-key.json")).expect("sets");
+        let config = load_config().unwrap();
+        assert_eq!(
+            config.get_account(Some("dev")).unwrap().credential_file,
+            Some("/secrets/ci-key.json".into())
+        );
+        cmd_account_edit("dev", None, None, Some("")).expect("clears");
+        let config = load_config().unwrap();
+        assert_eq!(
+            config.get_account(Some("dev")).unwrap().credential_file,
+            None
+        );
+        assert!(cmd_account_edit("dev", None, None, Some("key.json")).is_err());
     }
 
     fn configuration(name: &str) -> gcloud::GcloudConfiguration {

@@ -23,6 +23,12 @@ pub fn gcloud_common(acct: &Account, level: LogLevel) -> Vec<String> {
     if let Some(sa) = &acct.impersonate_service_account {
         args.push(format!("--impersonate-service-account={sa}"));
     }
+    // A hidden global flag, so one place covers the token probe, the tunnel,
+    // compute ssh (gcloud hands it to ssh's inner ProxyCommand) and the argv
+    // written to a service file. One argv element: the path may hold spaces.
+    if let Some(file) = &acct.credential_file {
+        args.push(format!("--credential-file-override={}", file.display()));
+    }
     args
 }
 
@@ -212,12 +218,12 @@ pub fn normalize_local_target(target: &str) -> Result<String> {
 pub fn diagnose_log_line(line: &str) -> Option<&'static str> {
     const TABLE: &[(&str, &str)] = &[
         (
-            "4003",
+            "[4003:",
             "IAP cannot reach the target port. Allow 35.235.240.0/20 to it in a firewall rule \
              (run: gtunnel doctor).",
         ),
         (
-            "4033",
+            "[4033:",
             "Not authorized for IAP tunnelling. Grant roles/iap.tunnelResourceAccessor.",
         ),
         (
@@ -245,6 +251,16 @@ pub fn diagnose_log_line(line: &str) -> Option<&'static str> {
             "numpy",
             "Install NumPy for gcloud to speed up IAP tunnels (see docs/troubleshooting.md).",
         ),
+        (
+            "[4004:",
+            "IAP asked gcloud to reauthenticate; gcloud resumes the session on its own. If it \
+             repeats, check the account's credentials (run: gtunnel doctor).",
+        ),
+        (
+            "Unable to reconnect within",
+            "gcloud gave up reconnecting to IAP after 15 minutes; clients on this tunnel were \
+             cut. See Limits in docs/architecture.md.",
+        ),
     ];
     TABLE
         .iter()
@@ -266,6 +282,7 @@ mod tests {
             project: "proj-1".to_string(),
             default_zone: "europe-west1-b".to_string(),
             impersonate_service_account: None,
+            credential_file: None,
             expose: None,
         }
     }
@@ -556,6 +573,30 @@ mod tests {
         );
     }
 
+    #[test]
+    fn gcloud_common_carries_the_credential_file_only_when_set() {
+        let mut acct = account();
+        assert!(!gcloud_common(&acct, LogLevel::Quiet)
+            .iter()
+            .any(|a| a.starts_with("--credential-file-override")));
+        acct.credential_file = Some("/secrets/ci key.json".into());
+        let args = gcloud_common(&acct, LogLevel::Quiet);
+        // One argv element, spaces and all: nothing here goes through a shell
+        assert!(args.contains(&"--credential-file-override=/secrets/ci key.json".to_string()));
+    }
+
+    #[test]
+    fn every_tunnel_kind_carries_the_credential_file_when_set() {
+        let mut acct = account();
+        acct.credential_file = Some("/secrets/ci-key.json".into());
+        acct.expose = Some(expose_config());
+        let flag = "--credential-file-override=/secrets/ci-key.json".to_string();
+        for t in [instance_tunnel(), dest_group_tunnel(), jump_tunnel()] {
+            let argv = access_argv(&acct, &t, LogLevel::Info).expect("argv");
+            assert!(argv.contains(&flag), "{}: {argv:?}", t.name);
+        }
+    }
+
     // Both tunnel kinds that run `gcloud compute ssh` need it. gcloud's
     // --verbosity governs gcloud, not the ssh it execs.
     //
@@ -747,6 +788,8 @@ mod tests {
             // failure `Error:` and makes it fatal when that option is on
             ("Error: remote port forwarding failed for listen port 30123", "relay"),
             ("WARNING: Python 3.12 lacks numpy, falling back to a slower implementation", "NumPy"),
+            ("INFO: [3] Received WebSocket Close message [4004: 'reauthentication required'].", "resumes the session"),
+            ("WARNING: [3] Unable to reconnect within [900000] ms", "15 minutes"),
         ];
         for (line, expected) in cases {
             let hint = diagnose_log_line(line).unwrap_or_else(|| panic!("no hint for: {line}"));
@@ -774,6 +817,29 @@ mod tests {
         assert!(diagnose_log_line("Testing if tunnel connection works.").is_none());
         assert!(diagnose_log_line("Listening on port [15432].").is_none());
         assert!(diagnose_log_line("").is_none());
+    }
+
+    // A port or URL that merely contains the digits is not an IAP close code
+    #[test]
+    fn diagnose_log_line_matches_close_codes_exactly() {
+        for line in [
+            "Listening on port [14004].",
+            "Listening on port [14003].",
+            "Listening on port [14033].",
+            "Client closed connection from 127.0.0.1:54004",
+            "Reconnecting with URL ['wss://tunnel.cloudproxy.app/v4/reconnect?sid=a4003b']",
+        ] {
+            assert!(diagnose_log_line(line).is_none(), "{line}");
+        }
+    }
+
+    // gcloud prints this on every call when the configuration was never
+    // created; it is noise, not a refusal or an error to explain
+    #[test]
+    fn a_missing_configuration_warning_is_not_a_refusal_or_a_failure() {
+        let line = "WARNING: Could not open the configuration file: [/home/you/.config/gcloud/configurations/config_ci].";
+        assert!(diagnose_log_line(line).is_none());
+        assert!(!crate::probe::is_refusal(line));
     }
 
     #[test]

@@ -136,6 +136,8 @@ emptied when its tunnel starts, so a line in it was written by the process runni
 | `4033` | Not authorized to tunnel through IAP | Grant `roles/iap.tunnelResourceAccessor` |
 | A public URL answers `503` (nothing in the log) | The tunnel's backend, host rule, named port or DNS record is missing | `gtunnel restart <name>` re-creates them, see [the log](commands.md#start-stop-restart-autostart-logs-list-delete) |
 | `Reauthentication required` | gcloud credentials expired. The supervisor stops the job instead of restarting it every few seconds, and `list` keeps showing `auth expired` until the next start | `gcloud auth login`, then `gtunnel start <name>` |
+| `4004` | IAP asked gcloud to reauthenticate; gcloud resumes the session on its own | Nothing, unless it repeats: then check the account's credentials with `gtunnel doctor` |
+| `Unable to reconnect within` | gcloud gave up reconnecting to IAP after 15 minutes and the clients on the tunnel were cut | Restart the tunnel; see [Limits](architecture.md#limits) |
 | `Address already in use` | Another process holds the local port | `gtunnel doctor`, or set `--local-port` |
 | `remote port forwarding failed` | The relay port is busy on the relay VM | `gtunnel restart <name>`, then `gtunnel doctor` |
 | `Too many open files` | The tunnel ran out of file descriptors | `gtunnel doctor` names the process holding them, see below |
@@ -342,12 +344,26 @@ not finish or it was not allowed to start.
 | No terminal: stdin or stdout is redirected, as under cron, a pipe or CI | A browser login cannot finish there. Run `gcloud auth login --configuration=<configuration>` once in a terminal, or use a credential that needs no login |
 | The login was cancelled or failed | Run it again; `gcloud auth list` shows who is logged in |
 | The login exited 0 but the probe still fails | The configuration gtunnel uses is not the one that was logged in. Check `gcloud config configurations list` against the account's `gcloud_configuration` |
+| The account runs on a CI runner with an attached service account | There is no login to run. Give the runner's service account `roles/iap.tunnelResourceAccessor`; see [Running in CI](usage.md#running-in-ci) |
+| The account names a `credential_file` | gtunnel never offers a login for it. The error names the file: check that it exists, is a service-account key or a workload identity federation file, and that its identity is not disabled. `gtunnel doctor` says which |
 | The account impersonates a service account | `gcloud auth login` is run without `--impersonate-service-account`, because it rejects that flag. It logs in the user whose credentials mint the impersonation token, so that user needs `roles/iam.serviceAccountTokenCreator` on the service account |
 
 Only the selected account (or `--account`) is checked at startup. Switching to another
 account in the TUI does not check again, so an account that is logged out surfaces as the
 error in that tunnel's log. `doctor`, `account`, `init`, `reset`, `demo` and `update` skip
 the check.
+
+## Connections drop after an hour
+
+A pooled connection that sat idle comes back dead, or a client stalls and then recovers.
+
+| Cause | Fix |
+|---|---|
+| IAP drops a session after one hour of inactivity, and a direct tunnel gives every connection its own session | Set the pool's idle lifetime under 60 minutes, or tunnel through a VM with `--via`, which keeps one stream busy |
+| gcloud is reconnecting: the log shows `Reconnecting with URL`, or a `4004` close | It retries from 1.5 s to 20 s apart for up to 15 minutes and resumes the session. The stall ends when it does |
+| The log shows `Unable to reconnect within` | The 15 minutes ran out. Restart the tunnel |
+
+The numbers and their sources are in [Limits](architecture.md#limits).
 
 ## Could not list projects
 

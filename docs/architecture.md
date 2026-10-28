@@ -147,7 +147,7 @@ services first. It never touches the Cloud DNS managed zone, which is yours.
 | Reboot | Auto-start is per tunnel; off by default, toggled with `A` in the TUI. On macOS it is the presence of the plist in `~/Library/LaunchAgents`, because launchd loads everything there at login and a `KeepAlive` job runs the moment it is loaded. The definition gtunnel starts and stops itself lives outside that directory |
 | Wedged tunnels | Supervision only catches a process that exits. A tunnel that stays up and refuses connections is caught instead by one watchdog job for the whole machine, which wakes every 30s, makes one pass over every tunnel and exits. It is an interval job rather than a supervised one precisely because it is supposed to exit every time |
 | PATH | A daemon does not inherit a shell, so gcloud's directory is written into the unit. Without it the service dies at every start |
-| Credentials | None stored. Each API call shells out to `gcloud auth print-access-token` for the account's configuration |
+| Credentials | None stored. Each API call shells out to `gcloud auth print-access-token` for the account's configuration. An account with a `credential_file` adds `--credential-file-override=<path>` to every gcloud call, so the path, never the file, is what gtunnel holds |
 | Ephemeral runs | `run` writes a record with gcloud's pid and that pid's start time, so `list`, the TUI and `doctor` see it and a recycled pid reads as gone. Every exit path stops gcloud's process group and tears the route down, including signals |
 | TUI polling | Discovery, metrics and health are three pollers (health reuses the metrics probe where one ran), each with at most one round in flight: a round slower than its period is waited for, never started again on top of itself. A result carries the generation its round began under and is dropped when that is no longer current, which is what an account switch does to every round begun for the old account. Every `gcloud`, `launchctl` and `systemctl` call is bounded (30s and 10s) and fails with `<command> timed out after <n>s`; the child is killed on timeout. The `lsof` and `ps` reads run on the blocking pool. `delete` treats a timed-out stop as a failure and keeps the record, because removing it would orphan a job that may still be running |
 | Strangers | A `[not managed by gtunnel]` row is an IAP process nothing here accounts for. One `ps` snapshot is read, then a process is gtunnel's if it forwards a port that any account's `tunnels.toml` entry or any run record owns, or if it sits below a pid launchd or a run record names. The port is tried first because launchd reports a supervisor's pid before the supervisor has spawned its gcloud child, and a verdict that depends on that gap is a verdict that depends on timing |
@@ -169,6 +169,40 @@ the flag *is* the file: launchd loads everything in `~/Library/LaunchAgents` at 
 or not anyone asked. That is why the copy gtunnel loads and unloads itself lives in
 `<config>/agents/` instead. On Linux the unit always lives in one place and `enable` is a
 separate switch, with `loginctl enable-linger` deciding whether it survives a logout.
+
+## Limits
+
+An IAP tunnel is a WebSocket to Google, and Google publishes few numbers about it. Each row
+names where it comes from.
+
+| Fact | Source |
+|---|---|
+| No published quota on connections, bandwidth or tunnels. IAP "isn't intended for bulk transfer of data" and may rate-limit abuse | Google Cloud, IAP "Using TCP forwarding" |
+| A session is dropped after one hour of inactivity | Same page |
+| `start-iap-tunnel` opens one WebSocket and one thread per local TCP connection, with no cap; the listen backlog is 128 | gcloud 590, `command_lib/compute/iap_tunnel.py` |
+| A dropped WebSocket is retried from 1.5 s up to 20 s apart, for up to 15 minutes | gcloud 590, `api_lib/compute/iap_tunnel_websocket.py` |
+| Close code `4004` means IAP wants reauthentication; the session resumes | gcloud 590, `api_lib/compute/iap_tunnel_websocket_helper.py` |
+| A tunnel through a VM carries every connection over one WebSocket, kept busy by `ServerAliveInterval=30` | gtunnel, `src/tunnel.rs` (the command shown under [Jump tunnels](#jump-tunnels)) |
+
+The two shapes pay differently.
+
+| | Direct tunnel (`instance`, `dest_group`) | Through a VM (`jump`) |
+|---|---|---|
+| Cost of a connection | One WebSocket and one TLS handshake each | A channel on the one WebSocket |
+| One hour idle | Cuts that connection. An application's TCP keepalive does not help: it never leaves the local socket | Does not apply: ssh's keepalive keeps the one stream busy |
+| Shared fate | None | Every connection rides one stream |
+
+What to do about it:
+
+| If | Then |
+|---|---|
+| A pool holds connections idle for an hour or more | Set the pool's idle lifetime under 60 minutes, or route through a VM with `--via` |
+| A burst opens many connections | Reuse them, or route through a VM: each direct connection costs a handshake |
+| A large copy | Do not do it over IAP; the page above says it is not for bulk transfer |
+
+When gcloud reconnects, the log keeps the `4004` close and the `Reconnecting with URL` line,
+and a tunnel that gave up logs `Unable to reconnect within`
+([what the log says](troubleshooting.md#what-the-log-says-and-what-it-means)).
 
 ## MCP server
 

@@ -15,10 +15,28 @@ use crate::state::{local_port_is_free, AccessTarget, PersistentTunnel, TunnelSpe
 pub const TUNNEL_ROLE: &str = "roles/iap.tunnelResourceAccessor";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CredentialFileProblem {
+    Missing,
+    NotJson,
+    UnknownType(String),
+    ReadableByOthers,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Finding {
     GcloudMissing,
     GcloudAuth {
         account: String,
+        // Set for an account that names one: `gcloud auth login` is then the
+        // wrong advice, because the key and not a person is what must sign in
+        credential_file: Option<String>,
+    },
+    // What is wrong with the file itself, found before any token is asked for
+    // so a bad file is named even when the probe fails after it
+    CredentialFile {
+        account: String,
+        path: String,
+        problem: CredentialFileProblem,
     },
     NumpyMissing,
     StaleState {
@@ -124,9 +142,39 @@ impl Finding {
             Finding::GcloudMissing => {
                 "gcloud is not on PATH. Install the Google Cloud SDK".to_string()
             }
-            Finding::GcloudAuth { account } => format!(
+            Finding::GcloudAuth {
+                account,
+                credential_file: None,
+            } => format!(
                 "gcloud has no usable credentials for account '{account}'. Run `gcloud auth login`"
             ),
+            Finding::GcloudAuth {
+                account,
+                credential_file: Some(path),
+            } => format!(
+                "Account '{account}' has no token. {}",
+                gcloud::credential_file_advice(path)
+            ),
+            Finding::CredentialFile {
+                account,
+                path,
+                problem,
+            } => match problem {
+                CredentialFileProblem::Missing => {
+                    format!("Account '{account}': the credential file {path} does not exist or cannot be read")
+                }
+                CredentialFileProblem::NotJson => {
+                    format!("Account '{account}': the credential file {path} is not JSON")
+                }
+                CredentialFileProblem::UnknownType(kind) => format!(
+                    "Account '{account}': the credential file {path} has type '{kind}'; \
+                     expected service_account or external_account"
+                ),
+                CredentialFileProblem::ReadableByOthers => format!(
+                    "Account '{account}': the key {path} is readable by other users. \
+                     Run `chmod 600 {path}`"
+                ),
+            },
             Finding::NumpyMissing => {
                 "gcloud's Python is missing numpy, which makes IAP tunnels slow. Run \
                  `gcloud components reinstall`"
@@ -284,6 +332,37 @@ pub fn unknown_key_findings(dir: &std::path::Path) -> Vec<Finding> {
         read("tunnels.toml").and_then(|t| crate::config::unknown_keys::<TunnelState>(&t).ok()),
     );
     out
+}
+
+/// Reads the file's `type` field and its mode, and nothing else: the rest of a
+/// key is a secret, and a finding is printed, logged and sent as JSON. A
+/// workload identity file holds no secret, so only a key is held to a mode.
+pub fn credential_file_finding(account: &str, path: &std::path::Path) -> Option<Finding> {
+    let problem = credential_file_problem(path)?;
+    Some(Finding::CredentialFile {
+        account: account.to_string(),
+        path: path.display().to_string(),
+        problem,
+    })
+}
+
+fn credential_file_problem(path: &std::path::Path) -> Option<CredentialFileProblem> {
+    let Ok(bytes) = std::fs::read(path) else {
+        return Some(CredentialFileProblem::Missing);
+    };
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return Some(CredentialFileProblem::NotJson);
+    };
+    let kind = value.get("type").and_then(|t| t.as_str()).unwrap_or("");
+    match kind {
+        "service_account" => {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(path).ok()?.permissions().mode();
+            (mode & 0o077 != 0).then_some(CredentialFileProblem::ReadableByOthers)
+        }
+        "external_account" => None,
+        other => Some(CredentialFileProblem::UnknownType(other.to_string())),
+    }
 }
 
 // The watchdog is machine-wide, so doctor reports it once rather than once per
@@ -708,9 +787,18 @@ async fn account_findings(_cfg: &Config, state: &TunnelState, acct: &Account) ->
         ));
     }
 
+    // Before the token probe, so a bad file is named even when the probe fails
+    if let Some(file) = &acct.credential_file {
+        findings.extend(credential_file_finding(&acct.name, file));
+    }
+
     if gcloud::print_access_token(acct).await.is_err() {
         findings.push(Finding::GcloudAuth {
             account: acct.name.clone(),
+            credential_file: acct
+                .credential_file
+                .as_ref()
+                .map(|p| p.display().to_string()),
         });
         // Without a token nothing else can be checked against GCP
         return findings;
@@ -1188,6 +1276,7 @@ mod tests {
             project: "proj-1".to_string(),
             default_zone: "europe-west1-b".to_string(),
             impersonate_service_account: None,
+            credential_file: None,
             expose: None,
         }
     }
@@ -1538,12 +1627,104 @@ mod tests {
         assert!(!Finding::GcloudMissing.fixable());
     }
 
+    fn write_credential(dir: &std::path::Path, body: &str, mode: u32) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join("ci-key.json");
+        std::fs::write(&path, body).expect("write");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).expect("chmod");
+        path
+    }
+
+    fn problem_of(path: &std::path::Path) -> Option<CredentialFileProblem> {
+        match credential_file_finding("ci", path) {
+            Some(Finding::CredentialFile { problem, .. }) => Some(problem),
+            Some(other) => panic!("unexpected finding {other:?}"),
+            None => None,
+        }
+    }
+
+    #[test]
+    fn a_missing_credential_file_is_named() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert_eq!(
+            problem_of(&dir.path().join("absent.json")),
+            Some(CredentialFileProblem::Missing)
+        );
+    }
+
+    #[test]
+    fn a_credential_file_that_is_not_json_is_named() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_credential(dir.path(), "not json", 0o600);
+        assert_eq!(problem_of(&path), Some(CredentialFileProblem::NotJson));
+    }
+
+    #[test]
+    fn a_credential_file_of_a_type_gcloud_will_not_take_here_is_named() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_credential(dir.path(), r#"{"type":"authorized_user"}"#, 0o600);
+        assert_eq!(
+            problem_of(&path),
+            Some(CredentialFileProblem::UnknownType(
+                "authorized_user".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn a_service_account_key_readable_by_others_is_flagged() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_credential(dir.path(), r#"{"type":"service_account"}"#, 0o644);
+        assert_eq!(
+            problem_of(&path),
+            Some(CredentialFileProblem::ReadableByOthers)
+        );
+    }
+
+    #[test]
+    fn a_private_service_account_key_gives_no_finding() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_credential(dir.path(), r#"{"type":"service_account"}"#, 0o600);
+        assert_eq!(problem_of(&path), None);
+    }
+
+    #[test]
+    fn a_workload_identity_file_is_not_a_secret_so_its_mode_is_not_flagged() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_credential(dir.path(), r#"{"type":"external_account"}"#, 0o644);
+        assert_eq!(problem_of(&path), None);
+    }
+
+    #[test]
+    fn the_finding_never_prints_the_files_content() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_credential(
+            dir.path(),
+            r#"{"type":"authorized_user","private_key":"SECRET-MARKER"}"#,
+            0o600,
+        );
+        let text = credential_file_finding("ci", &path)
+            .expect("finding")
+            .describe();
+        assert!(!text.contains("SECRET-MARKER"), "{text}");
+    }
+
     #[test]
     fn every_finding_describes_itself_without_panicking() {
         let findings = vec![
             Finding::GcloudMissing,
             Finding::GcloudAuth {
                 account: "dev".to_string(),
+                credential_file: None,
+            },
+            Finding::GcloudAuth {
+                account: "ci".to_string(),
+                credential_file: Some("/secrets/ci-key.json".to_string()),
+            },
+            Finding::CredentialFile {
+                account: "ci".to_string(),
+                path: "/secrets/ci-key.json".to_string(),
+                problem: CredentialFileProblem::UnknownType("authorized_user".to_string()),
             },
             Finding::NumpyMissing,
             Finding::StaleState {

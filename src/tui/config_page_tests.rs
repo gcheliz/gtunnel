@@ -20,6 +20,7 @@ fn account(name: &str) -> Account {
         project: format!("example-{name}-1a2b"),
         default_zone: "europe-west1-b".to_string(),
         impersonate_service_account: None,
+        credential_file: None,
         expose: None,
     }
 }

@@ -27,6 +27,8 @@ Every token comes from `gcloud auth print-access-token` at connect time
 (`src/gcp/gcloud.rs`). gtunnel holds no refresh token, no service-account key and no
 password, and writes none to disk.
 
+A credential file is referenced by path in `config.toml` and passed to gcloud per call; gtunnel never reads, copies or stores it.
+
 The cost is a hard dependency on a working `gcloud` on `PATH` and a shell-out per
 connection. In exchange, a stolen `tunnels.toml` is worth nothing, and revoking access is
 something the user does in Google, not in gtunnel.
