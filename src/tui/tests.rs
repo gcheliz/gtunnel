@@ -1977,3 +1977,52 @@ fn a_crash_loop_is_named_over_a_passing_metrics_probe_too() {
     }
     assert_eq!(app.entries[0].health, HealthStatus::CrashLooping);
 }
+
+// A metrics round that measured nothing for a tunnel left the health round
+// with nothing to take the verdict from, and skipping it again every tick
+// would leave the row unchecked for good.
+#[test]
+fn a_tunnel_the_metrics_round_brought_no_verdict_for_is_health_probed_next() {
+    let mut app = app_with_two();
+    let mut timers = Timers::due();
+    let first = plan_probes(&mut app, &mut timers);
+    let generation = first.metrics.expect("every timer starts due").generation;
+    // The round covered db and api, and only api came back with a verdict
+    let measured = crate::probe::TunnelMetrics {
+        health: Some(HealthStatus::Healthy),
+        ..Default::default()
+    };
+    apply_polled(
+        &mut app,
+        &mut timers,
+        Msg::Metrics(generation, vec![("api".to_string(), measured)]),
+    );
+    timers.metrics.last = Instant::now() - app::METRICS_EVERY;
+    timers.health.last = Instant::now() - app::HEALTH_EVERY;
+    let next = plan_probes(&mut app, &mut timers);
+    let health: Vec<_> = next.health.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(health, ["db"], "db was left unchecked, api probed twice?");
+}
+
+#[test]
+fn a_tunnel_with_a_verdict_from_metrics_stays_one_probe_per_tick() {
+    let mut app = app_with_two();
+    let mut timers = Timers::due();
+    let first = plan_probes(&mut app, &mut timers);
+    let generation = first.metrics.expect("due").generation;
+    let results = ["db", "api"]
+        .map(|n| {
+            let m = crate::probe::TunnelMetrics {
+                health: Some(HealthStatus::Healthy),
+                ..Default::default()
+            };
+            (n.to_string(), m)
+        })
+        .to_vec();
+    apply_polled(&mut app, &mut timers, Msg::Metrics(generation, results));
+    timers.metrics.last = Instant::now() - app::METRICS_EVERY;
+    timers.health.last = Instant::now() - app::HEALTH_EVERY;
+    let next = plan_probes(&mut app, &mut timers);
+    assert!(next.metrics.is_some());
+    assert!(next.health.is_empty(), "{:?}", next.health);
+}

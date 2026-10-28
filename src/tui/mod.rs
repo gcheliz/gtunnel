@@ -517,6 +517,19 @@ fn apply_polled(app: &mut App, timers: &mut Timers, msg: Msg) {
             if !timers.metrics.finish(generation) {
                 return;
             }
+            // Whoever the round was meant to measure and came back without a
+            // verdict is owed a health probe; the others had theirs from it
+            let covered: Vec<String> = ops::metric_targets(&app.entries)
+                .into_iter()
+                .map(|t| t.tunnel.name)
+                .collect();
+            for entry in app.entries.iter_mut() {
+                let owed = covered.iter().any(|n| n == entry.name())
+                    && !metrics
+                        .iter()
+                        .any(|(n, m)| n == entry.name() && m.health.is_some());
+                entry.needs_health_probe = owed;
+            }
             for (name, m) in metrics {
                 if let Some(entry) = app.entries.iter_mut().find(|e| e.name() == name) {
                     // Microseconds: a fast hop is a real measurement, and
@@ -736,7 +749,13 @@ fn plan_probes(app: &mut App, timers: &mut Timers) -> Probes {
             .iter()
             .map(|t| t.tunnel.name.as_str())
             .collect();
-        health.retain(|(name, _)| !covered.contains(name.as_str()));
+        let owed: std::collections::HashSet<&str> = app
+            .entries
+            .iter()
+            .filter(|e| e.needs_health_probe)
+            .map(|e| e.name())
+            .collect();
+        health.retain(|(name, _)| !covered.contains(name.as_str()) || owed.contains(name.as_str()));
     }
     Probes { metrics, health }
 }
