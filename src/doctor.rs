@@ -12,8 +12,26 @@ use crate::gcp::{certmanager, compute, dns, gcloud, iap, GcpClient};
 use crate::probe::Holder;
 use crate::state::{local_port_is_free, AccessTarget, PersistentTunnel, TunnelSpec, TunnelState};
 
+// Advice is pasted into a shell, so a path with a space must stay one argument.
+// Single quotes only: nothing inside them is expanded, and an embedded quote
+// closes, escapes and reopens the string.
+fn shell_quote(path: &str) -> String {
+    let plain = !path.is_empty()
+        && path
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "/._-+=:@%,".contains(c));
+    if plain {
+        path.to_string()
+    } else {
+        format!("'{}'", path.replace('\'', "'\\''"))
+    }
+}
+
 pub const TUNNEL_ROLE: &str = "roles/iap.tunnelResourceAccessor";
 
+// Why a credential file cannot be used, found by reading the file before gcloud
+// is asked for a token. Each variant is something the user fixes on disk, so
+// none of them carries the file's content: a key must never reach a log.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CredentialFileProblem {
     Missing,
@@ -172,7 +190,8 @@ impl Finding {
                 ),
                 CredentialFileProblem::ReadableByOthers => format!(
                     "Account '{account}': the key {path} is readable by other users. \
-                     Run `chmod 600 {path}`"
+                     Run `chmod 600 {}`",
+                    shell_quote(path)
                 ),
             },
             Finding::NumpyMissing => {
@@ -1678,6 +1697,34 @@ mod tests {
         assert_eq!(
             problem_of(&path),
             Some(CredentialFileProblem::ReadableByOthers)
+        );
+    }
+
+    #[test]
+    fn the_chmod_advice_pastes_as_one_argument_when_the_path_has_a_space() {
+        let text = Finding::CredentialFile {
+            account: "ci".to_string(),
+            path: "/secrets/my keys/ci-key.json".to_string(),
+            problem: CredentialFileProblem::ReadableByOthers,
+        }
+        .describe();
+        assert!(
+            text.contains("chmod 600 '/secrets/my keys/ci-key.json'"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn the_chmod_advice_escapes_a_single_quote_in_the_path() {
+        let text = Finding::CredentialFile {
+            account: "ci".to_string(),
+            path: "/secrets/it's.json".to_string(),
+            problem: CredentialFileProblem::ReadableByOthers,
+        }
+        .describe();
+        assert!(
+            text.contains(r"chmod 600 '/secrets/it'\''s.json'"),
+            "{text}"
         );
     }
 

@@ -484,6 +484,54 @@ mod tests {
         );
     }
 
+    // The file belongs to one account: a tunnel of another account, in the same
+    // config, must not inherit the key
+    #[test]
+    fn a_service_spec_of_another_account_lacks_the_credential_file_flag() {
+        if crate::gcp::gcloud::require_gcloud().is_err() {
+            eprintln!("no gcloud on this machine; skipping");
+            return;
+        }
+        let tunnel = crate::state::PersistentTunnel {
+            name: "db".to_string(),
+            account_name: "dev".to_string(),
+            auto_start: false,
+            spec: TunnelSpec::Access {
+                target: crate::state::AccessTarget::Instance {
+                    instance: "my-vm".to_string(),
+                    zone: "europe-west1-b".to_string(),
+                },
+                remote_port: 5432,
+                local_port: 15432,
+            },
+        };
+        let account = |name: &str, file: Option<&str>| crate::config::Account {
+            name: name.to_string(),
+            gcloud_configuration: name.to_string(),
+            project: "example-dev-1a2b".to_string(),
+            default_zone: "europe-west1-b".to_string(),
+            impersonate_service_account: None,
+            credential_file: file.map(Into::into),
+            expose: None,
+        };
+        let cfg = Config {
+            selected_account: "ci".to_string(),
+            accounts: vec![
+                account("ci", Some("/secrets/ci-key.json")),
+                account("dev", None),
+            ],
+            ..Config::default()
+        };
+        let got = service_spec(&cfg, &tunnel).expect("spec");
+        assert!(
+            !got.args
+                .iter()
+                .any(|a| a.starts_with("--credential-file-override")),
+            "{:?}",
+            got.args
+        );
+    }
+
     // The supervisor decides about connection lines and its ready file from
     // these flags; an access tunnel carries its port, an expose tunnel has none
     #[test]
