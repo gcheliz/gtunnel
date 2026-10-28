@@ -240,13 +240,28 @@ pub async fn ensure_logged_in(acct: &Account) -> Result<()> {
     ensure_logged_in_with(acct, is_interactive(), confirm_login).await
 }
 
+// gcloud's own words for why the token failed, which only `doctor` used to
+// show. The probe error embeds stderr after "failed: ". gcloud leads with an
+// INFO line naming the file, which is no reason, so the first ERROR line wins
+// and the first non-empty line is the fallback.
+fn gcloud_reason(msg: &str) -> Option<String> {
+    let (_, stderr) = msg.split_once("failed: ")?;
+    let mut lines = stderr.lines().map(str::trim).filter(|l| !l.is_empty());
+    let first = lines.clone().next();
+    lines
+        .find(|l| l.starts_with("ERROR"))
+        .or(first)
+        .map(str::to_string)
+}
+
 // Checks credentials against GCP and asks confirmation before opening a browser
 // when interactive. Non-interactive sessions fail immediately without prompting.
 pub async fn ensure_logged_in_with<F>(acct: &Account, interactive: bool, confirm: F) -> Result<()>
 where
     F: FnOnce(&str) -> Result<bool>,
 {
-    let probe_ok = print_access_token(acct).await.is_ok();
+    let probe = print_access_token(acct).await;
+    let probe_ok = probe.is_ok();
     match next_step(probe_ok, interactive, acct.credential_file.is_none()) {
         AuthStep::Proceed => return Ok(()),
         AuthStep::Login => {
@@ -262,8 +277,13 @@ where
     }
     let advice = auth_advice(acct, interactive);
     Err(GtunnelError::auth(if acct.credential_file.is_some() {
+        let reason = probe
+            .err()
+            .and_then(|e| gcloud_reason(&format!("{e:#}")))
+            .map(|r| format!("; gcloud said: {r}"))
+            .unwrap_or_default();
         format!(
-            "gtunnel could not get a token for '{}'. {advice}",
+            "gtunnel could not get a token for '{}'. {advice}{reason}",
             acct.name
         )
     } else {
@@ -385,6 +405,30 @@ mod tests {
             err.to_string().contains("/nonexistent/ci-key.json"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn gcloud_reason_is_the_first_non_empty_line_after_the_failure() {
+        let msg = "Could not get a gcloud access token. Check it: gcloud auth \
+                   print-access-token failed: \nINFO: Using file\nERROR: File /secrets/ci-key.json was not found.\nmore";
+        assert_eq!(
+            gcloud_reason(msg).as_deref(),
+            Some("ERROR: File /secrets/ci-key.json was not found.")
+        );
+        assert_eq!(gcloud_reason("no marker here"), None);
+    }
+
+    #[tokio::test]
+    async fn a_missing_credential_file_error_carries_gcloud_s_reason() {
+        if find_gcloud().is_none() {
+            return;
+        }
+        let mut acct = account(None);
+        acct.credential_file = Some("/nonexistent/ci-key.json".into());
+        let err = ensure_logged_in_with(&acct, false, |_| Ok(false))
+            .await
+            .expect_err("a missing key cannot sign in");
+        assert!(err.to_string().contains("was not found"), "{err}");
     }
 
     #[tokio::test]

@@ -574,8 +574,12 @@ pub enum AccountCommands {
         #[arg(help = "Account name")]
         name: String,
 
-        // gcloud configuration to take project and zone from
-        #[arg(long, help = "gcloud configuration to take project and zone from")]
+        // Still required with --project: it names the gcloud profile the account
+        // runs under, but it stops supplying project and zone
+        #[arg(
+            long,
+            help = "gcloud configuration; supplies project and zone unless --project is given"
+        )]
         configuration: String,
 
         // Skip the configuration lookup: needs no existing gcloud configuration
