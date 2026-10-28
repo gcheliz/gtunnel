@@ -25,6 +25,7 @@ nodes:
 - id: en, label: "systemctl --user enable", subtitle: "plus loginctl enable-linger", icon: cronjob, parent: lin
 - id: proc, label: "gcloud", subtitle: "child process", icon: server, parent: local
 - id: again, label: "Restart on failure", subtitle: "KeepAlive or RestartSec=5", icon: service, parent: local
+- id: down, label: "Stays down", subtitle: "run/LABEL.auth, auth expired", icon: iam, parent: local
 edges:
 - from: add, to: rec
 - from: rec, to: start
@@ -33,7 +34,9 @@ edges:
 - from: write, to: linload
 - from: macload, to: proc
 - from: linload, to: proc
-- from: proc, to: again, label: "exits non-zero"
+- from: proc, to: again, label: "any other non-zero exit"
+- from: proc, to: down, label: "credentials expired"
+- from: down, to: start, label: "gtunnel start clears it", style: dashed
 - from: again, to: proc
 - from: macload, to: la, label: "A toggles auto-start", style: dashed
 - from: linload, to: en, label: "A toggles auto-start", style: dashed
