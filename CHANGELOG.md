@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.17](https://github.com/gcheliz/gtunnel/compare/v0.2.16...v0.2.17) - 2026-10-28
+
+### Fixed
+
+- *(auth)* quote the chmod advice and keep gcloud's reason for a credential file ([#207](https://github.com/gcheliz/gtunnel/pull/207))
+
 ## [0.2.16](https://github.com/gcheliz/gtunnel/compare/v0.2.15...v0.2.16) - 2026-10-28
 
 ### Added
