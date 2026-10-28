@@ -212,9 +212,15 @@ pub fn cmd_account_list(json: bool) -> Result<()> {
 }
 
 pub fn cmd_account_select(name: &str) -> Result<()> {
-    update_config(|config| config.select_account(name))?;
+    account_select(name)?;
     println!("Selected account '{name}'");
     Ok(())
+}
+
+// The cores below print nothing, so the TUI can call them under the alternate
+// screen, where a println lands on top of the drawn page (decision 15)
+pub fn account_select(name: &str) -> Result<()> {
+    update_config(|config| config.select_account(name))
 }
 
 // A tunnel record names its account, so removing the account first would leave
@@ -222,6 +228,24 @@ pub fn cmd_account_select(name: &str) -> Result<()> {
 // nothing else: it cannot answer what becomes of the tunnels, which is the one
 // question a script cannot have settled by passing a flag.
 pub fn cmd_account_remove(name: &str, assume_yes: bool) -> Result<()> {
+    refuse_if_held(name)?;
+    if !confirm(&format!("Remove account '{name}'?"), assume_yes)? {
+        println!("Cancelled");
+        return Ok(());
+    }
+    account_remove(name)?;
+    println!("Removed account '{name}'");
+    Ok(())
+}
+
+// Asks nothing: a caller that reaches it has already had the answer
+pub fn account_remove(name: &str) -> Result<()> {
+    refuse_if_held(name)?;
+    update_config(|config| config.remove_account(name))?;
+    Ok(())
+}
+
+fn refuse_if_held(name: &str) -> Result<()> {
     let state = crate::state::TunnelState::load()?;
     let held = state.tunnels_for_account(name).len();
     if held > 0 {
@@ -230,12 +254,6 @@ pub fn cmd_account_remove(name: &str, assume_yes: bool) -> Result<()> {
              or move them to another account with `gtunnel move`, then remove the account"
         );
     }
-    if !confirm(&format!("Remove account '{name}'?"), assume_yes)? {
-        println!("Cancelled");
-        return Ok(());
-    }
-    update_config(|config| config.remove_account(name))?;
-    println!("Removed account '{name}'");
     Ok(())
 }
 
@@ -317,6 +335,12 @@ fn account_from_flags(configuration: &str, name: &str, opts: &AddOptions) -> Res
 // configuration they mean. It is async because listing configurations shells out
 // to gcloud, which `--project` makes unnecessary.
 pub async fn cmd_account_add(configuration: &str, name: &str, opts: AddOptions) -> Result<()> {
+    account_add(configuration, name, opts).await?;
+    println!("Account '{name}' saved to {}", config_dir()?.display());
+    Ok(())
+}
+
+pub async fn account_add(configuration: &str, name: &str, opts: AddOptions) -> Result<()> {
     // Before the branch, so the gcloud path refuses it too: there it would
     // only surface as "no configuration named ''" after a gcloud call
     if configuration.is_empty() {
@@ -338,9 +362,7 @@ pub async fn cmd_account_add(configuration: &str, name: &str, opts: AddOptions) 
         }
         account
     };
-    update_or_init_config(|config| config.add_account(account))?;
-    println!("Account '{name}' saved to {}", config_dir()?.display());
-    Ok(())
+    update_or_init_config(|config| config.add_account(account))
 }
 
 // Only the fields given change; an empty value is refused so an edit cannot
