@@ -27,6 +27,14 @@ pub fn exit_with(e: &anyhow::Error, json: bool) -> ! {
     std::process::exit(kind.exit_code());
 }
 
+// A bare `gtunnel` on a machine that has never been set up walks through `init`
+// instead of ending in an error. It needs a person to answer, so a script or a
+// pipe keeps the plain error, and it needs the file to be absent: one that
+// exists and fails to load is reported as such, never overwritten.
+fn first_run_needed(no_command: bool, config_exists: bool, interactive: bool) -> bool {
+    no_command && !config_exists && interactive
+}
+
 pub async fn run(args: Cli) -> Result<()> {
     // Before anything builds an argv or calls gcloud, and before the config
     // is needed for anything else: a bad GTUNNEL_LOG_LEVEL should fail here,
@@ -51,6 +59,17 @@ pub async fn run(args: Cli) -> Result<()> {
         args.command,
         None | Some(Commands::Update { .. } | Commands::Completions { .. })
     );
+
+    // Ahead of the gate below, which needs an account to exist; a failure or an
+    // interrupted prompt returns here, so the TUI never starts on a half setup
+    if first_run_needed(
+        args.command.is_none(),
+        config::config_path()?.exists(),
+        gcp::gcloud::is_interactive(),
+    ) {
+        println!("gtunnel is not set up yet. Pick a gcloud configuration to use:");
+        commands::account::cmd_init().await?;
+    }
 
     // Before the TUI takes the screen or any command touches GCP, so a login
     // prints to a normal terminal and a missing one ends the process here
@@ -254,4 +273,32 @@ pub async fn run(args: Cli) -> Result<()> {
         update::maybe_print_update_hint();
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::first_run_needed;
+
+    #[test]
+    fn first_run_needed_is_true_for_a_bare_command_with_no_file_on_a_terminal() {
+        assert!(first_run_needed(true, false, true));
+    }
+
+    #[test]
+    fn first_run_needed_is_false_when_the_file_exists() {
+        // A file that exists but does not parse must reach the load error, never
+        // `init`: saving over it would delete every account it holds
+        assert!(!first_run_needed(true, true, true));
+    }
+
+    #[test]
+    fn first_run_needed_is_false_without_a_terminal() {
+        // A prompt nobody can answer would hang a script or a cron job
+        assert!(!first_run_needed(true, false, false));
+    }
+
+    #[test]
+    fn first_run_needed_is_false_for_a_subcommand() {
+        assert!(!first_run_needed(false, false, true));
+    }
 }
