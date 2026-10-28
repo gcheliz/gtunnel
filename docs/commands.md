@@ -514,7 +514,7 @@ is written. With a file set, a missing token is named after the file, never `gcl
 
 ```
 $ gtunnel --account ci run bastion:22 --ttl 2m
-Error: gtunnel could not get a token for 'ci'. The credential file /secrets/ci-key.json gave no token. Check that it exists, is a service-account key or a workload identity federation file, and that its identity is not disabled
+Error: gtunnel could not get a token for 'ci'. The credential file /nonexistent/ci-key.json gave no token. Check that it exists, is a service-account key or a workload identity federation file, and that its identity is not disabled; gcloud said: ERROR: (gcloud.auth.print-access-token) Failed to load credential file: [/nonexistent/ci-key.json].  File /nonexistent/ci-key.json was not found.
 ```
 
 An account name is 1-16 characters of `a-z`, `0-9` and `-`, starting with a letter:

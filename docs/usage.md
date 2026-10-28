@@ -300,8 +300,8 @@ active one: `gcloud config configurations create ci --no-activate`.
 ### Name a credential file
 
 Outside GCP, point the account at the file. gtunnel stores the path and passes it to gcloud on
-every call as `--credential-file-override=<path>`; it never reads, copies or stores the
-file ([decision 1](decisions.md#1-gtunnel-stores-no-credential)).
+every call as `--credential-file-override=<path>`; it never copies, stores or logs the
+file, and `doctor` reads it to check its type and mode ([decision 1](decisions.md#1-gtunnel-stores-no-credential)).
 
 ```
 $ gtunnel account add ci --configuration ci --project example-dev-1a2b \

@@ -46,8 +46,9 @@ pub struct Account {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub impersonate_service_account: Option<String>,
     // A service-account key or a workload identity federation file, passed to
-    // gcloud per call. gtunnel only holds the path: it never reads, copies or
-    // stores the secret, so a key stays where its owner put it.
+    // gcloud per call. gtunnel only holds the path: it never copies, stores or
+    // logs the secret, so a key stays where its owner put it; `doctor` reads
+    // it only to check its type and mode.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential_file: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -751,7 +751,9 @@ fn schedule(app: &mut App, timers: &mut Timers, tx: &mpsc::UnboundedSender<Msg>)
 /// `JoinError` here and `empty` is sent in its place. `empty` is the round's
 /// own "nothing to report" message, which `apply_polled` already treats as
 /// rows keeping their last values: it releases the guard and touches nothing
-/// else.
+/// else. This covers unwinding builds only (test and debug): the release
+/// profile is `panic = "abort"`, so a panic there ends the process before the
+/// `JoinError` can exist.
 fn spawn_round<F>(tx: mpsc::UnboundedSender<Msg>, empty: Msg, round: F)
 where
     F: std::future::Future<Output = Msg> + Send + 'static,
