@@ -1888,6 +1888,41 @@ async fn a_stalled_tunnel_does_not_hold_back_the_metrics_of_the_others() {
     );
 }
 
+#[tokio::test]
+async fn a_hung_target_is_dropped_at_the_bound_and_the_round_still_lands() {
+    use std::time::{Duration, Instant};
+
+    let bound = Duration::from_millis(100);
+    let targets = vec![
+        ("fast".to_string(), 0u8),
+        ("hung".to_string(), 1),
+        ("also".to_string(), 2),
+    ];
+    let started = Instant::now();
+    let out = collect_round_within(
+        targets,
+        |which| async move {
+            if which == 1 {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+            }
+            Some(which)
+        },
+        bound,
+    )
+    .await;
+    let elapsed = started.elapsed();
+    let names: Vec<_> = out.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, ["fast", "also"], "the hung target is left out");
+    assert!(
+        elapsed >= bound,
+        "the round waited for the bound: {elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "the round was held by the hung target: {elapsed:?}"
+    );
+}
+
 // The probe is what costs: one IAP websocket to the VM. The metrics probe
 // already carries the verdict, so a tunnel it covers is not asked again.
 #[test]
