@@ -16,7 +16,10 @@ Set Padding 24
 Set TypingSpeed 70ms
 
 Hide
-Type `export PATH="$PWD/target/release:$PATH"`
+# An empty configuration directory: any command gtunnel runs at start-up, such
+# as reinstalling a launchd job that predates the binary, then finds no job of
+# the machine's own to name in the recording or to touch
+Type `export GT=$(mktemp -d) && export PATH="$PWD/target/release:$PATH" GTUNNEL_CONFIG_DIR="$GT" GTUNNEL_NO_NOTIFY=1`
 Enter
 Type "clear"
 Enter
@@ -40,6 +43,11 @@ Down
 Sleep 2000ms
 Down
 Sleep 3500ms
+
+# `S` stops the selected run. The demo schedules no work, so the row stays;
+# the scene shows the key on a run row, where `s` would be refused
+Type "S"
+Sleep 2500ms
 Down
 Sleep 1500ms
 Down
@@ -65,6 +73,23 @@ Sleep 1000ms
 # `:` is the accounts page: add, edit, select and remove accounts
 Type ":"
 Sleep 3s
+
+# `a` adds one: the first step picks a gcloud configuration, with the active
+# one already selected
+Type "a"
+Sleep 3s
+Down
+Sleep 1500ms
+Escape
+Sleep 1000ms
+
+# `e` edits the selected account: a project picker, then the zone picker
+Type "e"
+Sleep 2500ms
+Enter
+Sleep 3s
+Escape
+Sleep 1000ms
 Escape
 Sleep 1000ms
 
@@ -86,3 +111,7 @@ Sleep 1500ms
 
 Type "q"
 Sleep 1500ms
+
+Hide
+Type `rm -rf "$GT"`
+Enter
