@@ -164,7 +164,7 @@ fn demo_entries() -> Vec<TunnelEntry> {
     // What an agent opened with `gtunnel_run_tunnel`: it lives 25 minutes from
     // now, so the row and its details always show a stop time still ahead
     let mut run = TunnelEntry::new(
-        access("demo", "gt-3b2c10", "my-vm", 5432, 15900, false),
+        access("demo", "gt-3b2c10", "bastion", 5432, 15900, false),
         TunnelStatus::Running,
         TunnelKind::Ephemeral,
     );
@@ -281,7 +281,7 @@ impl App {
         if std::mem::take(&mut self.want_instances) {
             let zone = self.default_zone.clone();
             self.instances_arrived(
-                ["bastion", "cache-vm", "db-vm"]
+                ["bastion", "cache-1", "db-1"]
                     .map(|name| InstanceChoice {
                         name: name.to_string(),
                         zone: zone.clone(),

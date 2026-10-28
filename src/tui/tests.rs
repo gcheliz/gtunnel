@@ -162,7 +162,7 @@ pub(super) fn access(name: &str, local_port: u16) -> PersistentTunnel {
         auto_start: false,
         spec: TunnelSpec::Access {
             target: AccessTarget::Instance {
-                instance: "my-vm".to_string(),
+                instance: "bastion".to_string(),
                 zone: "europe-west1-b".to_string(),
             },
             remote_port: 5432,
@@ -955,7 +955,7 @@ fn a_filter_that_matches_none_of_the_listed_instances_accepts_what_was_typed() {
     let mut app = at_the_name_prompt();
     app.default_zone = "europe-west1-b".to_string();
     app.instances = vec![InstanceChoice {
-        name: "my-vm".to_string(),
+        name: "my-instance".to_string(),
         zone: "europe-west4-a".to_string(),
     }];
     keys(&mut app, "cache\nbastion\n");
@@ -1030,7 +1030,7 @@ fn typing_again_clears_the_refusal() {
 fn adding_an_access_tunnel_walks_the_prompts_and_creates_it() {
     let mut app = app_with_two();
     app.instances = vec![InstanceChoice {
-        name: "my-vm".to_string(),
+        name: "bastion".to_string(),
         zone: "europe-west1-b".to_string(),
     }];
 
@@ -1042,7 +1042,7 @@ fn adding_an_access_tunnel_walks_the_prompts_and_creates_it() {
             account: "dev".to_string(),
             name: "cache".to_string(),
             mode: TunnelMode::Access,
-            instance: "my-vm".to_string(),
+            instance: "bastion".to_string(),
             zone: "europe-west1-b".to_string(),
             remote_port: 5432,
             local_port: 15870,
@@ -1149,7 +1149,7 @@ fn pending_clears_on_the_first_round_after_the_op() {
 pub(super) fn submitted_access_draft() -> App {
     let mut app = app_with_two();
     app.instances = vec![InstanceChoice {
-        name: "my-vm".to_string(),
+        name: "bastion".to_string(),
         zone: "europe-west1-b".to_string(),
     }];
     keys(&mut app, "a1cache\n\n\n5432\n\n");
@@ -1164,7 +1164,7 @@ fn a_create_that_failed_brings_the_draft_back() {
 
     assert_eq!(app.input_mode, InputMode::AddLocalPort);
     assert_eq!(app.draft.name, "cache");
-    assert_eq!(app.draft.instance, "my-vm");
+    assert_eq!(app.draft.instance, "bastion");
     assert_eq!(app.draft.remote_port, 5432);
     assert_eq!(app.draft.local_port, 15870);
     assert_eq!(app.input, "15870");
@@ -1939,7 +1939,7 @@ async fn a_hung_target_is_dropped_at_the_bound_and_the_round_still_lands() {
     );
 }
 
-// The probe is what costs: one IAP websocket to the VM. The metrics probe
+// The probe is what costs: one IAP websocket to the instance. The metrics probe
 // already carries the verdict, so a tunnel it covers is not asked again.
 #[test]
 fn one_tick_over_a_covered_tunnel_probes_it_once() {

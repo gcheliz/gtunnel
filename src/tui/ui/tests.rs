@@ -3313,7 +3313,7 @@ mod run_stop_time {
                 auto_start: false,
                 spec: TunnelSpec::Access {
                     target: AccessTarget::Instance {
-                        instance: "my-vm".to_string(),
+                        instance: "bastion".to_string(),
                         zone: "europe-west1-b".to_string(),
                     },
                     remote_port: 5432,

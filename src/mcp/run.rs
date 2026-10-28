@@ -383,26 +383,27 @@ mod tests {
 
     #[test]
     fn a_request_without_a_ttl_is_refused() {
-        let err = RunRequest::parse(&args(json!({"target": "my-vm:5432"}))).unwrap_err();
+        let err = RunRequest::parse(&args(json!({"target": "bastion:5432"}))).unwrap_err();
         assert!(err.contains("ttl_minutes"), "{err}");
     }
 
     #[test]
     fn a_ttl_outside_one_to_four_eighty_minutes_is_refused() {
         for bad in [0, 481, 100_000] {
-            let err = RunRequest::parse(&args(json!({"target": "my-vm:5432", "ttl_minutes": bad})))
-                .unwrap_err();
+            let err =
+                RunRequest::parse(&args(json!({"target": "bastion:5432", "ttl_minutes": bad})))
+                    .unwrap_err();
             assert!(err.contains("ttl_minutes"), "{bad}: {err}");
         }
         for ok in [1, 480] {
-            RunRequest::parse(&args(json!({"target": "my-vm:5432", "ttl_minutes": ok})))
+            RunRequest::parse(&args(json!({"target": "bastion:5432", "ttl_minutes": ok})))
                 .expect("in range");
         }
     }
 
     #[test]
     fn a_target_without_a_port_is_refused() {
-        for bad in ["my-vm", "my-vm:0", ":5432", "my-vm:http"] {
+        for bad in ["bastion", "bastion:0", ":5432", "bastion:http"] {
             let err =
                 RunRequest::parse(&args(json!({"target": bad, "ttl_minutes": 5}))).unwrap_err();
             assert!(err.contains("target"), "{bad}: {err}");
@@ -412,7 +413,7 @@ mod tests {
     #[test]
     fn a_request_for_a_public_run_is_refused() {
         let err = RunRequest::parse(&args(
-            json!({"target": "my-vm:5432", "ttl_minutes": 5, "public": true}),
+            json!({"target": "bastion:5432", "ttl_minutes": 5, "public": true}),
         ))
         .unwrap_err();
         assert!(err.contains("public"), "{err}");
@@ -421,11 +422,11 @@ mod tests {
     #[test]
     fn a_bad_name_is_refused_and_a_missing_one_is_generated() {
         let err = RunRequest::parse(&args(
-            json!({"name": "Bad_Name", "target": "my-vm:5432", "ttl_minutes": 5}),
+            json!({"name": "Bad_Name", "target": "bastion:5432", "ttl_minutes": 5}),
         ))
         .unwrap_err();
         assert!(err.contains("name"), "{err}");
-        let req = RunRequest::parse(&args(json!({"target": "my-vm:5432", "ttl_minutes": 5})))
+        let req = RunRequest::parse(&args(json!({"target": "bastion:5432", "ttl_minutes": 5})))
             .expect("parse");
         assert!(req.name.starts_with("gt-"), "{}", req.name);
     }
@@ -433,7 +434,7 @@ mod tests {
     #[test]
     fn the_child_is_told_the_account_the_target_and_the_ttl_in_minutes() {
         let req = RunRequest::parse(&args(json!({
-            "name": "db", "target": "my-vm:5432", "zone": "europe-west1-b",
+            "name": "db", "target": "bastion:5432", "zone": "europe-west1-b",
             "local_port": 15432, "ttl_minutes": 30
         })))
         .expect("parse");
@@ -451,7 +452,7 @@ mod tests {
                 "30m",
                 "--",
                 "db",
-                "my-vm:5432"
+                "bastion:5432"
             ]
         );
     }
@@ -459,7 +460,7 @@ mod tests {
     #[test]
     fn a_minimal_request_passes_no_optional_flags() {
         let req = RunRequest::parse(&args(
-            json!({"name": "db", "target": "my-vm:5432", "ttl_minutes": 1}),
+            json!({"name": "db", "target": "bastion:5432", "ttl_minutes": 1}),
         ))
         .expect("parse");
         assert_eq!(
@@ -472,7 +473,7 @@ mod tests {
                 "1m",
                 "--",
                 "db",
-                "my-vm:5432"
+                "bastion:5432"
             ]
         );
     }
@@ -486,7 +487,7 @@ mod tests {
         }
         for bad in ["--public", "-d", "Europe-West1", "a b"] {
             let err = RunRequest::parse(&args(
-                json!({"target": "my-vm:5432", "zone": bad, "ttl_minutes": 5}),
+                json!({"target": "bastion:5432", "zone": bad, "ttl_minutes": 5}),
             ))
             .unwrap_err();
             assert!(err.contains("zone"), "{bad}: {err}");

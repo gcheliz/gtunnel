@@ -1081,7 +1081,7 @@ mod new_tunnel_tests {
             "db",
             "dev",
             AccessTarget::Instance {
-                instance: "my-vm".to_string(),
+                instance: "bastion".to_string(),
                 zone: "europe-west1-b".to_string(),
             },
             5432,
@@ -1105,7 +1105,7 @@ mod tests {
             pid: std::process::id(),
             spec: TunnelSpec::Access {
                 target: AccessTarget::Instance {
-                    instance: "my-vm".to_string(),
+                    instance: "bastion".to_string(),
                     zone: "europe-west1-b".to_string(),
                 },
                 remote_port: 5432,
@@ -1253,7 +1253,7 @@ mod tests {
             auto_start: false,
             spec: TunnelSpec::Access {
                 target: crate::state::AccessTarget::Instance {
-                    instance: "my-vm".to_string(),
+                    instance: "bastion".to_string(),
                     zone: "europe-west1-b".to_string(),
                 },
                 remote_port: 5432,
@@ -1427,20 +1427,20 @@ mod tests {
     #[test]
     fn access_target_splits_host_and_port() {
         assert_eq!(
-            parse_access_target("my-vm:5432").expect("parse"),
-            ("my-vm".to_string(), 5432)
+            parse_access_target("bastion:5432").expect("parse"),
+            ("bastion".to_string(), 5432)
         );
     }
 
     #[test]
     fn access_target_needs_a_port() {
-        let err = parse_access_target("my-vm").expect_err("should fail");
+        let err = parse_access_target("bastion").expect_err("should fail");
         assert!(err.to_string().contains("expected INSTANCE:PORT"), "{err}");
     }
 
     #[test]
     fn access_target_rejects_a_port_that_is_not_a_number() {
-        let err = parse_access_target("my-vm:http").expect_err("should fail");
+        let err = parse_access_target("bastion:http").expect_err("should fail");
         assert!(err.to_string().contains("expected INSTANCE:PORT"), "{err}");
     }
 
@@ -1503,7 +1503,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path(
-                "/compute/v1/projects/proj-1/zones/europe-west1-b/instances/missing-vm",
+                "/compute/v1/projects/proj-1/zones/europe-west1-b/instances/missing-instance",
             ))
             .respond_with(ResponseTemplate::new(404))
             .mount(&server)
@@ -1522,12 +1522,12 @@ mod tests {
             credential_file: None,
             expose: None,
         };
-        let err = verify_instance_with_client(&client, &acct, "europe-west1-b", "missing-vm")
+        let err = verify_instance_with_client(&client, &acct, "europe-west1-b", "missing-instance")
             .await
             .expect_err("should bail");
         let msg = format!("{err:#}");
         assert!(msg.contains(
-            "Instance 'missing-vm' not found in zone 'europe-west1-b' of project 'proj-1'"
+            "Instance 'missing-instance' not found in zone 'europe-west1-b' of project 'proj-1'"
         ));
         assert!(msg.contains("Run `gtunnel zones` to check available zones"));
     }
