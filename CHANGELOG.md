@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.30](https://github.com/gcheliz/gtunnel/compare/v0.2.29...v0.2.30) - 2026-10-28
+
+### Added
+
+- *(config)* the watchdog's probe timeout, degraded threshold and interval are settings ([#246](https://github.com/gcheliz/gtunnel/pull/246))
+
 ## [0.2.29](https://github.com/gcheliz/gtunnel/compare/v0.2.28...v0.2.29) - 2026-10-28
 
 ### Fixed
