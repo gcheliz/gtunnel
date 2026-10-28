@@ -507,7 +507,10 @@ credential_file = "/secrets/ci-key.json"
 federation file; a relative path is refused on `add` and `edit`, and on `edit` an empty value
 (`--credential-file ""`) clears it. A relative path written into `config.toml` by hand does not
 stop the file loading: that account's tunnels exit 2 naming it, `doctor` reports it, and `edit`
-repairs it. With a file set, a missing token is named after the file, never `gcloud auth login`:
+repairs it. `--configuration` cannot be empty, because gcloud reads an empty one as the active
+configuration and the tunnel would run as whoever is logged in to the shell; `--zone` is
+checked the same way `add` checks a tunnel's zone. Both are refused with exit 2 before anything
+is written. With a file set, a missing token is named after the file, never `gcloud auth login`:
 
 ```
 $ gtunnel --account ci run bastion:22 --ttl 2m
@@ -522,12 +525,26 @@ An account name is 1-16 characters of `a-z`, `0-9` and `-`, starting with a lett
 | `runner`, `prod-run` | yes | only `run` itself and the `run-` prefix collide |
 
 An account made before the rule keeps loading and working; `gtunnel doctor` names it and says
-to rename it. `edit` changes only what it is given:
+to rename it. `edit` changes only what it is given, and refuses with exit 2 a call with
+nothing to change or an empty project or zone:
 
 ```
 $ gtunnel account edit dev --zone europe-west4-a
 Account 'dev' updated
 ```
+
+An installed tunnel keeps the `--project` and `--credential-file-override` it was installed
+with, so changing either does not reach it until it restarts. `edit` does not restart, because
+a restart drops live connections; it names the installed tunnels that are now stale and says how:
+
+```
+$ gtunnel account edit ci --credential-file /secrets/new-key.json
+Account 'ci' updated
+Installed tunnels still use the old value: db. Restart to apply: `gtunnel restart db`
+```
+
+With no installed tunnel on the account, nothing extra is printed. A changed `--zone` needs no
+restart: the zone is not in a service file.
 
 `remove` refuses while the account still holds tunnels, and names both ways out rather than
 offering a flag that would strand the services:
@@ -689,7 +706,7 @@ Reports what gtunnel can see without changing anything.
 ```
 $ gtunnel doctor
 account dev:
-  - gcloud has no usable credentials for account 'dev'. Run `gcloud auth login`
+  - gcloud has no usable credentials for account 'dev'. Run `gcloud auth login --configuration=dev` and try again
 ```
 
 ```
@@ -697,7 +714,7 @@ $ gtunnel doctor          # with a gcloud whose Python has no numpy
 gtunnel:
   - gcloud's Python is missing numpy, which makes IAP tunnels slow. Run `gcloud components reinstall`
 account dev:
-  - gcloud has no usable credentials for account 'dev'. Run `gcloud auth login`
+  - gcloud has no usable credentials for account 'dev'. Run `gcloud auth login --configuration=dev` and try again
 ```
 
 A service with no record is machine-wide, so it is filed under `gtunnel:` like the watchdog.
@@ -724,7 +741,7 @@ $ gtunnel doctor
 gtunnel:
   ! config.toml has a key gtunnel ignores: accounts[0].log_level. Edit the file and remove or move it
 account scratch-docs:
-  ! gcloud has no usable credentials for account 'scratch-docs'. Run `gcloud auth login`
+  ! gcloud has no usable credentials for account 'scratch-docs'. Run `gcloud auth login --configuration=scratch-docs` and try again
 ```
 
 An account whose `credential_file` is relative or starts with `~` is reported per account,
@@ -832,7 +849,7 @@ person and is not a stable interface: branch on the code.
 | Kind | Exit | Meaning |
 |---|---|---|
 | `internal` | 1 | Anything unclassified: an unreadable config, a failed write, a tunnel that did not come up |
-| `usage` | 2 | A request gtunnel refuses: a bad argument or setting (a target without a port, a bad `GTUNNEL_LOG_LEVEL`), a name already taken (`add`, `expose`, `rename`, `move`, `account add`), a local port a run holds, a move that cannot happen, `expose` or `run --public` on an account with no relay, or a local target that is not a port or host:port. Same code clap uses for a malformed command line |
+| `usage` | 2 | A request gtunnel refuses: a bad argument or setting (a target without a port, a bad `GTUNNEL_LOG_LEVEL`), a name already taken (`add`, `expose`, `rename`, `move`, `account add`), an empty `--configuration`, an invalid `--zone`, an `account edit` with nothing to change or an empty project or zone, a local port a run holds, a move that cannot happen, `expose` or `run --public` on an account with no relay, or a local target that is not a port or host:port. Same code clap uses for a malformed command line |
 | `not_found` | 3 | The tunnel or the account named does not exist |
 | `auth` | 4 | gcloud has no usable credentials for the account |
 | `gcloud` | 5 | A gcloud call ran and failed |

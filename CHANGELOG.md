@@ -3,6 +3,18 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.20](https://github.com/gcheliz/gtunnel/compare/v0.2.19...v0.2.20) - 2026-10-28
+
+### Fixed
+
+- *(account)* refuse empty configuration and bad zone, and name tunnels an edit leaves stale ([#219](https://github.com/gcheliz/gtunnel/pull/219))
+
+## [0.2.19](https://github.com/gcheliz/gtunnel/compare/v0.2.18...v0.2.19) - 2026-10-28
+
+### Fixed
+
+- *(config)* a config.toml that fails to load is never overwritten ([#218](https://github.com/gcheliz/gtunnel/pull/218))
+
 ## [0.2.18](https://github.com/gcheliz/gtunnel/compare/v0.2.17...v0.2.18) - 2026-10-28
 
 ### Documentation
