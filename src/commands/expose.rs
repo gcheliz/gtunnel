@@ -15,7 +15,7 @@ use crate::state::{
 
 // What the relay costs before anyone agrees to create it
 pub fn relay_cost_line() -> String {
-    "Global forwarding rule (~USD 18/month) and e2-micro VM (~USD 7/month, free tier in some US \
+    "Global forwarding rule (~USD 18/month) and e2-micro instance (~USD 7/month, free tier in some US \
      regions)"
         .to_string()
 }
@@ -119,7 +119,7 @@ pub async fn cmd_relay_status(account: Option<&str>) -> Result<()> {
     let status = relay::relay_status(&client, &acct).await?;
 
     println!(
-        "vm              {}",
+        "instance        {}",
         status.vm.as_deref().unwrap_or("missing")
     );
     println!(
@@ -281,7 +281,7 @@ pub async fn expose_tunnel(account: Option<&str>, req: &ExposeRequest<'_>) -> Re
         name,
         RELAY_PORT_BASE,
         RELAY_PORT_SPAN,
-        // The port is bound on the relay VM, not here, so nothing local can
+        // The port is bound on the relay instance, not here, so nothing local can
         // probe it: tunnels.toml and the live runs are the whole record
         &crate::ephemeral::used_relay_ports(&state, &acct.name)?,
         |_| true,

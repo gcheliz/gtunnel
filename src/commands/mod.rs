@@ -257,7 +257,7 @@ mod tests {
             auto_start: true,
             spec: TunnelSpec::Access {
                 target: AccessTarget::Instance {
-                    instance: "my-vm".to_string(),
+                    instance: "bastion".to_string(),
                     zone: "europe-west1-b".to_string(),
                 },
                 remote_port: 5432,
@@ -368,7 +368,7 @@ mod tests {
         assert_eq!(columns[2], "db");
         assert_eq!(columns[3], "access");
         assert_eq!(columns[4], "localhost:15432");
-        assert_eq!(columns[5], "my-vm:5432");
+        assert_eq!(columns[5], "bastion:5432");
     }
 
     #[test]

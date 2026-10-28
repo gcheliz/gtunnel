@@ -130,7 +130,7 @@ fn ssh_forward_options(level: LogLevel, forward_flag: &str) -> Vec<String> {
 }
 
 // `gcloud compute ssh --tunnel-through-iap` argv that opens the reverse
-// forward from the relay VM back to the local service
+// forward from the relay instance back to the local service
 pub fn expose_argv(
     acct: &Account,
     ex: &ExposeConfig,
@@ -247,7 +247,7 @@ pub fn diagnose_log_line(line: &str) -> Option<&'static str> {
         ),
         (
             "remote port forwarding failed",
-            "Relay port is busy on the relay VM. Restart the tunnel or run gtunnel doctor.",
+            "Relay port is busy on the relay instance. Restart the tunnel or run gtunnel doctor.",
         ),
         (
             "numpy",
@@ -306,7 +306,7 @@ mod tests {
             auto_start: false,
             spec: TunnelSpec::Access {
                 target: AccessTarget::Instance {
-                    instance: "my-vm".to_string(),
+                    instance: "bastion".to_string(),
                     zone: "europe-west1-b".to_string(),
                 },
                 remote_port: 5432,
@@ -471,7 +471,7 @@ mod tests {
             vec![
                 "compute",
                 "start-iap-tunnel",
-                "my-vm",
+                "bastion",
                 "5432",
                 "--local-host-port=localhost:15432",
                 "--zone=europe-west1-b",
@@ -563,7 +563,7 @@ mod tests {
             vec![
                 "compute",
                 "start-iap-tunnel",
-                "my-vm",
+                "bastion",
                 "5432",
                 "--local-host-port=localhost:15432",
                 "--zone=europe-west1-b",

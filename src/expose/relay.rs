@@ -9,7 +9,7 @@ use crate::state::TunnelState;
 use super::naming::Names;
 use super::routes;
 
-// The relay VM carries this tag, and both firewall rules target it
+// The relay instance carries this tag, and both firewall rules target it
 pub const RELAY_TAG: &str = "gt-relay";
 // The default backend's port has no listener, so an unknown host gets a 503
 pub const DEFAULT_RELAY_PORT: u16 = 30_999;
@@ -194,7 +194,7 @@ pub async fn relay_up(
     }
     step(
         existing_vm.is_none(),
-        &format!("relay vm {}", names.relay_vm),
+        &format!("relay instance {}", names.relay_vm),
     );
 
     let group_url =
@@ -608,7 +608,7 @@ mod tests {
             } else {
                 TunnelSpec::Access {
                     target: crate::state::AccessTarget::Instance {
-                        instance: "vm".to_string(),
+                        instance: "bastion".to_string(),
                         zone: "europe-west1-b".to_string(),
                     },
                     remote_port: 5432,

@@ -217,7 +217,7 @@ mod tests {
 
     const PS: &str = "\
   501     1 /usr/bin/python3 /opt/homebrew/share/google-cloud-sdk/lib/gcloud.py compute start-iap-tunnel db-1 5432 --local-host-port=localhost:6000 --zone=us-central1-a
-  502     1 /usr/bin/python3 /opt/homebrew/share/google-cloud-sdk/lib/gcloud.py compute start-iap-tunnel managed-vm 3306 --local-host-port=localhost:15306 --zone=europe-west1-b
+  502     1 /usr/bin/python3 /opt/homebrew/share/google-cloud-sdk/lib/gcloud.py compute start-iap-tunnel managed-1 3306 --local-host-port=localhost:15306 --zone=europe-west1-b
   503     1 /usr/bin/grep start-iap-tunnel
   504     1 /bin/zsh
 ";
@@ -249,7 +249,7 @@ mod tests {
 
     #[test]
     fn a_tunnel_without_a_local_host_port_still_parses() {
-        let ps = "  601     1 gcloud compute start-iap-tunnel vm-9 22\n";
+        let ps = "  601     1 gcloud compute start-iap-tunnel db-9 22\n";
         let found = strangers(ps, &HashSet::new());
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].local_port, None);
