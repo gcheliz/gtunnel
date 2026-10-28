@@ -49,6 +49,9 @@ pub enum Finding {
         // Set for an account that names one: `gcloud auth login` is then the
         // wrong advice, because the key and not a person is what must sign in
         credential_file: Option<String>,
+        // Built where the account is at hand, because the right login names
+        // its configuration and depends on whether anyone is at a terminal
+        advice: String,
     },
     // What is wrong with the file itself, found before any token is asked for
     // so a bad file is named even when the probe fails after it
@@ -164,16 +167,13 @@ impl Finding {
             Finding::GcloudAuth {
                 account,
                 credential_file: None,
-            } => format!(
-                "gcloud has no usable credentials for account '{account}'. Run `gcloud auth login`"
-            ),
+                advice,
+            } => format!("gcloud has no usable credentials for account '{account}'. {advice}"),
             Finding::GcloudAuth {
                 account,
-                credential_file: Some(path),
-            } => format!(
-                "Account '{account}' has no token. {}",
-                gcloud::credential_file_advice(path)
-            ),
+                credential_file: Some(_),
+                advice,
+            } => format!("Account '{account}' has no token. {advice}"),
             Finding::CredentialFile {
                 account,
                 path,
@@ -791,6 +791,25 @@ pub async fn run_doctor(
     out
 }
 
+// The same advice `run` gives, and for a credential file the same `; gcloud
+// said:` reason, so doctor is never the vaguer of the two
+fn gcloud_auth_finding(acct: &Account, interactive: bool, err: &anyhow::Error) -> Finding {
+    let mut advice = gcloud::auth_advice(acct, interactive);
+    if acct.credential_file.is_some()
+        && let Some(reason) = gcloud::gcloud_reason(&format!("{err:#}"))
+    {
+        advice.push_str(&format!("; gcloud said: {reason}"));
+    }
+    Finding::GcloudAuth {
+        account: acct.name.clone(),
+        credential_file: acct
+            .credential_file
+            .as_ref()
+            .map(|p| p.display().to_string()),
+        advice,
+    }
+}
+
 async fn account_findings(_cfg: &Config, state: &TunnelState, acct: &Account) -> Vec<Finding> {
     let mut findings = Vec::new();
     let client = GcpClient::for_account(acct);
@@ -822,14 +841,8 @@ async fn account_findings(_cfg: &Config, state: &TunnelState, acct: &Account) ->
         findings.extend(credential_file_finding(&acct.name, file));
     }
 
-    if gcloud::print_access_token(acct).await.is_err() {
-        findings.push(Finding::GcloudAuth {
-            account: acct.name.clone(),
-            credential_file: acct
-                .credential_file
-                .as_ref()
-                .map(|p| p.display().to_string()),
-        });
+    if let Err(e) = gcloud::print_access_token(acct).await {
+        findings.push(gcloud_auth_finding(acct, gcloud::is_interactive(), &e));
         // Without a token nothing else can be checked against GCP
         return findings;
     }
@@ -1784,16 +1797,50 @@ mod tests {
     }
 
     #[test]
+    fn the_auth_finding_names_the_configuration_the_account_runs_on() {
+        let mut acct = account();
+        acct.gcloud_configuration = "work".to_string();
+        let err = anyhow::anyhow!("probe failed: ERROR: no credentials");
+        let text = gcloud_auth_finding(&acct, true, &err).describe();
+        assert!(text.contains("--configuration=work"), "{text}");
+    }
+
+    #[test]
+    fn the_auth_finding_does_not_send_a_runner_to_a_browser() {
+        let err = anyhow::anyhow!("probe failed: ERROR: no credentials");
+        let text = gcloud_auth_finding(&account(), false, &err).describe();
+        assert!(text.contains("No terminal to log in from"), "{text}");
+    }
+
+    #[test]
+    fn a_credential_file_failure_keeps_gcloud_s_own_reason() {
+        let mut acct = account();
+        acct.credential_file = Some("/secrets/ci-key.json".into());
+        let err = anyhow::anyhow!(
+            "Could not get a gcloud access token: gcloud auth print-access-token failed: \n\
+             INFO: Using file\nERROR: missing token_uri in the key"
+        );
+        let text = gcloud_auth_finding(&acct, false, &err).describe();
+        assert!(text.contains("/secrets/ci-key.json"), "{text}");
+        assert!(
+            text.contains("; gcloud said: ERROR: missing token_uri in the key"),
+            "{text}"
+        );
+    }
+
+    #[test]
     fn every_finding_describes_itself_without_panicking() {
         let findings = vec![
             Finding::GcloudMissing,
             Finding::GcloudAuth {
                 account: "dev".to_string(),
                 credential_file: None,
+                advice: "Run `gcloud auth login --configuration=dev` and try again".to_string(),
             },
             Finding::GcloudAuth {
                 account: "ci".to_string(),
                 credential_file: Some("/secrets/ci-key.json".to_string()),
+                advice: "The credential file gave no token".to_string(),
             },
             Finding::CredentialFile {
                 account: "ci".to_string(),
