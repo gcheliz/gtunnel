@@ -383,6 +383,10 @@ gtunnel on each TAB, so tunnel names complete as well as commands."
         // Which transport's connections are clients; see `logfilter::Backend`
         #[arg(long, value_enum)]
         conns: Option<crate::logfilter::Backend>,
+        // Written when gcloud exits because its login expired, cleared when
+        // the supervisor starts
+        #[arg(long)]
+        auth_marker: Option<std::path::PathBuf>,
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         argv: Vec<String>,
     },
@@ -623,6 +627,7 @@ mod tests {
                 ready_file,
                 conns,
                 argv,
+                ..
             } => {
                 assert_eq!((port, ready_file, conns), (None, None, None));
                 assert_eq!(argv, ["gcloud", "compute", "ssh"]);
@@ -651,6 +656,7 @@ mod tests {
                 ready_file,
                 conns,
                 argv,
+                ..
             } => {
                 assert_eq!(conns, Some(crate::logfilter::Backend::Ssh));
                 assert_eq!(port, Some(8443));

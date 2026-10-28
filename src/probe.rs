@@ -93,7 +93,14 @@ pub fn log_is_recent(modified: SystemTime, now: SystemTime) -> bool {
 /// What a probe that got no answer is called, given the tunnel's log. Only a
 /// failure is classified: a tunnel that answers is healthy whatever the log
 /// remembers.
-pub fn failed_health(log_path: &Path) -> HealthStatus {
+///
+/// `marker` is what a supervisor leaves when it stopped the job for expired
+/// credentials: the log is quiet after that and the window closes, so the
+/// marker alone keeps the answer until a start clears it.
+pub fn failed_health(log_path: &Path, marker: Option<&Path>) -> HealthStatus {
+    if marker.is_some_and(Path::exists) {
+        return HealthStatus::AuthExpired;
+    }
     let recent = std::fs::metadata(log_path)
         .and_then(|m| m.modified())
         .is_ok_and(|m| log_is_recent(m, SystemTime::now()));
@@ -1478,14 +1485,37 @@ LISTEN 0      128    127.0.0.1:15432     0.0.0.0:*
         std::fs::create_dir_all(&dir).unwrap();
         let log = dir.join("t.log");
         std::fs::write(&log, "started\nERROR: Reauthentication required.\n").unwrap();
-        assert_eq!(failed_health(&log), HealthStatus::AuthExpired);
+        assert_eq!(failed_health(&log, None), HealthStatus::AuthExpired);
         std::fs::write(&log, "Error: [4033: 'not authorized']\n").unwrap();
-        assert_eq!(failed_health(&log), HealthStatus::Unhealthy);
+        assert_eq!(failed_health(&log, None), HealthStatus::Unhealthy);
         assert_eq!(
-            failed_health(&dir.join("missing.log")),
+            failed_health(&dir.join("missing.log"), None),
             HealthStatus::Unhealthy
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // The job stopped itself and the log went quiet, so the window has long
+    // closed; the marker is what keeps the reason on screen
+    #[test]
+    fn a_marker_keeps_auth_expired_after_the_log_window_has_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("t.log");
+        let marker = dir.path().join("t.auth");
+        std::fs::write(&log, "ERROR: Reauthentication required.\n").unwrap();
+        let old = SystemTime::now() - CREDENTIAL_WINDOW - Duration::from_secs(60);
+        std::fs::File::options()
+            .write(true)
+            .open(&log)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        assert_eq!(failed_health(&log, Some(&marker)), HealthStatus::Unhealthy);
+        std::fs::write(&marker, "1\n").unwrap();
+        assert_eq!(
+            failed_health(&log, Some(&marker)),
+            HealthStatus::AuthExpired
+        );
     }
 
     #[test]

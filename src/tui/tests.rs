@@ -1487,6 +1487,19 @@ fn a_crash_loop_is_named_even_when_the_probe_just_passed() {
 }
 
 #[test]
+fn a_tunnel_that_stopped_for_expired_credentials_keeps_saying_so_across_a_reload() {
+    let mut app = app_with_two();
+    let mut stopped = app.entries.clone();
+    for e in &mut stopped {
+        e.status = TunnelStatus::Stopped;
+    }
+    stopped[0].health = HealthStatus::AuthExpired;
+    app.replace_entries(stopped, HashSet::new());
+    assert_eq!(app.entries[0].health, HealthStatus::AuthExpired);
+    assert_eq!(app.entries[1].health, HealthStatus::Unknown);
+}
+
+#[test]
 fn expired_credentials_outrank_a_crash_loop_and_both_count_as_failing() {
     let mut app = app_with_two();
     let mut timers = Timers::due();

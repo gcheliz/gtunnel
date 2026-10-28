@@ -33,11 +33,15 @@ pub async fn load_entries(account: &str) -> Result<(Vec<TunnelEntry>, HashSet<u1
     for tunnel in state.tunnels_for_account(account) {
         let label = daemon::platform_label(account, &tunnel.name);
         let status = daemon::status(&label).await;
-        entries.push(TunnelEntry::new(
-            tunnel.clone(),
-            status,
-            TunnelKind::Managed,
-        ));
+        let mut entry = TunnelEntry::new(tunnel.clone(), status, TunnelKind::Managed);
+        // Only a running tunnel is probed, and this one stopped itself so
+        // the log would go quiet: without this the reason reads as `stopped`
+        if status != TunnelStatus::Running
+            && crate::commands::access::stopped_for_credentials(tunnel)
+        {
+            entry.health = HealthStatus::AuthExpired;
+        }
+        entries.push(entry);
     }
 
     for (record, alive) in list_ephemeral().unwrap_or_default() {
@@ -218,7 +222,11 @@ pub async fn probe_health(tunnel: &PersistentTunnel) -> HealthStatus {
             let addr = format!("127.0.0.1:{local_port}");
             match probe_tunnel(&addr, TCP_HEALTH_TIMEOUT, &log).await {
                 Some(_) => HealthStatus::Healthy,
-                None => failed_health(&log),
+                None => {
+                    let label = daemon::platform_label(&tunnel.account_name, &tunnel.name);
+                    let marker = daemon::auth_marker_path(&label).ok();
+                    failed_health(&log, marker.as_deref())
+                }
             }
         }
         TunnelSpec::Expose { hostname, .. } => http_probe(&format!("https://{hostname}")).await,

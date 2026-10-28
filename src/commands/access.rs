@@ -423,6 +423,18 @@ fn ready_file_of(spec: &daemon::ServiceSpec) -> Option<std::path::PathBuf> {
     spec.args.get(at + 1).map(std::path::PathBuf::from)
 }
 
+/// The marker a supervisor left when it stopped for expired credentials. It
+/// is removed here for the same reason as the ready file: the supervisor clears
+/// it too, but `list` reads it before launchd has started that supervisor.
+fn clear_auth_marker(spec: &daemon::ServiceSpec) {
+    let Some(at) = spec.args.iter().position(|a| a == "--auth-marker") else {
+        return;
+    };
+    if let Some(path) = spec.args.get(at + 1) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 fn is_quiet(spec: &daemon::ServiceSpec) -> bool {
     spec.args
         .windows(2)
@@ -480,6 +492,7 @@ async fn start_inner(account: Option<&str>, name: &str) -> Result<Started> {
     if let Some(path) = &ready_file {
         let _ = std::fs::remove_file(path);
     }
+    clear_auth_marker(&spec);
     daemon::start(&spec.label).await?;
 
     let deadline = start_deadline();
@@ -672,6 +685,11 @@ pub async fn delete_tunnel(account: Option<&str>, name: &str) -> Result<()> {
     daemon::uninstall(&label).await?;
     // The log goes with the tunnel: nothing is left to own it
     daemon::remove_log(&log_path)?;
+    // And its marker: delete then add is how a tunnel is renamed, and the new
+    // one must not start out reading `auth expired`
+    if let Ok(dir) = crate::config::config_dir() {
+        daemon::remove_auth_marker_in(&dir, &label);
+    }
     // Only the record is removed under the lock; the daemon work is done
     TunnelState::update(|state| {
         state.remove_for_account(name, &acct.name);
@@ -759,6 +777,14 @@ pub struct ListRowJson {
 
 impl ListRowJson {
     fn declared(tunnel: &PersistentTunnel, status: TunnelStatus) -> Self {
+        Self::declared_with(
+            tunnel,
+            status,
+            status != TunnelStatus::Running && stopped_for_credentials(tunnel),
+        )
+    }
+
+    fn declared_with(tunnel: &PersistentTunnel, status: TunnelStatus, marked: bool) -> Self {
         Self {
             status: status_word(status).to_string(),
             name: tunnel.name.clone(),
@@ -771,7 +797,7 @@ impl ListRowJson {
             run: false,
             expires_at: None,
             local_port: access_port(&tunnel.spec),
-            health: "unknown",
+            health: if marked { "auth_expired" } else { "unknown" },
         }
     }
 
@@ -805,6 +831,13 @@ impl ListRowJson {
     }
 }
 
+/// Whether the tunnel's supervisor stopped it for expired credentials and no
+/// start has cleared that since.
+pub(crate) fn stopped_for_credentials(tunnel: &PersistentTunnel) -> bool {
+    let label = daemon::platform_label(&tunnel.account_name, &tunnel.name);
+    daemon::auth_marker_path(&label).is_ok_and(|m| m.exists())
+}
+
 fn access_port(spec: &TunnelSpec) -> Option<u16> {
     match spec {
         TunnelSpec::Access { local_port, .. } => Some(*local_port),
@@ -828,7 +861,8 @@ pub(crate) async fn probe_local(local_port: u16, log: &std::path::Path) -> Optio
 
 /// A probe that got no answer is named by the log: expired credentials are
 /// `auth_expired`, not just `unhealthy`. A crash loop needs restarts over
-/// time, which one call cannot see.
+/// time, which one call cannot see. A stopped row is not probed, so the marker
+/// is read where the row is built, not here.
 pub(crate) fn health_word(
     running: bool,
     probe_latency_ms: Option<u128>,
@@ -837,7 +871,7 @@ pub(crate) fn health_word(
 ) -> &'static str {
     match (running, probe_latency_ms) {
         (true, Some(_)) => "healthy",
-        (true, None) if access => match crate::probe::failed_health(log) {
+        (true, None) if access => match crate::probe::failed_health(log, None) {
             crate::probe::HealthStatus::AuthExpired => "auth_expired",
             _ => "unhealthy",
         },
@@ -1163,6 +1197,53 @@ mod tests {
             pick_local_port(&TunnelState::default(), "db", Some(port)).unwrap(),
             port
         );
+    }
+
+    // systemd leaves a job that exited 78 `failed`, which reads as Error
+    #[test]
+    fn a_row_that_is_down_for_expired_credentials_says_so_whatever_down_means() {
+        let tunnel = PersistentTunnel {
+            name: "db".to_string(),
+            account_name: "dev".to_string(),
+            auto_start: false,
+            spec: TunnelSpec::Access {
+                target: crate::state::AccessTarget::Instance {
+                    instance: "my-vm".to_string(),
+                    zone: "europe-west1-b".to_string(),
+                },
+                remote_port: 5432,
+                local_port: 15432,
+            },
+        };
+        for status in [TunnelStatus::Stopped, TunnelStatus::Error] {
+            let row = ListRowJson::declared_with(&tunnel, status, true);
+            assert_eq!(row.health, "auth_expired", "{status:?}");
+        }
+        let row = ListRowJson::declared_with(&tunnel, TunnelStatus::Stopped, false);
+        assert_eq!(row.health, "unknown");
+    }
+
+    #[test]
+    fn starting_a_tunnel_clears_the_marker_its_last_run_left() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("t.auth");
+        std::fs::write(&marker, "1\n").unwrap();
+        let spec = daemon::ServiceSpec {
+            label: "com.gtunnel.dev.db".to_string(),
+            program: "gtunnel".into(),
+            args: vec![
+                "__supervise".to_string(),
+                "--auth-marker".to_string(),
+                marker.to_string_lossy().to_string(),
+                "--".to_string(),
+            ],
+            log_path: dir.path().join("t.log"),
+            env: vec![],
+            auto_start: false,
+            description: String::new(),
+        };
+        clear_auth_marker(&spec);
+        assert!(!marker.exists());
     }
 
     #[tokio::test]

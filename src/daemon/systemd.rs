@@ -163,6 +163,7 @@ Type=simple
 {env}ExecStart={exec}
 Restart=on-failure
 RestartSec=5
+RestartPreventExitStatus={prevent}
 LimitNOFILE={max_files}
 StandardOutput=append:{log}
 StandardError=append:{log}
@@ -171,6 +172,7 @@ StandardError=append:{log}
 WantedBy=default.target
 "#,
         label = spec.label,
+        prevent = super::AUTH_EXPIRED_EXIT,
         max_files = super::TUNNEL_MAX_FILES,
     )
 }

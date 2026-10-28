@@ -229,8 +229,9 @@ pub async fn run(args: Cli) -> Result<()> {
             port,
             ready_file,
             conns,
+            auth_marker,
             argv,
-        }) => commands::supervise::run(argv, port, ready_file, conns).await,
+        }) => commands::supervise::run(argv, port, ready_file, conns, auth_marker).await,
     };
 
     if !quiet {
