@@ -139,6 +139,18 @@ profile uses fat LTO.
 | Debian, Ubuntu | the same rustup line | `sudo apt install build-essential` |
 | Fedora, RHEL | the same rustup line | `sudo dnf install gcc` |
 
+Homebrew is the alternative on macOS and Linux, and it needs no rustup:
+
+```
+$ brew install rust
+```
+
+It installs a current stable Rust, well above the 1.89 minimum, and `brew upgrade rust`
+moves it later. `cargo` lands on the `PATH` that Homebrew already manages, so skip the
+`. "$HOME/.cargo/env"` line below. `cargo install` still writes `gtunnel` to `~/.cargo/bin`,
+which Homebrew does not add to `PATH`; if the shell cannot find it, see
+[troubleshooting.md](troubleshooting.md#gtunnel-command-not-found-right-after-installing).
+
 rustup adds `~/.cargo/bin` to your shell's profile, which a shell that is already open has
 not read. Load it, then check both tools:
 
@@ -152,8 +164,8 @@ Apple clang version 21.0.0 (clang-2100.3.34.2)
 
 Any `cargo` of 1.89 or later passes, and Linux prints its own compiler, such as
 `cc (Debian 12.2.0-14+deb12u1) 12.2.0`. Distribution packages of Rust often lag behind
-1.89, which is why rustup is the one route listed; `rustup update` moves to a newer
-toolchain later. No other build tool is needed. Without a C compiler the build stops in its
+1.89, which is why the Debian, Ubuntu and Fedora rows use rustup rather than `apt` or
+`dnf`; `rustup update` moves to a newer toolchain later. No other build tool is needed. Without a C compiler the build stops in its
 first seconds:
 
 ```
