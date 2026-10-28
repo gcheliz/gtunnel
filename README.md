@@ -17,7 +17,7 @@
 gtunnel gives you private access to what runs inside a GCP VPC, and an HTTPS address for what
 runs on your laptop. It needs no inbound firewall rule, no public IP on the target and no stored
 credential. One binary, two modes, each persistent or ephemeral ([Concepts](docs/usage.md#concepts)):
-**Access** puts a VM, or a host behind it, on a port of `localhost` through Identity-Aware Proxy.
+**Access** puts a GCP instance, or a host behind it, on a port of `localhost` through Identity-Aware Proxy.
 **Expose** publishes a local service at an HTTPS URL through a relay in your own project.
 
 You drive it three ways, all over the same tunnels. The **TUI** is the daily surface: every
@@ -36,7 +36,7 @@ Linux. They outlive the terminal, restart on failure and can start at login.
 
 | Property | What it means in practice |
 |---|---|
-| Nothing is exposed | No inbound firewall rule, no public IP on the target, no agent on the VM. IAP authorises each connection against your own Google identity |
+| Nothing is exposed | No inbound firewall rule, no public IP on the target, no agent on the instance. IAP authorises each connection against your own Google identity |
 | Nothing is stored | gtunnel keeps no credential. Every token comes from `gcloud auth print-access-token` at connect time |
 | Access mode creates nothing in GCP | A private port is a local process plus an IAP connection: no resource left behind, no cost |
 | Tunnels survive the terminal | launchd on macOS, systemd `--user` on Linux: restart on failure, optional start at login, one log per tunnel |
@@ -51,12 +51,12 @@ Google's protocols. It opens every connection with **your own Google identity** 
 
 | Layer | How it works |
 |---|---|
-| **Access mode** | `gcloud compute start-iap-tunnel` binds a `localhost` port to a VM port through **Identity-Aware Proxy**. A **jump tunnel** reaches a host behind that VM. Nothing is created in GCP |
-| **Expose mode** | A **relay VM** with no public IP holds a **reverse SSH** tunnel to your laptop, opened through IAP. A **global HTTPS load balancer** with a **managed certificate** and a **Cloud DNS** record routes each hostname to its relay port; a gated tunnel adds **IAP sign-in** in front |
+| **Access mode** | `gcloud compute start-iap-tunnel` binds a `localhost` port to a GCP instance port through **Identity-Aware Proxy**. A **jump tunnel** reaches a host behind that instance. Nothing is created in GCP |
+| **Expose mode** | A **relay instance** with no public IP holds a **reverse SSH** tunnel to your laptop, opened through IAP. A **global HTTPS load balancer** with a **managed certificate** and a **Cloud DNS** record routes each hostname to its relay port; a gated tunnel adds **IAP sign-in** in front |
 | **Supervision** | Each tunnel is a **user service** (launchd on macOS, systemd `--user` on Linux) running one **supervisor** around one gcloud child, with **one log per tunnel**. A **machine watchdog** checks every tunnel every 30s and restarts one that is up but refusing connections |
 | **Control surfaces** | The **TUI**, the **CLI** and the **MCP server** share the same per-**account** tunnel list and the same **health probe**: a tunnel is healthy when it **answers**, not when its process exists |
 
-![gtunnel topology: a private port inward through IAP, a public URL outward through a relay VM with optional IAP sign-in, and the TUI or an MCP client driving gtunnel](docs/images/architecture/gtunnel-overview.png)
+![gtunnel topology: a private port inward through IAP, a public URL outward through a relay instance with optional IAP sign-in, and the TUI or an MCP client driving gtunnel](docs/images/architecture/gtunnel-overview.png)
 
 ## Install
 
@@ -77,18 +77,18 @@ There is no `cargo install gtunnel`: that crates.io name is an unrelated crate. 
 
 ## Quick start
 
-A private port to a VM:
+A private port to a GCP instance:
 
 ```
 gtunnel init                                     # read a gcloud configuration into a gtunnel account (a bare `gtunnel` does this on a first run)
-gtunnel add db my-vm:5432 --local-port 15432 -s  # localhost:15432 -> my-vm:5432, started now
+gtunnel add db bastion:5432 --local-port 15432 -s  # localhost:15432 -> bastion:5432, started now
 psql -h localhost -p 15432
 ```
 
 A public URL to a local service:
 
 ```
-gtunnel relay up --managed-zone my-dns-zone  # once per account: relay VM, load balancer, certificate
+gtunnel relay up --managed-zone my-dns-zone  # once per account: relay instance, load balancer, certificate
 gtunnel expose web 3000 -s                   # https://web.example.com -> localhost:3000
 ```
 
