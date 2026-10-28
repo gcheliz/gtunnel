@@ -177,6 +177,13 @@ fn targets(state: &TunnelState) -> (Vec<&PersistentTunnel>, Vec<String>) {
     (watched, skipped)
 }
 
+/// A job whose supervisor stopped on a spent restart budget is parked on
+/// purpose. The watchdog restarting it would undo the decision and start the
+/// loop again with a fresh count, so it is left alone until a person starts it.
+fn parked(config_dir: &std::path::Path, label: &str) -> bool {
+    daemon::crash_marked_in(config_dir, label)
+}
+
 fn key(tunnel: &PersistentTunnel) -> String {
     format!("{}.{}", tunnel.account_name, tunnel.name)
 }
@@ -243,6 +250,9 @@ async fn visit(
     };
     let addr = format!("127.0.0.1:{port}");
     let label = daemon::platform_label(&tunnel.account_name, &tunnel.name);
+    if crate::config::config_dir().is_ok_and(|dir| parked(&dir, &label)) {
+        return Ok(());
+    }
     let status = daemon::status(&label).await;
     // The probe reads the log to tell a refused tunnel from a quiet service
     let log_path = tunnel.log_path()?;
@@ -420,6 +430,21 @@ mod tests {
     use crate::breaker::{Action, Reason};
     use crate::probe::Holder;
     use crate::state::TunnelStatus;
+
+    #[test]
+    fn watch_skips_a_job_with_the_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let label = "com.gtunnel.dev.db";
+        assert!(!parked(dir.path(), label));
+        let marker = daemon::crash_marker_in(dir.path(), label);
+        std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        std::fs::write(&marker, "exit status: 1\n").unwrap();
+        assert!(parked(dir.path(), label));
+        assert!(
+            !parked(dir.path(), "com.gtunnel.dev.cache"),
+            "only the marked job is skipped"
+        );
+    }
 
     // The degraded verdict reads the breaker's own counter through its
     // serialised form, so a renamed field would quietly read as zero failures

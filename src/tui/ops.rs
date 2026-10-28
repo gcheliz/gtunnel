@@ -45,6 +45,12 @@ pub async fn load_entries(account: &str) -> Result<(Vec<TunnelEntry>, HashSet<u1
             && crate::commands::access::stopped_for_credentials(tunnel)
         {
             entry.health = HealthStatus::AuthExpired;
+        } else if status != TunnelStatus::Running
+            && crate::commands::access::stopped_for_budget(tunnel).is_some()
+        {
+            // The loop is the finding, and the supervisor ended it: the
+            // existing crash-loop word and its "check the log" action say so
+            entry.health = HealthStatus::CrashLooping;
         }
         entries.push(entry);
     }

@@ -42,6 +42,7 @@ in the configuration directory (see [Environment](#environment) below).
 | `selected_account` | string | yes | The account used when no `--account` is given |
 | `log_level` | string | no | `quiet`, `info` or `debug`; `info` when absent. See [The log level](#the-log-level) |
 | `notifications` | table | no | Which lifecycle changes raise a desktop notification: `up`, `degraded`, `recovered`, `failed`, all booleans. See [Notifications](commands.md#notifications) |
+| `restart` | table | no | When a tunnel that keeps failing is stopped: `max_restarts`, `window`, `min_uptime`, `base_backoff`, `max_backoff`. `init` writes all five at their defaults. See [The restart budget](#the-restart-budget) |
 | `accounts` | array of tables | yes | One entry per account; may be empty |
 
 Each entry in `accounts`:
@@ -234,6 +235,60 @@ the level in force at the moment of the toggle. Worth knowing if you exported
 `GTUNNEL_LOG_LEVEL` to diagnose something and left it set: the next `autostart --on` puts
 that level on the tunnel's start at login.
 
+## The restart budget
+
+A tunnel whose gcloud keeps dying for a reason gtunnel does not recognise stops instead of
+looping. The supervisor counts runs that died before `min_uptime`; past `max_restarts` of
+them inside `window` it writes `run/<label>.crash` with the last exit reason and ends with the
+exit the service manager leaves alone (0 on macOS, 78 on Linux). The tunnel stays stopped
+until `gtunnel start`, which clears the marker and the count. A run that lasts `min_uptime`
+or longer clears the count, so a laptop that sleeps and wakes never adds up to a stop.
+
+| Key under `[restart]` | Variable | Default | Range |
+|---|---|---|---|
+| `max_restarts` | `GTUNNEL_RESTART_MAX_RESTARTS` | `5` | whole number, `0` to 4294967295; `0` turns the budget off |
+| `window` | `GTUNNEL_RESTART_WINDOW` | `"10m"` | a duration above zero, not shorter than `base_backoff` |
+| `min_uptime` | `GTUNNEL_RESTART_MIN_UPTIME` | `"60s"` | a duration above zero; keep it above gcloud's normal startup |
+| `base_backoff` | `GTUNNEL_RESTART_BASE_BACKOFF` | `"10s"` | a duration above zero; the wait after the first failure, doubled on each next one |
+| `max_backoff` | `GTUNNEL_RESTART_MAX_BACKOFF` | `"5m"` | a duration not shorter than `base_backoff` |
+
+Durations are `humantime` text: `500ms`, `60s`, `10m`, `1h30m`.
+
+| Where | Beats |
+|---|---|
+| The `GTUNNEL_RESTART_*` variable | the file |
+| `[restart]` in `config.toml` | the default |
+| nothing set | the default above |
+
+The rules run on the merged result, so a variable that makes the file's other keys
+inconsistent is refused like any bad value. A bad `config.toml` value fails every command with
+exit 2 naming the key; a bad variable fails with exit 2 naming the variable:
+
+```
+$ GTUNNEL_RESTART_WINDOW=soon gtunnel list
+Error: GTUNNEL_RESTART_WINDOW: 'soon' is not a duration (expected number at 0)
+```
+
+`gtunnel init` writes the whole section, all five keys at their defaults, so the file shows
+what can be tuned. It adds only the keys that are missing and never changes a value already
+there; a file without the section loads with the defaults:
+
+```toml
+[restart]
+max_restarts = 5
+window = "10m"
+min_uptime = "60s"
+base_backoff = "10s"
+max_backoff = "5m"
+```
+
+A supervisor reads the budget once, when it starts. A launchd or systemd job does not see your
+shell, so the `GTUNNEL_RESTART_*` variables set when a tunnel is started or installed are
+written into its service definition; a variable exported later reaches it on the next
+`start` or `restart`. Cost: a tunnel that needs longer than `min_uptime` to come up and keeps
+failing is judged fast-failing. A tunnel installed before this feature has no
+`--crash-marker` in its definition and keeps looping until its next `start` or `restart`.
+
 ## Environment
 
 ### At a glance
@@ -243,6 +298,11 @@ that level on the tunnel's start at login.
 | `GTUNNEL_CONFIG_DIR` | keep every file in another directory | a throwaway configuration |
 | `GTUNNEL_LOG_LEVEL` | set `quiet`, `info` or `debug` without a flag | every command |
 | `GTUNNEL_START_DEADLINE_MS` | give a slow tunnel longer to listen | a start that fails before the tunnel is up |
+| `GTUNNEL_RESTART_MAX_RESTARTS` | set how many fast failures a tunnel survives; `0` turns the budget off | a tunnel that loops, or one that must never be parked |
+| `GTUNNEL_RESTART_WINDOW` | set how long a failure counts, e.g. `10m` | the restart budget |
+| `GTUNNEL_RESTART_MIN_UPTIME` | set how long a run must last to clear the count, e.g. `60s` | the restart budget |
+| `GTUNNEL_RESTART_BASE_BACKOFF` | set the wait after the first failure, e.g. `10s` | the restart budget |
+| `GTUNNEL_RESTART_MAX_BACKOFF` | cap the doubling wait, e.g. `5m` | the restart budget |
 | `VISUAL`, then `EDITOR` | choose the editor `e` opens | the TUI's config page |
 | `GTUNNEL_NO_NOTIFY` | silence desktop notifications | tests and diagnostics |
 | `GTUNNEL_NO_DISCOVERY` | stop looking for processes outside gtunnel | tests and diagnostics |
@@ -257,6 +317,11 @@ that level on the tunnel's start at login.
 | `GTUNNEL_NO_NOTIFY` | every command | Silences desktop notifications when set to anything but empty or `0`. The integration tests set it, so `cargo test` never posts a banner |
 | `GTUNNEL_NO_DISCOVERY` | `list`, the TUI, `mcp` | For tests: when set to anything but empty or `0`, no process outside gtunnel is looked for, so `list` shows no `pid N` rows. The integration tests set it so a tunnel running on the host cannot change a row count |
 | `GTUNNEL_START_DEADLINE_MS` | `start`, `restart`, `add -s` | Milliseconds an Access tunnel is given to report it is listening before the start counts as failed. Default 20000; an empty or non-numeric value counts as unset. Public tunnels use a fixed 3-second settle instead |
+| `GTUNNEL_RESTART_MAX_RESTARTS` | the supervisor, `start`, `restart` | Fast failures tolerated inside the window; a whole number, `0` disables the budget. Beats `max_restarts` under `[restart]`. An empty value counts as unset; anything else that is not a number in range is an error naming the variable. See [The restart budget](#the-restart-budget) |
+| `GTUNNEL_RESTART_WINDOW` | the supervisor, `start`, `restart` | How long a failure counts, as a duration (`10m`). Beats `window`. Must not be shorter than the base backoff |
+| `GTUNNEL_RESTART_MIN_UPTIME` | the supervisor, `start`, `restart` | How long a run must last to clear the count (`60s`). Beats `min_uptime` |
+| `GTUNNEL_RESTART_BASE_BACKOFF` | the supervisor, `start`, `restart` | The wait after the first failure (`10s`), doubled on each next one. Beats `base_backoff` |
+| `GTUNNEL_RESTART_MAX_BACKOFF` | the supervisor, `start`, `restart` | The cap on that wait (`5m`). Beats `max_backoff`; not shorter than the base backoff |
 | `GTUNNEL_SERVICE_BOUND_MS` | every command | A test and diagnostics knob: milliseconds to wait for one `launchctl` or `systemctl` call before it is reported as `timed out after`. Default 10000; an empty, zero or non-numeric value counts as unset. Leave it alone unless you are testing the timeout path or diagnosing a slow service manager |
 | `VISUAL`, then `EDITOR` | the TUI's config page | Which editor `e` opens. `VISUAL` wins because it names the full-screen editor. An empty value counts as unset, since `EDITOR=` is how a shell clears one, and neither set falls back to the platform default |
 | `PATH` | startup | Where `gcloud` is found |

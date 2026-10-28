@@ -79,7 +79,10 @@ pub struct Config {
     pub log_level: LogLevel,
     #[serde(default, skip_serializing_if = "NotifyConfig::is_default")]
     pub notifications: NotifyConfig,
-    #[serde(default, skip_serializing_if = "RestartConfig::is_default")]
+    // Always written, never skipped when it equals the defaults: it is the
+    // part of the file a person opens to tune, and a missing key is
+    // invisible. An older file without it still loads, with these values.
+    #[serde(default)]
     pub restart: RestartConfig,
     #[serde(default)]
     pub accounts: Vec<Account>,
@@ -114,10 +117,6 @@ impl Default for RestartConfig {
 }
 
 impl RestartConfig {
-    fn is_default(&self) -> bool {
-        *self == Self::default()
-    }
-
     /// Precedence is the variable, then the file, then the default, the same
     /// order as the log level. Each key is resolved to one value first and the
     /// cross-key rules run on that, so a variable that makes the file's other
@@ -743,11 +742,65 @@ mod tests {
         assert_eq!(b.max_restarts, 3);
     }
 
+    const DEFAULT_RESTART: &str = "[restart]\nmax_restarts = 5\nwindow = \"10m\"\nmin_uptime = \"60s\"\nbase_backoff = \"10s\"\nmax_backoff = \"5m\"\n";
+
+    fn config_text() -> String {
+        std::fs::read_to_string(config_path().expect("path")).expect("config.toml")
+    }
+
+    // The file is where a person looks for what to tune, so init writes the
+    // whole section rather than leaving the defaults to the source
     #[test]
-    fn a_default_restart_section_is_not_written_back() {
-        let config = Config::default();
-        let text = toml::to_string(&config).expect("serialise");
-        assert!(!text.contains("restart"), "{text}");
+    fn init_on_a_fresh_dir_writes_all_five_restart_defaults() {
+        with_temp_dir(|| {
+            update_or_init_config(|c| c.add_account(account("dev"))).expect("init");
+            let text = config_text();
+            assert!(text.contains(DEFAULT_RESTART), "{text}");
+            let at = |needle: &str| text.find(needle).expect(needle);
+            assert!(at("[restart]") < at("[[accounts]]"), "{text}");
+        });
+    }
+
+    #[test]
+    fn init_keeps_a_restart_value_already_in_the_file_and_fills_the_rest() {
+        with_temp_dir(|| {
+            std::fs::write(
+                config_path().expect("path"),
+                "selected_account = \"dev\"\n\n[restart]\nmax_restarts = 9\nwindow = \"20m\"\n",
+            )
+            .expect("write");
+            update_or_init_config(|c| c.add_account(account("dev"))).expect("init");
+            let text = config_text();
+            assert!(text.contains("max_restarts = 9"), "{text}");
+            assert!(text.contains("window = \"20m\""), "{text}");
+            for filled in [
+                "min_uptime = \"60s\"",
+                "base_backoff = \"10s\"",
+                "max_backoff = \"5m\"",
+            ] {
+                assert!(text.contains(filled), "{filled}: {text}");
+            }
+        });
+    }
+
+    #[test]
+    fn init_twice_changes_nothing_the_second_time() {
+        with_temp_dir(|| {
+            update_or_init_config(|c| c.add_account(account("dev"))).expect("first");
+            let first = config_text();
+            update_or_init_config(|_| Ok(())).expect("second");
+            assert_eq!(config_text(), first);
+        });
+    }
+
+    #[test]
+    fn an_older_file_without_the_section_still_loads_with_the_defaults() {
+        with_temp_dir(|| {
+            std::fs::write(config_path().expect("path"), "selected_account = \"dev\"\n")
+                .expect("write");
+            let loaded = load_config().expect("loads");
+            assert_eq!(loaded.restart, RestartConfig::default());
+        });
     }
 
     #[test]
@@ -877,7 +930,7 @@ mod tests {
 
     #[test]
     fn an_account_without_credential_file_round_trips_unchanged() {
-        let text = "selected_account = \"dev\"\nlog_level = \"info\"\n\n[[accounts]]\nname = \"dev\"\ngcloud_configuration = \"work\"\nproject = \"example-dev-1a2b\"\ndefault_zone = \"europe-west1-b\"\n";
+        let text = "selected_account = \"dev\"\nlog_level = \"info\"\n\n[restart]\nmax_restarts = 5\nwindow = \"10m\"\nmin_uptime = \"60s\"\nbase_backoff = \"10s\"\nmax_backoff = \"5m\"\n\n[[accounts]]\nname = \"dev\"\ngcloud_configuration = \"work\"\nproject = \"example-dev-1a2b\"\ndefault_zone = \"europe-west1-b\"\n";
         let cfg: Config = toml::from_str(text).expect("parse");
         assert_eq!(cfg.accounts[0].credential_file, None);
         let again = toml::to_string_pretty(&cfg).expect("serialize");

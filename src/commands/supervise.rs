@@ -195,6 +195,9 @@ pub async fn supervise(
             began.elapsed(),
             std::time::SystemTime::now(),
         );
+        if let Some(parent) = history_file.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
         let _ = crate::fsutil::write_atomic(&history_file, &history.render());
         if stops_for_budget(verdict) {
             let _ = crate::fsutil::write_atomic(&spend.marker, &format!("{status}\n"));
@@ -300,6 +303,17 @@ mod tests {
         assert_eq!(run_once(dir.path(), "exit 1", budget).await, want);
         let reason = std::fs::read_to_string(&marker).expect("marker");
         assert!(reason.contains("exit status: 1"), "{reason}");
+    }
+
+    // `run/` is made by whoever wrote a ready file first, and a tunnel with
+    // none must not lose its count to a directory that was never created
+    #[tokio::test]
+    async fn the_run_directory_is_created_when_the_count_has_to_be_saved() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let run = dir.path().join("run");
+        let budget = tiny(2, Duration::from_secs(60));
+        run_once(&run, "exit 1", budget).await;
+        assert!(run.join("com.gtunnel.dev.db.restarts").exists());
     }
 
     #[tokio::test]

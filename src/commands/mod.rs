@@ -109,6 +109,16 @@ impl ListRow {
         self
     }
 
+    /// A stopped tunnel whose supervisor spent its restart budget, with the
+    /// last thing gcloud died of. Same trailing note as the credential case,
+    /// so `stopped` stays the one status word.
+    pub fn stopped_for_budget(mut self, reason: Option<&str>) -> Self {
+        if let Some(reason) = reason {
+            self.note = Some(format!("  [restart budget spent: {reason}]"));
+        }
+        self
+    }
+
     pub fn render(&self, layout: &ListLayout) -> String {
         let note = self.note.as_deref().unwrap_or_default();
         format!(
@@ -372,6 +382,22 @@ mod tests {
         assert!(!before.contains("auth expired"), "{before}");
         assert!(after.contains("auth expired"), "{after}");
         assert!(after.starts_with(&before), "{after}");
+    }
+
+    #[test]
+    fn a_stopped_row_with_a_crash_marker_says_restart_budget_spent_and_why() {
+        let plain = vec![ListRow::from_tunnel(TunnelStatus::Stopped, &access())];
+        let marked = vec![ListRow::from_tunnel(TunnelStatus::Stopped, &access())
+            .stopped_for_budget(Some("exit status: 1"))];
+        let before = plain[0].render(&ListLayout::fit(&plain));
+        let after = marked[0].render(&ListLayout::fit(&marked));
+        assert!(
+            after.ends_with("[restart budget spent: exit status: 1]"),
+            "{after}"
+        );
+        assert!(after.starts_with(&before), "{after}");
+        let none = ListRow::from_tunnel(TunnelStatus::Stopped, &access()).stopped_for_budget(None);
+        assert_eq!(none.render(&ListLayout::fit(&plain)), before);
     }
 
     #[test]
