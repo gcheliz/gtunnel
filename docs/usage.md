@@ -499,6 +499,10 @@ project is refused with the command that sets one,
 `gcloud config set project <id> --configuration=<name>`. A typed name the list lacks is taken,
 and the text field stays when there is no configuration or gcloud cannot list them.
 
+A name longer than the picker is wide is cut with `…` and keeps the zone or project beside it;
+the line under the list then shows the highlighted row in full, and goes first when the
+terminal is short.
+
 While a list is on its way, the field or picker says so with a spinner, e.g.
 `loading configurations...`, and the instance picker says `nothing matches` only once the
 list has answered. The accounts page shows the operation it is running, e.g. `add sandbox`,
