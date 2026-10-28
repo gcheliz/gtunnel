@@ -317,7 +317,7 @@ impl Finding {
             Finding::WatchdogMissing => format!(
                 "No watchdog is installed, so a tunnel that wedges stays wedged until someone \
                  notices. Run `gtunnel watch install` to check every {}s",
-                crate::daemon::WATCHDOG_INTERVAL
+                crate::settings::current().watch_interval.as_secs()
             ),
         }
     }
@@ -2293,6 +2293,23 @@ mod tests {
             assert!(text.contains(part), "{part}: {text}");
         }
         assert!(!findings[0].fixable(), "the variable is the shell's");
+    }
+
+    #[test]
+    fn doctor_names_a_watch_key_the_environment_overrides() {
+        let findings = setting_override_findings(&Config::default(), &|name| {
+            (name == "GTUNNEL_WATCH_INTERVAL").then(|| "10s".to_string())
+        });
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        let text = findings[0].describe();
+        for part in [
+            "watch.interval",
+            "10s",
+            "'30s'",
+            "Unset GTUNNEL_WATCH_INTERVAL",
+        ] {
+            assert!(text.contains(part), "{part}: {text}");
+        }
     }
 
     #[test]

@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::process::Command;
 
-use super::{RuntimeInfo, ServiceSpec};
+use super::{watch_interval_secs, RuntimeInfo, ServiceSpec};
 use crate::state::TunnelStatus;
 
 pub fn label_for(account: &str, name: &str) -> String {
@@ -180,7 +180,7 @@ pub fn watchdog_log() -> Result<PathBuf> {
 pub async fn install_watchdog(program: &std::path::Path) -> Result<()> {
     crate::state::ensure_logs_dir()?;
     let label = super::watchdog_label();
-    let text = render_watchdog_plist(program, &watchdog_log()?);
+    let text = render_watchdog_plist(program, &watchdog_log()?, watch_interval_secs());
     for path in [plist_path(label)?, agent_path(label)?] {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)
@@ -227,7 +227,11 @@ pub const WATCHDOG_LABEL: &str = "com.gtunnel.watchdog";
 /// instead, because waking on a timer is the whole of what it does. A
 /// `KeepAlive` job that exits immediately is a job launchd respawns in a
 /// tight loop.
-pub fn render_watchdog_plist(program: &std::path::Path, log: &std::path::Path) -> String {
+pub fn render_watchdog_plist(
+    program: &std::path::Path,
+    log: &std::path::Path,
+    interval_secs: u64,
+) -> String {
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -261,7 +265,7 @@ pub fn render_watchdog_plist(program: &std::path::Path, log: &std::path::Path) -
 "#,
         label = WATCHDOG_LABEL,
         program = xml_escape(&program.to_string_lossy()),
-        interval = super::WATCHDOG_INTERVAL,
+        interval = interval_secs,
         log = xml_escape(&log.to_string_lossy()),
     )
 }

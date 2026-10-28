@@ -17,7 +17,7 @@ use crate::notify::Notifier;
 use crate::state::TunnelStatus;
 
 /// How old the watchdog's heartbeat may be before the TUI stops trusting it to
-/// be watching. Three of its thirty-second passes: one missed pass is a slow
+/// be watching. three of its thirty-second passes: one missed pass is a slow
 /// pass, three is a watchdog that is not running.
 pub const HEARTBEAT_FRESH_SECS: u64 = 90;
 
@@ -295,13 +295,14 @@ pub fn heartbeat_age_in(dir: &Path, now: u64) -> Option<u64> {
     Some(now.abs_diff(at))
 }
 
-pub fn heartbeat_fresh_in(dir: &Path, now: u64) -> bool {
-    heartbeat_age_in(dir, now).is_some_and(|age| age <= HEARTBEAT_FRESH_SECS)
+pub fn heartbeat_fresh_in(dir: &Path, now: u64, fresh_secs: u64) -> bool {
+    heartbeat_age_in(dir, now).is_some_and(|age| age <= fresh_secs)
 }
 
 #[cfg_attr(test, allow(dead_code))]
 pub fn watchdog_is_fresh() -> bool {
-    config_dir().is_some_and(|dir| heartbeat_fresh_in(&dir, now_secs()))
+    let fresh = crate::settings::heartbeat_fresh_secs(crate::settings::current().watch_interval);
+    config_dir().is_some_and(|dir| heartbeat_fresh_in(&dir, now_secs(), fresh))
 }
 
 pub fn heartbeat_age() -> Option<u64> {
@@ -561,10 +562,13 @@ mod tests {
     fn a_heartbeat_is_fresh_for_ninety_seconds_and_not_after() {
         let dir = tempfile::tempdir().unwrap();
         let d = dir.path();
-        assert!(!heartbeat_fresh_in(d, 1_000), "no heartbeat is not fresh");
+        assert!(
+            !heartbeat_fresh_in(d, 1_000, HEARTBEAT_FRESH_SECS),
+            "no heartbeat is not fresh"
+        );
         write_heartbeat_in(d, 1_000).unwrap();
-        assert!(heartbeat_fresh_in(d, 1_090));
-        assert!(!heartbeat_fresh_in(d, 1_091));
+        assert!(heartbeat_fresh_in(d, 1_090, HEARTBEAT_FRESH_SECS));
+        assert!(!heartbeat_fresh_in(d, 1_091, HEARTBEAT_FRESH_SECS));
         assert_eq!(heartbeat_age_in(d, 1_030), Some(30));
     }
 }

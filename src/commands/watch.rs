@@ -6,22 +6,19 @@
 //! reads afterwards.
 
 use anyhow::Result;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use crate::breaker::persist::{self, Row};
 use crate::breaker::{Action, Observation, Reason};
 use crate::daemon;
 use crate::lifecycle::{self, Cause, Edge, State};
 use crate::probe::{self, Holder};
+use crate::settings::Settings;
 use crate::state::{PersistentTunnel, TunnelState, TunnelStatus};
 
 /// What a listener out of file descriptors writes before it starts refusing
 /// everything. The same words `diagnose_log_line` keys on.
 const DESCRIPTOR_ERROR: &str = "Too many open files";
-
-/// How long a healthy tunnel has to answer its own local port. Generous: a
-/// slow answer is a working tunnel, and a false trip costs a restart.
-const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// What one check of one tunnel saw.
 ///
@@ -64,11 +61,6 @@ fn unread_from(len: u64, seen: u64) -> u64 {
     }
 }
 
-/// Consecutive failed probes before a tunnel is called degraded: the
-/// breaker's own run length, so the watchdog and the breaker agree on what
-/// "failing" means and one blip is neither.
-const DEGRADED_AFTER: u32 = 2;
-
 /// How many checks in a row this tunnel has failed, read from the breaker
 /// rather than counted again.
 ///
@@ -76,13 +68,13 @@ const DEGRADED_AFTER: u32 = 2;
 /// (anything but closed) is by definition past the threshold. Read through its
 /// serialised form because that is the one view it already offers; a test
 /// pins the field names so a rename cannot silently turn this into zero.
-fn consecutive_failures(breaker: &crate::breaker::Breaker) -> u32 {
+fn consecutive_failures(breaker: &crate::breaker::Breaker, degraded_after: u32) -> u32 {
     let Ok(toml::Value::Table(fields)) = toml::Value::try_from(breaker) else {
         return 0;
     };
     let closed = fields.get("state").and_then(|v| v.as_str()) == Some("closed");
     if !closed {
-        return DEGRADED_AFTER;
+        return degraded_after;
     }
     fields
         .get("failures")
@@ -194,6 +186,8 @@ fn key(tunnel: &PersistentTunnel) -> String {
 /// pass that cannot read the file stops rather than starting over, because
 /// starting over would restart tunnels a previous pass deliberately stopped.
 pub async fn one_pass(verbose: bool) -> Result<()> {
+    // Read once per pass: the file is the TUI's to edit while this runs
+    let settings = crate::settings::current();
     let state = TunnelState::load()?;
     let (watched, skipped) = targets(&state);
     if verbose {
@@ -218,7 +212,16 @@ pub async fn one_pass(verbose: bool) -> Result<()> {
 
     let mut edges = Vec::new();
     for tunnel in watched {
-        if let Err(err) = visit(tunnel, &mut rows, SystemTime::now(), verbose, &mut edges).await {
+        if let Err(err) = visit(
+            tunnel,
+            &settings,
+            &mut rows,
+            SystemTime::now(),
+            verbose,
+            &mut edges,
+        )
+        .await
+        {
             // One tunnel's failure must not cost every other tunnel its check
             eprintln!("{}: {err:#}", key(tunnel));
         }
@@ -237,6 +240,7 @@ pub async fn one_pass(verbose: bool) -> Result<()> {
 /// Look at one tunnel, feed the breaker, and carry out what it decided.
 async fn visit(
     tunnel: &PersistentTunnel,
+    settings: &Settings,
     rows: &mut persist::BreakerFile,
     now: SystemTime,
     verbose: bool,
@@ -256,7 +260,7 @@ async fn visit(
     let status = daemon::status(&label).await;
     // The probe reads the log to tell a refused tunnel from a quiet service
     let log_path = tunnel.log_path()?;
-    let probe_ok = probe::probe_tunnel(&addr, PROBE_TIMEOUT, &log_path)
+    let probe_ok = probe::probe_tunnel(&addr, settings.watch_probe_timeout, &log_path)
         .await
         .is_some();
 
@@ -282,8 +286,8 @@ async fn visit(
     let seen = lifecycle::observe(
         status,
         healthy,
-        consecutive_failures(&row.breaker),
-        DEGRADED_AFTER,
+        consecutive_failures(&row.breaker, settings.watch_degraded_after),
+        settings.watch_degraded_after,
     );
     edges.extend(seen.and_then(|to| {
         lifecycle::transition(&tunnel.account_name, &tunnel.name, to, Cause::Observed)
@@ -363,10 +367,6 @@ fn local_port(tunnel: &PersistentTunnel) -> Option<u16> {
     }
 }
 
-/// How long between passes when `watch` runs in the foreground. The agent
-/// runs `--once` on its own thirty-second interval instead.
-const LOOP_INTERVAL: Duration = Duration::from_secs(30);
-
 /// `gtunnel watch`. One pass and out, which is what the agent invokes, or a
 /// foreground loop, which is what a person debugging it runs.
 pub async fn cmd_watch_install() -> Result<()> {
@@ -377,7 +377,7 @@ pub async fn cmd_watch_install() -> Result<()> {
     println!(
         "Watchdog installed: {} every {}s",
         program.display(),
-        daemon::WATCHDOG_INTERVAL
+        crate::settings::current().watch_interval.as_secs()
     );
     println!("Log: {}", daemon::watchdog_log()?.display());
     Ok(())
@@ -393,7 +393,7 @@ pub async fn cmd_watch_status() -> Result<()> {
     if daemon::watchdog_installed().await {
         println!(
             "Watchdog installed, looking at every tunnel every {}s",
-            daemon::WATCHDOG_INTERVAL
+            crate::settings::current().watch_interval.as_secs()
         );
         println!("Log: {}", daemon::watchdog_log()?.display());
         match lifecycle::heartbeat_age() {
@@ -410,17 +410,15 @@ pub async fn cmd_watch(once: bool, verbose: bool) -> Result<()> {
     if once {
         return one_pass(verbose).await;
     }
-    println!(
-        "Watching every {}s. Ctrl-C to stop.",
-        LOOP_INTERVAL.as_secs()
-    );
+    let interval = crate::settings::current().watch_interval;
+    println!("Watching every {}s. Ctrl-C to stop.", interval.as_secs());
     loop {
         // A pass that failed is reported and the next one still happens: the
         // watchdog going quiet is worse than one bad pass
         if let Err(err) = one_pass(verbose).await {
             eprintln!("pass failed: {err:#}");
         }
-        tokio::time::sleep(LOOP_INTERVAL).await;
+        tokio::time::sleep(interval).await;
     }
 }
 
@@ -452,18 +450,18 @@ mod tests {
     #[test]
     fn the_watchdog_reads_failures_from_the_breaker_not_a_second_counter() {
         let mut breaker = crate::breaker::Breaker::default();
-        assert_eq!(consecutive_failures(&breaker), 0);
+        assert_eq!(consecutive_failures(&breaker, 2), 0);
         let now = SystemTime::UNIX_EPOCH;
         let fail = Observation::Failed(Reason::ProbeRefused);
         breaker.observe(fail, now);
-        assert_eq!(consecutive_failures(&breaker), 1);
+        assert_eq!(consecutive_failures(&breaker, 2), 1);
         breaker.observe(fail, now);
         assert!(
-            consecutive_failures(&breaker) >= DEGRADED_AFTER,
+            consecutive_failures(&breaker, 2) >= 2,
             "a tripped breaker has zeroed its counter and is still failing"
         );
         breaker.observe(Observation::NotRunning, now);
-        assert_eq!(consecutive_failures(&breaker), 0);
+        assert_eq!(consecutive_failures(&breaker, 2), 0);
     }
 
     // The first pass after `watch install` meets tunnels that have been
