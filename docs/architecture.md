@@ -242,7 +242,7 @@ Keys, defaults and the traps of editing `config.toml` and `tunnels.toml` are in
 | `<config>/run/probes/` | One file per local port gtunnel is probing, so the supervisor leaves gtunnel's own health checks out of the `conn` lines |
 | `<config>/run/watchdog.heartbeat` | Time of the watchdog's last pass. `watch status` reports its age; while it is under 90s old the TUI leaves notifications to the watchdog |
 | `<config>/lifecycle.json`, `<config>/lifecycle.lock` | The last state each tunnel was seen in, shared by the watchdog, the TUI and the CLI so that a change is notified once. The lock serialises its updates |
-| `<config>/agents/<label>.plist` | macOS: the service definition gtunnel loads and unloads |
+| `<config>/agents/<label>.plist` | macOS: the service definition gtunnel loads and unloads. Rewritten by the first command after an upgrade when it differs from what the new binary renders (`src/daemon/refresh.rs`); a running tunnel is restarted, a stopped one is not |
 | `~/Library/LaunchAgents/<label>.plist` | macOS: present only while auto-start is on |
 | `<config>/breakers.toml` | One row per tunnel: what the watchdog has seen of it, and how far up the restart ladder it is. Rewritten whole on every pass, by writing a sibling file and renaming it, and pruned to the tunnels that still exist |
 | `<config>/logs/watchdog.log` | What the watchdog did. A pass where nothing needed doing writes nothing |

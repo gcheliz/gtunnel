@@ -35,6 +35,23 @@ fn first_run_needed(no_command: bool, config_exists: bool, interactive: bool) ->
     no_command && !config_exists && interactive
 }
 
+/// Whether a command brings installed services up to date first. Not the
+/// ones that are themselves a service or run unattended, nor the ones that
+/// must work before anything is set up.
+fn wants_refresh(command: &Option<Commands>) -> bool {
+    !matches!(
+        command,
+        Some(
+            Commands::Supervise { .. }
+                | Commands::Watch { .. }
+                | Commands::Mcp { .. }
+                | Commands::Completions { .. }
+                | Commands::Update { .. }
+                | Commands::Init
+        )
+    )
+}
+
 pub async fn run(args: Cli) -> Result<()> {
     // Before anything builds an argv or calls gcloud, and before the config
     // is needed for anything else: a bad GTUNNEL_LOG_LEVEL should fail here,
@@ -64,6 +81,15 @@ pub async fn run(args: Cli) -> Result<()> {
         let cfg = config::load_config().unwrap_or_default();
         cfg.restart_budget()?;
         settings::resolve(&cfg, &|name| std::env::var(name).ok())?;
+    }
+
+    // An upgrade replaces the binary and leaves every installed service on the
+    // arguments it was written with, so the first command after one brings
+    // them up to date. Not the commands that are themselves a service or run
+    // unattended (a reload there would restart the job that is running it),
+    // nor the ones that must work before anything is set up.
+    if wants_refresh(&args.command) {
+        crate::daemon::refresh::refresh_installed().await;
     }
 
     let account = args.account.as_deref();
@@ -294,6 +320,29 @@ pub async fn run(args: Cli) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::first_run_needed;
+
+    #[test]
+    fn only_commands_that_are_not_services_or_setup_refresh_definitions() {
+        use crate::cli::Cli;
+        use clap::Parser;
+        let wants = |argv: &[&str]| {
+            let mut v = vec!["gtunnel"];
+            v.extend_from_slice(argv);
+            super::wants_refresh(&Cli::try_parse_from(v).expect("parses").command)
+        };
+        assert!(wants(&[]));
+        assert!(wants(&["list"]));
+        assert!(wants(&["start", "k8s"]));
+        for quiet in [
+            &["init"][..],
+            &["completions", "zsh"],
+            &["watch", "--once"],
+            &["mcp"],
+            &["update", "--check"],
+        ] {
+            assert!(!wants(quiet), "{quiet:?}");
+        }
+    }
 
     #[test]
     fn first_run_needed_is_true_for_a_bare_command_with_no_file_on_a_terminal() {

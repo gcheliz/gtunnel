@@ -6,6 +6,7 @@ use crate::state::{PersistentTunnel, TunnelSpec};
 use crate::tunnel;
 
 pub mod launchd;
+pub mod refresh;
 pub mod systemd;
 
 // What a service manager needs to run one tunnel
@@ -299,15 +300,15 @@ pub fn platform_label(account: &str, name: &str) -> String {
 #[allow(unused_imports)]
 #[cfg(target_os = "macos")]
 pub use launchd::{
-    install, install_watchdog, runtime_info, set_auto_start, start, status, stop, uninstall,
-    uninstall_watchdog, watchdog_installed, watchdog_log,
+    install, install_watchdog, restart, runtime_info, set_auto_start, start, status, stop,
+    uninstall, uninstall_watchdog, watchdog_installed, watchdog_log, write_definition,
 };
 
 #[allow(unused_imports)]
 #[cfg(not(target_os = "macos"))]
 pub use systemd::{
-    install, install_watchdog, runtime_info, set_auto_start, start, status, stop, uninstall,
-    uninstall_watchdog, watchdog_installed, watchdog_log,
+    install, install_watchdog, restart, runtime_info, set_auto_start, start, status, stop,
+    uninstall, uninstall_watchdog, watchdog_installed, watchdog_log, write_definition,
 };
 
 // A tunnel that starts gets a clean log. Truncated in place rather than removed

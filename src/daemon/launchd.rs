@@ -411,6 +411,21 @@ pub async fn install(spec: &ServiceSpec) -> Result<()> {
     Ok(())
 }
 
+/// The definition and its login copy, and nothing else: no log reset, no
+/// launchctl. A refresh of an old install must not wipe the log that may hold
+/// the reason the tunnel died, nor start a job the user stopped.
+pub async fn write_definition(spec: &ServiceSpec) -> Result<()> {
+    write_plist(&plist_path(&spec.label)?, spec)?;
+    sync_agent_copy(&agent_path(&spec.label)?, spec)
+}
+
+/// launchd has no reload for a loaded job's argv: unloading and loading it is
+/// the only way the new definition is read.
+pub async fn restart(label: &str) -> Result<()> {
+    stop(label).await?;
+    start(label).await
+}
+
 pub async fn uninstall(label: &str) -> Result<()> {
     let _ = launchctl(&["bootout", &format!("{}/{}", domain_target(), label)]).await;
     for path in [plist_path(label)?, agent_path(label)?] {
