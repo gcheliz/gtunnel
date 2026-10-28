@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.16](https://github.com/gcheliz/gtunnel/compare/v0.2.15...v0.2.16) - 2026-10-28
+
+### Added
+
+- *(account)* run gtunnel in CI with a per-account credential file ([#206](https://github.com/gcheliz/gtunnel/pull/206))
+
 ## [0.2.15](https://github.com/gcheliz/gtunnel/compare/v0.2.14...v0.2.15) - 2026-10-28
 
 ### Fixed
