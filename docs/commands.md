@@ -32,13 +32,14 @@ cannot infer.
 ```
 $ gtunnel init
 gcloud configurations:
-  1. default (active)  project=example-dev-1a2b  account=you@example.com
-Configuration number [1]: Account name [default]: Could not list projects: Could not get a gcloud access token. Run `gcloud auth login` and try again: gcloud auth print-access-token --configuration=default --project= --verbosity=info failed: ERROR: (gcloud.auth.print-access-token) Your current active account [you@example.com] does not have any valid credentials
+  1. work (active)  project=example-dev-1a2b  account=you@example.com
+Configuration number [1]: Account name [work]: Could not list projects: Could not get a gcloud access token. No terminal to log in from. On a workstation run `gcloud auth login --configuration=work`; on a CI runner, give the runner a service account with roles/iap.tunnelResourceAccessor, or set credential_file on the account: gcloud auth print-access-token --configuration=work --project= --verbosity=info failed: ERROR: (gcloud.auth.print-access-token) Your current active account [you@example.com] does not have any valid credentials
 Project [example-dev-1a2b]: Every gcloud call of this account acts as this service account; you need roles/iam.serviceAccountTokenCreator on it. Empty: act as yourself.
-Service account to impersonate (optional) []: Default zone: Account 'sandbox' saved to ~/Library/Application Support/gtunnel
+Service account to impersonate (optional) []: Default zone (name, or Enter to skip): Account 'sandbox' saved to ~/Library/Application Support/gtunnel
+No default zone saved; pass --zone to commands that need one
 ```
 
-The answers were `1`, `sandbox`, Enter, Enter and `europe-west1-b`, piped in, so they do not echo.
+The answers were `1`, `sandbox`, then Enter for the project, the service account and the zone, piped in, so they do not echo. This configuration has no zone, so Enter skipped it.
 The line before the impersonation prompt says what it does: every gcloud call of the account
 runs as that service account, which needs `roles/iam.serviceAccountTokenCreator` granted to you.
 
@@ -54,9 +55,17 @@ does not show still works.
 | Is empty, or the call fails | Prints `Could not list projects: <cause>` once, then asks `Project` as a typed field; the transcript above is this path |
 
 The zone step works the same way: the project's zones are printed as `N. <zone>`, the
-configuration's zone marked `(default)`, and `Default zone (number or name)` takes a row
-number or a zone name. A zone the project does not have is refused. When the zones cannot
-be listed, as in the transcript, the prompt is the plain `Default zone`.
+configuration's zone marked `(default)`, and `Default zone (number, name, or Enter to skip)`
+takes a row number or a zone name. A zone the project does not have is refused. When the
+zones cannot be listed, as in the transcript, the prompt is `Default zone (name, or Enter to
+skip)`.
+
+The zone is optional, because many gcloud configurations have none. An account saved without
+one works for everything except the commands that reach an instance by zone: `add --via` and
+`add` to an instance, `run` to an instance, and `relay up`. Those stop with exit code 2 and
+`no zone for account '<name>'` before any request is made, until you pass `--zone` or set a
+default with `gtunnel account edit <name> --zone <zone>`. A tunnel through a destination group
+(`--dest-group`) takes a region and needs no zone.
 
 The list is fetched with the configuration's own credentials, and only projects in the
 `ACTIVE` state are offered, up to 5,000. The cause is one line: a `403` means the account
