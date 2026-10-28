@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.29](https://github.com/gcheliz/gtunnel/compare/v0.2.28...v0.2.29) - 2026-10-28
+
+### Fixed
+
+- *(daemon)* reinstall services whose definition predates the running binary ([#245](https://github.com/gcheliz/gtunnel/pull/245))
+
 ## [0.2.28](https://github.com/gcheliz/gtunnel/compare/v0.2.27...v0.2.28) - 2026-10-28
 
 ### Added
