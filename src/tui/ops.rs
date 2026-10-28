@@ -390,14 +390,19 @@ async fn add_account(new: &NewAccount) -> Result<String> {
     Ok(format!("added account {}", new.name))
 }
 
+// The core, not `cmd_account_edit`: a println under the alternate screen lands
+// on top of the drawn page, so the stale-tunnel line goes into the status.
 fn edit_account(edit: &AccountEdit) -> Result<String> {
-    account::cmd_account_edit(
+    let edited = account::account_edit(
         &edit.name,
         edit.project.as_deref(),
         edit.zone.as_deref(),
         None,
     )?;
-    Ok(format!("{} updated", edit.name))
+    Ok(match account::stale_line(&edited.stale) {
+        Some(line) => format!("{} updated. {line}", edit.name),
+        None => format!("{} updated", edit.name),
+    })
 }
 
 // `--yes` answers a question the TUI has already asked on the page. It does

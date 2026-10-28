@@ -19,7 +19,7 @@ fn units_dir() -> Result<PathBuf> {
     Ok(home.join(".config/systemd/user"))
 }
 
-fn unit_path(label: &str) -> Result<PathBuf> {
+pub(super) fn unit_path(label: &str) -> Result<PathBuf> {
     Ok(units_dir()?.join(label))
 }
 

@@ -208,7 +208,7 @@ fn account_remove_with_tunnels_fails_with_guidance() {
 fn account_edit_no_args_fails_with_hint() {
     let h = Harness::new();
     let out = h.run(&["account", "edit", "demo"]);
-    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(out.status.code(), Some(2));
     assert!(stderr(&out).contains("Error: Nothing to change: pass --project, --zone, or both"));
 }
 
