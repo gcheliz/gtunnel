@@ -181,7 +181,9 @@ gtunnel init
 
 Running `gtunnel` with no arguments on a machine that has never been set up, from a terminal, starts the same prompts and then opens the TUI. A script or a pipe gets the error above instead.
 
-[init](commands.md#init) shows the prompts. The default zone is optional: Enter skips it, and
+[init](commands.md#init) shows the prompts. Each one says what the value sets, and where a
+value is picked from something that exists, the command that lists it. `Enter = <value>`
+takes the default. The default zone is optional: Enter skips it, and
 the commands that reach an instance then need `--zone`. `gtunnel zones` lists the ones in the
 project.
 
