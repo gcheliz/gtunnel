@@ -86,9 +86,7 @@ pub async fn cmd_init() -> Result<()> {
             prompt("Project", chosen.project.as_deref())?
         }
     };
-    if project.is_empty() {
-        bail!("A project is required");
-    }
+    require_project(&project)?;
     println!(
         "Every gcloud call of this account acts as this service account; \
          you need roles/iam.serviceAccountTokenCreator on it. Empty: act as yourself."
@@ -104,7 +102,10 @@ pub async fn cmd_init() -> Result<()> {
     // Listed as the projects are, so the zone is picked rather than recalled;
     // an empty list (denied or unreachable) leaves the prompt as it was
     let zone = if zones.is_empty() {
-        prompt("Default zone", chosen.zone.as_deref())?
+        prompt(
+            "Default zone (name, or Enter to skip)",
+            chosen.zone.as_deref(),
+        )?
     } else {
         println!("Zones:");
         for (index, z) in zones.iter().enumerate() {
@@ -115,22 +116,41 @@ pub async fn cmd_init() -> Result<()> {
             };
             println!("  {}. {z}{default}", index + 1);
         }
-        let answer = prompt("Default zone (number or name)", chosen.zone.as_deref())?;
+        let answer = prompt(
+            "Default zone (number, name, or Enter to skip)",
+            chosen.zone.as_deref(),
+        )?;
         resolve_zone_choice(&answer, &zones)
     };
-    if zone.is_empty() {
-        bail!("A default zone is required");
-    }
-    if !zones.is_empty() && !zones.contains(&zone) {
-        bail!(
-            "Zone '{zone}' does not exist in project '{}'",
-            account.project
-        );
-    }
+    check_zone(&zone, &zones, &account.project)?;
+    let zoneless = zone.is_empty();
     account.default_zone = zone;
 
     update_or_init_config(|config| config.add_account(account))?;
     println!("Account '{name}' saved to {}", config_dir()?.display());
+    if zoneless {
+        println!("No default zone saved; pass --zone to commands that need one");
+    }
+    Ok(())
+}
+
+// A zone is only a default for commands that reach an instance, and a gcloud
+// configuration often has none, so init must not make a person invent one. A
+// typed zone is still judged against the list, but an empty list means the
+// lookup failed, which is no verdict.
+fn check_zone(zone: &str, listed: &[String], project: &str) -> Result<()> {
+    if zone.is_empty() || listed.is_empty() || listed.iter().any(|z| z == zone) {
+        return Ok(());
+    }
+    bail!("Zone '{zone}' does not exist in project '{project}'")
+}
+
+// The project is what every API call is addressed to, so unlike the zone it
+// cannot be skipped
+fn require_project(project: &str) -> Result<()> {
+    if project.is_empty() {
+        bail!("A project is required");
+    }
     Ok(())
 }
 
@@ -942,6 +962,35 @@ mod tests {
             resolve_zone_choice(" europe-west1-c ", &zones),
             "europe-west1-c"
         );
+    }
+
+    #[test]
+    fn check_zone_allows_an_empty_zone() {
+        check_zone("", &["europe-west1-b".to_string()], "example-dev-1a2b")
+            .expect("a skipped zone is not an error");
+    }
+
+    #[test]
+    fn check_zone_refuses_a_zone_the_project_lacks() {
+        let err = check_zone(
+            "us-east1-b",
+            &["europe-west1-b".to_string()],
+            "example-dev-1a2b",
+        )
+        .expect_err("not in the list");
+        assert!(err.to_string().contains("does not exist"), "{err}");
+    }
+
+    #[test]
+    fn check_zone_trusts_a_missing_list() {
+        check_zone("us-east1-b", &[], "example-dev-1a2b").expect("no list, no verdict");
+    }
+
+    #[test]
+    fn project_stays_required() {
+        let err = require_project("").expect_err("empty project");
+        assert_eq!(err.to_string(), "A project is required");
+        require_project("example-dev-1a2b").expect("a project passes");
     }
 
     #[test]

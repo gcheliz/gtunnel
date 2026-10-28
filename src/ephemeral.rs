@@ -607,14 +607,12 @@ pub async fn cmd_run(
     } else {
         let (host, remote_port) = crate::commands::access::parse_access_target(&target)?;
         crate::state::validate_instance_name(&host)?;
-        if let Some(zone) = zone {
-            crate::state::validate_zone(zone)?;
-        }
+        let zone = crate::commands::require_zone(&acct, zone)?;
         (
             RunShape::Access {
                 target: AccessTarget::Instance {
                     instance: host,
-                    zone: zone.unwrap_or(&acct.default_zone).to_string(),
+                    zone,
                 },
                 remote_port,
                 local_port,

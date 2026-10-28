@@ -2,7 +2,7 @@ use crate::error::GtunnelError;
 use anyhow::{bail, Context, Result};
 use std::time::Duration;
 
-use super::{find_tunnel, resolve, status_word, tunnel_status, ListLayout, ListRow};
+use super::{find_tunnel, require_zone, resolve, status_word, tunnel_status, ListLayout, ListRow};
 use crate::config::Account;
 use crate::daemon;
 use crate::expose::routes;
@@ -139,7 +139,7 @@ async fn save_tunnel(account: Option<&str>, req: &AddRequest<'_>) -> Result<Adde
         // The instance is what gtunnel checks exists; the host behind it is
         // reachable from there or it is not, which only the tunnel can tell
         (_, Some(instance)) => {
-            let zone = zone.unwrap_or(&acct.default_zone).to_string();
+            let zone = require_zone(&acct, zone)?;
             verify_instance(&acct, &zone, instance).await?;
             AccessTarget::Jump {
                 instance: instance.to_string(),
@@ -156,7 +156,7 @@ async fn save_tunnel(account: Option<&str>, req: &AddRequest<'_>) -> Result<Adde
             network: network.unwrap_or("default").to_string(),
         },
         (None, None) => {
-            let zone = zone.unwrap_or(&acct.default_zone).to_string();
+            let zone = require_zone(&acct, zone)?;
             verify_instance(&acct, &zone, &host).await?;
             AccessTarget::Instance {
                 instance: host,
@@ -1473,5 +1473,23 @@ mod tests {
             "Instance 'missing-vm' not found in zone 'europe-west1-b' of project 'proj-1'"
         ));
         assert!(msg.contains("Run `gtunnel zones` to check available zones"));
+    }
+
+    #[test]
+    fn dest_group_add_needs_no_zone() {
+        // A destination group is addressed by region, so an account saved
+        // without a zone must not be refused for lacking one
+        let req = AddRequest {
+            name: "db",
+            target: "10.0.0.10:5432",
+            via: None,
+            zone: None,
+            local_port: None,
+            dest_group: Some("group"),
+            region: Some("europe-west1"),
+            network: None,
+            start: false,
+        };
+        req.validate().expect("no zone is asked for");
     }
 }

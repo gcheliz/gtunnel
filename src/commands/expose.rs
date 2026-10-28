@@ -2,7 +2,7 @@ use crate::error::GtunnelError;
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
-use super::{confirm, prompt, resolve};
+use super::{confirm, prompt, require_zone, resolve};
 use crate::config::{update_config, DomainConfig};
 use crate::daemon;
 use crate::expose::naming::{hostname_for, Names};
@@ -28,13 +28,13 @@ pub async fn cmd_relay_up(
     assume_yes: bool,
 ) -> Result<()> {
     let (_, acct) = resolve(account)?;
+    let zone = require_zone(&acct, zone)?;
     let client = GcpClient::for_account(&acct);
 
     let managed_zone = match managed_zone {
         Some(z) => z.to_string(),
         None => pick_managed_zone(&client, &acct.project).await?,
     };
-    let zone = zone.unwrap_or(&acct.default_zone).to_string();
 
     println!("Relay for account '{}' in {zone}:", acct.name);
     println!("  {}", relay_cost_line());
