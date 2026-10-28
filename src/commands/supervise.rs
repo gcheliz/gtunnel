@@ -1,9 +1,16 @@
 use crate::logfilter::{lock, Backend, Correlator};
+use crate::restart_budget::{judge, Budget, History, Verdict};
 use anyhow::{bail, Context, Result};
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::process::Command;
+
+/// Where a spent budget is recorded, and the budget that decides it.
+pub struct Spend {
+    pub marker: PathBuf,
+    pub budget: Budget,
+}
 
 /// Run a child process, pumping its stdout and stderr through the log filter, then exit with its status.
 pub async fn run(
@@ -12,8 +19,20 @@ pub async fn run(
     ready_file: Option<PathBuf>,
     conns: Option<Backend>,
     auth_marker: Option<PathBuf>,
+    crash_marker: Option<PathBuf>,
 ) -> Result<()> {
-    let code = supervise(argv, port, ready_file, conns, auth_marker).await?;
+    // Read once, here, so a running supervisor keeps the budget it started
+    // with. A bad value must not kill the supervisor: the service manager
+    // would restart it into the same error forever, which is the loop this
+    // budget exists to end. The default applies and the log says why.
+    let budget = crate::config::load_config()
+        .and_then(|c| c.restart_budget())
+        .unwrap_or_else(|e| {
+            eprintln!("restart budget: {e:#}. Using the defaults");
+            Budget::default()
+        });
+    let spend = crash_marker.map(|marker| Spend { marker, budget });
+    let code = supervise(argv, port, ready_file, conns, auth_marker, spend).await?;
     std::process::exit(code);
 }
 
@@ -30,6 +49,7 @@ pub async fn supervise(
     ready_file: Option<PathBuf>,
     conns: Option<Backend>,
     auth_marker: Option<PathBuf>,
+    spend: Option<Spend>,
 ) -> Result<i32> {
     if argv.is_empty() {
         bail!("__supervise requires at least one argument (the program to run)");
@@ -49,6 +69,12 @@ pub async fn supervise(
     // A login that was renewed since the last run must not keep naming itself
     if let Some(file) = &auth_marker {
         let _ = std::fs::remove_file(file);
+    }
+    // Whoever starts this supervisor is starting the job again, so the reason
+    // it was parked no longer holds. The count stays: it is what lets a loop
+    // of restarts add up across supervisors.
+    if let Some(spend) = &spend {
+        let _ = std::fs::remove_file(&spend.marker);
     }
     // A ready file left by a previous run would say the listener is up before
     // this child has bound anything
@@ -75,6 +101,7 @@ pub async fn supervise(
     }
     let conn = conn.share();
 
+    let began = std::time::Instant::now();
     let mut child = cmd
         .args(args)
         .stdout(std::process::Stdio::piped())
@@ -155,7 +182,43 @@ pub async fn supervise(
         }
         return Ok(crate::daemon::auth_expired_exit(cfg!(target_os = "macos")));
     }
-    Ok(status.code().unwrap_or(1))
+    let code = status.code().unwrap_or(1);
+    if let Some(spend) = &spend
+        && spends_budget(status.success(), expired, asked_to_stop)
+    {
+        let history_file = crate::daemon::restart_history_beside(&spend.marker);
+        let mut history =
+            History::parse(&std::fs::read_to_string(&history_file).unwrap_or_default());
+        let verdict = judge(
+            &spend.budget,
+            &mut history,
+            began.elapsed(),
+            std::time::SystemTime::now(),
+        );
+        let _ = crate::fsutil::write_atomic(&history_file, &history.render());
+        if stops_for_budget(verdict) {
+            let _ = crate::fsutil::write_atomic(&spend.marker, &format!("{status}\n"));
+            return Ok(crate::daemon::auth_expired_exit(cfg!(target_os = "macos")));
+        }
+        if let Verdict::Restart { after } = verdict {
+            // The service manager restarts at its own pace; this is the part
+            // that grows, so a loop slows down before it is stopped
+            tokio::time::sleep(after).await;
+        }
+    }
+    Ok(code)
+}
+
+/// Whether this exit counts against the budget. Credentials have their own
+/// stop, a clean exit is not a failure, and a stop the user asked for says
+/// nothing about the tunnel.
+fn spends_budget(succeeded: bool, expired: bool, asked_to_stop: bool) -> bool {
+    !(succeeded || expired || asked_to_stop)
+}
+
+/// Whether the verdict ends the job.
+fn stops_for_budget(verdict: Verdict) -> bool {
+    matches!(verdict, Verdict::Stop)
 }
 
 /// Whether this exit is the permanent kind. Only gcloud dying on its own
@@ -180,10 +243,107 @@ mod tests {
         );
     }
 
+    #[test]
+    fn stops_for_budget_when_judge_says_stop() {
+        assert!(stops_for_budget(Verdict::Stop));
+        assert!(!stops_for_budget(Verdict::Restart {
+            after: Duration::ZERO
+        }));
+        // Only a failure of gcloud's own makes a run count
+        assert!(spends_budget(false, false, false));
+        assert!(!spends_budget(false, false, true), "SIGTERM");
+        assert!(!spends_budget(true, false, false), "clean exit");
+        assert!(!spends_budget(false, true, false), "credentials stop first");
+    }
+
+    fn tiny(max_restarts: u32, min_uptime: Duration) -> Budget {
+        Budget {
+            max_restarts,
+            window: Duration::from_secs(600),
+            min_uptime,
+            base_backoff: Duration::from_millis(1),
+            max_backoff: Duration::from_millis(5),
+        }
+    }
+
+    async fn run_once(dir: &std::path::Path, script: &str, budget: Budget) -> i32 {
+        supervise(
+            fake_gcloud(script),
+            None,
+            None,
+            None,
+            None,
+            Some(Spend {
+                marker: dir.join("com.gtunnel.dev.db.crash"),
+                budget,
+            }),
+        )
+        .await
+        .expect("run")
+    }
+
+    // The service manager starts one supervisor per attempt, so the count has
+    // to live in a file: three runs here are three processes there
+    #[tokio::test]
+    async fn a_child_that_exits_instantly_forever_is_stopped_with_the_marker() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let marker = dir.path().join("com.gtunnel.dev.db.crash");
+        let budget = tiny(2, Duration::from_secs(60));
+        assert_eq!(run_once(dir.path(), "exit 1", budget).await, 1);
+        assert_eq!(run_once(dir.path(), "exit 1", budget).await, 1);
+        assert!(!marker.exists(), "still inside the budget");
+        let want = if cfg!(target_os = "macos") {
+            0
+        } else {
+            crate::daemon::AUTH_EXPIRED_EXIT
+        };
+        assert_eq!(run_once(dir.path(), "exit 1", budget).await, want);
+        let reason = std::fs::read_to_string(&marker).expect("marker");
+        assert!(reason.contains("exit status: 1"), "{reason}");
+    }
+
+    #[tokio::test]
+    async fn a_run_past_min_uptime_resets_the_count() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let history = dir.path().join("com.gtunnel.dev.db.restarts");
+        let budget = tiny(2, Duration::from_millis(300));
+        run_once(dir.path(), "exit 1", budget).await;
+        run_once(dir.path(), "exit 1", budget).await;
+        assert_eq!(
+            std::fs::read_to_string(&history)
+                .expect("history")
+                .lines()
+                .count(),
+            2
+        );
+        // It worked for longer than min_uptime, then died
+        assert_eq!(run_once(dir.path(), "sleep 1; exit 1", budget).await, 1);
+        assert_eq!(std::fs::read_to_string(&history).expect("history"), "");
+        assert_eq!(
+            run_once(dir.path(), "exit 1", budget).await,
+            1,
+            "fresh budget"
+        );
+        assert!(!dir.path().join("com.gtunnel.dev.db.crash").exists());
+    }
+
+    #[tokio::test]
+    async fn a_zero_budget_never_stops_and_a_stale_marker_is_cleared_at_start() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let marker = dir.path().join("com.gtunnel.dev.db.crash");
+        std::fs::write(&marker, "old\n").expect("stale");
+        let budget = tiny(0, Duration::from_secs(60));
+        for _ in 0..4 {
+            assert_eq!(run_once(dir.path(), "exit 1", budget).await, 1);
+        }
+        assert!(!marker.exists());
+    }
+
     #[tokio::test]
     async fn runs_child_and_returns_exit_code() {
         let code = supervise(
             vec!["echo".to_string(), "hello".to_string()],
+            None,
             None,
             None,
             None,
@@ -196,7 +356,7 @@ mod tests {
 
     #[tokio::test]
     async fn returns_non_zero_exit_code_on_child_failure() {
-        let code = supervise(vec!["false".to_string()], None, None, None, None)
+        let code = supervise(vec!["false".to_string()], None, None, None, None, None)
             .await
             .expect("run false");
         assert_eq!(code, 1);
@@ -220,6 +380,7 @@ mod tests {
             ],
             Some(18443),
             Some(ready.clone()),
+            None,
             None,
             None,
         )
@@ -250,6 +411,7 @@ mod tests {
             None,
             None,
             Some(marker.clone()),
+            None,
         )
         .await
         .expect("run");
@@ -272,6 +434,7 @@ mod tests {
             None,
             None,
             Some(marker.clone()),
+            None,
         )
         .await
         .expect("run");
@@ -290,6 +453,7 @@ mod tests {
             None,
             None,
             Some(marker.clone()),
+            None,
         )
         .await
         .expect("run");

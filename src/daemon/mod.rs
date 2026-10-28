@@ -97,6 +97,37 @@ pub fn remove_auth_marker_in(config_dir: &std::path::Path, label: &str) {
     let _ = std::fs::remove_file(auth_marker_in(config_dir, label));
 }
 
+/// Where a supervisor records that it stopped because its tunnel spent the
+/// restart budget. Same directory and label as the auth marker, so one sweep
+/// of `run/` finds both; the file holds the last exit reason for `list`.
+pub fn crash_marker_path(label: &str) -> Result<PathBuf> {
+    Ok(crash_marker_in(&crate::config::config_dir()?, label))
+}
+
+pub fn crash_marker_in(config_dir: &std::path::Path, label: &str) -> PathBuf {
+    config_dir.join("run").join(format!("{label}.crash"))
+}
+
+/// The failure times a budget counts, kept beside its marker because the
+/// service manager starts a new supervisor per attempt and the count has to
+/// outlive each one. The marker's last segment is always `crash`, so swapping
+/// it never eats part of a tunnel name.
+pub fn restart_history_beside(marker: &std::path::Path) -> PathBuf {
+    marker.with_extension("restarts")
+}
+
+/// Forget a spent budget: the marker that says why the job is down and the
+/// count that produced it. `start` and `delete` both want exactly this.
+pub fn clear_crash_state(marker: &std::path::Path) {
+    let _ = std::fs::remove_file(marker);
+    let _ = std::fs::remove_file(restart_history_beside(marker));
+}
+
+/// Whether this tunnel's supervisor stopped on purpose for a spent budget.
+pub fn crash_marked_in(config_dir: &std::path::Path, label: &str) -> bool {
+    crash_marker_in(config_dir, label).exists()
+}
+
 /// How often the watchdog wakes to look at every tunnel. Short enough that a
 /// wedged tunnel is noticed before a person reaches for the terminal, long
 /// enough that the probe it runs costs nothing worth measuring.
@@ -181,6 +212,8 @@ pub fn service_spec(cfg: &Config, t: &PersistentTunnel) -> Result<ServiceSpec> {
     // Every tunnel can lose its login, an expose tunnel as much as an access one
     args.push("--auth-marker".to_string());
     args.push(auth_marker_path(&label)?.to_string_lossy().to_string());
+    args.push("--crash-marker".to_string());
+    args.push(crash_marker_path(&label)?.to_string_lossy().to_string());
     args.push("--".to_string());
     args.push(gcloud.to_string_lossy().to_string());
     args.extend(gcloud_args);
