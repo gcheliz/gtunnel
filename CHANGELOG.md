@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.32](https://github.com/gcheliz/gtunnel/compare/v0.2.31...v0.2.32) - 2026-10-28
+
+### Added
+
+- *(config)* the GCP client's timings, the file lock wait and the fingerprint retries are settings ([#251](https://github.com/gcheliz/gtunnel/pull/251))
+
 ## [0.2.31](https://github.com/gcheliz/gtunnel/compare/v0.2.30...v0.2.31) - 2026-10-28
 
 ### Added
