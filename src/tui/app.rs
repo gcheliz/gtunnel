@@ -3088,7 +3088,7 @@ mod display_name_tests {
             auto_start: false,
             spec: TunnelSpec::Access {
                 target: AccessTarget::Instance {
-                    instance: "vm".to_string(),
+                    instance: "bastion".to_string(),
                     zone: "z".to_string(),
                 },
                 remote_port: 1,

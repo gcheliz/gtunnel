@@ -428,7 +428,7 @@ mod tests {
         let mut t = tunnel();
         t.spec = TunnelSpec::Access {
             target: crate::state::AccessTarget::Instance {
-                instance: "my-vm".to_string(),
+                instance: "bastion".to_string(),
                 zone: "europe-west1-b".to_string(),
             },
             remote_port: 5432,

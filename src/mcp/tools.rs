@@ -374,7 +374,7 @@ pub fn all_tools() -> Vec<ToolDefinition> {
                 "properties": {
                     "target": {
                         "type": "string",
-                        "description": "Remote target as INSTANCE:PORT, e.g. my-vm:5432"
+                        "description": "Remote target as INSTANCE:PORT, e.g. bastion:5432"
                     },
                     "ttl_minutes": {
                         "type": "integer",
@@ -1089,7 +1089,7 @@ mod schema_tests {
             pid: 4242,
             spec: TunnelSpec::Access {
                 target: AccessTarget::Instance {
-                    instance: "my-vm".to_string(),
+                    instance: "bastion".to_string(),
                     zone: "europe-west1-b".to_string(),
                 },
                 remote_port: 5432,

@@ -521,7 +521,7 @@ mod tests {
             auto_start: false,
             spec: TunnelSpec::Access {
                 target: AccessTarget::Instance {
-                    instance: "my-vm".to_string(),
+                    instance: "bastion".to_string(),
                     zone: "europe-west1-b".to_string(),
                 },
                 remote_port: 5432,
@@ -966,7 +966,7 @@ mod tests {
             "prod",
             "p",
             "z",
-            "vm",
+            "bastion",
         )
         .unwrap_err();
         let msg = format!("{err:#}");
@@ -977,12 +977,12 @@ mod tests {
 
     #[test]
     fn an_instance_missing_in_the_destination_zone_points_at_delete_and_add() {
-        let err =
-            destination_verdict::<()>(Ok(None), "prod", "p", "europe-west1-b", "vm").unwrap_err();
+        let err = destination_verdict::<()>(Ok(None), "prod", "p", "europe-west1-b", "bastion")
+            .unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("europe-west1-b"), "{msg}");
         assert!(msg.contains("delete") && msg.contains("add"), "{msg}");
-        assert!(destination_verdict(Ok(Some(())), "prod", "p", "z", "vm").is_ok());
+        assert!(destination_verdict(Ok(Some(())), "prod", "p", "z", "bastion").is_ok());
     }
 
     #[test]
