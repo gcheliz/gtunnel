@@ -74,6 +74,52 @@ pub const LOGS_LINES_PER_MINUTE: i64 = 60;
 /// How long before gcloud's exit a credential line still explains it.
 pub const LOGS_AUTH_EXIT_WINDOW: Duration = Duration::from_secs(30);
 
+/// Google issues access tokens for an hour; refreshing at 45 minutes keeps a
+/// long operation from straddling the expiry.
+pub const GCP_TOKEN_TTL: Duration = Duration::from_secs(45 * 60);
+
+/// How long a compute or DNS operation may run before gtunnel stops waiting.
+/// Ten minutes covers the slowest thing it creates, a managed certificate.
+pub const GCP_OPERATION_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// One API request, connect to last byte.
+pub const GCP_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Between looks at a running operation: often enough that a quick one is not
+/// padded by a long sleep, rare enough not to spend the API quota.
+pub const GCP_POLL_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Long enough for another gtunnel to finish a save, short enough that a
+/// wedged holder is reported rather than waited on.
+pub const GCP_LOCK_DEADLINE: Duration = Duration::from_secs(5);
+
+/// Reads of a fingerprinted resource redone after a concurrent change (412).
+pub const GCP_FINGERPRINT_ATTEMPTS: i64 = 5;
+
+pub fn default_gcp_token_ttl() -> String {
+    shown(GCP_TOKEN_TTL)
+}
+
+pub fn default_gcp_operation_timeout() -> String {
+    shown(GCP_OPERATION_TIMEOUT)
+}
+
+pub fn default_gcp_http_timeout() -> String {
+    shown(GCP_HTTP_TIMEOUT)
+}
+
+pub fn default_gcp_poll_interval() -> String {
+    shown(GCP_POLL_INTERVAL)
+}
+
+pub fn default_gcp_lock_deadline() -> String {
+    shown(GCP_LOCK_DEADLINE)
+}
+
+pub fn default_gcp_fingerprint_attempts() -> i64 {
+    GCP_FINGERPRINT_ATTEMPTS
+}
+
 const KIB: u64 = 1024;
 const MIB: u64 = KIB * 1024;
 const GIB: u64 = MIB * 1024;
@@ -168,6 +214,36 @@ const LOGS_AUTH_EXIT_WINDOW_KEY: Key = Key {
     var: "GTUNNEL_LOGS_AUTH_EXIT_WINDOW",
     legacy: None,
 };
+const GCP_TOKEN_TTL_KEY: Key = Key {
+    name: "gcp.token_ttl",
+    var: "GTUNNEL_GCP_TOKEN_TTL",
+    legacy: None,
+};
+const GCP_OPERATION_TIMEOUT_KEY: Key = Key {
+    name: "gcp.operation_timeout",
+    var: "GTUNNEL_GCP_OPERATION_TIMEOUT",
+    legacy: None,
+};
+const GCP_HTTP_TIMEOUT_KEY: Key = Key {
+    name: "gcp.http_timeout",
+    var: "GTUNNEL_GCP_HTTP_TIMEOUT",
+    legacy: None,
+};
+const GCP_POLL_INTERVAL_KEY: Key = Key {
+    name: "gcp.poll_interval",
+    var: "GTUNNEL_GCP_POLL_INTERVAL",
+    legacy: None,
+};
+const GCP_LOCK_DEADLINE_KEY: Key = Key {
+    name: "gcp.lock_deadline",
+    var: "GTUNNEL_GCP_LOCK_DEADLINE",
+    legacy: None,
+};
+const GCP_FINGERPRINT_ATTEMPTS_KEY: Key = Key {
+    name: "gcp.fingerprint_attempts",
+    var: "GTUNNEL_GCP_FINGERPRINT_ATTEMPTS",
+    legacy: None,
+};
 const EDITOR_KEY: Key = Key {
     name: "editor",
     var: "GTUNNEL_EDITOR",
@@ -191,6 +267,12 @@ pub struct Settings {
     pub logs_keep_size: u64,
     pub logs_lines_per_minute: u32,
     pub logs_auth_exit_window: Duration,
+    pub gcp_token_ttl: Duration,
+    pub gcp_operation_timeout: Duration,
+    pub gcp_http_timeout: Duration,
+    pub gcp_poll_interval: Duration,
+    pub gcp_lock_deadline: Duration,
+    pub gcp_fingerprint_attempts: u32,
     /// `GTUNNEL_EDITOR`, which outranks `VISUAL` and `EDITOR` like any
     /// variable outranks the file.
     pub editor_env: Option<String>,
@@ -513,6 +595,23 @@ pub fn resolve(config: &Config, env: EnvFn) -> Result<Resolved> {
         shown,
         &mut overrides,
     )?;
+    let gcp = &config.gcp;
+    let mut gcp_duration = |key: &Key, file_raw: &str| {
+        plain_key(env, key, file_raw, parse_duration, shown, &mut overrides)
+    };
+    let gcp_token_ttl = gcp_duration(&GCP_TOKEN_TTL_KEY, &gcp.token_ttl)?;
+    let gcp_operation_timeout = gcp_duration(&GCP_OPERATION_TIMEOUT_KEY, &gcp.operation_timeout)?;
+    let gcp_http_timeout = gcp_duration(&GCP_HTTP_TIMEOUT_KEY, &gcp.http_timeout)?;
+    let gcp_poll_interval = gcp_duration(&GCP_POLL_INTERVAL_KEY, &gcp.poll_interval)?;
+    let gcp_lock_deadline = gcp_duration(&GCP_LOCK_DEADLINE_KEY, &gcp.lock_deadline)?;
+    let gcp_fingerprint_attempts = plain_key(
+        env,
+        &GCP_FINGERPRINT_ATTEMPTS_KEY,
+        &gcp.fingerprint_attempts.to_string(),
+        parse_count,
+        |n| n.to_string(),
+        &mut overrides,
+    )?;
     let editor_file = Some(config.editor.trim().to_string()).filter(|e| !e.is_empty());
     let editor_env = var(env, EDITOR_KEY.var);
     if let Some(chosen) = &editor_env
@@ -538,6 +637,12 @@ pub fn resolve(config: &Config, env: EnvFn) -> Result<Resolved> {
             logs_keep_size,
             logs_lines_per_minute,
             logs_auth_exit_window,
+            gcp_token_ttl,
+            gcp_operation_timeout,
+            gcp_http_timeout,
+            gcp_poll_interval,
+            gcp_lock_deadline,
+            gcp_fingerprint_attempts,
             editor_env,
             editor_file,
         },
@@ -1029,5 +1134,112 @@ mod tests {
         assert_eq!(show_size(1536 << 10), "1536KiB");
         assert_eq!(show_size(1000), "1000B");
         assert_eq!(show_size(2 << 30), "2GiB");
+    }
+
+    #[test]
+    fn the_gcp_keys_default_to_what_the_constants_were() {
+        let s = settings_of("", &[]);
+        assert_eq!(s.gcp_token_ttl, Duration::from_secs(45 * 60));
+        assert_eq!(s.gcp_operation_timeout, Duration::from_secs(600));
+        assert_eq!(s.gcp_http_timeout, Duration::from_secs(30));
+        assert_eq!(s.gcp_poll_interval, Duration::from_secs(2));
+        assert_eq!(s.gcp_lock_deadline, Duration::from_secs(5));
+        assert_eq!(s.gcp_fingerprint_attempts, 5);
+    }
+
+    #[test]
+    fn the_file_sets_the_gcp_keys() {
+        let s = settings_of(
+            "[gcp]\ntoken_ttl = \"30m\"\noperation_timeout = \"20m\"\nhttp_timeout = \"10s\"\npoll_interval = \"500ms\"\nlock_deadline = \"15s\"\nfingerprint_attempts = 8\n",
+            &[],
+        );
+        assert_eq!(s.gcp_token_ttl, Duration::from_secs(30 * 60));
+        assert_eq!(s.gcp_operation_timeout, Duration::from_secs(20 * 60));
+        assert_eq!(s.gcp_http_timeout, Duration::from_secs(10));
+        assert_eq!(s.gcp_poll_interval, Duration::from_millis(500));
+        assert_eq!(s.gcp_lock_deadline, Duration::from_secs(15));
+        assert_eq!(s.gcp_fingerprint_attempts, 8);
+    }
+
+    #[test]
+    fn a_gcp_variable_beats_the_same_key_in_the_file() {
+        let file = "[gcp]\ntoken_ttl = \"30m\"\noperation_timeout = \"20m\"\nhttp_timeout = \"10s\"\npoll_interval = \"500ms\"\nlock_deadline = \"15s\"\nfingerprint_attempts = 8\n";
+        let r = resolve_with(
+            file,
+            &[
+                ("GTUNNEL_GCP_TOKEN_TTL", "20m"),
+                ("GTUNNEL_GCP_OPERATION_TIMEOUT", "5m"),
+                ("GTUNNEL_GCP_HTTP_TIMEOUT", "1m"),
+                ("GTUNNEL_GCP_POLL_INTERVAL", "1s"),
+                ("GTUNNEL_GCP_LOCK_DEADLINE", "2s"),
+                ("GTUNNEL_GCP_FINGERPRINT_ATTEMPTS", "3"),
+            ],
+        )
+        .expect("resolves");
+        assert_eq!(r.settings.gcp_token_ttl, Duration::from_secs(20 * 60));
+        assert_eq!(r.settings.gcp_operation_timeout, Duration::from_secs(300));
+        assert_eq!(r.settings.gcp_http_timeout, Duration::from_secs(60));
+        assert_eq!(r.settings.gcp_poll_interval, Duration::from_secs(1));
+        assert_eq!(r.settings.gcp_lock_deadline, Duration::from_secs(2));
+        assert_eq!(r.settings.gcp_fingerprint_attempts, 3);
+        let seen: Vec<(&str, &str)> = r.overrides.iter().map(|o| (o.key, o.variable)).collect();
+        assert_eq!(
+            seen,
+            vec![
+                ("gcp.token_ttl", "GTUNNEL_GCP_TOKEN_TTL"),
+                ("gcp.operation_timeout", "GTUNNEL_GCP_OPERATION_TIMEOUT"),
+                ("gcp.http_timeout", "GTUNNEL_GCP_HTTP_TIMEOUT"),
+                ("gcp.poll_interval", "GTUNNEL_GCP_POLL_INTERVAL"),
+                ("gcp.lock_deadline", "GTUNNEL_GCP_LOCK_DEADLINE"),
+                (
+                    "gcp.fingerprint_attempts",
+                    "GTUNNEL_GCP_FINGERPRINT_ATTEMPTS"
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_bad_gcp_variable_is_a_usage_error_naming_it() {
+        for (var, value) in [
+            ("GTUNNEL_GCP_TOKEN_TTL", "soon"),
+            ("GTUNNEL_GCP_TOKEN_TTL", "0s"),
+            ("GTUNNEL_GCP_OPERATION_TIMEOUT", "0s"),
+            ("GTUNNEL_GCP_HTTP_TIMEOUT", "fast"),
+            ("GTUNNEL_GCP_HTTP_TIMEOUT", "0s"),
+            ("GTUNNEL_GCP_POLL_INTERVAL", "0s"),
+            ("GTUNNEL_GCP_LOCK_DEADLINE", "never"),
+            ("GTUNNEL_GCP_LOCK_DEADLINE", "0s"),
+            ("GTUNNEL_GCP_FINGERPRINT_ATTEMPTS", "many"),
+            ("GTUNNEL_GCP_FINGERPRINT_ATTEMPTS", "0"),
+        ] {
+            let err = resolve_with("", &[(var, value)]).expect_err(var);
+            let (code, text) = exit_and_text(&err);
+            assert_eq!(code, 2, "{var}={value}: {text}");
+            assert!(text.contains(var), "{var}={value}: {text}");
+        }
+    }
+
+    #[test]
+    fn a_bad_gcp_file_value_is_a_usage_error_naming_the_key() {
+        for (text, key) in [
+            ("[gcp]\ntoken_ttl = \"0s\"\n", "gcp.token_ttl"),
+            (
+                "[gcp]\noperation_timeout = \"x\"\n",
+                "gcp.operation_timeout",
+            ),
+            ("[gcp]\nhttp_timeout = \"0s\"\n", "gcp.http_timeout"),
+            ("[gcp]\npoll_interval = \"0s\"\n", "gcp.poll_interval"),
+            ("[gcp]\nlock_deadline = \"0s\"\n", "gcp.lock_deadline"),
+            (
+                "[gcp]\nfingerprint_attempts = 0\n",
+                "gcp.fingerprint_attempts",
+            ),
+        ] {
+            let err = resolve_with(text, &[]).expect_err(text);
+            let (code, msg) = exit_and_text(&err);
+            assert_eq!(code, 2, "{msg}");
+            assert!(msg.contains(key), "{msg}");
+        }
     }
 }

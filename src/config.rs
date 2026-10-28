@@ -110,6 +110,10 @@ pub struct Config {
     // decision, and an absent key hides it
     #[serde(default)]
     pub logs: LogsConfig,
+    // Written for the same reason: the API timeouts and retry counts are what
+    // a slow network or a busy account tunes, and an absent key hides them
+    #[serde(default)]
+    pub gcp: GcpConfig,
     #[serde(default)]
     pub accounts: Vec<Account>,
 }
@@ -127,6 +131,7 @@ impl Default for Config {
             restart: RestartConfig::default(),
             watch: WatchConfig::default(),
             logs: LogsConfig::default(),
+            gcp: GcpConfig::default(),
             accounts: Vec::new(),
         }
     }
@@ -169,6 +174,35 @@ impl Default for LogsConfig {
             keep_size: settings::default_logs_keep_size(),
             lines_per_minute: settings::default_logs_lines_per_minute(),
             auth_exit_window: settings::default_logs_auth_exit_window(),
+        }
+    }
+}
+
+/// The GCP client's timings and retry counts as written in `config.toml`, raw
+/// like `LogsConfig`. `lock_deadline` and `fingerprint_attempts` sit here
+/// because the plan files them under `[gcp]`: one is the wait for the file
+/// lock every gtunnel writer takes, the other the retries of a fingerprinted
+/// update, and neither has a section of its own.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GcpConfig {
+    pub token_ttl: String,
+    pub operation_timeout: String,
+    pub http_timeout: String,
+    pub poll_interval: String,
+    pub lock_deadline: String,
+    pub fingerprint_attempts: i64,
+}
+
+impl Default for GcpConfig {
+    fn default() -> Self {
+        Self {
+            token_ttl: settings::default_gcp_token_ttl(),
+            operation_timeout: settings::default_gcp_operation_timeout(),
+            http_timeout: settings::default_gcp_http_timeout(),
+            poll_interval: settings::default_gcp_poll_interval(),
+            lock_deadline: settings::default_gcp_lock_deadline(),
+            fingerprint_attempts: settings::default_gcp_fingerprint_attempts(),
         }
     }
 }
@@ -616,7 +650,7 @@ fn dotted(path: &serde_ignored::Path<'_>) -> String {
 pub fn lock_config() -> Result<crate::fsutil::Lock> {
     crate::fsutil::lock_exclusive(
         &config_dir()?.join("config.lock"),
-        crate::fsutil::LOCK_DEADLINE,
+        crate::fsutil::lock_deadline(),
     )
 }
 
@@ -996,6 +1030,50 @@ mod tests {
         });
     }
 
+    const DEFAULT_GCP: &str = "[gcp]\ntoken_ttl = \"45m\"\noperation_timeout = \"10m\"\nhttp_timeout = \"30s\"\npoll_interval = \"2s\"\nlock_deadline = \"5s\"\nfingerprint_attempts = 5\n";
+
+    #[test]
+    fn init_on_a_fresh_dir_writes_the_gcp_section_at_its_defaults() {
+        with_temp_dir(|| {
+            update_or_init_config(|c| c.add_account(account("dev"))).expect("init");
+            let text = config_text();
+            assert!(text.contains(DEFAULT_GCP), "{text}");
+        });
+    }
+
+    #[test]
+    fn init_keeps_a_gcp_value_already_in_the_file_and_fills_the_rest() {
+        with_temp_dir(|| {
+            std::fs::write(
+                config_path().expect("path"),
+                "selected_account = \"dev\"\n\n[gcp]\nhttp_timeout = \"1m\"\n",
+            )
+            .expect("write");
+            update_or_init_config(|c| c.add_account(account("dev"))).expect("init");
+            let text = config_text();
+            assert!(text.contains("http_timeout = \"1m\""), "{text}");
+            assert!(text.contains("token_ttl = \"45m\""), "{text}");
+            assert!(text.contains("fingerprint_attempts = 5"), "{text}");
+            let first = text;
+            update_or_init_config(|_| Ok(())).expect("again");
+            assert_eq!(config_text(), first, "a second init changes nothing");
+        });
+    }
+
+    #[test]
+    fn load_config_refuses_a_zero_gcp_timeout_with_exit_2_naming_the_key() {
+        with_temp_dir(|| {
+            std::fs::write(
+                config_path().expect("path"),
+                "[gcp]\npoll_interval = \"0s\"\n",
+            )
+            .expect("write");
+            let err = load_config().expect_err("zero interval");
+            assert!(format!("{err:#}").contains("gcp.poll_interval"));
+            assert_eq!(crate::error::kind_of(&err).exit_code(), 2);
+        });
+    }
+
     #[test]
     fn load_config_refuses_a_keep_size_that_is_not_below_max_size_naming_both() {
         with_temp_dir(|| {
@@ -1179,7 +1257,7 @@ mod tests {
 
     #[test]
     fn an_account_without_credential_file_round_trips_unchanged() {
-        let text = "selected_account = \"dev\"\nlog_level = \"info\"\nstart_deadline = \"20s\"\ndiscovery = true\nservice_call_timeout = \"10s\"\neditor = \"\"\n\n[notifications]\nenabled = true\nup = false\ndegraded = true\nrecovered = true\nfailed = true\n\n[restart]\nmax_restarts = 5\nwindow = \"10m\"\nmin_uptime = \"60s\"\nbase_backoff = \"10s\"\nmax_backoff = \"5m\"\n\n[watch]\nprobe_timeout = \"3s\"\ndegraded_after = 2\ninterval = \"30s\"\n\n[logs]\nmax_size = \"8MiB\"\nkeep_size = \"2MiB\"\nlines_per_minute = 60\nauth_exit_window = \"30s\"\n\n[[accounts]]\nname = \"dev\"\ngcloud_configuration = \"work\"\nproject = \"example-dev-1a2b\"\ndefault_zone = \"europe-west1-b\"\n";
+        let text = "selected_account = \"dev\"\nlog_level = \"info\"\nstart_deadline = \"20s\"\ndiscovery = true\nservice_call_timeout = \"10s\"\neditor = \"\"\n\n[notifications]\nenabled = true\nup = false\ndegraded = true\nrecovered = true\nfailed = true\n\n[restart]\nmax_restarts = 5\nwindow = \"10m\"\nmin_uptime = \"60s\"\nbase_backoff = \"10s\"\nmax_backoff = \"5m\"\n\n[watch]\nprobe_timeout = \"3s\"\ndegraded_after = 2\ninterval = \"30s\"\n\n[logs]\nmax_size = \"8MiB\"\nkeep_size = \"2MiB\"\nlines_per_minute = 60\nauth_exit_window = \"30s\"\n\n[gcp]\ntoken_ttl = \"45m\"\noperation_timeout = \"10m\"\nhttp_timeout = \"30s\"\npoll_interval = \"2s\"\nlock_deadline = \"5s\"\nfingerprint_attempts = 5\n\n[[accounts]]\nname = \"dev\"\ngcloud_configuration = \"work\"\nproject = \"example-dev-1a2b\"\ndefault_zone = \"europe-west1-b\"\n";
         let cfg: Config = toml::from_str(text).expect("parse");
         assert_eq!(cfg.accounts[0].credential_file, None);
         let again = toml::to_string_pretty(&cfg).expect("serialize");

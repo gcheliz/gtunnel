@@ -242,7 +242,7 @@ that level on the tunnel's start at login.
 
 ## Settings the environment can override
 
-Twelve keys of `config.toml` have a variable each. Where they disagree the variable wins, always:
+Eighteen keys of `config.toml` have a variable each. Where they disagree the variable wins, always:
 there is no key that opts out, so a value edited in the file that has no effect has one cause,
 and `gtunnel doctor` names it.
 
@@ -260,6 +260,12 @@ and `gtunnel doctor` names it.
 | `logs.keep_size` | `GTUNNEL_LOGS_KEEP_SIZE` | none | `"2MiB"` | a size above zero and below `logs.max_size` |
 | `logs.lines_per_minute` | `GTUNNEL_LOGS_LINES_PER_MINUTE` | none | `60` | a whole number from 1 |
 | `logs.auth_exit_window` | `GTUNNEL_LOGS_AUTH_EXIT_WINDOW` | none | `"30s"` | a duration above zero |
+| `gcp.token_ttl` | `GTUNNEL_GCP_TOKEN_TTL` | none | `"45m"` | a duration above zero |
+| `gcp.operation_timeout` | `GTUNNEL_GCP_OPERATION_TIMEOUT` | none | `"10m"` | a duration above zero |
+| `gcp.http_timeout` | `GTUNNEL_GCP_HTTP_TIMEOUT` | none | `"30s"` | a duration above zero |
+| `gcp.poll_interval` | `GTUNNEL_GCP_POLL_INTERVAL` | none | `"2s"` | a duration above zero |
+| `gcp.lock_deadline` | `GTUNNEL_GCP_LOCK_DEADLINE` | none | `"5s"` | a duration above zero |
+| `gcp.fingerprint_attempts` | `GTUNNEL_GCP_FINGERPRINT_ATTEMPTS` | none | `5` | a whole number from 1 |
 
 | Where | Beats |
 |---|---|
@@ -270,6 +276,11 @@ and `gtunnel doctor` names it.
 Sizes are bytes (`1048576`) or a number with `B`, `KiB`, `MiB` or `GiB`; there are no decimal
 units, so `8MB` is refused instead of meaning two things. A `keep_size` that is not below
 `max_size` fails with exit 2 naming both keys, and the variable that set either.
+`token_ttl` is how long gtunnel reuses an access token before asking gcloud for another; Google
+issues them for an hour, so a value past `1h` makes requests fail with 401 until it lapses.
+`lock_deadline` and `fingerprint_attempts` sit under `[gcp]` for want of a section of their own:
+the first is how long a command waits for the lock another gtunnel holds on a file it is writing,
+the second how many times a change to a URL map or named port is redone after a concurrent edit.
 Durations are `humantime` text (`500ms`, `20s`, `1m30s`). Booleans take `true`, `false`, `yes`,
 `no`, `on`, `off`, `1` or `0`. The older variables keep working: `GTUNNEL_START_DEADLINE_MS` and
 `GTUNNEL_SERVICE_BOUND_MS` are whole milliseconds, and `GTUNNEL_NO_DISCOVERY` and
@@ -316,6 +327,14 @@ max_size = "8MiB"
 keep_size = "2MiB"
 lines_per_minute = 60
 auth_exit_window = "30s"
+
+[gcp]
+token_ttl = "45m"
+operation_timeout = "10m"
+http_timeout = "30s"
+poll_interval = "2s"
+lock_deadline = "5s"
+fingerprint_attempts = 5
 ```
 
 When a variable gives a value other than the file's, `gtunnel doctor` says so and what to unset:
@@ -416,6 +435,12 @@ skipped, so a second run does nothing. A definition counts as out of date only w
 | `GTUNNEL_LOGS_KEEP_SIZE` | set what a trim keeps, e.g. `2MiB`; must stay below the maximum | the same |
 | `GTUNNEL_LOGS_LINES_PER_MINUTE` | set how many connection lines a tunnel's log takes a minute | a noisy client, or lines you want to see |
 | `GTUNNEL_LOGS_AUTH_EXIT_WINDOW` | set how long a credential line is held to explain gcloud's exit, e.g. `30s` | a login expiry read as a crash |
+| `GTUNNEL_GCP_TOKEN_TTL` | set how long an access token is reused, e.g. `45m` | `401` from a Google API after a long session |
+| `GTUNNEL_GCP_OPERATION_TIMEOUT` | set how long gtunnel waits for a compute or DNS operation, e.g. `10m` | `did not finish within` errors |
+| `GTUNNEL_GCP_HTTP_TIMEOUT` | set how long one API request may take, e.g. `30s` | a slow network or VPN |
+| `GTUNNEL_GCP_POLL_INTERVAL` | set the pause between looks at a running operation, e.g. `2s` | API quota, or a wait that feels padded |
+| `GTUNNEL_GCP_LOCK_DEADLINE` | set how long a write waits for the file lock another gtunnel holds, e.g. `5s` | `is held by another gtunnel process` |
+| `GTUNNEL_GCP_FINGERPRINT_ATTEMPTS` | set how many times a concurrent edit of a URL map or named port is retried | `Gave up after N attempts` |
 | `GTUNNEL_EDITOR`, then `VISUAL`, then `EDITOR` | choose the editor `e` opens | the TUI's config page |
 | `GTUNNEL_NOTIFICATIONS` | switch desktop notifications on or off (older: `GTUNNEL_NO_NOTIFY`) | tests and diagnostics |
 | `GTUNNEL_DISCOVERY` | switch the look for processes outside gtunnel on or off (older: `GTUNNEL_NO_DISCOVERY`) | tests and diagnostics |
@@ -425,7 +450,7 @@ skipped, so a second run does nothing. A definition counts as out of date only w
 
 | Variable | Read by | Effect |
 |---|---|---|
-| `GTUNNEL_CONFIG_DIR` | every command | Also turns off the automatic reinstall of out-of-date service definitions, because the label is shared with the live job. Moves `config.toml`, `tunnels.toml`, `lifecycle.json`, `run/` (including the watchdog heartbeat), `agents/` and `logs/` into that directory. The service label is still `com.gtunnel.<account>.<name>`, so give a throwaway configuration an account name of its own or `install` restarts the live job that shares the label |
+| `GTUNNEL_CONFIG_DIR` | every command | Also turns off the automatic reinstall of out-of-date service definitions, because the label is shared with the live job. Moves `config.toml`, `tunnels.toml`, `lifecycle.json`, `run/` (including the watchdog heartbeat), `agents/` and `logs/` into that directory. The service label is still `com.gtunnel.<account>.<name>`, so give a throwaway configuration an account name of its own or `install` restarts the live job that shares the label. No `config.toml` key: it locates the file, so the file cannot hold it |
 | `GTUNNEL_LOG_LEVEL` | every command | `quiet`, `info` or `debug`. Beaten by `--log-level`, beats `log_level` in `config.toml`. An empty value counts as unset; anything else that is not a level is an error naming the variable. See [The log level](#the-log-level) |
 | `GTUNNEL_NOTIFICATIONS` | every command | `true` or `false`: whether desktop notifications are raised. Beats `enabled` under `[notifications]`. An empty value counts as unset; anything else that is not a boolean is an error naming the variable. See [Settings the environment can override](#settings-the-environment-can-override) |
 | `GTUNNEL_NO_NOTIFY` | every command | The older spelling of `GTUNNEL_NOTIFICATIONS=false`: silences desktop notifications when set to anything but empty or `0`. `GTUNNEL_NOTIFICATIONS` wins when both are set. The integration tests set it, so `cargo test` never posts a banner |
@@ -440,6 +465,12 @@ skipped, so a second run does nothing. A definition counts as out of date only w
 | `GTUNNEL_LOGS_KEEP_SIZE` | the same | What a trim keeps, same units. Beats `keep_size`. Default 2MiB. Must be below the maximum: both keys are named when it is not |
 | `GTUNNEL_LOGS_LINES_PER_MINUTE` | the supervisor | Connection lines written per tunnel per minute; the rest are counted into one line. A whole number from 1. Beats `lines_per_minute`. Default 60 |
 | `GTUNNEL_LOGS_AUTH_EXIT_WINDOW` | the supervisor | How long before gcloud exits a credential-failure line still explains it, as a duration. Beats `auth_exit_window`. Default 30s |
+| `GTUNNEL_GCP_TOKEN_TTL` | every command that calls a Google API | How long an access token is reused before gcloud is asked for another, as a duration (`45m`). Beats `token_ttl` under `[gcp]`. Default 45m, inside the hour Google issues them for. An empty value counts as unset; anything else that is not a duration above zero is an error naming the variable |
+| `GTUNNEL_GCP_OPERATION_TIMEOUT` | the same | How long a compute or DNS operation is waited on before it is reported as not finished. Beats `operation_timeout`. Default 10m |
+| `GTUNNEL_GCP_HTTP_TIMEOUT` | the same | The limit on one API request. Beats `http_timeout`. Default 30s |
+| `GTUNNEL_GCP_POLL_INTERVAL` | the same | The pause between looks at a running operation. Beats `poll_interval`. Default 2s |
+| `GTUNNEL_GCP_LOCK_DEADLINE` | every command that writes `config.toml`, `tunnels.toml` or the lifecycle ledger | How long a writer waits for the lock another gtunnel holds before reporting it. Beats `lock_deadline`. Default 5s |
+| `GTUNNEL_GCP_FINGERPRINT_ATTEMPTS` | `expose`, `doctor --fix` | Tries of a read-modify-write on a fingerprinted resource after a `412`; a whole number from 1. Beats `fingerprint_attempts`. Default 5 |
 | `GTUNNEL_RESTART_MAX_RESTARTS` | the supervisor, `start`, `restart` | Fast failures tolerated inside the window; a whole number, `0` disables the budget. Beats `max_restarts` under `[restart]`. An empty value counts as unset; anything else that is not a number in range is an error naming the variable. See [The restart budget](#the-restart-budget) |
 | `GTUNNEL_RESTART_WINDOW` | the supervisor, `start`, `restart` | How long a failure counts, as a duration (`10m`). Beats `window`. Must not be shorter than the base backoff |
 | `GTUNNEL_RESTART_MIN_UPTIME` | the supervisor, `start`, `restart` | How long a run must last to clear the count (`60s`). Beats `min_uptime` |
@@ -449,7 +480,7 @@ skipped, so a second run does nothing. A definition counts as out of date only w
 | `GTUNNEL_SERVICE_BOUND_MS` | every command | The older spelling, in whole milliseconds above zero. `GTUNNEL_SERVICE_CALL_TIMEOUT` wins when both are set |
 | `GTUNNEL_EDITOR` | the TUI's config page | Which editor `e` opens, ahead of `VISUAL` and `EDITOR`. Beats `editor` in `config.toml`, which sits below both |
 | `VISUAL`, then `EDITOR` | the TUI's config page | Which editor `e` opens. `VISUAL` wins because it names the full-screen editor. An empty value counts as unset, since `EDITOR=` is how a shell clears one; neither set falls back to `editor` in `config.toml`, then to the platform default |
-| `PATH` | startup | Where `gcloud` is found |
+| `PATH` | startup | Where `gcloud` is found. No `config.toml` key: it is the shell's, shared with every other program |
 
 The value of `VISUAL` or `EDITOR` is split into a program and its arguments here, never
 handed to a shell, so `code -w` works and nothing in the variable is interpreted as a

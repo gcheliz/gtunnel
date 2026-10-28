@@ -1286,7 +1286,7 @@ async fn apply_fix(
             let acct = acct.ok_or_else(|| anyhow::anyhow!("Account '{account_name}' not found"))?;
             let client = GcpClient::for_account(acct);
             let names = Names::new(&acct.name);
-            routes::retry_on_precondition(routes::FINGERPRINT_ATTEMPTS, || async {
+            routes::retry_on_precondition(routes::fingerprint_attempts(), || async {
                 let Some(map) =
                     compute::get_url_map(&client, &acct.project, &names.url_map).await?
                 else {
@@ -1310,7 +1310,7 @@ async fn apply_fix(
                 .ok_or_else(|| anyhow::anyhow!("Account '{account_name}' has no relay"))?;
             let client = GcpClient::for_account(acct);
             let names = Names::new(&acct.name);
-            routes::retry_on_precondition(routes::FINGERPRINT_ATTEMPTS, || async {
+            routes::retry_on_precondition(routes::fingerprint_attempts(), || async {
                 let (ports, fingerprint) = compute::get_named_ports(
                     &client,
                     &acct.project,
@@ -2324,6 +2324,23 @@ mod tests {
             "4MiB",
             "'8MiB'",
             "Unset GTUNNEL_LOGS_MAX_SIZE",
+        ] {
+            assert!(text.contains(part), "{part}: {text}");
+        }
+    }
+
+    #[test]
+    fn doctor_names_a_gcp_key_the_environment_overrides() {
+        let findings = setting_override_findings(&Config::default(), &|name| {
+            (name == "GTUNNEL_GCP_HTTP_TIMEOUT").then(|| "1m".to_string())
+        });
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        let text = findings[0].describe();
+        for part in [
+            "gcp.http_timeout",
+            "1m",
+            "'30s'",
+            "Unset GTUNNEL_GCP_HTTP_TIMEOUT",
         ] {
             assert!(text.contains(part), "{part}: {text}");
         }

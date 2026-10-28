@@ -7,8 +7,11 @@ use crate::state::{PersistentTunnel, TunnelSpec};
 
 use super::naming::Names;
 
-// How many times a read-modify-write against a fingerprinted resource is retried
-pub const FINGERPRINT_ATTEMPTS: u32 = 5;
+/// How many times a read-modify-write against a fingerprinted resource is
+/// tried: `gcp.fingerprint_attempts`.
+pub fn fingerprint_attempts() -> u32 {
+    crate::settings::current().gcp_fingerprint_attempts
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RouteRemoval {
@@ -97,7 +100,7 @@ pub async fn remove_route(
 
     let names = &target.names;
     let host = target.hostname.clone();
-    removal.host_rule = retry_on_precondition(FINGERPRINT_ATTEMPTS, || async {
+    removal.host_rule = retry_on_precondition(fingerprint_attempts(), || async {
         let Some(map) = compute::get_url_map(client, project, &names.url_map).await? else {
             return Ok(false);
         };
@@ -119,7 +122,7 @@ pub async fn remove_route(
     let zone = &ex.relay_zone;
     let group = &names.instance_group;
     let port_name = target.named_port.clone();
-    removal.named_port = retry_on_precondition(FINGERPRINT_ATTEMPTS, || async {
+    removal.named_port = retry_on_precondition(fingerprint_attempts(), || async {
         let (ports, fingerprint) = compute::get_named_ports(client, project, zone, group).await?;
         if !ports.iter().any(|p| p.name == port_name) {
             return Ok(false);
@@ -152,7 +155,7 @@ pub async fn add_route(
     let port_name = target.named_port.clone();
     let relay_port = target.relay_port;
 
-    retry_on_precondition(FINGERPRINT_ATTEMPTS, || async {
+    retry_on_precondition(fingerprint_attempts(), || async {
         let (ports, fingerprint) = compute::get_named_ports(client, project, zone, group).await?;
         if ports
             .iter()
@@ -211,7 +214,7 @@ pub async fn add_route(
         target.backend
     );
     let host = target.hostname.clone();
-    retry_on_precondition(FINGERPRINT_ATTEMPTS, || async {
+    retry_on_precondition(fingerprint_attempts(), || async {
         let map = compute::get_url_map(client, project, &names.url_map)
             .await?
             .with_context(|| {

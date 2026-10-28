@@ -62,8 +62,9 @@ The answers were `1`, `sandbox`, then Enter for the project, the service account
 defaults, adding only the keys that are missing and never changing one that is set, so the
 [restart budget](configuration.md#the-restart-budget) is visible and tunable from the first
 run. The `[watch]` section (`probe_timeout`, `degraded_after`, `interval`) and the `[logs]` section
-(`max_size`, `keep_size`, `lines_per_minute`, `auth_exit_window`) are written the same
-way; see [Settings the environment can override](configuration.md#settings-the-environment-can-override).
+(`max_size`, `keep_size`, `lines_per_minute`, `auth_exit_window`) and `[gcp]` section
+(`token_ttl`, `operation_timeout`, `http_timeout`, `poll_interval`, `lock_deadline`,
+`fingerprint_attempts`) are written the same way; see [Settings the environment can override](configuration.md#settings-the-environment-can-override).
 The same sections are written by every command that saves the file.
 
 Every prompt is preceded by a line saying what the value sets, and, for a value you pick from
