@@ -376,12 +376,14 @@ async fn move_tunnel(moving: &MoveTunnel) -> Result<String> {
     })
 }
 
-// The four below are the CLI's own commands, for the reason `create` calls
-// `cmd_add`: what an account may be called, which zone is real and whether an
-// account may go at all are answered in one place, and the page is a second
-// way to ask rather than a second set of rules.
+// The four below are the cores of the CLI's own commands, for the reason
+// `create` calls `cmd_add`: what an account may be called, which zone is real
+// and whether an account may go at all are answered in one place, and the page
+// is a second way to ask rather than a second set of rules. The cores, not the
+// `cmd_` wrappers: a println under the alternate screen lands on top of the
+// drawn page, so what the CLI would print goes into the status instead.
 async fn add_account(new: &NewAccount) -> Result<String> {
-    account::cmd_account_add(
+    account::account_add(
         &new.configuration,
         &new.name,
         account::AddOptions::default(),
@@ -390,8 +392,6 @@ async fn add_account(new: &NewAccount) -> Result<String> {
     Ok(format!("added account {}", new.name))
 }
 
-// The core, not `cmd_account_edit`: a println under the alternate screen lands
-// on top of the drawn page, so the stale-tunnel line goes into the status.
 fn edit_account(edit: &AccountEdit) -> Result<String> {
     let edited = account::account_edit(
         &edit.name,
@@ -405,16 +405,16 @@ fn edit_account(edit: &AccountEdit) -> Result<String> {
     })
 }
 
-// `--yes` answers a question the TUI has already asked on the page. It does
-// not answer the refusal underneath: an account that still holds tunnels is
-// refused here whatever this flag says.
+// The page has already asked the question `--yes` would answer. It does not
+// answer the refusal underneath: an account that still holds tunnels is
+// refused here all the same.
 fn remove_account(name: &str) -> Result<String> {
-    account::cmd_account_remove(name, true)?;
+    account::account_remove(name)?;
     Ok(format!("removed account {name}"))
 }
 
 fn select_account(name: &str) -> Result<String> {
-    account::cmd_account_select(name)?;
+    account::account_select(name)?;
     Ok(format!("selected account {name}"))
 }
 
@@ -587,6 +587,16 @@ async fn import(account: &str, name: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A `cmd_` account command prints its confirmation, and under the
+    // alternate screen that line lands on the drawn page and stays there
+    #[test]
+    fn the_accounts_page_calls_the_cores_that_print_nothing() {
+        let source = include_str!("ops.rs");
+        let needle = concat!("account::", "cmd_");
+        let calls: Vec<&str> = source.lines().filter(|l| l.contains(needle)).collect();
+        assert!(calls.is_empty(), "printing commands called: {calls:?}");
+    }
 
     fn access(name: &str, local_port: u16) -> PersistentTunnel {
         PersistentTunnel {
