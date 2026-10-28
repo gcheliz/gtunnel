@@ -43,11 +43,13 @@ pub enum Commands {
     #[command(about = "Add a persistent Access tunnel (IAP TCP forward to localhost)")]
     Add {
         // Tunnel name
-        #[arg(help = "Tunnel name")]
+        #[arg(help = "Tunnel name: what it connects to, e.g. postgres")]
         name: String,
 
         // INSTANCE:PORT, or HOST:PORT when --dest-group or --via is used
-        #[arg(help = "INSTANCE:PORT, or HOST:PORT with --dest-group or --via")]
+        #[arg(
+            help = "INSTANCE:PORT (GCP instance name, port 22 open), or HOST:PORT with --dest-group or --via, e.g. bastion:5432"
+        )]
         target: String,
 
         // An instance that can reach the target, when IAP cannot reach it
@@ -55,34 +57,38 @@ pub enum Commands {
         #[arg(
             long,
             conflicts_with = "dest_group",
-            help = "Instance to forward from, for a host only it can reach"
+            help = "GCP instance name (port 22 open) to forward from, for a host only it can reach, e.g. bastion"
         )]
         via: Option<String>,
 
         // Compute zone of the instance (overrides the account default)
-        #[arg(short, long, help = "Compute zone of the instance")]
+        #[arg(
+            short,
+            long,
+            help = "Zone of the instance, e.g. europe-west1-b (default: the account's zone)"
+        )]
         zone: Option<String>,
 
         // Local port to listen on (allocated automatically when omitted)
         #[arg(
             long,
-            help = "Local port to listen on (allocated automatically when omitted)"
+            help = "Port on localhost you connect to, e.g. 15432 (allocated automatically when omitted)"
         )]
         local_port: Option<u16>,
 
         // IAP destination group, for targets that are not a compute instance
         #[arg(
             long,
-            help = "IAP destination group, for targets that are not a compute instance"
+            help = "IAP destination group, for targets that are not a compute instance, e.g. my-group"
         )]
         dest_group: Option<String>,
 
         // Region of the destination group
-        #[arg(long, help = "Region of the destination group")]
+        #[arg(long, help = "Region of the destination group, e.g. europe-west1")]
         region: Option<String>,
 
         // Network of the destination group
-        #[arg(long, help = "Network of the destination group")]
+        #[arg(long, help = "VPC network of the destination group, e.g. default")]
         network: Option<String>,
 
         // Start the tunnel immediately after adding
@@ -94,15 +100,19 @@ pub enum Commands {
     #[command(about = "Publish a local service at https://<name>.<domain> via the relay")]
     Expose {
         // Tunnel name (the subdomain part)
-        #[arg(help = "Tunnel name (the subdomain part)")]
+        #[arg(help = "Tunnel name, the subdomain part: web in web.example.com")]
         name: String,
 
         // Local service to publish (e.g. 3000, localhost:3000)
-        #[arg(help = "Local service to publish (e.g. 3000, localhost:3000)")]
+        #[arg(help = "Local service to publish, e.g. 3000 or localhost:3000")]
         target: String,
 
         // Domain to publish under (overrides the account default)
-        #[arg(short, long, help = "Domain to publish under")]
+        #[arg(
+            short,
+            long,
+            help = "Domain registered with `gtunnel domains add`, e.g. example.com (default: the account's domain)"
+        )]
         domain: Option<String>,
 
         // Require Google sign-in via IAP on the load balancer
@@ -123,15 +133,22 @@ pub enum Commands {
     #[command(about = "Run an ephemeral tunnel in the foreground (stops on Ctrl+C)")]
     Run {
         // Target alone, or name and target
-        #[arg(required = true, num_args = 1..=2, help = "Target alone, or name and target")]
+        #[arg(required = true, num_args = 1..=2, help = "Target alone, or name and target: INSTANCE:PORT (e.g. bastion:5432), or a local service with --public")]
         args: Vec<String>,
 
         // Compute zone of the instance (Access mode)
-        #[arg(short, long, help = "Compute zone of the instance (Access mode)")]
+        #[arg(
+            short,
+            long,
+            help = "Zone of the instance, e.g. europe-west1-b (Access mode)"
+        )]
         zone: Option<String>,
 
         // Local port to listen on (Access mode)
-        #[arg(long, help = "Local port to listen on (Access mode)")]
+        #[arg(
+            long,
+            help = "Port on localhost you connect to, e.g. 15432 (Access mode)"
+        )]
         local_port: Option<u16>,
 
         // Publish a local service publicly instead of forwarding a remote port
@@ -142,7 +159,11 @@ pub enum Commands {
         public: bool,
 
         // Domain to publish under (Expose mode)
-        #[arg(short, long, help = "Domain to publish under (Expose mode)")]
+        #[arg(
+            short,
+            long,
+            help = "Domain registered with `gtunnel domains add`, e.g. example.com (Expose mode)"
+        )]
         domain: Option<String>,
 
         // Stop by itself after this long, exactly as Ctrl+C would
@@ -510,15 +531,26 @@ pub enum RelayCommands {
     #[command(about = "Create the relay VM, load balancer, certificate and DNS plumbing")]
     Up {
         // Compute zone for the relay VM (overrides the account default)
-        #[arg(short, long, help = "Compute zone for the relay VM")]
+        #[arg(
+            short,
+            long,
+            help = "Zone for the relay instance, e.g. europe-west1-b (default: the account's zone)"
+        )]
         zone: Option<String>,
 
         // VPC network for the relay VM
-        #[arg(long, default_value = "default", help = "VPC network for the relay VM")]
+        #[arg(
+            long,
+            default_value = "default",
+            help = "VPC network for the relay instance"
+        )]
         network: String,
 
         // Cloud DNS managed zone to serve tunnel hostnames from
-        #[arg(long, help = "Cloud DNS managed zone to serve tunnel hostnames from")]
+        #[arg(
+            long,
+            help = "Cloud DNS managed zone that serves tunnel hostnames, e.g. my-zone; list them with `gcloud dns managed-zones list`"
+        )]
         managed_zone: Option<String>,
 
         // Skip the confirmation prompt
@@ -571,33 +603,33 @@ pub enum AccountCommands {
     #[command(about = "Add an account from an existing gcloud configuration")]
     Add {
         // Account name
-        #[arg(help = "Account name")]
+        #[arg(help = "Account name: what you pass to --account, e.g. dev")]
         name: String,
 
         // Still required with --project: it names the gcloud profile the account
         // runs under, but it stops supplying project and zone
         #[arg(
             long,
-            help = "gcloud configuration; supplies project and zone unless --project is given"
+            help = "gcloud configuration, e.g. default; list them with `gcloud config configurations list`. Supplies project and zone unless --project is given"
         )]
         configuration: String,
 
         // Skip the configuration lookup: needs no existing gcloud configuration
         #[arg(
             long,
-            help = "Project to use; the account is then built from flags, with no gcloud configuration needed"
+            help = "GCP project id, e.g. example-dev-1a2b; list them with `gcloud projects list`. The account is then built from flags, with no gcloud configuration needed"
         )]
         project: Option<String>,
 
         // Default zone
-        #[arg(long, help = "Default zone")]
+        #[arg(long, help = "Default zone, e.g. europe-west1-b")]
         zone: Option<String>,
 
         // Service-account key or workload identity federation file
         #[arg(
             long,
             value_name = "PATH",
-            help = "Absolute path of a service-account key or workload identity federation file gcloud reads per call"
+            help = "Absolute path of a service-account key or workload identity federation file gcloud reads per call, e.g. /home/you/key.json"
         )]
         credential_file: Option<std::path::PathBuf>,
     },
@@ -610,18 +642,18 @@ pub enum AccountCommands {
         name: String,
 
         // New project
-        #[arg(long, help = "New project")]
+        #[arg(long, help = "New GCP project id, e.g. example-dev-1a2b")]
         project: Option<String>,
 
         // New default zone
-        #[arg(long, help = "New default zone")]
+        #[arg(long, help = "New default zone, e.g. europe-west1-b")]
         zone: Option<String>,
 
         // Credential file; an empty value clears it
         #[arg(
             long,
             value_name = "PATH",
-            help = "Absolute path of a credential file; an empty value clears it"
+            help = "Absolute path of a credential file, e.g. /home/you/key.json; an empty value clears it"
         )]
         credential_file: Option<String>,
     },
@@ -1044,5 +1076,61 @@ mod tests {
     #[test]
     fn the_tui_needs_a_login() {
         assert!(parse(&["gtunnel"]).needs_gcp_auth());
+    }
+
+    // `--help` is the only place a person meets a flag before reading docs, so
+    // each value flag says its shape and shows a placeholder to copy. Wrapped
+    // lines are joined first: clap wraps at the terminal width, and an example
+    // split across two lines would otherwise fail a check it satisfies.
+    fn help_of(argv: &[&str]) -> String {
+        let text = Cli::try_parse_from(argv)
+            .err()
+            .expect("help exits")
+            .to_string();
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    #[test]
+    fn flag_help_has_an_example_for_each_value_flag() {
+        let expectations: [(&[&str], &[&str]); 5] = [
+            (
+                &["gtunnel", "add", "--help"],
+                &[
+                    "GCP instance name (port 22 open)",
+                    "e.g. bastion",
+                    "INSTANCE:PORT",
+                    "e.g. europe-west1-b",
+                    "e.g. 15432",
+                    "e.g. my-group",
+                ],
+            ),
+            (
+                &["gtunnel", "account", "add", "--help"],
+                &[
+                    "gcloud config configurations list",
+                    "e.g. example-dev-1a2b",
+                    "e.g. europe-west1-b",
+                    "e.g. /home/you/key.json",
+                ],
+            ),
+            (
+                &["gtunnel", "expose", "--help"],
+                &["e.g. 3000 or localhost:3000", "e.g. example.com"],
+            ),
+            (
+                &["gtunnel", "run", "--help"],
+                &["e.g. europe-west1-b", "e.g. 15432", "e.g. example.com"],
+            ),
+            (
+                &["gtunnel", "relay", "up", "--help"],
+                &["e.g. europe-west1-b", "e.g. my-zone"],
+            ),
+        ];
+        for (argv, wanted) in expectations {
+            let help = help_of(argv);
+            for want in wanted {
+                assert!(help.contains(want), "{argv:?} lacks {want:?}:\n{help}");
+            }
+        }
     }
 }
