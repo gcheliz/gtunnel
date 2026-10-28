@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.23](https://github.com/gcheliz/gtunnel/compare/v0.2.22...v0.2.23) - 2026-10-28
+
+### Fixed
+
+- *(init)* a gcloud configuration without a zone no longer blocks init ([#226](https://github.com/gcheliz/gtunnel/pull/226))
+
 ## [0.2.22](https://github.com/gcheliz/gtunnel/compare/v0.2.21...v0.2.22) - 2026-10-28
 
 ### Documentation
