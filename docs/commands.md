@@ -33,34 +33,54 @@ error and exits 1.
 
 ```
 $ gtunnel init
+An account is a name gtunnel gives to one GCP project. It is built from a gcloud configuration (the profile `gcloud init` made: login, project, zone). Enter takes the value shown.
+
 gcloud configurations:
   1. work (active)  project=example-dev-1a2b  account=you@example.com
-Configuration number [1]: Account name [work]: Could not list projects: Could not get a gcloud access token. No terminal to log in from. On a workstation run `gcloud auth login --configuration=work`; on a CI runner, give the runner a service account with roles/iap.tunnelResourceAccessor, or set credential_file on the account: gcloud auth print-access-token --configuration=work --project= --verbosity=info failed: ERROR: (gcloud.auth.print-access-token) Your current active account [you@example.com] does not have any valid credentials
-Project [example-dev-1a2b]: Every gcloud call of this account acts as this service account; you need roles/iam.serviceAccountTokenCreator on it. Empty: act as yourself.
-Service account to impersonate (optional) []: Default zone (name, or Enter to skip): Account 'sandbox' saved to ~/Library/Application Support/gtunnel
+
+  The gcloud configuration whose login, project and zone this account uses
+  To list: gcloud config configurations list
+Configuration number (Enter = 1): 
+  What you pass to `--account`. Lower case, digits and dashes, e.g. `dev`
+Account name (Enter = work): Could not list projects: Could not get a gcloud access token. No terminal to log in from. On a workstation run `gcloud auth login --configuration=work`; on a CI runner, give the runner a service account with roles/iap.tunnelResourceAccessor, or set credential_file on the account: gcloud auth print-access-token --configuration=work --project= --verbosity=info failed: ERROR: (gcloud.auth.print-access-token) Your current active account [you@example.com] does not have any valid credentials
+
+  The GCP project every tunnel and API call of this account targets
+  To list: gcloud projects list
+Project (Enter = example-dev-1a2b): 
+  Every gcloud call of this account acts as this service account; you need roles/iam.serviceAccountTokenCreator on it. Most people press Enter and act as themselves
+Service account to impersonate (optional, Enter to skip): 
+  Used when a tunnel names an instance without a zone
+  To list: gcloud compute zones list
+Default zone (optional, Enter to skip): Account 'sandbox' saved to ~/Library/Application Support/gtunnel
 No default zone saved; pass --zone to commands that need one
 ```
 
 The answers were `1`, `sandbox`, then Enter for the project, the service account and the zone, piped in, so they do not echo. This configuration has no zone, so Enter skipped it.
-The line before the impersonation prompt says what it does: every gcloud call of the account
-runs as that service account, which needs `roles/iam.serviceAccountTokenCreator` granted to you.
+
+Every prompt is preceded by a line saying what the value sets, and, for a value you pick from
+something that exists, the command that lists it. The text is the one the TUI's account form
+shows, from one source (`src/fields.rs`). In the brackets after the label, `Enter = <value>`
+is the default and `optional, Enter to skip` marks an answer that may be empty. The helper
+lines are plain text on stdout, so a piped answer is read exactly as before. The impersonation
+line says what it does: every gcloud call of the account runs as that service account, which
+needs `roles/iam.serviceAccountTokenCreator` granted to you; most people press Enter.
 
 The project step lists the projects the logged-in account can see, one numbered row each
 as `N. <project id>  <name>`, the gcloud configuration's own project marked `(default)`.
-The prompt is `Project (number or id)`: a number picks that row, and anything else is taken
+The prompt is `Project, by number or id`: a number picks that row, and anything else is taken
 as the project id you typed. Typing stays possible whatever the list holds, so a project it
 does not show still works.
 
 | The list | What `init` does |
 |---|---|
-| Has rows | Prints them, asks `Project (number or id)` |
+| Has rows | Prints them, asks `Project, by number or id` |
 | Is empty, or the call fails | Prints `Could not list projects: <cause>` once, then asks `Project` as a typed field; the transcript above is this path |
 
 The zone step works the same way: the project's zones are printed as `N. <zone>`, the
-configuration's zone marked `(default)`, and `Default zone (number, name, or Enter to skip)`
+configuration's zone marked `(default)`, and `Default zone, by number or name`
 takes a row number or a zone name. A zone the project does not have is refused. When the
-zones cannot be listed, as in the transcript, the prompt is `Default zone (name, or Enter to
-skip)`.
+zones cannot be listed, as in the transcript, the prompt is `Default zone`
+with the same `optional, Enter to skip` hint.
 
 The zone is optional, because many gcloud configurations have none. An account saved without
 one works for everything except the commands that reach an instance by zone: `add --via` and

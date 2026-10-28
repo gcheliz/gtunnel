@@ -12,6 +12,7 @@ mod doctor;
 mod ephemeral;
 mod error;
 mod expose;
+mod fields;
 mod fsutil;
 mod gcp;
 mod http;

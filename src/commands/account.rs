@@ -6,9 +6,42 @@ use crate::config::{
     config_dir, load_config, update_config, update_or_init_config, validate_account_name,
     validate_credential_file, Account,
 };
+use crate::fields::{self, Field};
 use crate::gcp::projects::{self, Project};
 use crate::gcp::{compute, gcloud, GcpClient};
 use crate::state::validate_zone;
+
+// What Enter does for a field: take the default, or skip an optional one. Empty
+// when Enter would do neither, so a required prompt never shows a bare `[]`.
+fn field_hint(f: Field, default: Option<&str>) -> String {
+    match default {
+        Some(d) if !d.is_empty() => format!("Enter = {d}"),
+        _ if f.optional() => "optional, Enter to skip".to_string(),
+        _ => String::new(),
+    }
+}
+
+// Says what the value is and where to list it, then asks. The helper lines are
+// plain text on stdout and the default is applied here, so a piped answer is
+// read exactly as `prompt` read it before.
+fn ask(f: Field, label: &str, default: Option<&str>) -> Result<String> {
+    println!();
+    println!("  {}", fields::help(f));
+    if let Some(cmd) = fields::how_to_find(f) {
+        println!("  To list: {cmd}");
+    }
+    let hint = field_hint(f, default);
+    let answer = if hint.is_empty() {
+        prompt(label, None)?
+    } else {
+        prompt(&format!("{label} ({hint})"), None)?
+    };
+    Ok(if answer.is_empty() {
+        default.unwrap_or_default().to_string()
+    } else {
+        answer
+    })
+}
 
 // First run: turn a gcloud configuration into a gtunnel account
 pub async fn cmd_init() -> Result<()> {
@@ -18,6 +51,8 @@ pub async fn cmd_init() -> Result<()> {
         bail!("No gcloud configurations found. Run `gcloud init` first");
     }
 
+    println!("{}", fields::INIT_INTRO);
+    println!();
     println!("gcloud configurations:");
     for (index, c) in configurations.iter().enumerate() {
         let active = if c.is_active { " (active)" } else { "" };
@@ -34,7 +69,11 @@ pub async fn cmd_init() -> Result<()> {
         .iter()
         .position(|c| c.is_active)
         .map(|i| (i + 1).to_string());
-    let choice = prompt("Configuration number", active.as_deref())?;
+    let choice = ask(
+        Field::Configuration,
+        "Configuration number",
+        active.as_deref(),
+    )?;
     let index: usize = choice
         .parse::<usize>()
         .ok()
@@ -44,7 +83,7 @@ pub async fn cmd_init() -> Result<()> {
 
     // Read for the early duplicate check; the locked update at the end checks again
     let config = load_config().unwrap_or_default();
-    let name = prompt("Account name", Some(&chosen.name))?;
+    let name = ask(Field::AccountName, "Account name", Some(&chosen.name))?;
     validate_account_name(&name)?;
     if config.accounts.iter().any(|a| a.name == name) {
         return Err(GtunnelError::usage(format!("Account '{name}' already exists")).into());
@@ -74,7 +113,11 @@ pub async fn cmd_init() -> Result<()> {
                 };
                 println!("  {}. {}  {}{default}", index + 1, p.project_id, p.name);
             }
-            let answer = prompt("Project (number or id)", chosen.project.as_deref())?;
+            let answer = ask(
+                Field::Project,
+                "Project, by number or id",
+                chosen.project.as_deref(),
+            )?;
             resolve_project_choice(&answer, &listed)
         }
         // A failed or empty list never blocks the account: typing still works
@@ -83,15 +126,11 @@ pub async fn cmd_init() -> Result<()> {
                 Err(e) => println!("Could not list projects: {}", short_cause(&e)),
                 Ok(_) => println!("Could not list projects: no project is visible to this account"),
             }
-            prompt("Project", chosen.project.as_deref())?
+            ask(Field::Project, "Project", chosen.project.as_deref())?
         }
     };
     require_project(&project)?;
-    println!(
-        "Every gcloud call of this account acts as this service account; \
-         you need roles/iam.serviceAccountTokenCreator on it. Empty: act as yourself."
-    );
-    let impersonate = prompt("Service account to impersonate (optional)", Some(""))?;
+    let impersonate = ask(Field::Impersonate, "Service account to impersonate", None)?;
     account.project = project;
     account.impersonate_service_account = (!impersonate.is_empty()).then_some(impersonate);
 
@@ -102,10 +141,7 @@ pub async fn cmd_init() -> Result<()> {
     // Listed as the projects are, so the zone is picked rather than recalled;
     // an empty list (denied or unreachable) leaves the prompt as it was
     let zone = if zones.is_empty() {
-        prompt(
-            "Default zone (name, or Enter to skip)",
-            chosen.zone.as_deref(),
-        )?
+        ask(Field::Zone, "Default zone", chosen.zone.as_deref())?
     } else {
         println!("Zones:");
         for (index, z) in zones.iter().enumerate() {
@@ -116,8 +152,9 @@ pub async fn cmd_init() -> Result<()> {
             };
             println!("  {}. {z}{default}", index + 1);
         }
-        let answer = prompt(
-            "Default zone (number, name, or Enter to skip)",
+        let answer = ask(
+            Field::Zone,
+            "Default zone, by number or name",
             chosen.zone.as_deref(),
         )?;
         resolve_zone_choice(&answer, &zones)
@@ -525,6 +562,20 @@ pub fn stale_line(stale: &[String]) -> Option<String> {
 mod tests {
     use super::*;
     use crate::config::testing::TempConfigDir;
+
+    #[test]
+    fn describe_line_formats_default_and_skip() {
+        assert_eq!(field_hint(Field::AccountName, Some("dev")), "Enter = dev");
+        assert_eq!(
+            field_hint(Field::Impersonate, None),
+            "optional, Enter to skip"
+        );
+        assert_eq!(
+            field_hint(Field::Impersonate, Some("")),
+            "optional, Enter to skip"
+        );
+    }
+
     use crate::config::{save_config, Config};
     use crate::state::{AccessTarget, PersistentTunnel, TunnelSpec, TunnelState};
 

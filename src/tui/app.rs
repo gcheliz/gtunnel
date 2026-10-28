@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::discovery::ExternalTunnel;
+use crate::fields::{self, Field};
 use crate::probe::{HealthStatus, MetricsHistory, RestartWatch, TunnelMetrics};
 use crate::state::{
     allocate_port, PersistentTunnel, TunnelSpec, TunnelStatus, ACCESS_PORT_BASE, ACCESS_PORT_SPAN,
@@ -411,46 +412,32 @@ impl InputMode {
     /// know what a bare label means. `EditTarget` describes an Access tunnel;
     /// the dialog swaps in the Expose wording for an Expose one.
     pub fn describe(&self) -> &'static str {
-        match self {
-            InputMode::AccountConfiguration => {
-                "The gcloud configuration whose login, project and zone this account uses. \
-                 List them: `gcloud config configurations list`"
-            }
-            InputMode::AccountConfigurationPick => {
-                "The gcloud configuration whose login, project and zone this account uses"
-            }
-            InputMode::AccountName => {
-                "What you pass to `--account`. Lower case, digits and dashes, e.g. `dev`"
-            }
-            InputMode::AccountProject | InputMode::AccountProjectPick => {
-                "The GCP project every tunnel and API call of this account targets"
-            }
-            InputMode::AccountZone | InputMode::AccountZonePick => {
-                "Used when a tunnel names an instance without a zone"
-            }
-            InputMode::AddName => {
-                "What it connects to, never the account: `postgres`, `k8s`. \
-                 Up to 40 of a-z 0-9 -"
-            }
-            InputMode::AddInstance => {
-                "The VM IAP connects to. Its port, or a host behind it, becomes local"
-            }
-            InputMode::AddJumpHost => {
-                "A host the VM can reach, tunnelled through it over ssh. Empty: the VM itself"
-            }
-            InputMode::AddRemotePort => "The port on that VM or host",
-            InputMode::AddLocalPort => {
-                "The port on localhost you connect to. The suggestion is derived from the name"
-            }
-            InputMode::AddDomain => {
-                "A domain registered with `gtunnel domains add`; the URL is `<name>.<domain>`"
-            }
-            InputMode::AddLocalTarget => "The service on this machine to publish",
-            InputMode::EditTarget => {
-                "The port on the VM or host, then the localhost port, e.g. 5432:15432"
-            }
-            _ => "",
+        if *self == InputMode::AccountConfiguration {
+            return fields::CONFIGURATION_WITH_LISTING;
         }
+        self.field().map_or("", fields::help)
+    }
+
+    /// The shared field this mode asks for. Modes with no entry (a rename, a
+    /// move, the choosers) say nothing under the prompt.
+    pub fn field(&self) -> Option<Field> {
+        Some(match self {
+            InputMode::AccountConfiguration | InputMode::AccountConfigurationPick => {
+                Field::Configuration
+            }
+            InputMode::AccountName => Field::AccountName,
+            InputMode::AccountProject | InputMode::AccountProjectPick => Field::Project,
+            InputMode::AccountZone | InputMode::AccountZonePick => Field::Zone,
+            InputMode::AddName => Field::TunnelName,
+            InputMode::AddInstance => Field::Instance,
+            InputMode::AddJumpHost => Field::JumpHost,
+            InputMode::AddRemotePort => Field::RemotePort,
+            InputMode::AddLocalPort => Field::LocalPort,
+            InputMode::AddDomain => Field::Domain,
+            InputMode::AddLocalTarget => Field::LocalTarget,
+            InputMode::EditTarget => Field::Ports,
+            _ => return None,
+        })
     }
 
     /// Where this field sits in its form, for the dialog's title. The add
