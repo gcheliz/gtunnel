@@ -33,6 +33,42 @@ pub fn default_discovery() -> bool {
     true
 }
 
+/// How long a healthy tunnel has to answer its own local port. Generous: a
+/// slow answer is a working tunnel, and a false trip costs a restart.
+pub const WATCH_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Consecutive failed probes before a tunnel is called degraded: the
+/// breaker's own run length, so the watchdog and the breaker agree on what
+/// "failing" means and one blip is neither.
+pub const WATCH_DEGRADED_AFTER: i64 = 2;
+
+/// How often the watchdog wakes to look at every tunnel. Short enough that a
+/// wedged tunnel is noticed before a person reaches for the terminal, long
+/// enough that the probe it runs costs nothing worth measuring.
+pub const WATCH_INTERVAL: Duration = Duration::from_secs(30);
+
+pub fn default_watch_probe_timeout() -> String {
+    humantime::format_duration(WATCH_PROBE_TIMEOUT).to_string()
+}
+
+pub fn default_watch_degraded_after() -> i64 {
+    WATCH_DEGRADED_AFTER
+}
+
+pub fn default_watch_interval() -> String {
+    humantime::format_duration(WATCH_INTERVAL).to_string()
+}
+
+/// How long the TUI trusts the watchdog's last heartbeat: three passes, never
+/// under the 90 s the default interval has always implied.
+///
+/// Derived from the interval and not a second key, because the two cannot be
+/// set apart: a freshness window shorter than one pass reads a healthy
+/// watchdog as dead, and one key cannot be set wrong against itself.
+pub fn heartbeat_fresh_secs(interval: Duration) -> u64 {
+    crate::lifecycle::HEARTBEAT_FRESH_SECS.max(interval.as_secs().saturating_mul(3))
+}
+
 /// One key's variables. The plain spelling is the one the docs name; the
 /// legacy one keeps a script that already exports it working, and loses to the
 /// plain one when both are set.
@@ -62,6 +98,21 @@ const NOTIFICATIONS_KEY: Key = Key {
     var: "GTUNNEL_NOTIFICATIONS",
     legacy: Some("GTUNNEL_NO_NOTIFY"),
 };
+const WATCH_PROBE_TIMEOUT_KEY: Key = Key {
+    name: "watch.probe_timeout",
+    var: "GTUNNEL_WATCH_PROBE_TIMEOUT",
+    legacy: None,
+};
+const WATCH_DEGRADED_AFTER_KEY: Key = Key {
+    name: "watch.degraded_after",
+    var: "GTUNNEL_WATCH_DEGRADED_AFTER",
+    legacy: None,
+};
+const WATCH_INTERVAL_KEY: Key = Key {
+    name: "watch.interval",
+    var: "GTUNNEL_WATCH_INTERVAL",
+    legacy: None,
+};
 const EDITOR_KEY: Key = Key {
     name: "editor",
     var: "GTUNNEL_EDITOR",
@@ -75,6 +126,11 @@ pub struct Settings {
     pub service_call_timeout: Duration,
     pub discovery: bool,
     pub notifications: bool,
+    pub watch_probe_timeout: Duration,
+    pub watch_degraded_after: u32,
+    /// Whole seconds: a launchd `StartInterval` and a systemd timer have no
+    /// finer unit, so a finer value would be one the unit cannot honour.
+    pub watch_interval: Duration,
     /// `GTUNNEL_EDITOR`, which outranks `VISUAL` and `EDITOR` like any
     /// variable outranks the file.
     pub editor_env: Option<String>,
@@ -180,6 +236,57 @@ fn duration_key(
     Ok(effective)
 }
 
+/// A whole-second duration, for the one value a service manager reads.
+fn parse_whole_seconds(source: &str, raw: &str) -> Result<Duration> {
+    let d = parse_duration(source, raw)?;
+    if d.subsec_nanos() != 0 {
+        return Err(bad(
+            source,
+            format!(
+                "'{raw}' must be a whole number of seconds, the service manager has no finer unit"
+            ),
+        ));
+    }
+    Ok(d)
+}
+
+fn parse_count(source: &str, raw: &str) -> Result<u32> {
+    match raw.parse::<i64>() {
+        Ok(n) if (1..=i64::from(u32::MAX)).contains(&n) => Ok(n as u32),
+        _ => Err(bad(
+            source,
+            format!("'{raw}' is not a whole number from 1 to {}", u32::MAX),
+        )),
+    }
+}
+
+/// A key with one variable and no older spelling: the file's value is always
+/// checked, then a variable replaces it. `duration_key` is this for durations
+/// that also read a millisecond variable.
+fn plain_key<T: PartialEq + Copy>(
+    env: EnvFn,
+    key: &Key,
+    file_raw: &str,
+    parse: fn(&str, &str) -> Result<T>,
+    show: fn(T) -> String,
+    overrides: &mut Vec<Override>,
+) -> Result<T> {
+    let file = parse(key.name, file_raw)?;
+    let Some(raw) = var(env, key.var) else {
+        return Ok(file);
+    };
+    let effective = parse(key.var, &raw)?;
+    if effective != file {
+        overrides.push(Override {
+            key: key.name,
+            variable: key.var,
+            file: show(file),
+            effective: show(effective),
+        });
+    }
+    Ok(effective)
+}
+
 /// A switch whose legacy variable is an off switch (`GTUNNEL_NO_*`): any
 /// value but empty or `0` turns the feature off, and `0` is not an opinion.
 fn switch_key(env: EnvFn, key: &Key, file: bool, overrides: &mut Vec<Override>) -> Result<bool> {
@@ -231,6 +338,31 @@ pub fn resolve(config: &Config, env: EnvFn) -> Result<Resolved> {
         config.notifications.enabled,
         &mut overrides,
     )?;
+    let watch = &config.watch;
+    let watch_probe_timeout = plain_key(
+        env,
+        &WATCH_PROBE_TIMEOUT_KEY,
+        &watch.probe_timeout,
+        parse_duration,
+        shown,
+        &mut overrides,
+    )?;
+    let watch_degraded_after = plain_key(
+        env,
+        &WATCH_DEGRADED_AFTER_KEY,
+        &watch.degraded_after.to_string(),
+        parse_count,
+        |n| n.to_string(),
+        &mut overrides,
+    )?;
+    let watch_interval = plain_key(
+        env,
+        &WATCH_INTERVAL_KEY,
+        &watch.interval,
+        parse_whole_seconds,
+        shown,
+        &mut overrides,
+    )?;
     let editor_file = Some(config.editor.trim().to_string()).filter(|e| !e.is_empty());
     let editor_env = var(env, EDITOR_KEY.var);
     if let Some(chosen) = &editor_env
@@ -249,6 +381,9 @@ pub fn resolve(config: &Config, env: EnvFn) -> Result<Resolved> {
             service_call_timeout,
             discovery,
             notifications,
+            watch_probe_timeout,
+            watch_degraded_after,
+            watch_interval,
             editor_env,
             editor_file,
         },
@@ -514,5 +649,108 @@ mod tests {
                 ("editor", "GTUNNEL_EDITOR"),
             ]
         );
+    }
+
+    #[test]
+    fn the_watch_keys_default_to_what_the_constants_were() {
+        let s = settings_of("", &[]);
+        assert_eq!(s.watch_probe_timeout, Duration::from_secs(3));
+        assert_eq!(s.watch_degraded_after, 2);
+        assert_eq!(s.watch_interval, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn the_file_sets_the_watch_keys() {
+        let s = settings_of(
+            "[watch]\nprobe_timeout = \"5s\"\ndegraded_after = 4\ninterval = \"45s\"\n",
+            &[],
+        );
+        assert_eq!(s.watch_probe_timeout, Duration::from_secs(5));
+        assert_eq!(s.watch_degraded_after, 4);
+        assert_eq!(s.watch_interval, Duration::from_secs(45));
+    }
+
+    #[test]
+    fn a_watch_variable_beats_the_same_key_in_the_file() {
+        let file = "[watch]\nprobe_timeout = \"5s\"\ndegraded_after = 4\ninterval = \"45s\"\n";
+        let r = resolve_with(
+            file,
+            &[
+                ("GTUNNEL_WATCH_PROBE_TIMEOUT", "1s"),
+                ("GTUNNEL_WATCH_DEGRADED_AFTER", "3"),
+                ("GTUNNEL_WATCH_INTERVAL", "10s"),
+            ],
+        )
+        .expect("resolves");
+        assert_eq!(r.settings.watch_probe_timeout, Duration::from_secs(1));
+        assert_eq!(r.settings.watch_degraded_after, 3);
+        assert_eq!(r.settings.watch_interval, Duration::from_secs(10));
+        let seen: Vec<(&str, &str)> = r.overrides.iter().map(|o| (o.key, o.variable)).collect();
+        assert_eq!(
+            seen,
+            vec![
+                ("watch.probe_timeout", "GTUNNEL_WATCH_PROBE_TIMEOUT"),
+                ("watch.degraded_after", "GTUNNEL_WATCH_DEGRADED_AFTER"),
+                ("watch.interval", "GTUNNEL_WATCH_INTERVAL"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_bad_watch_variable_is_a_usage_error_naming_it() {
+        for (var, value) in [
+            ("GTUNNEL_WATCH_PROBE_TIMEOUT", "soon"),
+            ("GTUNNEL_WATCH_PROBE_TIMEOUT", "0s"),
+            ("GTUNNEL_WATCH_DEGRADED_AFTER", "many"),
+            ("GTUNNEL_WATCH_DEGRADED_AFTER", "0"),
+            ("GTUNNEL_WATCH_DEGRADED_AFTER", "-1"),
+            ("GTUNNEL_WATCH_INTERVAL", "soon"),
+            ("GTUNNEL_WATCH_INTERVAL", "0s"),
+            ("GTUNNEL_WATCH_INTERVAL", "1500ms"),
+        ] {
+            let err = resolve_with("", &[(var, value)]).expect_err(var);
+            let (code, text) = exit_and_text(&err);
+            assert_eq!(code, 2, "{var}={value}: {text}");
+            assert!(text.contains(var), "{var}={value}: {text}");
+        }
+    }
+
+    #[test]
+    fn a_bad_watch_file_value_is_a_usage_error_naming_the_key() {
+        for (text, key) in [
+            ("[watch]\nprobe_timeout = \"0s\"\n", "watch.probe_timeout"),
+            ("[watch]\nprobe_timeout = \"x\"\n", "watch.probe_timeout"),
+            ("[watch]\ndegraded_after = 0\n", "watch.degraded_after"),
+            ("[watch]\ndegraded_after = -2\n", "watch.degraded_after"),
+            ("[watch]\ninterval = \"0s\"\n", "watch.interval"),
+            ("[watch]\ninterval = \"2500ms\"\n", "watch.interval"),
+        ] {
+            let err = resolve_with(text, &[]).expect_err(text);
+            let (code, msg) = exit_and_text(&err);
+            assert_eq!(code, 2, "{msg}");
+            assert!(msg.contains(key), "{msg}");
+        }
+    }
+
+    #[test]
+    fn an_empty_watch_variable_is_unset() {
+        let s = settings_of(
+            "[watch]\ndegraded_after = 4\n",
+            &[("GTUNNEL_WATCH_DEGRADED_AFTER", " ")],
+        );
+        assert_eq!(s.watch_degraded_after, 4);
+    }
+
+    // The TUI trusts the heartbeat for as long as it would take the watchdog to
+    // miss three passes, so a slower watchdog must not read as a dead one
+    #[test]
+    fn the_heartbeat_stays_fresh_for_longer_than_one_interval() {
+        for secs in [1, 30, 45, 90, 600] {
+            let fresh = heartbeat_fresh_secs(Duration::from_secs(secs));
+            assert!(fresh > secs, "{secs}s interval, {fresh}s freshness");
+        }
+        assert_eq!(heartbeat_fresh_secs(Duration::from_secs(30)), 90);
+        assert_eq!(heartbeat_fresh_secs(Duration::from_secs(10)), 90);
+        assert_eq!(heartbeat_fresh_secs(Duration::from_secs(60)), 180);
     }
 }

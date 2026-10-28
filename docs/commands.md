@@ -61,7 +61,9 @@ The answers were `1`, `sandbox`, then Enter for the project, the service account
 `init` also writes the `[restart]` section of `config.toml` with its five keys at their
 defaults, adding only the keys that are missing and never changing one that is set, so the
 [restart budget](configuration.md#the-restart-budget) is visible and tunable from the first
-run. The same section is written by every command that saves the file.
+run. The `[watch]` section (`probe_timeout`, `degraded_after`, `interval`) is written the same
+way; see [Settings the environment can override](configuration.md#settings-the-environment-can-override).
+The same sections are written by every command that saves the file.
 
 Every prompt is preceded by a line saying what the value sets, and, for a value you pick from
 something that exists, the command that lists it. The text is the one the TUI's account form
@@ -663,7 +665,7 @@ question. Both kinds of line appear only under `-v`.
 
 | Form | What it does |
 |---|---|
-| `gtunnel watch` | The loop, in the foreground, one pass every 30s until Ctrl+C |
+| `gtunnel watch` | The loop, in the foreground, one pass every `watch.interval` (30s) until Ctrl+C |
 | `gtunnel watch --once` | One pass, then exit. What the agent runs |
 | `gtunnel watch -v` | Say what each pass saw, rather than only what it did |
 | `gtunnel watch install` | Install the agent, so the loop runs with no terminal open |
@@ -711,7 +713,7 @@ decision and begin the loop with a fresh count.
 ### The agent
 
 `watch install` writes one job for the machine, not one per tunnel: `com.gtunnel.watchdog`
-on macOS, `gtunnel-watchdog.timer` on Linux. It wakes every 30 seconds, makes one pass,
+on macOS, `gtunnel-watchdog.timer` on Linux. It wakes every 30 seconds by default (`watch.interval`, applied when you run `watch install`), makes one pass,
 and exits — it is a timer, not a service, because a job that exits immediately under
 `KeepAlive` is one the service manager respawns in a tight loop.
 

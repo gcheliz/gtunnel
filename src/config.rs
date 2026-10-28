@@ -102,6 +102,10 @@ pub struct Config {
     // invisible. An older file without it still loads, with these values.
     #[serde(default)]
     pub restart: RestartConfig,
+    // Always written too, for the same reason: the three watchdog knobs are
+    // the file's second-most tuned part and an absent key hides them
+    #[serde(default)]
+    pub watch: WatchConfig,
     #[serde(default)]
     pub accounts: Vec<Account>,
 }
@@ -117,7 +121,28 @@ impl Default for Config {
             editor: String::new(),
             notifications: NotifyConfig::default(),
             restart: RestartConfig::default(),
+            watch: WatchConfig::default(),
             accounts: Vec::new(),
+        }
+    }
+}
+
+/// The watchdog's three knobs as written in `config.toml`, raw for the reason
+/// `RestartConfig` is: a bad one is named by key, not by a line number.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WatchConfig {
+    pub probe_timeout: String,
+    pub degraded_after: i64,
+    pub interval: String,
+}
+
+impl Default for WatchConfig {
+    fn default() -> Self {
+        Self {
+            probe_timeout: settings::default_watch_probe_timeout(),
+            degraded_after: settings::default_watch_degraded_after(),
+            interval: settings::default_watch_interval(),
         }
     }
 }
@@ -867,6 +892,54 @@ mod tests {
         });
     }
 
+    const DEFAULT_WATCH: &str =
+        "[watch]\nprobe_timeout = \"3s\"\ndegraded_after = 2\ninterval = \"30s\"\n";
+
+    #[test]
+    fn init_on_a_fresh_dir_writes_the_watch_section_at_its_defaults() {
+        with_temp_dir(|| {
+            update_or_init_config(|c| c.add_account(account("dev"))).expect("init");
+            let text = config_text();
+            assert!(text.contains(DEFAULT_WATCH), "{text}");
+        });
+    }
+
+    #[test]
+    fn init_keeps_a_watch_value_already_in_the_file_and_fills_the_rest() {
+        with_temp_dir(|| {
+            std::fs::write(
+                config_path().expect("path"),
+                "selected_account = \"dev\"\n\n[watch]\ninterval = \"45s\"\n",
+            )
+            .expect("write");
+            update_or_init_config(|c| c.add_account(account("dev"))).expect("init");
+            let text = config_text();
+            assert!(text.contains("interval = \"45s\""), "{text}");
+            assert!(text.contains("probe_timeout = \"3s\""), "{text}");
+            assert!(text.contains("degraded_after = 2"), "{text}");
+            let first = text;
+            update_or_init_config(|_| Ok(())).expect("again");
+            assert_eq!(config_text(), first, "a second init changes nothing");
+        });
+    }
+
+    #[test]
+    fn load_config_refuses_a_bad_watch_key_with_exit_2_naming_it() {
+        with_temp_dir(|| {
+            std::fs::write(
+                config_path().expect("path"),
+                "[watch]\ndegraded_after = 0\n",
+            )
+            .expect("write");
+            let err = load_config().expect_err("zero is not a threshold");
+            assert!(
+                format!("{err:#}").contains("watch.degraded_after"),
+                "{err:#}"
+            );
+            assert_eq!(crate::error::kind_of(&err).exit_code(), 2);
+        });
+    }
+
     #[test]
     fn load_config_refuses_a_bad_settings_key_with_exit_2() {
         with_temp_dir(|| {
@@ -1034,7 +1107,7 @@ mod tests {
 
     #[test]
     fn an_account_without_credential_file_round_trips_unchanged() {
-        let text = "selected_account = \"dev\"\nlog_level = \"info\"\nstart_deadline = \"20s\"\ndiscovery = true\nservice_call_timeout = \"10s\"\neditor = \"\"\n\n[notifications]\nenabled = true\nup = false\ndegraded = true\nrecovered = true\nfailed = true\n\n[restart]\nmax_restarts = 5\nwindow = \"10m\"\nmin_uptime = \"60s\"\nbase_backoff = \"10s\"\nmax_backoff = \"5m\"\n\n[[accounts]]\nname = \"dev\"\ngcloud_configuration = \"work\"\nproject = \"example-dev-1a2b\"\ndefault_zone = \"europe-west1-b\"\n";
+        let text = "selected_account = \"dev\"\nlog_level = \"info\"\nstart_deadline = \"20s\"\ndiscovery = true\nservice_call_timeout = \"10s\"\neditor = \"\"\n\n[notifications]\nenabled = true\nup = false\ndegraded = true\nrecovered = true\nfailed = true\n\n[restart]\nmax_restarts = 5\nwindow = \"10m\"\nmin_uptime = \"60s\"\nbase_backoff = \"10s\"\nmax_backoff = \"5m\"\n\n[watch]\nprobe_timeout = \"3s\"\ndegraded_after = 2\ninterval = \"30s\"\n\n[[accounts]]\nname = \"dev\"\ngcloud_configuration = \"work\"\nproject = \"example-dev-1a2b\"\ndefault_zone = \"europe-west1-b\"\n";
         let cfg: Config = toml::from_str(text).expect("parse");
         assert_eq!(cfg.accounts[0].credential_file, None);
         let again = toml::to_string_pretty(&cfg).expect("serialize");

@@ -47,6 +47,7 @@ in the configuration directory (see [Environment](#environment) below).
 | `editor` | string | no | The editor `e` opens, below `$VISUAL` and `$EDITOR`; `""` (none chosen) when absent |
 | `notifications` | table | no | Which lifecycle changes raise a desktop notification: `enabled` (the master switch), then `up`, `degraded`, `recovered`, `failed`, all booleans. See [Notifications](commands.md#notifications) |
 | `restart` | table | no | When a tunnel that keeps failing is stopped: `max_restarts`, `window`, `min_uptime`, `base_backoff`, `max_backoff`. `init` writes all five at their defaults. See [The restart budget](#the-restart-budget) |
+| `watch` | table | no | How the watchdog probes and when it calls a tunnel degraded: `probe_timeout`, `degraded_after`, `interval`. `init` writes all three at their defaults. See [Settings the environment can override](#settings-the-environment-can-override) |
 | `accounts` | array of tables | yes | One entry per account; may be empty |
 
 Each entry in `accounts`:
@@ -241,7 +242,7 @@ that level on the tunnel's start at login.
 
 ## Settings the environment can override
 
-Five keys of `config.toml` have a variable each. Where they disagree the variable wins, always:
+Eight keys of `config.toml` have a variable each. Where they disagree the variable wins, always:
 there is no key that opts out, so a value edited in the file that has no effect has one cause,
 and `gtunnel doctor` names it.
 
@@ -252,6 +253,9 @@ and `gtunnel doctor` names it.
 | `discovery` | `GTUNNEL_DISCOVERY` | `GTUNNEL_NO_DISCOVERY` | `true` | `true` or `false` |
 | `notifications.enabled` | `GTUNNEL_NOTIFICATIONS` | `GTUNNEL_NO_NOTIFY` | `true` | `true` or `false` |
 | `editor` | `GTUNNEL_EDITOR` | none | none | a command line |
+| `watch.probe_timeout` | `GTUNNEL_WATCH_PROBE_TIMEOUT` | none | `"3s"` | a duration above zero |
+| `watch.degraded_after` | `GTUNNEL_WATCH_DEGRADED_AFTER` | none | `2` | a whole number from 1 |
+| `watch.interval` | `GTUNNEL_WATCH_INTERVAL` | none | `"30s"` | a whole number of seconds above zero, as a duration |
 
 | Where | Beats |
 |---|---|
@@ -294,6 +298,11 @@ up = false
 degraded = true
 recovered = true
 failed = true
+
+[watch]
+probe_timeout = "3s"
+degraded_after = 2
+interval = "30s"
 ```
 
 When a variable gives a value other than the file's, `gtunnel doctor` says so and what to unset:
@@ -304,6 +313,12 @@ start_deadline is 1m 30s here because GTUNNEL_START_DEADLINE is set in the envir
 
 The file is read on each use, so a change made in the TUI's config page applies to the next
 start without a relaunch.
+
+`watch.interval` is the one key a service manager also reads: `gtunnel watch install` writes it
+into the launchd `StartInterval` or the systemd timer, so a new value reaches the installed
+watchdog only after `gtunnel watch install` runs again (the foreground `gtunnel watch` loop
+reads it at once). The TUI trusts the watchdog's heartbeat for three intervals and never less
+than 90 seconds, so a slower watchdog is not read as a dead one; there is no key for that.
 
 ## The restart budget
 
@@ -381,6 +396,9 @@ skipped, so a second run does nothing. A definition counts as out of date only w
 | `GTUNNEL_RESTART_MIN_UPTIME` | set how long a run must last to clear the count, e.g. `60s` | the restart budget |
 | `GTUNNEL_RESTART_BASE_BACKOFF` | set the wait after the first failure, e.g. `10s` | the restart budget |
 | `GTUNNEL_RESTART_MAX_BACKOFF` | cap the doubling wait, e.g. `5m` | the restart budget |
+| `GTUNNEL_WATCH_PROBE_TIMEOUT` | set how long the watchdog waits for a tunnel's local port, e.g. `3s` | a slow tunnel read as wedged |
+| `GTUNNEL_WATCH_DEGRADED_AFTER` | set how many failed probes in a row make a tunnel degraded | a flapping tunnel, or a late alert |
+| `GTUNNEL_WATCH_INTERVAL` | set how often the watchdog looks at every tunnel, e.g. `30s` | `watch` and `watch install` |
 | `GTUNNEL_EDITOR`, then `VISUAL`, then `EDITOR` | choose the editor `e` opens | the TUI's config page |
 | `GTUNNEL_NOTIFICATIONS` | switch desktop notifications on or off (older: `GTUNNEL_NO_NOTIFY`) | tests and diagnostics |
 | `GTUNNEL_DISCOVERY` | switch the look for processes outside gtunnel on or off (older: `GTUNNEL_NO_DISCOVERY`) | tests and diagnostics |
@@ -398,6 +416,9 @@ skipped, so a second run does nothing. A definition counts as out of date only w
 | `GTUNNEL_NO_DISCOVERY` | `list`, the TUI, `mcp` | The older spelling of `GTUNNEL_DISCOVERY=false`, for tests: when set to anything but empty or `0`, no process outside gtunnel is looked for. The integration tests set it so a tunnel running on the host cannot change a row count |
 | `GTUNNEL_START_DEADLINE` | `start`, `restart`, `add -s` | How long an Access tunnel is given to report it is listening before the start counts as failed, as a duration (`45s`). Beats `start_deadline`. Default 20s; an empty value counts as unset, and anything else that is not a duration above zero is an error naming the variable. Public tunnels use a fixed 3-second settle instead |
 | `GTUNNEL_START_DEADLINE_MS` | `start`, `restart`, `add -s` | The older spelling, in whole milliseconds above zero. `GTUNNEL_START_DEADLINE` wins when both are set |
+| `GTUNNEL_WATCH_PROBE_TIMEOUT` | `watch` | How long one probe of a tunnel's local port may take before it counts as a failure, as a duration (`3s`). Beats `probe_timeout` under `[watch]`. Default 3s; an empty value counts as unset, and anything else that is not a duration above zero is an error naming the variable |
+| `GTUNNEL_WATCH_DEGRADED_AFTER` | `watch` | Consecutive failed probes before a tunnel is called degraded; a whole number from 1. Beats `degraded_after`. Default 2, the breaker's own run length |
+| `GTUNNEL_WATCH_INTERVAL` | `watch`, `watch install` | How often the watchdog makes a pass, as a whole number of seconds written as a duration (`45s`). Beats `interval`. Default 30s. Installed units keep the value they were written with until `watch install` runs again |
 | `GTUNNEL_RESTART_MAX_RESTARTS` | the supervisor, `start`, `restart` | Fast failures tolerated inside the window; a whole number, `0` disables the budget. Beats `max_restarts` under `[restart]`. An empty value counts as unset; anything else that is not a number in range is an error naming the variable. See [The restart budget](#the-restart-budget) |
 | `GTUNNEL_RESTART_WINDOW` | the supervisor, `start`, `restart` | How long a failure counts, as a duration (`10m`). Beats `window`. Must not be shorter than the base backoff |
 | `GTUNNEL_RESTART_MIN_UPTIME` | the supervisor, `start`, `restart` | How long a run must last to clear the count (`60s`). Beats `min_uptime` |

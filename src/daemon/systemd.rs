@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::process::Command;
 
-use super::{RuntimeInfo, ServiceSpec};
+use super::{watch_interval_secs, RuntimeInfo, ServiceSpec};
 use crate::state::TunnelStatus;
 
 pub fn unit_for(account: &str, name: &str) -> String {
@@ -52,7 +52,7 @@ pub fn watchdog_log() -> Result<PathBuf> {
 pub async fn install_watchdog(program: &std::path::Path) -> Result<()> {
     crate::state::ensure_logs_dir()?;
     let label = super::watchdog_label();
-    let (service, timer) = render_watchdog_units(program, &watchdog_log()?);
+    let (service, timer) = render_watchdog_units(program, &watchdog_log()?, watch_interval_secs());
     for (name, text) in [
         (format!("{label}.service"), service),
         (format!("{label}.timer"), timer),
@@ -105,7 +105,11 @@ pub async fn watchdog_installed() -> bool {
 /// for why it is a constant here rather than the host's label.
 pub const WATCHDOG_LABEL: &str = "gtunnel-watchdog";
 
-pub fn render_watchdog_units(program: &std::path::Path, log: &std::path::Path) -> (String, String) {
+pub fn render_watchdog_units(
+    program: &std::path::Path,
+    log: &std::path::Path,
+    interval_secs: u64,
+) -> (String, String) {
     let label = WATCHDOG_LABEL;
     let service = format!(
         r#"[Unit]
@@ -132,7 +136,7 @@ Unit={label}.service
 [Install]
 WantedBy=timers.target
 "#,
-        interval = super::WATCHDOG_INTERVAL,
+        interval = interval_secs,
     );
     (service, timer)
 }

@@ -163,10 +163,11 @@ pub fn crash_reason_in(config_dir: &std::path::Path, label: &str) -> Option<Stri
     Some(if line.is_empty() { "unknown" } else { line }.to_string())
 }
 
-/// How often the watchdog wakes to look at every tunnel. Short enough that a
-/// wedged tunnel is noticed before a person reaches for the terminal, long
-/// enough that the probe it runs costs nothing worth measuring.
-pub const WATCHDOG_INTERVAL: u64 = 30;
+/// The watchdog's `watch.interval` in whole seconds, as the unit it is
+/// installed with spells it. Fixed at install: a change needs `watch install`.
+pub(crate) fn watch_interval_secs() -> u64 {
+    crate::settings::current().watch_interval.as_secs()
+}
 
 /// The watchdog is one job for the whole machine, not one per tunnel, so its
 /// label carries no account or tunnel segment.
@@ -474,6 +475,8 @@ pub fn remove_log(path: &std::path::Path) -> Result<()> {
 mod tests {
     use super::*;
     use crate::state::TunnelStatus;
+
+    const WATCHDOG_INTERVAL: u64 = 30;
 
     // The level in a service file has to come from the config being installed
     // from, not from whatever the config said when the process started. A TUI
@@ -819,6 +822,7 @@ mod tests {
         let plist = launchd::render_watchdog_plist(
             std::path::Path::new("/usr/local/bin/gtunnel"),
             std::path::Path::new("/tmp/watchdog.log"),
+            WATCHDOG_INTERVAL,
         );
         assert!(
             plist.contains(&format!(
@@ -829,11 +833,25 @@ mod tests {
         assert!(plist.contains("<key>RunAtLoad</key>"), "{plist}");
     }
 
+    // `watch.interval` is the one value the unit carries, so the unit must
+    // take it from the caller and not from a constant
+    #[test]
+    fn the_watchdog_units_carry_the_interval_they_are_given() {
+        let program = std::path::Path::new("/usr/local/bin/gtunnel");
+        let log = std::path::Path::new("/tmp/watchdog.log");
+        let plist = launchd::render_watchdog_plist(program, log, 45);
+        assert!(plist.contains("<integer>45</integer>"), "{plist}");
+        let (_, timer) = systemd::render_watchdog_units(program, log, 45);
+        assert!(timer.contains("OnBootSec=45s"), "{timer}");
+        assert!(timer.contains("OnUnitActiveSec=45s"), "{timer}");
+    }
+
     #[test]
     fn the_watchdog_runs_the_gtunnel_binary_with_watch_once() {
         let plist = launchd::render_watchdog_plist(
             std::path::Path::new("/usr/local/bin/gtunnel"),
             std::path::Path::new("/tmp/watchdog.log"),
+            WATCHDOG_INTERVAL,
         );
         assert!(
             plist.contains("<string>/usr/local/bin/gtunnel</string>"),
@@ -851,6 +869,7 @@ mod tests {
         let plist = launchd::render_watchdog_plist(
             std::path::Path::new("/usr/local/bin/gtunnel"),
             std::path::Path::new("/tmp/watchdog.log"),
+            WATCHDOG_INTERVAL,
         );
         assert!(!plist.contains("KeepAlive"), "{plist}");
     }
@@ -860,6 +879,7 @@ mod tests {
         let (service, timer) = systemd::render_watchdog_units(
             std::path::Path::new("/usr/local/bin/gtunnel"),
             std::path::Path::new("/tmp/watchdog.log"),
+            WATCHDOG_INTERVAL,
         );
         assert!(service.contains("Type=oneshot"), "{service}");
         assert!(service.contains("watch --once"), "{service}");
@@ -880,13 +900,13 @@ mod tests {
         let program = std::path::Path::new("/usr/local/bin/gtunnel");
         let log = std::path::Path::new("/tmp/watchdog.log");
 
-        let plist = launchd::render_watchdog_plist(program, log);
+        let plist = launchd::render_watchdog_plist(program, log, WATCHDOG_INTERVAL);
         assert!(
             plist.contains("<string>com.gtunnel.watchdog</string>"),
             "{plist}"
         );
 
-        let (_, timer) = systemd::render_watchdog_units(program, log);
+        let (_, timer) = systemd::render_watchdog_units(program, log, WATCHDOG_INTERVAL);
         assert!(timer.contains("Unit=gtunnel-watchdog.service"), "{timer}");
     }
 
