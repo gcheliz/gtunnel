@@ -121,6 +121,9 @@ const _: () = assert!(TUNNEL_MAX_FILES <= 61440);
 
 pub fn service_spec(cfg: &Config, t: &PersistentTunnel) -> Result<ServiceSpec> {
     let acct = cfg.get_account(Some(&t.account_name))?;
+    // Before gcloud is looked for: a relative path would be written into a
+    // service file, where it resolves against nothing
+    acct.credential_file_for_use()?;
     let gcloud = crate::gcp::gcloud::require_gcloud()?;
     // From the config in hand, not from startup: this argv is about to be
     // written into a service file that outlives the command writing it, and
@@ -481,6 +484,46 @@ mod tests {
                 .contains(&"--credential-file-override=/secrets/ci-key.json".to_string()),
             "{:?}",
             got.args
+        );
+    }
+
+    // Refused where the file is used, for the one account, before gcloud is even
+    // looked for: the other accounts of the same config keep installing
+    #[test]
+    fn a_service_spec_refuses_a_relative_credential_file_naming_the_account() {
+        let tunnel = crate::state::PersistentTunnel {
+            name: "db".to_string(),
+            account_name: "ci".to_string(),
+            auto_start: false,
+            spec: TunnelSpec::Access {
+                target: crate::state::AccessTarget::Instance {
+                    instance: "my-vm".to_string(),
+                    zone: "europe-west1-b".to_string(),
+                },
+                remote_port: 5432,
+                local_port: 15432,
+            },
+        };
+        let cfg = Config {
+            selected_account: "ci".to_string(),
+            accounts: vec![crate::config::Account {
+                name: "ci".to_string(),
+                gcloud_configuration: "ci".to_string(),
+                project: "example-dev-1a2b".to_string(),
+                default_zone: "europe-west1-b".to_string(),
+                impersonate_service_account: None,
+                credential_file: Some("~/ci-key.json".into()),
+                expose: None,
+            }],
+            ..Config::default()
+        };
+        let err = service_spec(&cfg, &tunnel).expect_err("relative");
+        let text = format!("{err:#}");
+        assert!(text.contains("'ci'") && text.contains("absolute"), "{text}");
+        assert_eq!(
+            crate::error::kind_of(&err),
+            crate::error::ErrorKind::Usage,
+            "{text}"
         );
     }
 

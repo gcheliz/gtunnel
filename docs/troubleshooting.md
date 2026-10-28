@@ -353,6 +353,27 @@ account in the TUI does not check again, so an account that is logged out surfac
 error in that tunnel's log. `doctor`, `account`, `init`, `reset`, `demo` and `update` skip
 the check.
 
+## `credential_file must be an absolute path`
+
+An account whose `credential_file` is relative or starts with `~` stops that account's tunnels
+with exit 2, naming the account. Every other account, and every command that edits or lists
+accounts, keeps working, so the fix is one command:
+
+```
+gtunnel doctor                                   # names the account and the value
+gtunnel account edit ci --credential-file /secrets/ci-key.json
+gtunnel account edit ci --credential-file ""     # or clear it
+```
+
+`doctor --fix` leaves it alone: the right path is yours to choose.
+
+## `Failed to parse .../config.toml`
+
+A `config.toml` that cannot be read (a TOML error, or a value such as `log_level` that is not
+one of the choices) stops every command, and `account add` and `init` refuse to write over it:
+the error names the file and the line, and the file is left byte for byte as it was. Fix that
+line, or move the file aside to start again with `gtunnel init`.
+
 ## Connections drop after an hour
 
 A pooled connection that sat idle comes back dead, or a client stalls and then recovers.

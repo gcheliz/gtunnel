@@ -38,6 +38,7 @@ pub enum CredentialFileProblem {
     NotJson,
     UnknownType(String),
     ReadableByOthers,
+    NotAbsolute,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -192,6 +193,11 @@ impl Finding {
                     "Account '{account}': the key {path} is readable by other users. \
                      Run `chmod 600 {}`",
                     shell_quote(path)
+                ),
+                CredentialFileProblem::NotAbsolute => format!(
+                    "Account '{account}': credential_file {path} is not an absolute path, so a \
+                     service cannot resolve it. Run `gtunnel account edit {account} \
+                     --credential-file <absolute path>`, or `--credential-file \"\"` to clear it"
                 ),
             },
             Finding::NumpyMissing => {
@@ -366,6 +372,11 @@ pub fn credential_file_finding(account: &str, path: &std::path::Path) -> Option<
 }
 
 fn credential_file_problem(path: &std::path::Path) -> Option<CredentialFileProblem> {
+    // Before reading: a relative path would be read against the shell's
+    // directory here, and a service would resolve it against nothing
+    if !path.is_absolute() {
+        return Some(CredentialFileProblem::NotAbsolute);
+    }
     let Ok(bytes) = std::fs::read(path) else {
         return Some(CredentialFileProblem::Missing);
     };
@@ -1659,6 +1670,22 @@ mod tests {
             Some(Finding::CredentialFile { problem, .. }) => Some(problem),
             Some(other) => panic!("unexpected finding {other:?}"),
             None => None,
+        }
+    }
+
+    #[test]
+    fn a_relative_credential_file_is_named_and_says_how_to_fix_it() {
+        for path in ["~/ci-key.json", "ci-key.json"] {
+            let finding = credential_file_finding("ci", std::path::Path::new(path)).expect("found");
+            assert_eq!(
+                problem_of(std::path::Path::new(path)),
+                Some(CredentialFileProblem::NotAbsolute),
+                "{path}"
+            );
+            let text = finding.describe();
+            assert!(text.contains("'ci'") && text.contains(path), "{text}");
+            assert!(text.contains("absolute"), "{text}");
+            assert!(text.contains("account edit ci --credential-file"), "{text}");
         }
     }
 
