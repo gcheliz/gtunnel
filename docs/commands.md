@@ -57,6 +57,11 @@ No default zone saved; pass --zone to commands that need one
 
 The answers were `1`, `sandbox`, then Enter for the project, the service account and the zone, piped in, so they do not echo. This configuration has no zone, so Enter skipped it.
 
+`init` also writes the `[restart]` section of `config.toml` with its five keys at their
+defaults, adding only the keys that are missing and never changing one that is set, so the
+[restart budget](configuration.md#the-restart-budget) is visible and tunable from the first
+run. The same section is written by every command that saves the file.
+
 Every prompt is preceded by a line saying what the value sets, and, for a value you pick from
 something that exists, the command that lists it. The text is the one the TUI's account form
 shows, from one source (`src/fields.rs`). In the brackets after the label, `Enter = <value>`
@@ -272,6 +277,11 @@ not. A run whose process is gone is not listed; `doctor` reports its leftover re
 A stopped tunnel whose supervisor gave up on expired credentials carries `[auth expired]` in
 the same place, and `gtunnel_get_status` reports its `health` as `auth_expired`. Both clear on
 the next `gtunnel start`.
+
+A stopped tunnel whose supervisor spent its [restart budget](configuration.md#the-restart-budget)
+carries `[restart budget spent: exit status: 1]`, the last thing gcloud died of, and the TUI
+shows it as a crash loop. `gtunnel start` clears the marker and the count; `gtunnel watch`
+never restarts it.
 
 The TUI tags the same row `[run, stops at 14:32]`, or `[ephemeral]` without a TTL, and its
 details pane counts down: `stops at  14:32 (in 25m)`.
@@ -692,6 +702,10 @@ holding the connections. Nothing starts it again by itself: the next pass sees a
 that is not running, forgets everything it knew about it, and leaves it alone. `gtunnel
 start <name>` is how it comes back, once the cause is dealt with — and if the cause is
 still there, the ladder runs again from the beginning.
+
+A tunnel whose supervisor stopped it on a spent [restart budget](configuration.md#the-restart-budget)
+is skipped altogether: the pass leaves it stopped, because restarting it would undo that
+decision and begin the loop with a fresh count.
 
 ### The agent
 

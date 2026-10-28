@@ -23,6 +23,7 @@ pub mod mcp;
 mod notify;
 mod probe;
 mod proc;
+mod restart_budget;
 mod state;
 mod tui;
 mod tunnel;

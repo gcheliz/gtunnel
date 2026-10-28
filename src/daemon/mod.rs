@@ -32,13 +32,33 @@ pub struct RuntimeInfo {
 // A daemon does not inherit an interactive shell's PATH, so gcloud's directory
 // is written into the unit. Without it the daemon dies at startup every time.
 fn daemon_env(gcloud: &std::path::Path) -> Vec<(String, String)> {
+    daemon_env_with(gcloud, &|name| std::env::var(name).ok())
+}
+
+/// The restart budget is read by the supervisor, which a service manager
+/// starts with none of the installing shell's variables. Whatever
+/// `GTUNNEL_RESTART_*` is set when the service is written is written into it,
+/// the way the log level rides on the command line, so the override a person
+/// exported is the one the supervisor sees.
+const RESTART_VARS: [&str; 5] = [
+    "GTUNNEL_RESTART_MAX_RESTARTS",
+    "GTUNNEL_RESTART_WINDOW",
+    "GTUNNEL_RESTART_MIN_UPTIME",
+    "GTUNNEL_RESTART_BASE_BACKOFF",
+    "GTUNNEL_RESTART_MAX_BACKOFF",
+];
+
+fn daemon_env_with(
+    gcloud: &std::path::Path,
+    get: &dyn Fn(&str) -> Option<String>,
+) -> Vec<(String, String)> {
     let mut path = String::new();
     if let Some(dir) = gcloud.parent() {
         path.push_str(&dir.to_string_lossy());
         path.push(':');
     }
     path.push_str("/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin");
-    vec![
+    let mut env = vec![
         ("CLOUDSDK_CORE_DISABLE_PROMPTS".to_string(), "1".to_string()),
         ("PATH".to_string(), path),
         // gcloud is Python, and Python block-buffers a stdout that is not a
@@ -46,7 +66,13 @@ fn daemon_env(gcloud: &std::path::Path) -> Vec<(String, String)> {
         // without this a line is held until 4 KiB have accumulated or the
         // process exits, and a working tunnel reads as a silent one.
         ("PYTHONUNBUFFERED".to_string(), "1".to_string()),
-    ]
+    ];
+    for name in RESTART_VARS {
+        if let Some(value) = get(name).filter(|v| !v.trim().is_empty()) {
+            env.push((name.to_string(), value));
+        }
+    }
+    env
 }
 
 /// How many file descriptors a tunnel's service may hold open.
@@ -95,6 +121,45 @@ pub fn auth_marker_in(config_dir: &std::path::Path, label: &str) -> PathBuf {
 /// next, could inherit.
 pub fn remove_auth_marker_in(config_dir: &std::path::Path, label: &str) {
     let _ = std::fs::remove_file(auth_marker_in(config_dir, label));
+}
+
+/// Where a supervisor records that it stopped because its tunnel spent the
+/// restart budget. Same directory and label as the auth marker, so one sweep
+/// of `run/` finds both; the file holds the last exit reason for `list`.
+pub fn crash_marker_path(label: &str) -> Result<PathBuf> {
+    Ok(crash_marker_in(&crate::config::config_dir()?, label))
+}
+
+pub fn crash_marker_in(config_dir: &std::path::Path, label: &str) -> PathBuf {
+    config_dir.join("run").join(format!("{label}.crash"))
+}
+
+/// The failure times a budget counts, kept beside its marker because the
+/// service manager starts a new supervisor per attempt and the count has to
+/// outlive each one. The marker's last segment is always `crash`, so swapping
+/// it never eats part of a tunnel name.
+pub fn restart_history_beside(marker: &std::path::Path) -> PathBuf {
+    marker.with_extension("restarts")
+}
+
+/// Forget a spent budget: the marker that says why the job is down and the
+/// count that produced it. `start` and `delete` both want exactly this.
+pub fn clear_crash_state(marker: &std::path::Path) {
+    let _ = std::fs::remove_file(marker);
+    let _ = std::fs::remove_file(restart_history_beside(marker));
+}
+
+/// Whether this tunnel's supervisor stopped on purpose for a spent budget.
+pub fn crash_marked_in(config_dir: &std::path::Path, label: &str) -> bool {
+    crash_marker_in(config_dir, label).exists()
+}
+
+/// The last exit reason a spent budget recorded, or `None` when the tunnel is
+/// not parked. A marker with nothing readable in it is still a marker.
+pub fn crash_reason_in(config_dir: &std::path::Path, label: &str) -> Option<String> {
+    let text = std::fs::read_to_string(crash_marker_in(config_dir, label)).ok()?;
+    let line = text.trim();
+    Some(if line.is_empty() { "unknown" } else { line }.to_string())
 }
 
 /// How often the watchdog wakes to look at every tunnel. Short enough that a
@@ -181,6 +246,8 @@ pub fn service_spec(cfg: &Config, t: &PersistentTunnel) -> Result<ServiceSpec> {
     // Every tunnel can lose its login, an expose tunnel as much as an access one
     args.push("--auth-marker".to_string());
     args.push(auth_marker_path(&label)?.to_string_lossy().to_string());
+    args.push("--crash-marker".to_string());
+    args.push(crash_marker_path(&label)?.to_string_lossy().to_string());
     args.push("--".to_string());
     args.push(gcloud.to_string_lossy().to_string());
     args.extend(gcloud_args);
@@ -1024,6 +1091,29 @@ mod tests {
             env.iter().any(|(k, v)| k == "PYTHONUNBUFFERED" && v == "1"),
             "gcloud is Python and its stdout block-buffers into a redirected \
              file, so a tunnel's lines arrive 4 KiB at a time or at exit\n{env:?}"
+        );
+    }
+
+    #[test]
+    fn a_restart_variable_set_at_install_time_reaches_the_service() {
+        let get = |name: &str| match name {
+            "GTUNNEL_RESTART_WINDOW" => Some("20m".to_string()),
+            "GTUNNEL_RESTART_MAX_RESTARTS" => Some("0".to_string()),
+            "GTUNNEL_RESTART_MIN_UPTIME" => Some("  ".to_string()),
+            "GTUNNEL_LOG_LEVEL" => Some("debug".to_string()),
+            _ => None,
+        };
+        let env = daemon_env_with(std::path::Path::new("/opt/homebrew/bin/gcloud"), &get);
+        let has = |k: &str, v: &str| env.iter().any(|(ek, ev)| ek == k && ev == v);
+        assert!(has("GTUNNEL_RESTART_WINDOW", "20m"), "{env:?}");
+        assert!(has("GTUNNEL_RESTART_MAX_RESTARTS", "0"), "{env:?}");
+        assert!(
+            !env.iter().any(|(k, _)| k == "GTUNNEL_RESTART_MIN_UPTIME"),
+            "an empty value is unset"
+        );
+        assert!(
+            !env.iter().any(|(k, _)| k == "GTUNNEL_LOG_LEVEL"),
+            "only the restart variables travel"
         );
     }
 

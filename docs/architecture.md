@@ -183,6 +183,7 @@ names where it comes from.
 | A dropped WebSocket is retried from 1.5 s up to 20 s apart, for up to 15 minutes | gcloud 590, `api_lib/compute/iap_tunnel_websocket.py` |
 | Close code `4004` means IAP wants reauthentication; the session resumes | gcloud 590, `api_lib/compute/iap_tunnel_websocket_helper.py` |
 | A tunnel through a VM carries every connection over one WebSocket, kept busy by `ServerAliveInterval=30` | gtunnel, `src/tunnel.rs` (the command shown under [Jump tunnels](#jump-tunnels)) |
+| A gcloud that dies before `min_uptime` (60s) more than `max_restarts` (5) times inside `window` (10m) stops its job; the wait between restarts doubles from 10s to 5m. A tunnel slower than `min_uptime` to come up counts as failing | gtunnel, `src/restart_budget.rs`; [The restart budget](configuration.md#the-restart-budget) |
 
 The two shapes pay differently.
 
@@ -235,6 +236,8 @@ Keys, defaults and the traps of editing `config.toml` and `tunnels.toml` are in
 | `<config>/tunnels.edit-<pid>.toml`, `<config>/config.edit-<pid>.toml` | The config page's private copy of the file being edited. Removed on save or `Esc`, and on the next page open once its gtunnel is gone |
 | `<config>/run/<account>-<name>.json` | One record per live `gtunnel run` |
 | `<config>/run/<label>.ready` | Written by a tunnel's supervisor once its log reports the listener; what `start` waits for |
+| `<config>/run/<label>.crash` | Written by a supervisor whose tunnel spent its restart budget: the last exit reason. `list` reads it, `watch` skips the job, `start` and `delete` remove it |
+| `<config>/run/<label>.restarts` | The times of the recent fast failures, one unix second per line, kept because the service manager starts a new supervisor per attempt |
 | `<config>/run/probes/` | One file per local port gtunnel is probing, so the supervisor leaves gtunnel's own health checks out of the `conn` lines |
 | `<config>/run/watchdog.heartbeat` | Time of the watchdog's last pass. `watch status` reports its age; while it is under 90s old the TUI leaves notifications to the watchdog |
 | `<config>/lifecycle.json`, `<config>/lifecycle.lock` | The last state each tunnel was seen in, shared by the watchdog, the TUI and the CLI so that a change is notified once. The lock serialises its updates |

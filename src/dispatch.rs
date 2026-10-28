@@ -53,6 +53,14 @@ pub async fn run(args: Cli) -> Result<()> {
     )?;
     loglevel::set_current(loglevel::resolve_effective(over, from_file), over);
 
+    // The same early failure for GTUNNEL_RESTART_*, against the file's own
+    // values, so a typo is caught by whichever command is typed next and not
+    // only when a tunnel is failing. The supervisor is exempt: it falls back
+    // to the defaults, because dying here would restart it into this error.
+    if !matches!(args.command, Some(Commands::Supervise { .. })) {
+        config::load_config().unwrap_or_default().restart_budget()?;
+    }
+
     let account = args.account.as_deref();
     // The hint reads a cache file; `update` does the real check itself
     let quiet = matches!(
@@ -265,8 +273,11 @@ pub async fn run(args: Cli) -> Result<()> {
             ready_file,
             conns,
             auth_marker,
+            crash_marker,
             argv,
-        }) => commands::supervise::run(argv, port, ready_file, conns, auth_marker).await,
+        }) => {
+            commands::supervise::run(argv, port, ready_file, conns, auth_marker, crash_marker).await
+        }
     };
 
     if !quiet {

@@ -408,6 +408,10 @@ gtunnel on each TAB, so tunnel names complete as well as commands."
         // the supervisor starts
         #[arg(long)]
         auth_marker: Option<std::path::PathBuf>,
+        // Written when the tunnel spends its restart budget; the sibling
+        // `.restarts` file holds the count between supervisors
+        #[arg(long)]
+        crash_marker: Option<std::path::PathBuf>,
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         argv: Vec<String>,
     },

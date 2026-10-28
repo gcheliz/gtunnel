@@ -435,6 +435,19 @@ fn clear_auth_marker(spec: &daemon::ServiceSpec) {
     }
 }
 
+/// The marker a supervisor left when the tunnel spent its restart budget, and
+/// the count behind it. Cleared here for the same reason as the auth marker:
+/// `list` reads it before the new supervisor has started, and a budget that
+/// began the start already spent would stop the first failure.
+fn clear_crash_marker(spec: &daemon::ServiceSpec) {
+    let Some(at) = spec.args.iter().position(|a| a == "--crash-marker") else {
+        return;
+    };
+    if let Some(path) = spec.args.get(at + 1) {
+        daemon::clear_crash_state(std::path::Path::new(path));
+    }
+}
+
 fn is_quiet(spec: &daemon::ServiceSpec) -> bool {
     spec.args
         .windows(2)
@@ -493,6 +506,7 @@ async fn start_inner(account: Option<&str>, name: &str) -> Result<Started> {
         let _ = std::fs::remove_file(path);
     }
     clear_auth_marker(&spec);
+    clear_crash_marker(&spec);
     daemon::start(&spec.label).await?;
 
     let deadline = start_deadline();
@@ -689,6 +703,7 @@ pub async fn delete_tunnel(account: Option<&str>, name: &str) -> Result<()> {
     // one must not start out reading `auth expired`
     if let Ok(dir) = crate::config::config_dir() {
         daemon::remove_auth_marker_in(&dir, &label);
+        daemon::clear_crash_state(&daemon::crash_marker_in(&dir, &label));
     }
     // Only the record is removed under the lock; the daemon work is done
     TunnelState::update(|state| {
@@ -854,6 +869,12 @@ pub(crate) fn stopped_for_credentials(tunnel: &PersistentTunnel) -> bool {
     daemon::auth_marker_path(&label).is_ok_and(|m| m.exists())
 }
 
+/// Why a stopped tunnel's supervisor gave up on restarting, when it did.
+pub(crate) fn stopped_for_budget(tunnel: &PersistentTunnel) -> Option<String> {
+    let label = daemon::platform_label(&tunnel.account_name, &tunnel.name);
+    daemon::crash_reason_in(&crate::config::config_dir().ok()?, &label)
+}
+
 fn access_port(spec: &TunnelSpec) -> Option<u16> {
     match spec {
         TunnelSpec::Access { local_port, .. } => Some(*local_port),
@@ -974,7 +995,14 @@ pub async fn cmd_list(account: Option<&str>, json: bool) -> Result<()> {
     for tunnel in tunnels {
         let status = tunnel_status(tunnel).await;
         let marked = status != TunnelStatus::Running && stopped_for_credentials(tunnel);
-        rows.push(ListRow::from_tunnel(status, tunnel).stopped_for_credentials(marked));
+        let spent = (status != TunnelStatus::Running)
+            .then(|| stopped_for_budget(tunnel))
+            .flatten();
+        rows.push(
+            ListRow::from_tunnel(status, tunnel)
+                .stopped_for_credentials(marked)
+                .stopped_for_budget(spent.as_deref()),
+        );
     }
     rows.extend(runs.iter().map(ListRow::from_run));
     rows.extend(external);
@@ -1272,6 +1300,35 @@ mod tests {
         };
         clear_auth_marker(&spec);
         assert!(!marker.exists());
+    }
+
+    #[test]
+    fn start_clears_the_crash_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("com.gtunnel.dev.db.crash");
+        let history = dir.path().join("com.gtunnel.dev.db.restarts");
+        let other = dir.path().join("com.gtunnel.dev.cache.crash");
+        for f in [&marker, &history, &other] {
+            std::fs::write(f, "exit status: 1\n").unwrap();
+        }
+        let spec = daemon::ServiceSpec {
+            label: "com.gtunnel.dev.db".to_string(),
+            program: "gtunnel".into(),
+            args: vec![
+                "__supervise".to_string(),
+                "--crash-marker".to_string(),
+                marker.to_string_lossy().to_string(),
+                "--".to_string(),
+            ],
+            log_path: dir.path().join("t.log"),
+            env: vec![],
+            auto_start: false,
+            description: String::new(),
+        };
+        clear_crash_marker(&spec);
+        assert!(!marker.exists());
+        assert!(!history.exists(), "the count goes with the marker");
+        assert!(other.exists(), "another tunnel's marker is not touched");
     }
 
     #[tokio::test]

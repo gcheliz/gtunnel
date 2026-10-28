@@ -79,8 +79,122 @@ pub struct Config {
     pub log_level: LogLevel,
     #[serde(default, skip_serializing_if = "NotifyConfig::is_default")]
     pub notifications: NotifyConfig,
+    // Always written, never skipped when it equals the defaults: it is the
+    // part of the file a person opens to tune, and a missing key is
+    // invisible. An older file without it still loads, with these values.
+    #[serde(default)]
+    pub restart: RestartConfig,
     #[serde(default)]
     pub accounts: Vec<Account>,
+}
+
+/// The restart budget as written in `config.toml`.
+///
+/// Kept raw (an integer and duration strings) and checked by
+/// `Config::restart_budget`, not by serde: a typed field would answer a
+/// negative `max_restarts` with a parse error about a line, and the reader
+/// needs the key's name and the range it may take.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RestartConfig {
+    pub max_restarts: i64,
+    pub window: String,
+    pub min_uptime: String,
+    pub base_backoff: String,
+    pub max_backoff: String,
+}
+
+impl Default for RestartConfig {
+    fn default() -> Self {
+        Self {
+            max_restarts: 5,
+            window: "10m".to_string(),
+            min_uptime: "60s".to_string(),
+            base_backoff: "10s".to_string(),
+            max_backoff: "5m".to_string(),
+        }
+    }
+}
+
+impl RestartConfig {
+    /// Precedence is the variable, then the file, then the default, the same
+    /// order as the log level. Each key is resolved to one value first and the
+    /// cross-key rules run on that, so a variable that makes the file's other
+    /// keys inconsistent is caught like any other bad value.
+    fn budget(
+        &self,
+        env: &dyn Fn(&str) -> Option<String>,
+    ) -> Result<crate::restart_budget::Budget> {
+        // An exported-but-empty variable is how a shell spells unset. The
+        // source is named in every error: the value may come from a profile
+        // the reader is not looking at.
+        let var = |key: &str| {
+            let name = format!("GTUNNEL_RESTART_{}", key.to_uppercase());
+            env(&name)
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+                .map(|v| (name, v))
+        };
+        let bad = |source: &str, why: String| -> anyhow::Error {
+            GtunnelError::usage(format!("{source}: {why}")).into()
+        };
+        let max_restarts = match var("max_restarts") {
+            Some((name, raw)) => raw
+                .parse::<i64>()
+                .map_err(|_| bad(&name, format!("'{raw}' is not a whole number")))
+                .map(|n| (name, n))?,
+            None => ("[restart] max_restarts".to_string(), self.max_restarts),
+        };
+        let max_restarts = u32::try_from(max_restarts.1).map_err(|_| {
+            bad(
+                &max_restarts.0,
+                format!("{} is out of range, use 0 to {}", max_restarts.1, u32::MAX),
+            )
+        })?;
+        let duration = |key: &str, file: &str| -> Result<std::time::Duration> {
+            let (source, raw) =
+                var(key).unwrap_or_else(|| (format!("[restart] {key}"), file.to_string()));
+            let d = humantime::parse_duration(&raw)
+                .map_err(|e| bad(&source, format!("'{raw}' is not a duration ({e})")))?;
+            if d.is_zero() {
+                return Err(bad(&source, format!("'{raw}' must be longer than zero")));
+            }
+            Ok(d)
+        };
+        let window = duration("window", &self.window)?;
+        let min_uptime = duration("min_uptime", &self.min_uptime)?;
+        let base_backoff = duration("base_backoff", &self.base_backoff)?;
+        let max_backoff = duration("max_backoff", &self.max_backoff)?;
+        // A failure forgotten before its own wait ends could never add up
+        let shown = |d: std::time::Duration| humantime::format_duration(d).to_string();
+        if window < base_backoff {
+            return Err(bad(
+                "[restart] window",
+                format!(
+                    "{} is shorter than base_backoff {}",
+                    shown(window),
+                    shown(base_backoff)
+                ),
+            ));
+        }
+        if max_backoff < base_backoff {
+            return Err(bad(
+                "[restart] max_backoff",
+                format!(
+                    "{} is shorter than base_backoff {}",
+                    shown(max_backoff),
+                    shown(base_backoff)
+                ),
+            ));
+        }
+        Ok(crate::restart_budget::Budget {
+            max_restarts,
+            window,
+            min_uptime,
+            base_backoff,
+            max_backoff,
+        })
+    }
 }
 
 /// Which lifecycle edges are worth a desktop notification.
@@ -137,6 +251,20 @@ pub fn resolve_log_override(flag: Option<LogLevel>, env: Option<&str>) -> Result
 }
 
 impl Config {
+    /// The budget a supervisor stops by, or the first bad `[restart]` key.
+    pub fn restart_budget(&self) -> Result<crate::restart_budget::Budget> {
+        self.restart_budget_with(&|name| std::env::var(name).ok())
+    }
+
+    /// `env` is a parameter so the precedence is tested without touching the
+    /// process environment, which `cargo test` shares between threads.
+    pub fn restart_budget_with(
+        &self,
+        env: &dyn Fn(&str) -> Option<String>,
+    ) -> Result<crate::restart_budget::Budget> {
+        self.restart.budget(env)
+    }
+
     // Resolve an account by name, falling back to the selected one
     pub fn get_account(&self, name: Option<&str>) -> Result<&Account> {
         let wanted = name.unwrap_or(&self.selected_account);
@@ -255,6 +383,13 @@ pub fn load_config() -> Result<Config> {
         .with_context(|| format!("Failed to read {}", path.display()))?;
     let config: Config =
         toml::from_str(&text).with_context(|| format!("Failed to parse {}", path.display()))?;
+    // A bad [restart] key is refused here, with the file named, so it cannot
+    // sit unnoticed until a tunnel is failing and the supervisor reads it
+    // The file alone: a variable is the shell's, and blaming this path for it
+    // would send the reader to the wrong place
+    config
+        .restart_budget_with(&|_| None)
+        .with_context(|| format!("In {}", path.display()))?;
     Ok(config)
 }
 
@@ -454,6 +589,220 @@ pub mod testing {
 
 #[cfg(test)]
 mod tests {
+    use crate::restart_budget::Budget;
+    use std::time::Duration;
+
+    fn budget_of(text: &str) -> anyhow::Result<Budget> {
+        toml::from_str::<Config>(text)
+            .expect("parse")
+            .restart_budget()
+    }
+
+    #[test]
+    fn restart_defaults_match_the_decision() {
+        let b = budget_of("selected_account = \"dev\"\n").expect("defaults");
+        assert_eq!(b.max_restarts, 5);
+        assert_eq!(b.window, Duration::from_secs(600));
+        assert_eq!(b.min_uptime, Duration::from_secs(60));
+        assert_eq!(b.base_backoff, Duration::from_secs(10));
+        assert_eq!(b.max_backoff, Duration::from_secs(300));
+        assert_eq!(b, Budget::default(), "the two defaults cannot drift");
+    }
+
+    #[test]
+    fn restart_keys_override_one_at_a_time() {
+        let b = budget_of("[restart]\nmax_restarts = 2\nbase_backoff = \"1s\"\n").expect("parse");
+        assert_eq!(b.max_restarts, 2);
+        assert_eq!(b.base_backoff, Duration::from_secs(1));
+        assert_eq!(
+            b.window,
+            Duration::from_secs(600),
+            "untouched keys keep theirs"
+        );
+    }
+
+    #[test]
+    fn restart_rejects_window_shorter_than_backoff() {
+        let err = budget_of("[restart]\nwindow = \"5s\"\nbase_backoff = \"10s\"\n")
+            .expect_err("window below backoff");
+        let text = format!("{err:#}");
+        assert!(text.contains("window"), "{text}");
+        assert!(text.contains("base_backoff"), "{text}");
+        assert_eq!(crate::error::kind_of(&err).exit_code(), 2);
+    }
+
+    #[test]
+    fn restart_rejects_a_value_it_cannot_use_naming_the_key() {
+        for (text, key) in [
+            ("[restart]\nmax_restarts = -1\n", "max_restarts"),
+            ("[restart]\nwindow = \"soon\"\n", "window"),
+            ("[restart]\nmin_uptime = \"0s\"\n", "min_uptime"),
+            ("[restart]\nmax_backoff = \"1s\"\n", "max_backoff"),
+        ] {
+            let err = budget_of(text).expect_err(text);
+            assert!(format!("{err:#}").contains(key), "{key}: {err:#}");
+            assert_eq!(crate::error::kind_of(&err).exit_code(), 2, "{key}");
+        }
+    }
+
+    #[test]
+    fn restart_zero_disables() {
+        let b = budget_of("[restart]\nmax_restarts = 0\n").expect("zero is valid");
+        assert_eq!(b.max_restarts, 0);
+    }
+
+    fn with_env(text: &str, vars: &[(&str, &str)]) -> anyhow::Result<Budget> {
+        let vars: Vec<(String, String)> = vars
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        toml::from_str::<Config>(text)
+            .expect("parse")
+            .restart_budget_with(&|name| {
+                vars.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone())
+            })
+    }
+
+    #[test]
+    fn a_restart_variable_beats_the_config_file_and_the_file_beats_the_default() {
+        let file = "[restart]\nmax_restarts = 2\nwindow = \"20m\"\n";
+        let b = with_env(
+            file,
+            &[
+                ("GTUNNEL_RESTART_MAX_RESTARTS", "9"),
+                ("GTUNNEL_RESTART_MIN_UPTIME", "2m"),
+            ],
+        )
+        .expect("merge");
+        assert_eq!(b.max_restarts, 9, "env over file");
+        assert_eq!(b.min_uptime, Duration::from_secs(120), "env over default");
+        assert_eq!(b.window, Duration::from_secs(1200), "file over default");
+        assert_eq!(b.base_backoff, Duration::from_secs(10), "default");
+    }
+
+    #[test]
+    fn every_restart_key_has_its_own_variable() {
+        let b = with_env(
+            "",
+            &[
+                ("GTUNNEL_RESTART_MAX_RESTARTS", "1"),
+                ("GTUNNEL_RESTART_WINDOW", "30m"),
+                ("GTUNNEL_RESTART_MIN_UPTIME", "5s"),
+                ("GTUNNEL_RESTART_BASE_BACKOFF", "2s"),
+                ("GTUNNEL_RESTART_MAX_BACKOFF", "8s"),
+            ],
+        )
+        .expect("all five");
+        assert_eq!(b.max_restarts, 1);
+        assert_eq!(b.window, Duration::from_secs(1800));
+        assert_eq!(b.min_uptime, Duration::from_secs(5));
+        assert_eq!(b.base_backoff, Duration::from_secs(2));
+        assert_eq!(b.max_backoff, Duration::from_secs(8));
+    }
+
+    #[test]
+    fn an_invalid_restart_variable_is_a_usage_error_naming_it() {
+        for (var, value) in [
+            ("GTUNNEL_RESTART_MAX_RESTARTS", "lots"),
+            ("GTUNNEL_RESTART_MAX_RESTARTS", "-1"),
+            ("GTUNNEL_RESTART_WINDOW", "soon"),
+            ("GTUNNEL_RESTART_MIN_UPTIME", "0s"),
+        ] {
+            let err = with_env("", &[(var, value)]).expect_err(var);
+            let text = format!("{err:#}");
+            assert!(text.starts_with(var), "{text}");
+            assert_eq!(crate::error::kind_of(&err).exit_code(), 2, "{text}");
+        }
+    }
+
+    #[test]
+    fn the_merged_result_is_validated_not_each_source() {
+        // Fine in the file alone; the variable makes the window too short
+        let err = with_env(
+            "[restart]\nbase_backoff = \"1s\"\nwindow = \"5s\"\n",
+            &[("GTUNNEL_RESTART_BASE_BACKOFF", "30s")],
+        )
+        .expect_err("window below the variable's backoff");
+        assert_eq!(crate::error::kind_of(&err).exit_code(), 2);
+    }
+
+    #[test]
+    fn a_restart_variable_of_zero_disables_the_budget() {
+        let b = with_env("", &[("GTUNNEL_RESTART_MAX_RESTARTS", "0")]).expect("zero");
+        assert_eq!(b.max_restarts, 0);
+    }
+
+    #[test]
+    fn an_empty_restart_variable_is_unset() {
+        let b = with_env(
+            "[restart]\nmax_restarts = 3\n",
+            &[("GTUNNEL_RESTART_MAX_RESTARTS", " ")],
+        )
+        .expect("empty is how a shell spells unset");
+        assert_eq!(b.max_restarts, 3);
+    }
+
+    const DEFAULT_RESTART: &str = "[restart]\nmax_restarts = 5\nwindow = \"10m\"\nmin_uptime = \"60s\"\nbase_backoff = \"10s\"\nmax_backoff = \"5m\"\n";
+
+    fn config_text() -> String {
+        std::fs::read_to_string(config_path().expect("path")).expect("config.toml")
+    }
+
+    // The file is where a person looks for what to tune, so init writes the
+    // whole section rather than leaving the defaults to the source
+    #[test]
+    fn init_on_a_fresh_dir_writes_all_five_restart_defaults() {
+        with_temp_dir(|| {
+            update_or_init_config(|c| c.add_account(account("dev"))).expect("init");
+            let text = config_text();
+            assert!(text.contains(DEFAULT_RESTART), "{text}");
+            let at = |needle: &str| text.find(needle).expect(needle);
+            assert!(at("[restart]") < at("[[accounts]]"), "{text}");
+        });
+    }
+
+    #[test]
+    fn init_keeps_a_restart_value_already_in_the_file_and_fills_the_rest() {
+        with_temp_dir(|| {
+            std::fs::write(
+                config_path().expect("path"),
+                "selected_account = \"dev\"\n\n[restart]\nmax_restarts = 9\nwindow = \"20m\"\n",
+            )
+            .expect("write");
+            update_or_init_config(|c| c.add_account(account("dev"))).expect("init");
+            let text = config_text();
+            assert!(text.contains("max_restarts = 9"), "{text}");
+            assert!(text.contains("window = \"20m\""), "{text}");
+            for filled in [
+                "min_uptime = \"60s\"",
+                "base_backoff = \"10s\"",
+                "max_backoff = \"5m\"",
+            ] {
+                assert!(text.contains(filled), "{filled}: {text}");
+            }
+        });
+    }
+
+    #[test]
+    fn init_twice_changes_nothing_the_second_time() {
+        with_temp_dir(|| {
+            update_or_init_config(|c| c.add_account(account("dev"))).expect("first");
+            let first = config_text();
+            update_or_init_config(|_| Ok(())).expect("second");
+            assert_eq!(config_text(), first);
+        });
+    }
+
+    #[test]
+    fn an_older_file_without_the_section_still_loads_with_the_defaults() {
+        with_temp_dir(|| {
+            std::fs::write(config_path().expect("path"), "selected_account = \"dev\"\n")
+                .expect("write");
+            let loaded = load_config().expect("loads");
+            assert_eq!(loaded.restart, RestartConfig::default());
+        });
+    }
+
     #[test]
     fn an_absent_notifications_section_is_the_defaults() {
         let config: Config = toml::from_str("selected_account = \"dev\"\n").expect("parse");
@@ -493,6 +842,18 @@ mod tests {
             save_config(&cfg).expect("save");
             let loaded = load_config().expect("a relative path still loads");
             assert_eq!(loaded.accounts.len(), 2);
+        });
+    }
+
+    #[test]
+    fn load_config_refuses_a_bad_restart_key_with_exit_2() {
+        with_temp_dir(|| {
+            let mut cfg = Config::default();
+            cfg.restart.window = "1s".to_string();
+            save_config(&cfg).expect("save");
+            let err = load_config().expect_err("window below base_backoff");
+            assert!(format!("{err:#}").contains("window"), "{err:#}");
+            assert_eq!(crate::error::kind_of(&err).exit_code(), 2);
         });
     }
 
@@ -569,7 +930,7 @@ mod tests {
 
     #[test]
     fn an_account_without_credential_file_round_trips_unchanged() {
-        let text = "selected_account = \"dev\"\nlog_level = \"info\"\n\n[[accounts]]\nname = \"dev\"\ngcloud_configuration = \"work\"\nproject = \"example-dev-1a2b\"\ndefault_zone = \"europe-west1-b\"\n";
+        let text = "selected_account = \"dev\"\nlog_level = \"info\"\n\n[restart]\nmax_restarts = 5\nwindow = \"10m\"\nmin_uptime = \"60s\"\nbase_backoff = \"10s\"\nmax_backoff = \"5m\"\n\n[[accounts]]\nname = \"dev\"\ngcloud_configuration = \"work\"\nproject = \"example-dev-1a2b\"\ndefault_zone = \"europe-west1-b\"\n";
         let cfg: Config = toml::from_str(text).expect("parse");
         assert_eq!(cfg.accounts[0].credential_file, None);
         let again = toml::to_string_pretty(&cfg).expect("serialize");
