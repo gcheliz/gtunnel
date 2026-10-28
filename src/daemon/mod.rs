@@ -84,9 +84,17 @@ pub fn auth_expired_exit(launchd: bool) -> i32 {
 /// Where a supervisor records that it stopped for expired credentials. Beside
 /// the ready file, keyed by the same label.
 pub fn auth_marker_path(label: &str) -> Result<PathBuf> {
-    Ok(crate::config::config_dir()?
-        .join("run")
-        .join(format!("{label}.auth")))
+    Ok(auth_marker_in(&crate::config::config_dir()?, label))
+}
+
+pub fn auth_marker_in(config_dir: &std::path::Path, label: &str) -> PathBuf {
+    config_dir.join("run").join(format!("{label}.auth"))
+}
+
+/// A deleted tunnel leaves nothing that a tunnel of the same name, added
+/// next, could inherit.
+pub fn remove_auth_marker_in(config_dir: &std::path::Path, label: &str) {
+    let _ = std::fs::remove_file(auth_marker_in(config_dir, label));
 }
 
 /// How often the watchdog wakes to look at every tunnel. Short enough that a
@@ -545,6 +553,22 @@ mod tests {
     fn a_tunnel_does_not_ask_for_a_hard_limit_it_cannot_have() {
         let plist = launchd::render_plist(&spec());
         assert!(!plist.contains("HardResourceLimits"), "{plist}");
+    }
+
+    #[test]
+    fn deleting_a_tunnel_removes_its_auth_marker_so_a_rename_starts_clean() {
+        let dir = tempfile::tempdir().unwrap();
+        let label = "com.gtunnel.dev.db";
+        let marker = auth_marker_in(dir.path(), label);
+        std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        std::fs::write(&marker, "1\n").unwrap();
+        let other = auth_marker_in(dir.path(), "com.gtunnel.dev.cache");
+        std::fs::write(&other, "1\n").unwrap();
+        remove_auth_marker_in(dir.path(), label);
+        assert!(!marker.exists());
+        assert!(other.exists(), "only this tunnel's marker goes");
+        // Nothing to remove is not an error
+        remove_auth_marker_in(dir.path(), label);
     }
 
     #[test]

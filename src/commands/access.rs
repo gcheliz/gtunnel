@@ -685,6 +685,11 @@ pub async fn delete_tunnel(account: Option<&str>, name: &str) -> Result<()> {
     daemon::uninstall(&label).await?;
     // The log goes with the tunnel: nothing is left to own it
     daemon::remove_log(&log_path)?;
+    // And its marker: delete then add is how a tunnel is renamed, and the new
+    // one must not start out reading `auth expired`
+    if let Ok(dir) = crate::config::config_dir() {
+        daemon::remove_auth_marker_in(&dir, &label);
+    }
     // Only the record is removed under the lock; the daemon work is done
     TunnelState::update(|state| {
         state.remove_for_account(name, &acct.name);
@@ -772,6 +777,14 @@ pub struct ListRowJson {
 
 impl ListRowJson {
     fn declared(tunnel: &PersistentTunnel, status: TunnelStatus) -> Self {
+        Self::declared_with(
+            tunnel,
+            status,
+            status != TunnelStatus::Running && stopped_for_credentials(tunnel),
+        )
+    }
+
+    fn declared_with(tunnel: &PersistentTunnel, status: TunnelStatus, marked: bool) -> Self {
         Self {
             status: status_word(status).to_string(),
             name: tunnel.name.clone(),
@@ -784,11 +797,7 @@ impl ListRowJson {
             run: false,
             expires_at: None,
             local_port: access_port(&tunnel.spec),
-            health: if status == TunnelStatus::Stopped && stopped_for_credentials(tunnel) {
-                "auth_expired"
-            } else {
-                "unknown"
-            },
+            health: if marked { "auth_expired" } else { "unknown" },
         }
     }
 
@@ -1188,6 +1197,30 @@ mod tests {
             pick_local_port(&TunnelState::default(), "db", Some(port)).unwrap(),
             port
         );
+    }
+
+    // systemd leaves a job that exited 78 `failed`, which reads as Error
+    #[test]
+    fn a_row_that_is_down_for_expired_credentials_says_so_whatever_down_means() {
+        let tunnel = PersistentTunnel {
+            name: "db".to_string(),
+            account_name: "dev".to_string(),
+            auto_start: false,
+            spec: TunnelSpec::Access {
+                target: crate::state::AccessTarget::Instance {
+                    instance: "my-vm".to_string(),
+                    zone: "europe-west1-b".to_string(),
+                },
+                remote_port: 5432,
+                local_port: 15432,
+            },
+        };
+        for status in [TunnelStatus::Stopped, TunnelStatus::Error] {
+            let row = ListRowJson::declared_with(&tunnel, status, true);
+            assert_eq!(row.health, "auth_expired", "{status:?}");
+        }
+        let row = ListRowJson::declared_with(&tunnel, TunnelStatus::Stopped, false);
+        assert_eq!(row.health, "unknown");
     }
 
     #[test]

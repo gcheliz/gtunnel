@@ -290,8 +290,11 @@ pub struct Correlator {
     cap: RateCap,
     ready: Option<(PathBuf, Option<u16>)>,
     backend: Option<Backend>,
-    credentials_expired: bool,
+    last_credential_failure: Option<Instant>,
 }
+
+/// How long before gcloud's exit a credential line still explains it.
+pub const AUTH_EXIT_WINDOW: Duration = Duration::from_secs(30);
 
 pub type SharedCorrelator = Arc<Mutex<Correlator>>;
 
@@ -304,7 +307,7 @@ impl Correlator {
             cap: RateCap::new(CAP_PER_MINUTE, Duration::from_secs(60)),
             ready: None,
             backend: None,
-            credentials_expired: false,
+            last_credential_failure: None,
         }
     }
 
@@ -355,18 +358,21 @@ impl Correlator {
         }
     }
 
-    /// Whether any line seen so far said gcloud's login expired. Read by the
-    /// supervisor when gcloud exits: this sees both streams, so the answer
-    /// does not depend on which one gcloud chose to complain on.
-    pub fn credentials_expired(&self) -> bool {
-        self.credentials_expired
+    /// Whether a line within `AUTH_EXIT_WINDOW` of `now` said gcloud's login
+    /// expired. Read by the supervisor when gcloud exits: this sees both
+    /// streams, so the answer does not depend on which one gcloud chose to
+    /// complain on. A line from hours ago is not the reason for this exit: the
+    /// user may have logged in again since and the tunnel died of the network.
+    pub fn credentials_expired(&self, now: Instant) -> bool {
+        self.last_credential_failure
+            .is_some_and(|at| now.saturating_duration_since(at) <= AUTH_EXIT_WINDOW)
     }
 
     /// One line in, the formatted lines it produces out.
     pub fn feed(&mut self, raw: &str, now: Instant) -> Vec<String> {
         let mut out = self.tick(now);
         if crate::probe::is_credential_failure(raw) {
-            self.credentials_expired = true;
+            self.last_credential_failure = Some(now);
         }
         match classify(raw) {
             Line::Drop => {}
@@ -616,6 +622,20 @@ mod tests {
     use crate::loglevel::LogLevel;
     use std::io::Cursor;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn an_old_credential_line_does_not_explain_a_later_exit() {
+        let t0 = Instant::now();
+        let mut c = Correlator::new(LogLevel::Info);
+        assert!(!c.credentials_expired(t0));
+        c.feed("ERROR: Reauthentication required.", t0);
+        assert!(c.credentials_expired(t0 + Duration::from_secs(5)));
+        assert!(!c.credentials_expired(t0 + AUTH_EXIT_WINDOW + Duration::from_secs(1)));
+        // A fresh line renews it
+        let later = t0 + Duration::from_secs(3600);
+        c.feed("Please run: gcloud auth login", later);
+        assert!(c.credentials_expired(later + Duration::from_secs(1)));
+    }
 
     #[test]
     fn drops_noisy_debug_lines() {

@@ -148,8 +148,8 @@ pub async fn supervise(
     if let Some((dir, port)) = &probes {
         crate::probe::unwatch_probes(dir, *port);
     }
-    let expired = lock(&conn).credentials_expired();
-    if expired && !asked_to_stop && !status.success() {
+    let expired = lock(&conn).credentials_expired(std::time::Instant::now());
+    if stops_for_credentials(status.success(), expired, asked_to_stop) {
         if let Some(file) = &auth_marker {
             let _ = crate::fsutil::write_atomic(file, "1\n");
         }
@@ -158,9 +158,27 @@ pub async fn supervise(
     Ok(status.code().unwrap_or(1))
 }
 
+/// Whether this exit is the permanent kind. Only gcloud dying on its own
+/// qualifies: a stop the user asked for, or a clean exit, says nothing about
+/// the login whatever the log held.
+fn stops_for_credentials(succeeded: bool, expired: bool, asked_to_stop: bool) -> bool {
+    expired && !asked_to_stop && !succeeded
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stop_the_user_asked_for_is_never_an_auth_exit() {
+        assert!(stops_for_credentials(false, true, false));
+        assert!(!stops_for_credentials(false, true, true), "SIGTERM");
+        assert!(!stops_for_credentials(true, true, false), "clean exit");
+        assert!(
+            !stops_for_credentials(false, false, false),
+            "no credential line"
+        );
+    }
 
     #[tokio::test]
     async fn runs_child_and_returns_exit_code() {
