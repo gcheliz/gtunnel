@@ -119,6 +119,31 @@ gtunnel add <NAME> <HOST:PORT> --dest-group G --region R --network N [-s]
 | `--dest-group` | Target an IAP destination group instead of an instance |
 | `-s`, `--start` | Install the service and start it immediately |
 
+`--help` says what each value is and shows a placeholder to copy:
+
+```
+$ gtunnel add --help
+Add a persistent Access tunnel (IAP TCP forward to localhost)
+
+Usage: gtunnel add [OPTIONS] <NAME> <TARGET>
+
+Arguments:
+  <NAME>    Tunnel name: what it connects to, e.g. postgres
+  <TARGET>  INSTANCE:PORT (GCP instance name, port 22 open), or HOST:PORT with --dest-group or --via, e.g. bastion:5432
+
+Options:
+      --account <ACCOUNT>        Use a specific account (overrides the default)
+      --via <VIA>                GCP instance name (port 22 open) to forward from, for a host only it can reach, e.g. bastion
+      --log-level <LEVEL>        How much to log: quiet, info or debug (default: info)
+  -z, --zone <ZONE>              Zone of the instance, e.g. europe-west1-b (default: the account's zone)
+      --local-port <LOCAL_PORT>  Port on localhost you connect to, e.g. 15432 (allocated automatically when omitted)
+      --dest-group <DEST_GROUP>  IAP destination group, for targets that are not a compute instance, e.g. my-group
+      --region <REGION>          Region of the destination group, e.g. europe-west1
+      --network <NETWORK>        VPC network of the destination group, e.g. default
+  -s, --start                    Start the tunnel immediately after adding
+  -h, --help                     Print help
+```
+
 The local port is derived from the tunnel name, so the same name gets the same port on
 every machine unless it is taken. A port held by a live `gtunnel run`, in any account,
 counts as taken: an explicit `--local-port` for it is refused with `Local port P is already
