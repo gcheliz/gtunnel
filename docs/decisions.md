@@ -385,7 +385,7 @@ because it holds nothing.
 
 ## 20. Restarts belong to launchd and systemd, and readiness is a file
 
-**Status:** Accepted, 2026-10-28
+**Status:** Accepted, 2026-10-28, amended 2026-10-28 (the supervisor stops a job that spends its restart budget, #229)
 
 A tunnel's supervisor runs gcloud once and exits with gcloud's status. Restarting it is the
 service manager's job, with fixed settings, and gtunnel does not speak `sd_notify` (#209).
@@ -408,3 +408,32 @@ reopening when a client reads systemd readiness rather than the ready file.
 
 The cost: a failure that is permanent but not about credentials, such as a wrong instance
 name, is retried every 5 or 10 s until the user stops the tunnel.
+
+### Amendment: the supervisor stops a job that spends its restart budget
+
+Restarting is still the service manager's job, but a tunnel whose gcloud keeps failing for a
+reason gtunnel does not recognise no longer loops forever. The supervisor counts fast
+failures and, over budget, stops the job the way an expired credential does: it writes
+`run/<label>.crash` with the last exit reason and exits 0 on macOS or 78 on Linux. The
+tunnel then stays stopped until `gtunnel start`, which clears the marker and the count.
+The supervisor never retries by itself after it stops, and `gtunnel watch` skips a job that
+carries the marker. Credential expiry still wins: its marker and exit are unchanged.
+
+| Setting under `[restart]` in `config.toml` | Default | Meaning |
+|---|---|---|
+| `max_restarts` | 5 | Fast failures tolerated inside `window`; `0` disables the budget |
+| `window` | 10m | Failures older than this are forgotten |
+| `min_uptime` | 60s | A run at least this long clears the count |
+| `base_backoff` | 10s | Wait after the first failure; doubles on each next one |
+| `max_backoff` | 5m | Cap on the wait |
+
+| Question | Answer |
+|---|---|
+| Why not systemd `StartLimitBurst` | The supervisor owns the budget on both platforms. systemd's default (5 starts in 10 s) cannot trip at `RestartSec=5`, and macOS has no equivalent |
+| Are wake restarts excluded | No. A wake restart follows a run longer than `min_uptime`, which clears the count, so they never accumulate (#230) |
+| Is a user stop counted | No. SIGTERM is never counted and never writes the marker |
+
+The cost: a tunnel that needs longer than `min_uptime` to come up and keeps failing is
+judged fast-failing, so `min_uptime` must stay above gcloud's normal startup. The "retried
+indefinitely" and "retried every 5 or 10 s" statements above hold for transient failures
+that recover; a job that keeps failing now stops after `max_restarts`.
