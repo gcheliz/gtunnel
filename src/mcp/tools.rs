@@ -5,8 +5,8 @@ use super::protocol::{
     ToolCallResult, ToolDefinition, INTERNAL_ERROR, INVALID_PARAMS,
 };
 use crate::commands::access::{
-    add_tunnel, delete_tunnel, health_word, list_rows_json, probe_local, restart_tunnel,
-    start_tunnel, stop_by_name, AddRequest, Stopped,
+    add_tunnel, declared_health, delete_tunnel, health_word, list_rows_json, probe_local,
+    restart_tunnel, start_tunnel, stop_by_name, stopped_for_credentials, AddRequest, Stopped,
 };
 use crate::commands::expose::{expose_tunnel, ExposeRequest, Exposed};
 use crate::commands::relocate::{move_tunnel, rename_tunnel};
@@ -808,8 +808,9 @@ pub async fn execute_tool(
                 None
             };
 
-            let health = health_word(
+            let health = declared_health(
                 status == TunnelStatus::Running,
+                status != TunnelStatus::Running && stopped_for_credentials(&t),
                 probe_latency_ms,
                 matches!(t.spec, TunnelSpec::Access { .. }),
                 &t.log_path().unwrap_or_default(),

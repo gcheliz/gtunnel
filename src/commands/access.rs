@@ -797,7 +797,7 @@ impl ListRowJson {
             run: false,
             expires_at: None,
             local_port: access_port(&tunnel.spec),
-            health: if marked { "auth_expired" } else { "unknown" },
+            health: declared_health(false, marked, None, false, std::path::Path::new("")),
         }
     }
 
@@ -833,6 +833,22 @@ impl ListRowJson {
 
 /// Whether the tunnel's supervisor stopped it for expired credentials and no
 /// start has cleared that since.
+/// Health of a declared tunnel for every reader that shares `list --json`'s
+/// words. `marked` is only consulted when the tunnel is not running: a running
+/// one is probed, and a start has cleared the marker anyway.
+pub(crate) fn declared_health(
+    running: bool,
+    marked: bool,
+    probe_latency_ms: Option<u128>,
+    access: bool,
+    log: &std::path::Path,
+) -> &'static str {
+    if !running && marked {
+        return "auth_expired";
+    }
+    health_word(running, probe_latency_ms, access, log)
+}
+
 pub(crate) fn stopped_for_credentials(tunnel: &PersistentTunnel) -> bool {
     let label = daemon::platform_label(&tunnel.account_name, &tunnel.name);
     daemon::auth_marker_path(&label).is_ok_and(|m| m.exists())
@@ -957,7 +973,8 @@ pub async fn cmd_list(account: Option<&str>, json: bool) -> Result<()> {
     let mut rows = Vec::new();
     for tunnel in tunnels {
         let status = tunnel_status(tunnel).await;
-        rows.push(ListRow::from_tunnel(status, tunnel));
+        let marked = status != TunnelStatus::Running && stopped_for_credentials(tunnel);
+        rows.push(ListRow::from_tunnel(status, tunnel).stopped_for_credentials(marked));
     }
     rows.extend(runs.iter().map(ListRow::from_run));
     rows.extend(external);
@@ -1221,6 +1238,17 @@ mod tests {
         }
         let row = ListRowJson::declared_with(&tunnel, TunnelStatus::Stopped, false);
         assert_eq!(row.health, "unknown");
+    }
+
+    #[test]
+    fn get_status_health_for_a_stopped_marked_tunnel_is_auth_expired() {
+        let none = NO_LOG.as_ref();
+        assert_eq!(
+            declared_health(false, true, None, true, none),
+            "auth_expired"
+        );
+        assert_eq!(declared_health(false, false, None, true, none), "unknown");
+        assert_eq!(declared_health(true, true, Some(3), true, none), "healthy");
     }
 
     #[test]
