@@ -3,6 +3,16 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.31](https://github.com/gcheliz/gtunnel/compare/v0.2.30...v0.2.31) - 2026-10-28
+
+### Added
+
+- *(config)* the log's size cap, trim size, line rate and auth window are settings ([#249](https://github.com/gcheliz/gtunnel/pull/249))
+
+### Documentation
+
+- *(site)* re-record the demos and check the doc blocks against the binary ([#247](https://github.com/gcheliz/gtunnel/pull/247))
+
 ## [0.2.30](https://github.com/gcheliz/gtunnel/compare/v0.2.29...v0.2.30) - 2026-10-28
 
 ### Added
