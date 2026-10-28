@@ -3,6 +3,17 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.25](https://github.com/gcheliz/gtunnel/compare/v0.2.24...v0.2.25) - 2026-10-28
+
+### Added
+
+- *(init)* every init prompt says what it sets and how to find it ([#233](https://github.com/gcheliz/gtunnel/pull/233))
+
+### Documentation
+
+- *(troubleshooting)* explain restarts after the laptop wakes ([#232](https://github.com/gcheliz/gtunnel/pull/232))
+- *(decisions)* the supervisor stops a job that spends its restart budget ([#231](https://github.com/gcheliz/gtunnel/pull/231))
+
 ## [0.2.24](https://github.com/gcheliz/gtunnel/compare/v0.2.23...v0.2.24) - 2026-10-28
 
 ### Added
