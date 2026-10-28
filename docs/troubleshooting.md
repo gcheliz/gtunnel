@@ -387,6 +387,30 @@ A pooled connection that sat idle comes back dead, or a client stalls and then r
 
 The numbers and their sources are in [Limits](architecture.md#limits).
 
+## Restarts after the laptop wakes
+
+After the machine sleeps, a tunnel's restart count goes up by one and the tunnel is back shortly after. This is expected, not instability.
+
+| Step | What happens |
+|---|---|
+| Asleep | ssh keepalive timers do not run, and gcloud's IAP websocket to the GCP instance is reset |
+| Wake | gcloud notices the dead socket, ssh exits with 255, and the service manager restarts the tunnel |
+| Recovered | The listener is back about 40 seconds after the wake |
+
+The log shows the sequence (placeholder names; the shape of the lines, not a captured transcript):
+
+```
+Connection to bastion closed by remote host.
+gcloud compute ssh exited with return code [255].
+Local forwarding listening on 127.0.0.1 port 8443.
+```
+
+| You see | Meaning |
+|---|---|
+| One restart after each wake | Expected. The crash-loop state in the [health table](usage.md#the-tui) needs three restarts inside two minutes |
+| A count that rises while the machine stays awake | Not the wake case. Read the log with `gtunnel logs <name>` and look for the cause |
+| `Unable to reconnect within [900000] ms` | The network stayed down for gcloud's 15 minute window. The restart is the same one; see [Limits](architecture.md#limits) |
+
 ## `no zone for account`
 
 ```
