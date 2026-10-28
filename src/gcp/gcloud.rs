@@ -195,7 +195,7 @@ pub fn next_step(probe_ok: bool, interactive: bool, can_login: bool) -> AuthStep
 
 // Both ends must be a terminal: the login prints a URL to read and takes a
 // verification code typed back, and a redirected stdout hides the first
-fn is_interactive() -> bool {
+pub fn is_interactive() -> bool {
     use std::io::IsTerminal;
     std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
 }
@@ -240,11 +240,11 @@ pub async fn ensure_logged_in(acct: &Account) -> Result<()> {
     ensure_logged_in_with(acct, is_interactive(), confirm_login).await
 }
 
-// gcloud's own words for why the token failed, which only `doctor` used to
-// show. The probe error embeds stderr after "failed: ". gcloud leads with an
+// gcloud's own words for why the token failed, shown by `run` and `doctor`
+// alike. The probe error embeds stderr after "failed: ". gcloud leads with an
 // INFO line naming the file, which is no reason, so the first ERROR line wins
 // and the first non-empty line is the fallback.
-fn gcloud_reason(msg: &str) -> Option<String> {
+pub fn gcloud_reason(msg: &str) -> Option<String> {
     let (_, stderr) = msg.split_once("failed: ")?;
     let mut lines = stderr.lines().map(str::trim).filter(|l| !l.is_empty());
     let first = lines.clone().next();

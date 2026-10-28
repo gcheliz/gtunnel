@@ -689,7 +689,7 @@ Reports what gtunnel can see without changing anything.
 ```
 $ gtunnel doctor
 account dev:
-  - gcloud has no usable credentials for account 'dev'. Run `gcloud auth login`
+  - gcloud has no usable credentials for account 'dev'. Run `gcloud auth login --configuration=dev` and try again
 ```
 
 ```
@@ -697,7 +697,7 @@ $ gtunnel doctor          # with a gcloud whose Python has no numpy
 gtunnel:
   - gcloud's Python is missing numpy, which makes IAP tunnels slow. Run `gcloud components reinstall`
 account dev:
-  - gcloud has no usable credentials for account 'dev'. Run `gcloud auth login`
+  - gcloud has no usable credentials for account 'dev'. Run `gcloud auth login --configuration=dev` and try again
 ```
 
 A service with no record is machine-wide, so it is filed under `gtunnel:` like the watchdog.
@@ -724,7 +724,7 @@ $ gtunnel doctor
 gtunnel:
   ! config.toml has a key gtunnel ignores: accounts[0].log_level. Edit the file and remove or move it
 account scratch-docs:
-  ! gcloud has no usable credentials for account 'scratch-docs'. Run `gcloud auth login`
+  ! gcloud has no usable credentials for account 'scratch-docs'. Run `gcloud auth login --configuration=scratch-docs` and try again
 ```
 
 An account whose `credential_file` is relative or starts with `~` is reported per account,

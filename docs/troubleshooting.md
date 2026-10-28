@@ -345,7 +345,7 @@ not finish or it was not allowed to start.
 | The login was cancelled or failed | Run it again; `gcloud auth list` shows who is logged in |
 | The login exited 0 but the probe still fails | The configuration gtunnel uses is not the one that was logged in. Check `gcloud config configurations list` against the account's `gcloud_configuration` |
 | The account runs on a CI runner with an attached service account | There is no login to run. Give the runner's service account `roles/iap.tunnelResourceAccessor`; see [Running in CI](usage.md#running-in-ci) |
-| The account names a `credential_file` | gtunnel never offers a login for it. The error names the file: check that it exists, is a service-account key or a workload identity federation file, and that its identity is not disabled. `gtunnel doctor` says which |
+| The account names a `credential_file` | gtunnel never offers a login for it. The error names the file and ends with gcloud's own reason (`; gcloud said: ERROR: ...`): check that it exists, is a service-account key or a workload identity federation file, and that its identity is not disabled. `gtunnel doctor` names the file and repeats the reason |
 | The account impersonates a service account | `gcloud auth login` is run without `--impersonate-service-account`, because it rejects that flag. It logs in the user whose credentials mint the impersonation token, so that user needs `roles/iam.serviceAccountTokenCreator` on the service account |
 
 Only the selected account (or `--account`) is checked at startup. Switching to another
