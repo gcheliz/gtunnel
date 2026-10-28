@@ -1229,7 +1229,7 @@ mod tests {
         let gcloud = fake_gcloud(dir.path(), "exec sleep 30");
         let held = crate::fsutil::lock_exclusive(
             &crate::state::tunnels_lock_path().unwrap(),
-            crate::fsutil::LOCK_DEADLINE,
+            crate::fsutil::lock_deadline(),
         )
         .unwrap();
         let handle = std::thread::spawn(move || {

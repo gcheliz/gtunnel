@@ -209,7 +209,7 @@ impl TunnelState {
     /// `update` applies: `f` must not await or start a daemon.
     pub fn with_lock<T>(f: impl FnOnce(&TunnelState) -> Result<T>) -> Result<T> {
         let _lock =
-            crate::fsutil::lock_exclusive(&tunnels_lock_path()?, crate::fsutil::LOCK_DEADLINE)?;
+            crate::fsutil::lock_exclusive(&tunnels_lock_path()?, crate::fsutil::lock_deadline())?;
         f(&Self::load()?)
     }
 
@@ -327,7 +327,7 @@ pub fn tunnels_lock_path() -> Result<PathBuf> {
 // The lock every writer of tunnels.toml holds from its read to its write; the
 // TUI's config page takes it around its final rename for the same reason
 pub fn lock_tunnels() -> Result<crate::fsutil::Lock> {
-    crate::fsutil::lock_exclusive(&tunnels_lock_path()?, crate::fsutil::LOCK_DEADLINE)
+    crate::fsutil::lock_exclusive(&tunnels_lock_path()?, crate::fsutil::lock_deadline())
 }
 
 pub fn ensure_logs_dir() -> Result<PathBuf> {

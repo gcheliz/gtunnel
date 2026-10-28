@@ -195,7 +195,7 @@ fn read(dir: &Path) -> Ledger {
 
 fn update(dir: &Path, change: impl FnOnce(&mut Ledger) -> Option<Edge>) -> Result<Option<Edge>> {
     let _lock =
-        crate::fsutil::lock_exclusive(&dir.join("lifecycle.lock"), crate::fsutil::LOCK_DEADLINE)?;
+        crate::fsutil::lock_exclusive(&dir.join("lifecycle.lock"), crate::fsutil::lock_deadline())?;
     let mut ledger = read(dir);
     let edge = change(&mut ledger);
     let text = serde_json::to_string_pretty(&ledger).context("Failed to serialize lifecycle")?;

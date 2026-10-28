@@ -9,9 +9,12 @@ use std::io::Write;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-// Long enough for another gtunnel to finish a save, short enough that a
-// wedged holder is reported rather than waited on
-pub const LOCK_DEADLINE: Duration = Duration::from_secs(5);
+/// How long a writer waits for the lock another gtunnel holds: `gcp.lock_deadline`,
+/// read at the wait and not cached, because the supervisor and the TUI outlive
+/// an edit of the file.
+pub fn lock_deadline() -> Duration {
+    crate::settings::current().gcp_lock_deadline
+}
 
 // A holder releases and re-takes the lock within microseconds, so a waiter
 // that always sleeps the full cap almost never wakes to a free lock. Starting
@@ -132,7 +135,7 @@ mod tests {
     fn update_gives_up_after_the_deadline_and_names_the_lock() {
         let dir = tempfile::tempdir().unwrap();
         let lock_path = dir.path().join("tunnels.lock");
-        let _held = lock_exclusive(&lock_path, LOCK_DEADLINE).unwrap();
+        let _held = lock_exclusive(&lock_path, lock_deadline()).unwrap();
         let err = lock_exclusive(&lock_path, Duration::from_millis(100)).unwrap_err();
         assert!(err.to_string().contains("tunnels.lock"), "{err}");
     }

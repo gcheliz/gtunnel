@@ -6,17 +6,6 @@ use tokio::sync::Mutex;
 
 use crate::config::Account;
 
-// Access tokens last an hour; refresh early so a long operation never
-// straddles the expiry
-const TOKEN_TTL: Duration = Duration::from_secs(45 * 60);
-
-#[cfg(not(test))]
-const POLL_INTERVAL: Duration = Duration::from_secs(2);
-#[cfg(test)]
-const POLL_INTERVAL: Duration = Duration::from_millis(10);
-
-const OPERATION_TIMEOUT: Duration = Duration::from_secs(600);
-
 // Where the token comes from. Tests use a fixed string; everything else shells
 // out to gcloud so gtunnel never stores a credential of its own.
 #[derive(Debug, Clone)]
@@ -121,18 +110,39 @@ pub struct GcpClient {
     source: TokenSource,
     pub endpoints: Endpoints,
     cached: Mutex<Option<(String, Instant)>>,
+    // Read once per client, from `gcp.*`: a client lives for one command, so
+    // a value edited in the file applies to the next one
+    token_ttl: Duration,
+    poll_interval: Duration,
+    operation_timeout: Duration,
 }
 
 impl GcpClient {
     pub fn new(source: TokenSource, endpoints: Endpoints) -> Self {
+        Self::with_settings(source, endpoints, &crate::settings::current())
+    }
+
+    fn with_settings(
+        source: TokenSource,
+        endpoints: Endpoints,
+        settings: &crate::settings::Settings,
+    ) -> Self {
         Self {
             http: crate::http::client_builder()
-                .timeout(Duration::from_secs(30))
+                .timeout(settings.gcp_http_timeout)
                 .build()
                 .expect("reqwest client"),
             source,
             endpoints,
             cached: Mutex::new(None),
+            token_ttl: settings.gcp_token_ttl,
+            // A mock server answers at once, and the default sleep would make
+            // every operation test wait two seconds for nothing
+            #[cfg(not(test))]
+            poll_interval: settings.gcp_poll_interval,
+            #[cfg(test)]
+            poll_interval: Duration::from_millis(10),
+            operation_timeout: settings.gcp_operation_timeout,
         }
     }
 
@@ -150,7 +160,7 @@ impl GcpClient {
             TokenSource::Gcloud(acct) => {
                 let mut cached = self.cached.lock().await;
                 if let Some((token, at)) = cached.as_ref()
-                    && at.elapsed() < TOKEN_TTL
+                    && at.elapsed() < self.token_ttl
                 {
                     return Ok(token.clone());
                 }
@@ -270,7 +280,7 @@ impl GcpClient {
 
         let started = Instant::now();
         loop {
-            tokio::time::sleep(POLL_INTERVAL).await;
+            tokio::time::sleep(self.poll_interval).await;
             let current: Operation = self.get(&url).await?;
             if let Some(err) = &current.error {
                 return Err(operation_error(err));
@@ -278,11 +288,11 @@ impl GcpClient {
             if current.is_done() {
                 return Ok(());
             }
-            if started.elapsed() > OPERATION_TIMEOUT {
+            if started.elapsed() > self.operation_timeout {
                 return Err(anyhow!(
                     "Operation {} did not finish within {} seconds",
                     url,
-                    OPERATION_TIMEOUT.as_secs()
+                    self.operation_timeout.as_secs()
                 ));
             }
         }
