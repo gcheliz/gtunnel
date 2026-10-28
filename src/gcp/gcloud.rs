@@ -132,7 +132,7 @@ pub async fn print_access_token(acct: &Account) -> Result<String> {
     args.extend(crate::tunnel::gcloud_common(
         acct,
         crate::loglevel::current(),
-    ));
+    )?);
     // A token that cannot be minted is a credential problem whatever gcloud
     // printed, so this is the one place a gcloud failure is reclassified
     let stdout = run_gcloud(&args).await.map_err(|e| {
@@ -260,6 +260,9 @@ pub async fn ensure_logged_in_with<F>(acct: &Account, interactive: bool, confirm
 where
     F: FnOnce(&str) -> Result<bool>,
 {
+    // A relative path is a usage error, not a credential failure: the probe
+    // below folds every error into an auth exit and would hide that
+    acct.credential_file_for_use()?;
     let probe = print_access_token(acct).await;
     let probe_ok = probe.is_ok();
     match next_step(probe_ok, interactive, acct.credential_file.is_none()) {
@@ -416,6 +419,20 @@ mod tests {
             Some("ERROR: File /secrets/ci-key.json was not found.")
         );
         assert_eq!(gcloud_reason("no marker here"), None);
+    }
+
+    #[tokio::test]
+    async fn a_relative_credential_file_is_a_usage_error_not_an_auth_failure() {
+        let mut acct = account(None);
+        acct.credential_file = Some("~/ci-key.json".into());
+        let err = ensure_logged_in_with(&acct, false, |_| Ok(false))
+            .await
+            .expect_err("relative");
+        assert_eq!(
+            crate::error::kind_of(&err),
+            crate::error::ErrorKind::Usage,
+            "{err:#}"
+        );
     }
 
     #[tokio::test]

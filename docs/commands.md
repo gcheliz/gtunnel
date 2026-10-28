@@ -504,8 +504,10 @@ credential_file = "/secrets/ci-key.json"
 ```
 
 `--credential-file` takes an absolute path to a service-account key or a workload identity
-federation file; a relative path is refused, and on `edit` an empty value (`--credential-file ""`)
-clears it. With a file set, a missing token is named after the file, never `gcloud auth login`:
+federation file; a relative path is refused on `add` and `edit`, and on `edit` an empty value
+(`--credential-file ""`) clears it. A relative path written into `config.toml` by hand does not
+stop the file loading: that account's tunnels exit 2 naming it, `doctor` reports it, and `edit`
+repairs it. With a file set, a missing token is named after the file, never `gcloud auth login`:
 
 ```
 $ gtunnel --account ci run bastion:22 --ttl 2m
@@ -723,6 +725,15 @@ gtunnel:
   ! config.toml has a key gtunnel ignores: accounts[0].log_level. Edit the file and remove or move it
 account scratch-docs:
   ! gcloud has no usable credentials for account 'scratch-docs'. Run `gcloud auth login`
+```
+
+An account whose `credential_file` is relative or starts with `~` is reported per account,
+and `--fix` does not touch it:
+
+```
+$ gtunnel doctor
+account ci:
+  ! Account 'ci': credential_file ~/ci-key.json is not an absolute path, so a service cannot resolve it. Run `gtunnel account edit ci --credential-file <absolute path>`, or `--credential-file ""` to clear it
 ```
 
 | Flag | Effect |

@@ -10,7 +10,7 @@ use crate::state::{
 
 // Flags every gcloud invocation carries, so a tunnel never depends on which
 // gcloud configuration happens to be active in the shell
-pub fn gcloud_common(acct: &Account, level: LogLevel) -> Vec<String> {
+pub fn gcloud_common(acct: &Account, level: LogLevel) -> Result<Vec<String>> {
     let mut args = vec![
         format!("--configuration={}", acct.gcloud_configuration),
         format!("--project={}", acct.project),
@@ -26,10 +26,12 @@ pub fn gcloud_common(acct: &Account, level: LogLevel) -> Vec<String> {
     // A hidden global flag, so one place covers the token probe, the tunnel,
     // compute ssh (gcloud hands it to ssh's inner ProxyCommand) and the argv
     // written to a service file. One argv element: the path may hold spaces.
-    if let Some(file) = &acct.credential_file {
+    // Checked here and not at load, so a bad path stops this account's
+    // commands with a usage error and leaves every other account usable
+    if let Some(file) = acct.credential_file_for_use()? {
         args.push(format!("--credential-file-override={}", file.display()));
     }
-    args
+    Ok(args)
 }
 
 // `gcloud compute start-iap-tunnel` argv for an Access tunnel
@@ -67,7 +69,7 @@ pub fn access_argv(acct: &Account, t: &PersistentTunnel, level: LogLevel) -> Res
             "--tunnel-through-iap".to_string(),
             "--quiet".to_string(),
         ];
-        argv.extend(gcloud_common(acct, level));
+        argv.extend(gcloud_common(acct, level)?);
         argv.push("--".to_string());
         argv.extend(ssh_forward_options(level, "-L"));
         argv.push(format!("{local_port}:{host}:{remote_port}"));
@@ -98,7 +100,7 @@ pub fn access_argv(acct: &Account, t: &PersistentTunnel, level: LogLevel) -> Res
             argv.push(format!("--dest-group={group}"));
         }
     }
-    argv.extend(gcloud_common(acct, level));
+    argv.extend(gcloud_common(acct, level)?);
     Ok(argv)
 }
 
@@ -160,7 +162,7 @@ pub fn expose_argv(
         "--tunnel-through-iap".to_string(),
         "--quiet".to_string(),
     ];
-    argv.extend(gcloud_common(acct, level));
+    argv.extend(gcloud_common(acct, level)?);
     argv.push("--".to_string());
     argv.extend(ssh_forward_options(level, "-R"));
     argv.push(format!("0.0.0.0:{relay_port}:{normalized}"));
@@ -577,12 +579,27 @@ mod tests {
     fn gcloud_common_carries_the_credential_file_only_when_set() {
         let mut acct = account();
         assert!(!gcloud_common(&acct, LogLevel::Quiet)
+            .expect("args")
             .iter()
             .any(|a| a.starts_with("--credential-file-override")));
         acct.credential_file = Some("/secrets/ci key.json".into());
-        let args = gcloud_common(&acct, LogLevel::Quiet);
+        let args = gcloud_common(&acct, LogLevel::Quiet).expect("args");
         // One argv element, spaces and all: nothing here goes through a shell
         assert!(args.contains(&"--credential-file-override=/secrets/ci key.json".to_string()));
+    }
+
+    #[test]
+    fn a_relative_credential_file_stops_the_tunnel_with_a_usage_error() {
+        let mut acct = account();
+        acct.credential_file = Some("~/ci-key.json".into());
+        let err = gcloud_common(&acct, LogLevel::Quiet).expect_err("relative");
+        assert_eq!(
+            crate::error::kind_of(&err),
+            crate::error::ErrorKind::Usage,
+            "{err:#}"
+        );
+        let err = access_argv(&acct, &instance_tunnel(), LogLevel::Info).expect_err("relative");
+        assert!(format!("{err:#}").contains("absolute"), "{err:#}");
     }
 
     #[test]

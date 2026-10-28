@@ -54,6 +54,18 @@ pub struct Account {
     pub expose: Option<ExposeConfig>,
 }
 
+impl Account {
+    /// The path to hand to gcloud, or the usage error for a relative one. Every
+    /// code path that builds a gcloud argv for this account goes through here.
+    pub fn credential_file_for_use(&self) -> Result<Option<&std::path::Path>> {
+        let Some(file) = self.credential_file.as_deref() else {
+            return Ok(None);
+        };
+        validate_credential_file(file).with_context(|| format!("In account '{}'", self.name))?;
+        Ok(Some(file))
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default)]
@@ -242,17 +254,14 @@ pub fn load_config() -> Result<Config> {
         .with_context(|| format!("Failed to read {}", path.display()))?;
     let config: Config =
         toml::from_str(&text).with_context(|| format!("Failed to parse {}", path.display()))?;
-    for acct in &config.accounts {
-        if let Some(file) = &acct.credential_file {
-            validate_credential_file(file)
-                .with_context(|| format!("In account '{}' of {}", acct.name, path.display()))?;
-        }
-    }
     Ok(config)
 }
 
 // A service runs with another working directory and no shell, so `~` and a
-// relative path would resolve against nothing. Only an absolute path loads.
+// relative path would resolve against nothing. Only an absolute path is used,
+// and that is checked where it is used (`Account::credential_file_for_use`),
+// not at load: one account's bad path must not make the file unloadable, since
+// the commands that repair it load the file first.
 pub fn validate_credential_file(path: &std::path::Path) -> Result<()> {
     if !path.is_absolute() {
         return Err(GtunnelError::usage(format!(
@@ -281,7 +290,19 @@ pub fn update_config<T>(f: impl FnOnce(&mut Config) -> Result<T>) -> Result<T> {
 
 // For `init` and `account add`, which may be writing the first account
 pub fn update_or_init_config<T>(f: impl FnOnce(&mut Config) -> Result<T>) -> Result<T> {
-    locked_config_update(|| Ok(load_config().unwrap_or_default()), f)
+    locked_config_update(
+        || {
+            // Only a file that is not there is "no config yet". Any other
+            // failure means there is a config we cannot read, and saving
+            // over it would delete every account it holds.
+            if config_path()?.exists() {
+                load_config()
+            } else {
+                Ok(Config::default())
+            }
+        },
+        f,
+    )
 }
 
 /// The keys a TOML text carries that `T` does not read, as dotted paths with
@@ -458,16 +479,90 @@ mod tests {
         assert!(validate_credential_file(std::path::Path::new("/secrets/ci-key.json")).is_ok());
     }
 
+    // One account's bad path must not stop the file loading: the commands that
+    // repair it (`account edit`, `account remove`, `doctor`) load it first
     #[test]
-    fn load_config_refuses_a_relative_credential_file() {
+    fn load_config_accepts_a_relative_credential_file() {
         with_temp_dir(|| {
             let mut cfg = Config::default();
             let mut acct = account("ci");
-            acct.credential_file = Some("ci-key.json".into());
+            acct.credential_file = Some("~/ci-key.json".into());
             cfg.accounts.push(acct);
+            cfg.accounts.push(account("other"));
             save_config(&cfg).expect("save");
-            let err = load_config().expect_err("relative path must not load");
-            assert!(format!("{err:#}").contains("absolute"), "{err:#}");
+            let loaded = load_config().expect("a relative path still loads");
+            assert_eq!(loaded.accounts.len(), 2);
+        });
+    }
+
+    #[test]
+    fn the_use_check_names_the_account_and_is_a_usage_error() {
+        let mut acct = account("ci");
+        acct.credential_file = Some("~/ci-key.json".into());
+        let err = acct.credential_file_for_use().expect_err("relative");
+        let text = format!("{err:#}");
+        assert!(text.contains("'ci'"), "{text}");
+        assert!(text.contains("absolute"), "{text}");
+        assert_eq!(
+            crate::error::kind_of(&err),
+            crate::error::ErrorKind::Usage,
+            "{text}"
+        );
+        acct.credential_file = Some("/secrets/ci-key.json".into());
+        assert!(acct.credential_file_for_use().expect("ok").is_some());
+        acct.credential_file = None;
+        assert!(acct.credential_file_for_use().expect("ok").is_none());
+    }
+
+    #[test]
+    fn update_or_init_refuses_an_unparseable_config_and_leaves_it_untouched() {
+        with_temp_dir(|| {
+            let path = config_path().expect("path");
+            let text = "selected_account = [broken\n";
+            std::fs::write(&path, text).expect("write");
+            let err = update_or_init_config(|c| {
+                c.accounts.push(account("new"));
+                Ok(())
+            })
+            .expect_err("must not overwrite");
+            assert!(
+                format!("{err:#}").contains(&path.display().to_string()),
+                "{err:#}"
+            );
+            assert_eq!(std::fs::read_to_string(&path).expect("read"), text);
+            // A value the enum does not know is the same refusal
+            let bad = "log_level = \"loud\"\n";
+            std::fs::write(&path, bad).expect("write");
+            assert!(update_or_init_config(|_| Ok(())).is_err());
+            assert_eq!(std::fs::read_to_string(&path).expect("read"), bad);
+        });
+    }
+
+    #[test]
+    fn update_or_init_keeps_every_account_when_one_has_a_relative_credential_file() {
+        with_temp_dir(|| {
+            let text = "selected_account = \"ci\"\n\n[[accounts]]\nname = \"ci\"\ngcloud_configuration = \"ci\"\nproject = \"example-dev-1a2b\"\ndefault_zone = \"europe-west1-b\"\ncredential_file = \"~/ci-key.json\"\n";
+            std::fs::write(config_path().expect("path"), text).expect("write");
+            update_or_init_config(|c| {
+                c.accounts.push(account("new"));
+                Ok(())
+            })
+            .expect("a relative path loads, so the update goes through");
+            let loaded = load_config().expect("load");
+            assert_eq!(loaded.accounts.len(), 2, "the other account survives");
+        });
+    }
+
+    #[test]
+    fn update_or_init_still_creates_a_missing_config() {
+        with_temp_dir(|| {
+            assert!(!config_path().expect("path").exists());
+            update_or_init_config(|c| {
+                c.accounts.push(account("first"));
+                Ok(())
+            })
+            .expect("create");
+            assert_eq!(load_config().expect("load").accounts[0].name, "first");
         });
     }
 

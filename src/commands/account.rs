@@ -549,6 +549,32 @@ mod tests {
         assert!(cmd_account_edit("dev", None, None, Some("key.json")).is_err());
     }
 
+    // The edit that repairs a relative path has to be able to load the file that
+    // holds it, and `account add` on such a file must not swallow the others
+    #[tokio::test]
+    async fn a_relative_credential_file_can_be_cleared_and_never_costs_the_other_accounts() {
+        let _dir = TempConfigDir::new();
+        save_accounts(&["ci", "other"]);
+        let mut config = load_config().unwrap();
+        config.accounts[0].credential_file = Some("~/ci-key.json".into());
+        save_config(&config).unwrap();
+        let opts = AddOptions {
+            project: Some("example-dev-1a2b".into()),
+            ..AddOptions::default()
+        };
+        cmd_account_add("new", "new", opts).await.expect("adds");
+        assert_eq!(load_config().unwrap().accounts.len(), 3);
+        cmd_account_edit("ci", None, None, Some("")).expect("clears");
+        assert_eq!(
+            load_config()
+                .unwrap()
+                .get_account(Some("ci"))
+                .unwrap()
+                .credential_file,
+            None
+        );
+    }
+
     fn configuration(name: &str) -> gcloud::GcloudConfiguration {
         gcloud::GcloudConfiguration {
             name: name.to_string(),
