@@ -380,3 +380,29 @@ different tunnels would write one file (#132).
 
 The launchd label joins with `.` and is unaffected. A dead run does not block the name,
 because it holds nothing.
+
+## 20. Restarts belong to launchd and systemd, and readiness is a file
+
+**Status:** Accepted, 2026-10-28
+
+A tunnel's supervisor runs gcloud once and exits with gcloud's status. Restarting it is the
+service manager's job, with fixed settings, and gtunnel does not speak `sd_notify` (#209).
+
+| Platform | Settings | What they do |
+|---|---|---|
+| macOS | `KeepAlive {SuccessfulExit false}`, `ThrottleInterval 10` | Restarts every non-zero exit, 10 s apart |
+| Linux | `Type=simple`, `Restart=on-failure`, `RestartSec=5`, `RestartPreventExitStatus=78` | Restarts every failure, 5 s apart, except exit 78 |
+
+| Question | Answer |
+|---|---|
+| A failure that restarting cannot fix | Expired credentials exit 0 on macOS and 78 on Linux, the one status each manager leaves alone, and write `run/<label>.auth` (#193) |
+| A transient failure, such as a dropped network or VPN | Retried indefinitely; 5 s never reaches systemd's default start limit of 5 starts in 10 s |
+| When the tunnel is ready | `run/<label>.ready`, written once gcloud logs that it is listening; `start` waits for it and `list` reads it on both platforms |
+
+`Type=notify` was not adopted. It would show readiness only to someone reading raw
+`systemctl --user status`, it does nothing on macOS, and it adds a failure: a gcloud that
+never logs its listener is killed at `TimeoutStartSec` instead of staying up. It is worth
+reopening when a client reads systemd readiness rather than the ready file.
+
+The cost: a failure that is permanent but not about credentials, such as a wrong instance
+name, is retried every 5 or 10 s until the user stops the tunnel.
