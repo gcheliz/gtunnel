@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>gtunnel — private GCP, one localhost away</title>
-<meta name="description" content="Tunnels to GCP VMs with no public IP, through Identity-Aware Proxy, from a live dashboard, a script or your AI agent. No open ports, no stored credentials, one binary.">
+<meta name="description" content="Tunnels to GCP instances with no public IP, through Identity-Aware Proxy, from a live dashboard, a script or your AI agent. No open ports, no stored credentials, one binary.">
 <meta property="og:title" content="gtunnel — private GCP, one localhost away">
-<meta property="og:description" content="Tunnels to private VMs through IAP, from a TUI, a CLI or an MCP server. One binary, nothing to expose.">
+<meta property="og:description" content="Tunnels to private instances through IAP, from a TUI, a CLI or an MCP server. One binary, nothing to expose.">
 <meta property="og:image" content="https://gcheliz.github.io/gtunnel/demo-tui.gif">
 <meta property="og:url" content="https://gcheliz.github.io/gtunnel/">
 <meta name="theme-color" content="#0E0E10">
@@ -259,7 +259,7 @@ GitHub</a>
 </div>
 <div class="row">
 <div class="col copy">
-<p class="lead">Tunnels to private VMs, from a dashboard, a script or your agent.</p>
+<p class="lead">Tunnels to private instances, from a dashboard, a script or your agent.</p>
 <div class="install">
 <div class="tabs" role="tablist" aria-label="Install method">
 <button type="button" role="tab" aria-selected="true" aria-controls="install-cmd-box" data-cmd="cargo install --git https://github.com/gcheliz/gtunnel">cargo</button>
@@ -298,15 +298,15 @@ GitHub</a>
 <h2 class="h2" id="cli-title">One command per <span class="c-amber">tunnel.</span></h2>
 <p class="body">Two modes, each persistent or ephemeral. Ctrl+C or a TTL closes an ephemeral one.</p>
 <dl class="modes">
-<div><dt class="c-blue">ACCESS</dt><dd>gtunnel add db my-vm:5432 -s</dd><button type="button" class="copy-sm" data-copy-for="gtunnel add db my-vm:5432 -s">Copy</button></div>
+<div><dt class="c-blue">ACCESS</dt><dd>gtunnel add db bastion:5432 -s</dd><button type="button" class="copy-sm" data-copy-for="gtunnel add db bastion:5432 -s">Copy</button></div>
 <div><dt class="c-green">EXPOSE</dt><dd>gtunnel expose web 3000 -s</dd><button type="button" class="copy-sm" data-copy-for="gtunnel expose web 3000 -s">Copy</button></div>
-<div><dt class="c-amber">EPHEMERAL</dt><dd>gtunnel run my-vm:5432 --ttl 30m</dd><button type="button" class="copy-sm" data-copy-for="gtunnel run my-vm:5432 --ttl 30m">Copy</button></div>
+<div><dt class="c-amber">EPHEMERAL</dt><dd>gtunnel run bastion:5432 --ttl 30m</dd><button type="button" class="copy-sm" data-copy-for="gtunnel run bastion:5432 --ttl 30m">Copy</button></div>
 </dl>
 <p class="body">Expose mode needs a relay once per account: <code>gtunnel relay up --managed-zone my-dns-zone</code>.</p>
 </div>
 <figure class="frame rec">
-<div class="bar2" aria-hidden="true"><i></i><i></i><i></i><span>gtunnel run my-vm:5432 --ttl 30m</span></div>
-<div class="pad"><div class="viewport"><img src="demo-run.gif" alt="A terminal recording: gtunnel run --ttl 30m db my-vm:5432 prints the local port and its stop time, gtunnel list shows the run, Ctrl+C closes it, and the list is empty again, animated" width="1500" height="500" loading="lazy"></div></div>
+<div class="bar2" aria-hidden="true"><i></i><i></i><i></i><span>gtunnel run bastion:5432 --ttl 30m</span></div>
+<div class="pad"><div class="viewport"><img src="demo-run.gif" alt="A terminal recording: gtunnel run --ttl 30m db bastion:5432 prints the local port and its stop time, gtunnel list shows the run, Ctrl+C closes it, and the list is empty again, animated" width="1500" height="500" loading="lazy"></div></div>
 <div class="chips">
 <span class="chip"><i style="background: var(--amber)"></i>Stops by itself in 30m</span>
 <span class="chip"><i style="background: var(--green)"></i>Ctrl+C closes it</span>
@@ -412,7 +412,7 @@ GitHub</a>
 <span class="prompt">$</span> gtunnel doctor
 
 <span class="c"># 3 · connect</span>
-<span class="prompt">$</span> gtunnel add db my-vm:5432 --local-port 15432 -s
+<span class="prompt">$</span> gtunnel add db bastion:5432 --local-port 15432 -s
 <span class="prompt">$</span> psql -h localhost -p 15432</pre>
 <button type="button" class="copy-sm" data-copy-for="the quick start commands">Copy</button>
 </div>

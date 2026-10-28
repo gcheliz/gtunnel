@@ -97,7 +97,7 @@ fixtures may carry a real value.
 |---|---|
 | GCP project | `example-dev-1a2b`, `example-prod-3c4d` |
 | Account | `you@example.com` |
-| Instance | `bastion`, `my-vm` |
+| Instance | `bastion` |
 | Private address | `10.0.0.10` |
 | Internal hostname | `db.internal` |
 | Username in captured output | `you` |

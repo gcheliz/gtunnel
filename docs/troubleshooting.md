@@ -142,7 +142,7 @@ emptied when its tunnel starts, so a line in it was written by the process runni
 | `4004` | IAP asked gcloud to reauthenticate; gcloud resumes the session on its own | Nothing, unless it repeats: then check the account's credentials with `gtunnel doctor` |
 | `Unable to reconnect within` | gcloud gave up reconnecting to IAP after 15 minutes and the clients on the tunnel were cut | Restart the tunnel; see [Limits](architecture.md#limits) |
 | `Address already in use` | Another process holds the local port | `gtunnel doctor`, or set `--local-port` |
-| `remote port forwarding failed` | The relay port is busy on the relay VM | `gtunnel restart <name>`, then `gtunnel doctor` |
+| `remote port forwarding failed` | The relay port is busy on the relay instance | `gtunnel restart <name>`, then `gtunnel doctor` |
 | `Too many open files` | The tunnel ran out of file descriptors | `gtunnel doctor` names the process holding them, see below |
 | `numpy` | gcloud's Python has no NumPy | See NumPy below |
 | `timed out after` (in the TUI status line or a command's error) | A subprocess did not answer within its bound: 30s for `gcloud`, 10s for `launchctl` and `systemctl`. Usually `gcloud` waiting on a browser login or a dead network, or a wedged launchd | Run the named command by hand to see what it waits on, then `gcloud auth login` or `gtunnel doctor`. `delete` that times out stopping the job keeps the record, so retry it once the job answers |
@@ -383,7 +383,7 @@ A pooled connection that sat idle comes back dead, or a client stalls and then r
 
 | Cause | Fix |
 |---|---|
-| IAP drops a session after one hour of inactivity, and a direct tunnel gives every connection its own session | Set the pool's idle lifetime under 60 minutes, or tunnel through a VM with `--via`, which keeps one stream busy |
+| IAP drops a session after one hour of inactivity, and a direct tunnel gives every connection its own session | Set the pool's idle lifetime under 60 minutes, or tunnel through a GCP instance with `--via`, which keeps one stream busy |
 | gcloud is reconnecting: the log shows `Reconnecting with URL`, or a `4004` close | It retries from 1.5 s to 20 s apart for up to 15 minutes and resumes the session. The stall ends when it does |
 | The log shows `Unable to reconnect within` | The 15 minutes ran out. Restart the tunnel |
 
@@ -459,7 +459,7 @@ gcloud compute firewall-rules create gt-allow-iap-<port> --project=<project> \
   --source-ranges=35.235.240.0/20
 ```
 
-The relay VM's two rules are created by `relay up` and target the tag `gt-relay`:
+The relay instance's two rules are created by `relay up` and target the tag `gt-relay`:
 
 | Rule | Source | Ports |
 |---|---|---|
@@ -570,7 +570,7 @@ Access mode creates nothing and costs nothing beyond egress.
 | Item | Scope | Approximate cost |
 |---|---|---|
 | Global forwarding rule | Per account | USD 18/month |
-| e2-micro relay VM | Per account | USD 7/month, free tier in some US regions |
+| e2-micro relay instance | Per account | USD 7/month, free tier in some US regions |
 | Managed certificate | Per domain | Free |
 | Backend service, named port, DNS record | Per tunnel | Free, DNS queries billed per million |
 

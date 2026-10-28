@@ -25,8 +25,8 @@ nodes:
 - id: lb, label: "HTTPS load balancer", subtitle: "managed certificate", icon: lb, parent: gcp
 - id: gate, label: "IAP sign-in", subtitle: "gated URLs only", icon: iap, parent: gcp
 - id: vpc, label: "VPC (europe-west1)", style: vpc, type: container, parent: gcp
-- id: vm, label: "my-vm", subtitle: "no public IP", icon: compute, parent: vpc
-- id: relay, label: "Relay VM", subtitle: "e2-micro, no public IP", icon: compute, parent: vpc
+- id: vm, label: "bastion", subtitle: "no public IP", icon: compute, parent: vpc
+- id: relay, label: "Relay instance", subtitle: "e2-micro, no public IP", icon: compute, parent: vpc
 edges:
 - from: agent, to: cli, label: "gtunnel mcp"
 - from: client, to: cli, label: "localhost:15432"

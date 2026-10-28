@@ -47,7 +47,7 @@ Sleep 400ms
 Enter
 Sleep 2500ms
 
-Type `agent gtunnel_run_tunnel '{"name": "db", "target": "my-vm:5432", "ttl_minutes": 30}'`
+Type `agent gtunnel_run_tunnel '{"name": "db", "target": "bastion:5432", "ttl_minutes": 30}'`
 Sleep 500ms
 Enter
 # the tool waits for the run's record before it answers

@@ -61,8 +61,8 @@ Each entry in `accounts`:
 
 | Key | Type | Required | What it is |
 |---|---|---|---|
-| `relay_instance` | string | yes | The relay VM's instance name |
-| `relay_zone` | string | yes | The zone that VM is in |
+| `relay_instance` | string | yes | The relay instance's instance name |
+| `relay_zone` | string | yes | The zone that instance is in |
 | `network` | string | yes | The VPC network the relay and its load balancer sit in |
 | `default_domain` | string | yes | The domain used when `expose` is given no `--domain` |
 | `domains` | array of tables | no | Every registered domain; `default_domain` must name one of them |
@@ -99,9 +99,9 @@ Every tunnel is an entry in a `[[tunnels]]` array:
 
 | `kind` | Keys | Reaches |
 |---|---|---|
-| `instance` | `instance`, `zone` | A port on a Compute Engine VM |
-| `dest_group` | `host`, `region`, `group`, `network` | A host behind an IAP destination group, with no VM in the path |
-| `jump` | `instance`, `zone`, `host` | A host only the VM can see, forwarded by ssh on the VM with IAP carrying the ssh connection |
+| `instance` | `instance`, `zone` | A port on a Compute Engine instance |
+| `dest_group` | `host`, `region`, `group`, `network` | A host behind an IAP destination group, with no instance in the path |
+| `jump` | `instance`, `zone`, `host` | A host only the instance can see, forwarded by ssh on the instance with IAP carrying the ssh connection |
 
 `mode = "expose"` publishes a local service through the relay:
 
@@ -110,7 +110,7 @@ Every tunnel is an entry in a `[[tunnels]]` array:
 | `local_target` | string | The local address being published, as `host:port` |
 | `domain` | string | Which registered domain serves it |
 | `hostname` | string | The full name the service answers on |
-| `relay_port` | u16 | The port reserved on the relay VM, derived from the name |
+| `relay_port` | u16 | The port reserved on the relay instance, derived from the name |
 | `private` | bool | Whether IAP sign-in sits in front of the URL |
 
 ### One example per tunnel
@@ -121,7 +121,7 @@ written by `gtunnel add`; the others are the same schema written by hand, becaus
 `expose` check GCP, and `gtunnel list` read all five back. Names, project and hosts are
 placeholders.
 
-Access, `kind = "instance"`: a port of a VM (`gtunnel add db my-vm:5432`).
+Access, `kind = "instance"`: a port of a GCP instance (`gtunnel add db bastion:5432`).
 
 ```toml
 [[tunnels]]
@@ -136,7 +136,7 @@ local_port = 15432
 
 [tunnels.spec.target]
 kind = "instance"
-instance = "my-vm"
+instance = "bastion"
 zone = "europe-west1-b"
 ```
 

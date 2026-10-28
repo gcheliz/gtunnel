@@ -27,7 +27,7 @@ nodes:
 - id: cfg, label: "config.toml", subtitle: "CONFIG/config.toml", icon: storage, parent: local
 - id: accts, label: "accounts", subtitle: "gcloud config, project, zone", icon: users, parent: local
 - id: def, label: "default_account", subtitle: "overridden by --account", icon: users, parent: local
-- id: relay, label: "relay, per account", subtitle: "VM, zone, load balancer", icon: compute, parent: local
+- id: relay, label: "relay, per account", subtitle: "instance, zone, load balancer", icon: compute, parent: local
 - id: doms, label: "domains, per account", subtitle: "set by domains add", icon: dns, parent: local
 edges:
 - from: cfg, to: accts

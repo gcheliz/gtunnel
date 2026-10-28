@@ -20,7 +20,7 @@ nodes:
 - id: acct, label: "Per account, once", style: namespace, type: container, parent: gcp
 - id: front, label: "HTTPS front end", subtitle: "address, rule, HTTPS proxy", icon: lb, parent: acct
 - id: urlmap, label: "URL map", subtitle: "default backend, health check", icon: lb, parent: acct
-- id: vm, label: "Relay VM", subtitle: "and its instance group", icon: compute, parent: acct
+- id: vm, label: "Relay instance", subtitle: "and its instance group", icon: compute, parent: acct
 - id: fw, label: "Firewall rules", subtitle: "gt-ACCT-iap-ssh, gt-ACCT-lb-hc", icon: armor, parent: acct
 - id: cm, label: "Certificate map", subtitle: "gt-ACCT-certs", icon: certmanager, parent: acct
 - id: perdom, label: "Per domain", style: namespace, type: container, parent: gcp
