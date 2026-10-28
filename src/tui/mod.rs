@@ -906,11 +906,12 @@ fn health_round(
 }
 
 /// One metrics round: every target measured at once, in target order, with a
-/// target that yields nothing left out.
+/// target that yields nothing, or does not answer in time, left out.
 ///
-/// The round is as slow as its slowest tunnel, not the sum of them. Measured
-/// one after another, a single tunnel whose probe stalled held back the
-/// numbers of every other row for as long as it took to time out.
+/// The round is bounded, not as slow as its slowest tunnel. Measured one after
+/// another, a stalled probe held back every other row; measured together but
+/// unbounded, a `launchctl` or `lsof` that hung still did, for as long as it
+/// took to give up, and `Msg::Metrics` is the only thing that moves the numbers.
 async fn collect_round<T, R, F, Fut>(
     targets: impl IntoIterator<Item = (String, T)>,
     collect: F,
@@ -920,9 +921,28 @@ where
     Fut: std::future::Future<Output = Option<R>> + Send + 'static,
     R: Send + 'static,
 {
+    collect_round_within(targets, collect, app::METRICS_TARGET_BOUND).await
+}
+
+// The bound is a parameter so a test can use a few milliseconds of real time:
+// tokio's paused clock needs the `test-util` feature, which the build does not
+// otherwise carry.
+async fn collect_round_within<T, R, F, Fut>(
+    targets: impl IntoIterator<Item = (String, T)>,
+    collect: F,
+    bound: std::time::Duration,
+) -> Vec<(String, R)>
+where
+    F: Fn(T) -> Fut,
+    Fut: std::future::Future<Output = Option<R>> + Send + 'static,
+    R: Send + 'static,
+{
     let measured = targets.into_iter().map(|(name, target)| {
         let measuring = collect(target);
-        async move { measuring.await.map(|m| (name, m)) }
+        async move {
+            let measured = tokio::time::timeout(bound, measuring).await.ok()??;
+            Some((name, measured))
+        }
     });
     futures_join(measured).await.into_iter().flatten().collect()
 }

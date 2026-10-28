@@ -16,6 +16,11 @@ use crate::state::{
 // a buffer sized to one guess at the width left the rest of the chart blank
 pub const SPARKLINE_SAMPLES: usize = 240;
 pub const METRICS_EVERY: Duration = Duration::from_secs(5);
+// One target's share of a round. Above a full TCP probe (2 s + 2 s + 0.25 s)
+// plus a healthy `launchctl`, below the 10 s `SERVICE_BOUND`, so a target that
+// is merely slow still lands and one that hangs is dropped before the next
+// round is due to start behind it.
+pub const METRICS_TARGET_BOUND: Duration = Duration::from_secs(8);
 // A connection count read once every five seconds lands between two requests
 // and reports an idle tunnel under real traffic, so the count is sampled on
 // its own clock and the pane reports the peak. Ten samples a render is as fine
