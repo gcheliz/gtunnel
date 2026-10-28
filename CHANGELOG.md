@@ -3,6 +3,16 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.26](https://github.com/gcheliz/gtunnel/compare/v0.2.25...v0.2.26) - 2026-10-28
+
+### Added
+
+- *(supervise)* stop a job that spends its restart budget ([#237](https://github.com/gcheliz/gtunnel/pull/237))
+
+### Documentation
+
+- *(cli)* flag help names what each value is and shows an example ([#236](https://github.com/gcheliz/gtunnel/pull/236))
+
 ## [0.2.25](https://github.com/gcheliz/gtunnel/compare/v0.2.24...v0.2.25) - 2026-10-28
 
 ### Added
