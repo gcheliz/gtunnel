@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.24](https://github.com/gcheliz/gtunnel/compare/v0.2.23...v0.2.24) - 2026-10-28
+
+### Added
+
+- *(init)* a bare gtunnel on a fresh install runs the configuration picker ([#227](https://github.com/gcheliz/gtunnel/pull/227))
+
 ## [0.2.23](https://github.com/gcheliz/gtunnel/compare/v0.2.22...v0.2.23) - 2026-10-28
 
 ### Fixed
