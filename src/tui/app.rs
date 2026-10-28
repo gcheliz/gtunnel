@@ -2960,10 +2960,13 @@ pub fn edit_in_terminal(path: &Path) -> anyhow::Result<()> {
         }
     }
 
-    let (program, args) = super::config_edit::resolve_editor(
+    let settings = crate::settings::current();
+    let (program, args) = super::config_edit::resolve_editor_from(&[
+        settings.editor_env.as_deref(),
         std::env::var("VISUAL").ok().as_deref(),
         std::env::var("EDITOR").ok().as_deref(),
-    );
+        settings.editor_file.as_deref(),
+    ]);
     let _handoff = Handoff::leave();
     let status = std::process::Command::new(&program)
         .args(&args)

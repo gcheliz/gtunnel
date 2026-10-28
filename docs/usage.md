@@ -591,7 +591,7 @@ bottom row (`1-16 of 29 lines`) says where the window is. A file that does not e
 so: `tunnels.toml` is absent until the first `add`. `Esc` or `q` closes the page. The demo has
 no config files, so `C` there says so and opens nothing.
 
-`e` edits the file on screen in `$VISUAL`, then `$EDITOR`, then `vi`. The value is split on
+`e` edits the file on screen in `$VISUAL`, then `$EDITOR`, then the `editor` key of `config.toml`, then `vi`. The value is split on
 whitespace, so `code -w` works, and a quoted path with a space stays one program. gtunnel
 leaves the screen while the editor runs and takes it back when the editor exits, whatever
 way it exits.

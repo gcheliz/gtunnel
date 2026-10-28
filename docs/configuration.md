@@ -41,7 +41,11 @@ in the configuration directory (see [Environment](#environment) below).
 |---|---|---|---|
 | `selected_account` | string | yes | The account used when no `--account` is given |
 | `log_level` | string | no | `quiet`, `info` or `debug`; `info` when absent. See [The log level](#the-log-level) |
-| `notifications` | table | no | Which lifecycle changes raise a desktop notification: `up`, `degraded`, `recovered`, `failed`, all booleans. See [Notifications](commands.md#notifications) |
+| `start_deadline` | string | no | How long a start waits for an Access tunnel to report it is listening, as a duration; `"20s"` when absent. See [Settings the environment can override](#settings-the-environment-can-override) |
+| `discovery` | boolean | no | Whether `list`, the TUI and `mcp` look for tunnel processes started outside gtunnel; `true` when absent |
+| `service_call_timeout` | string | no | How long one `launchctl` or `systemctl` call may take before it is reported as `timed out after`, as a duration; `"10s"` when absent |
+| `editor` | string | no | The editor `e` opens, below `$VISUAL` and `$EDITOR`; `""` (none chosen) when absent |
+| `notifications` | table | no | Which lifecycle changes raise a desktop notification: `enabled` (the master switch), then `up`, `degraded`, `recovered`, `failed`, all booleans. See [Notifications](commands.md#notifications) |
 | `restart` | table | no | When a tunnel that keeps failing is stopped: `max_restarts`, `window`, `min_uptime`, `base_backoff`, `max_backoff`. `init` writes all five at their defaults. See [The restart budget](#the-restart-budget) |
 | `accounts` | array of tables | yes | One entry per account; may be empty |
 
@@ -235,6 +239,72 @@ the level in force at the moment of the toggle. Worth knowing if you exported
 `GTUNNEL_LOG_LEVEL` to diagnose something and left it set: the next `autostart --on` puts
 that level on the tunnel's start at login.
 
+## Settings the environment can override
+
+Five keys of `config.toml` have a variable each. Where they disagree the variable wins, always:
+there is no key that opts out, so a value edited in the file that has no effect has one cause,
+and `gtunnel doctor` names it.
+
+| Key | Variable | Older variable | Default | Value |
+|---|---|---|---|---|
+| `start_deadline` | `GTUNNEL_START_DEADLINE` | `GTUNNEL_START_DEADLINE_MS` | `"20s"` | a duration above zero |
+| `service_call_timeout` | `GTUNNEL_SERVICE_CALL_TIMEOUT` | `GTUNNEL_SERVICE_BOUND_MS` | `"10s"` | a duration above zero |
+| `discovery` | `GTUNNEL_DISCOVERY` | `GTUNNEL_NO_DISCOVERY` | `true` | `true` or `false` |
+| `notifications.enabled` | `GTUNNEL_NOTIFICATIONS` | `GTUNNEL_NO_NOTIFY` | `true` | `true` or `false` |
+| `editor` | `GTUNNEL_EDITOR` | none | none | a command line |
+
+| Where | Beats |
+|---|---|
+| The variable (the plain spelling, then the older one) | the file |
+| The key in `config.toml` | the default |
+| nothing set | the default above |
+
+Durations are `humantime` text (`500ms`, `20s`, `1m30s`). Booleans take `true`, `false`, `yes`,
+`no`, `on`, `off`, `1` or `0`. The older variables keep working: `GTUNNEL_START_DEADLINE_MS` and
+`GTUNNEL_SERVICE_BOUND_MS` are whole milliseconds, and `GTUNNEL_NO_DISCOVERY` and
+`GTUNNEL_NO_NOTIFY` turn the feature off when set to anything but empty or `0`. When both
+spellings of one key are set the plain one wins. An empty variable counts as unset.
+
+A bad `config.toml` value fails every command with exit 2 naming the key; a bad variable fails
+with exit 2 naming the variable. The older variables are checked now too, where they used to be
+ignored when they did not parse:
+
+```
+$ GTUNNEL_START_DEADLINE=soon gtunnel list
+Error: GTUNNEL_START_DEADLINE: 'soon' is not a duration like 30s or 1m (expected number at 0)
+```
+
+`editor` ranks below `$VISUAL` and `$EDITOR`: `GTUNNEL_EDITOR`, then `$VISUAL`, then
+`$EDITOR`, then the file, then `vi`. A person who set `$EDITOR` in a profile is not overruled by
+a key written once.
+
+`gtunnel init` writes all of these at their defaults, with `editor = ""` for none chosen. It
+adds only the keys that are missing and never changes a value already there; a file without them
+loads with the defaults:
+
+```toml
+start_deadline = "20s"
+discovery = true
+service_call_timeout = "10s"
+editor = ""
+
+[notifications]
+enabled = true
+up = false
+degraded = true
+recovered = true
+failed = true
+```
+
+When a variable gives a value other than the file's, `gtunnel doctor` says so and what to unset:
+
+```
+start_deadline is 1m 30s here because GTUNNEL_START_DEADLINE is set in the environment; config.toml says '45s' and is ignored for it. Unset GTUNNEL_START_DEADLINE to use the file
+```
+
+The file is read on each use, so a change made in the TUI's config page applies to the next
+start without a relaunch.
+
 ## The restart budget
 
 A tunnel whose gcloud keeps dying for a reason gtunnel does not recognise stops instead of
@@ -305,16 +375,16 @@ skipped, so a second run does nothing. A definition counts as out of date only w
 |---|---|---|
 | `GTUNNEL_CONFIG_DIR` | keep every file in another directory | a throwaway configuration |
 | `GTUNNEL_LOG_LEVEL` | set `quiet`, `info` or `debug` without a flag | every command |
-| `GTUNNEL_START_DEADLINE_MS` | give a slow tunnel longer to listen | a start that fails before the tunnel is up |
+| `GTUNNEL_START_DEADLINE` | give a slow tunnel longer to listen, e.g. `45s` (older: `GTUNNEL_START_DEADLINE_MS`) | a start that fails before the tunnel is up |
 | `GTUNNEL_RESTART_MAX_RESTARTS` | set how many fast failures a tunnel survives; `0` turns the budget off | a tunnel that loops, or one that must never be parked |
 | `GTUNNEL_RESTART_WINDOW` | set how long a failure counts, e.g. `10m` | the restart budget |
 | `GTUNNEL_RESTART_MIN_UPTIME` | set how long a run must last to clear the count, e.g. `60s` | the restart budget |
 | `GTUNNEL_RESTART_BASE_BACKOFF` | set the wait after the first failure, e.g. `10s` | the restart budget |
 | `GTUNNEL_RESTART_MAX_BACKOFF` | cap the doubling wait, e.g. `5m` | the restart budget |
-| `VISUAL`, then `EDITOR` | choose the editor `e` opens | the TUI's config page |
-| `GTUNNEL_NO_NOTIFY` | silence desktop notifications | tests and diagnostics |
-| `GTUNNEL_NO_DISCOVERY` | stop looking for processes outside gtunnel | tests and diagnostics |
-| `GTUNNEL_SERVICE_BOUND_MS` | bound one `launchctl` or `systemctl` call | tests and diagnostics |
+| `GTUNNEL_EDITOR`, then `VISUAL`, then `EDITOR` | choose the editor `e` opens | the TUI's config page |
+| `GTUNNEL_NOTIFICATIONS` | switch desktop notifications on or off (older: `GTUNNEL_NO_NOTIFY`) | tests and diagnostics |
+| `GTUNNEL_DISCOVERY` | switch the look for processes outside gtunnel on or off (older: `GTUNNEL_NO_DISCOVERY`) | tests and diagnostics |
+| `GTUNNEL_SERVICE_CALL_TIMEOUT` | bound one `launchctl` or `systemctl` call (older: `GTUNNEL_SERVICE_BOUND_MS`) | tests and diagnostics |
 
 ### Reference
 
@@ -322,16 +392,21 @@ skipped, so a second run does nothing. A definition counts as out of date only w
 |---|---|---|
 | `GTUNNEL_CONFIG_DIR` | every command | Also turns off the automatic reinstall of out-of-date service definitions, because the label is shared with the live job. Moves `config.toml`, `tunnels.toml`, `lifecycle.json`, `run/` (including the watchdog heartbeat), `agents/` and `logs/` into that directory. The service label is still `com.gtunnel.<account>.<name>`, so give a throwaway configuration an account name of its own or `install` restarts the live job that shares the label |
 | `GTUNNEL_LOG_LEVEL` | every command | `quiet`, `info` or `debug`. Beaten by `--log-level`, beats `log_level` in `config.toml`. An empty value counts as unset; anything else that is not a level is an error naming the variable. See [The log level](#the-log-level) |
-| `GTUNNEL_NO_NOTIFY` | every command | Silences desktop notifications when set to anything but empty or `0`. The integration tests set it, so `cargo test` never posts a banner |
-| `GTUNNEL_NO_DISCOVERY` | `list`, the TUI, `mcp` | For tests: when set to anything but empty or `0`, no process outside gtunnel is looked for, so `list` shows no `pid N` rows. The integration tests set it so a tunnel running on the host cannot change a row count |
-| `GTUNNEL_START_DEADLINE_MS` | `start`, `restart`, `add -s` | Milliseconds an Access tunnel is given to report it is listening before the start counts as failed. Default 20000; an empty or non-numeric value counts as unset. Public tunnels use a fixed 3-second settle instead |
+| `GTUNNEL_NOTIFICATIONS` | every command | `true` or `false`: whether desktop notifications are raised. Beats `enabled` under `[notifications]`. An empty value counts as unset; anything else that is not a boolean is an error naming the variable. See [Settings the environment can override](#settings-the-environment-can-override) |
+| `GTUNNEL_NO_NOTIFY` | every command | The older spelling of `GTUNNEL_NOTIFICATIONS=false`: silences desktop notifications when set to anything but empty or `0`. `GTUNNEL_NOTIFICATIONS` wins when both are set. The integration tests set it, so `cargo test` never posts a banner |
+| `GTUNNEL_DISCOVERY` | `list`, the TUI, `mcp` | `true` or `false`: whether processes outside gtunnel are looked for. Beats `discovery` in `config.toml`. `false` makes `list` show no `pid N` rows |
+| `GTUNNEL_NO_DISCOVERY` | `list`, the TUI, `mcp` | The older spelling of `GTUNNEL_DISCOVERY=false`, for tests: when set to anything but empty or `0`, no process outside gtunnel is looked for. The integration tests set it so a tunnel running on the host cannot change a row count |
+| `GTUNNEL_START_DEADLINE` | `start`, `restart`, `add -s` | How long an Access tunnel is given to report it is listening before the start counts as failed, as a duration (`45s`). Beats `start_deadline`. Default 20s; an empty value counts as unset, and anything else that is not a duration above zero is an error naming the variable. Public tunnels use a fixed 3-second settle instead |
+| `GTUNNEL_START_DEADLINE_MS` | `start`, `restart`, `add -s` | The older spelling, in whole milliseconds above zero. `GTUNNEL_START_DEADLINE` wins when both are set |
 | `GTUNNEL_RESTART_MAX_RESTARTS` | the supervisor, `start`, `restart` | Fast failures tolerated inside the window; a whole number, `0` disables the budget. Beats `max_restarts` under `[restart]`. An empty value counts as unset; anything else that is not a number in range is an error naming the variable. See [The restart budget](#the-restart-budget) |
 | `GTUNNEL_RESTART_WINDOW` | the supervisor, `start`, `restart` | How long a failure counts, as a duration (`10m`). Beats `window`. Must not be shorter than the base backoff |
 | `GTUNNEL_RESTART_MIN_UPTIME` | the supervisor, `start`, `restart` | How long a run must last to clear the count (`60s`). Beats `min_uptime` |
 | `GTUNNEL_RESTART_BASE_BACKOFF` | the supervisor, `start`, `restart` | The wait after the first failure (`10s`), doubled on each next one. Beats `base_backoff` |
 | `GTUNNEL_RESTART_MAX_BACKOFF` | the supervisor, `start`, `restart` | The cap on that wait (`5m`). Beats `max_backoff`; not shorter than the base backoff |
-| `GTUNNEL_SERVICE_BOUND_MS` | every command | A test and diagnostics knob: milliseconds to wait for one `launchctl` or `systemctl` call before it is reported as `timed out after`. Default 10000; an empty, zero or non-numeric value counts as unset. Leave it alone unless you are testing the timeout path or diagnosing a slow service manager |
-| `VISUAL`, then `EDITOR` | the TUI's config page | Which editor `e` opens. `VISUAL` wins because it names the full-screen editor. An empty value counts as unset, since `EDITOR=` is how a shell clears one, and neither set falls back to the platform default |
+| `GTUNNEL_SERVICE_CALL_TIMEOUT` | every command | A test and diagnostics knob: how long to wait for one `launchctl` or `systemctl` call before it is reported as `timed out after`, as a duration (`10s`). Beats `service_call_timeout`. Default 10s; an empty value counts as unset. Leave it alone unless you are testing the timeout path or diagnosing a slow service manager |
+| `GTUNNEL_SERVICE_BOUND_MS` | every command | The older spelling, in whole milliseconds above zero. `GTUNNEL_SERVICE_CALL_TIMEOUT` wins when both are set |
+| `GTUNNEL_EDITOR` | the TUI's config page | Which editor `e` opens, ahead of `VISUAL` and `EDITOR`. Beats `editor` in `config.toml`, which sits below both |
+| `VISUAL`, then `EDITOR` | the TUI's config page | Which editor `e` opens. `VISUAL` wins because it names the full-screen editor. An empty value counts as unset, since `EDITOR=` is how a shell clears one; neither set falls back to `editor` in `config.toml`, then to the platform default |
 | `PATH` | startup | Where `gcloud` is found |
 
 The value of `VISUAL` or `EDITOR` is split into a program and its arguments here, never

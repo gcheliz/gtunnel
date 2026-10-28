@@ -8,7 +8,7 @@ use crate::cli::{
     AccountCommands, Cli, Commands, DomainsCommands, RelayCommands, WatchCommands, ZonesCommands,
 };
 pub use crate::commands::completions::answer_if_asked;
-use crate::{commands, config, doctor, ephemeral, gcp, loglevel, mcp, tui, update};
+use crate::{commands, config, doctor, ephemeral, gcp, loglevel, mcp, settings, tui, update};
 
 /// Prints a failure the way the caller asked for it and ends the process
 /// with the code its kind maps to.
@@ -74,8 +74,13 @@ pub async fn run(args: Cli) -> Result<()> {
     // values, so a typo is caught by whichever command is typed next and not
     // only when a tunnel is failing. The supervisor is exempt: it falls back
     // to the defaults, because dying here would restart it into this error.
+    // The same goes for the settings of `settings.rs`: the file is checked at
+    // load, and here the environment is checked against it, so a bad
+    // GTUNNEL_START_DEADLINE fails by name before a command half-runs.
     if !matches!(args.command, Some(Commands::Supervise { .. })) {
-        config::load_config().unwrap_or_default().restart_budget()?;
+        let cfg = config::load_config().unwrap_or_default();
+        cfg.restart_budget()?;
+        settings::resolve(&cfg, &|name| std::env::var(name).ok())?;
     }
 
     // An upgrade replaces the binary and leaves every installed service on the

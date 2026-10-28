@@ -24,6 +24,7 @@ mod notify;
 mod probe;
 mod proc;
 mod restart_budget;
+mod settings;
 mod state;
 mod tui;
 mod tunnel;
