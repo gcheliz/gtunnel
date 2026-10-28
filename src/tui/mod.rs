@@ -689,12 +689,16 @@ fn schedule(app: &mut App, timers: &mut Timers, tx: &mpsc::UnboundedSender<Msg>)
         app.update = crate::update::available_update();
         let tx = tx.clone();
         let account = account.clone();
-        tokio::spawn(async move {
-            let _ = tx.send(match ops::load_entries(&account).await {
-                Ok((entries, used_ports)) => Msg::Entries(generation, entries, used_ports),
-                Err(e) => Msg::EntriesFailed(generation, format!("{e:#}")),
-            });
-        });
+        spawn_round(
+            tx,
+            Msg::EntriesFailed(generation, "the discovery round failed".to_string()),
+            async move {
+                match ops::load_entries(&account).await {
+                    Ok((entries, used_ports)) => Msg::Entries(generation, entries, used_ports),
+                    Err(e) => Msg::EntriesFailed(generation, format!("{e:#}")),
+                }
+            },
+        );
     }
 
     // Blocking: `lsof` is a process, and it runs ten times per metrics round
@@ -709,7 +713,8 @@ fn schedule(app: &mut App, timers: &mut Timers, tx: &mpsc::UnboundedSender<Msg>)
     let polls = plan_probes(app, timers);
     if let Some(round) = polls.metrics {
         let tx = tx.clone();
-        tokio::spawn(async move {
+        let generation = round.generation;
+        spawn_round(tx, Msg::Metrics(generation, Vec::new()), async move {
             let include_lb = round.include_lb;
             let peaks = std::sync::Arc::new(round.peaks);
             let targets = round
@@ -721,7 +726,7 @@ fn schedule(app: &mut App, timers: &mut Timers, tx: &mpsc::UnboundedSender<Msg>)
                 async move { ops::collect(&target, include_lb, Some(&peaks)).await }
             })
             .await;
-            let _ = tx.send(Msg::Metrics(round.generation, out));
+            Msg::Metrics(generation, out)
         });
     }
 
@@ -729,14 +734,32 @@ fn schedule(app: &mut App, timers: &mut Timers, tx: &mpsc::UnboundedSender<Msg>)
     if !targets.is_empty() {
         let generation = timers.health.begin();
         let tx = tx.clone();
-        tokio::spawn(async move {
+        spawn_round(tx, Msg::Health(generation, Vec::new()), async move {
             let probes = targets
                 .into_iter()
                 .map(|(name, tunnel)| async move { (name, ops::probe_health(&tunnel).await) });
-            let results = futures_join(probes).await;
-            let _ = tx.send(Msg::Health(generation, results));
+            Msg::Health(generation, futures_join(probes).await)
         });
     }
+}
+
+/// Runs one poller round and always reports back.
+///
+/// The flight guard is cleared only when the round's message lands, so a round
+/// that dies without sending one would hold its slot for good and freeze every
+/// row it feeds. The round runs as an inner task: a panic comes back as a
+/// `JoinError` here and `empty` is sent in its place. `empty` is the round's
+/// own "nothing to report" message, which `apply_polled` already treats as
+/// rows keeping their last values: it releases the guard and touches nothing
+/// else.
+fn spawn_round<F>(tx: mpsc::UnboundedSender<Msg>, empty: Msg, round: F)
+where
+    F: std::future::Future<Output = Msg> + Send + 'static,
+{
+    tokio::spawn(async move {
+        let msg = tokio::spawn(round).await.unwrap_or(empty);
+        let _ = tx.send(msg);
+    });
 }
 
 // The probing one tick starts, decided before any of it runs

@@ -2144,3 +2144,104 @@ fn an_empty_list_does_not_spend_the_metrics_slot() {
     app.entries = app_with_two().entries;
     assert!(plan_probes(&mut app, &mut timers).metrics.is_some());
 }
+
+// One body for the three pollers that use the flight guard: begin a round,
+// let it die without a result, and check the guard is released
+async fn a_round_that_panics_still_reports_and_the_next_tick_starts_another(
+    begin: impl Fn(&mut App, &mut Timers) -> Option<Msg>,
+    again: impl Fn(&mut App, &mut Timers) -> bool,
+) {
+    use std::time::Duration;
+    use tokio::sync::Notify;
+
+    let mut app = app_with_two();
+    let mut timers = Timers::due();
+    let empty = begin(&mut app, &mut timers).expect("the first round starts");
+    assert!(
+        !again(&mut app, &mut timers),
+        "a round in flight must hold the guard"
+    );
+
+    // The round parks until the test has looked, then dies without a result
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let go = std::sync::Arc::new(Notify::new());
+    let wait = go.clone();
+    spawn_round(tx, empty, async move {
+        wait.notified().await;
+        panic!("the collector panicked");
+    });
+    go.notify_one();
+    let msg = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .expect("the panicked round never reported: its guard stays set for good")
+        .expect("channel open");
+    apply_polled(&mut app, &mut timers, msg);
+
+    // The clock is moved back rather than waited for
+    timers.metrics.last -= Duration::from_secs(3600);
+    timers.health.last -= Duration::from_secs(3600);
+    timers.entries.last -= Duration::from_secs(3600);
+    assert!(
+        again(&mut app, &mut timers),
+        "the next tick must start a new round"
+    );
+}
+
+#[tokio::test]
+async fn a_metrics_round_that_panics_still_reports_and_the_next_tick_starts_another() {
+    a_round_that_panics_still_reports_and_the_next_tick_starts_another(
+        |app, timers| {
+            let round = metrics_round(app, timers)?;
+            Some(Msg::Metrics(round.generation, Vec::new()))
+        },
+        |app, timers| metrics_round(app, timers).is_some(),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_health_round_that_panics_still_reports_and_the_next_tick_starts_another() {
+    a_round_that_panics_still_reports_and_the_next_tick_starts_another(
+        |app, timers| {
+            if health_round(app, timers).is_empty() {
+                return None;
+            }
+            let generation = timers.health.begin();
+            Some(Msg::Health(generation, Vec::new()))
+        },
+        |app, timers| !health_round(app, timers).is_empty(),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_discovery_round_that_panics_still_reports_and_the_next_tick_starts_another() {
+    a_round_that_panics_still_reports_and_the_next_tick_starts_another(
+        |_, timers| {
+            let generation = timers.entries.begin();
+            Some(Msg::EntriesFailed(generation, "x".to_string()))
+        },
+        |_, timers| timers.entries.due(app::DISCOVERY_EVERY),
+    )
+    .await;
+}
+
+// An empty result is "nothing to say", never "every tunnel is gone": the rows
+// keep what they had and only the guard is released
+#[test]
+fn an_empty_round_result_keeps_the_rows_last_values() {
+    let mut app = app_with_two();
+    let mut timers = Timers::due();
+    app.entries[0].health = HealthStatus::Healthy;
+    let round = metrics_round(&mut app, &mut timers).expect("a round");
+    apply_polled(
+        &mut app,
+        &mut timers,
+        Msg::Metrics(round.generation, Vec::new()),
+    );
+    let generation = timers.health.begin();
+    apply_polled(&mut app, &mut timers, Msg::Health(generation, Vec::new()));
+    assert_eq!(app.entries.len(), 2);
+    assert_eq!(app.entries[0].health, HealthStatus::Healthy);
+    assert!(!timers.metrics.in_flight && !timers.health.in_flight);
+}
