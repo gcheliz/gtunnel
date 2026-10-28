@@ -96,6 +96,15 @@ pub struct TunnelEntry {
     // is growth inside a window, which one round's count cannot say
     pub restart_watch: RestartWatch,
     pub crash_looping: bool,
+    // The last metrics round covered this row and brought no verdict for it,
+    // so the health round may not skip it while the metrics round is the
+    // only other source: otherwise a row whose measurement keeps failing
+    // would never be checked again
+    pub needs_health_probe: bool,
+    // When the round that produced the standing verdict began. Two rounds can
+    // carry a verdict and the slower one lands last, so a verdict from a round
+    // that began earlier than the standing one is stale and is dropped
+    pub health_at: Option<std::time::Instant>,
     pub external: Option<ExternalTunnel>,
     pub pending: Option<PendingOp>,
     // Set when the op has returned: the first entries round begun after that
@@ -119,6 +128,8 @@ impl TunnelEntry {
             health: HealthStatus::Unknown,
             restart_watch: RestartWatch::default(),
             crash_looping: false,
+            needs_health_probe: false,
+            health_at: None,
             external: None,
             pending: None,
             pending_settle: false,
