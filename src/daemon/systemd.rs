@@ -234,6 +234,27 @@ pub async fn install(spec: &ServiceSpec) -> Result<()> {
     set_auto_start(spec).await
 }
 
+/// The unit file and its enablement, with no log reset and no start; see
+/// the launchd twin for why.
+pub async fn write_definition(spec: &ServiceSpec) -> Result<()> {
+    let dir = units_dir()?;
+    std::fs::create_dir_all(&dir).with_context(|| format!("Failed to create {}", dir.display()))?;
+    let path = unit_path(&spec.label)?;
+    std::fs::write(&path, render_unit(spec))
+        .with_context(|| format!("Failed to write {}", path.display()))?;
+    daemon_reload().await?;
+    set_auto_start(spec).await
+}
+
+pub async fn restart(label: &str) -> Result<()> {
+    let out = systemctl(&["restart", label]).await?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        anyhow::bail!("systemctl restart failed: {}", stderr.trim());
+    }
+    Ok(())
+}
+
 pub async fn uninstall(label: &str) -> Result<()> {
     let _ = systemctl(&["stop", label]).await;
     let _ = systemctl(&["disable", label]).await;

@@ -138,6 +138,7 @@ emptied when its tunnel starts, so a line in it was written by the process runni
 | A public URL answers `503` (nothing in the log) | The tunnel's backend, host rule, named port or DNS record is missing | `gtunnel restart <name>` re-creates them, see [the log](commands.md#start-stop-restart-autostart-logs-list-delete) |
 | `Reauthentication required` | gcloud credentials expired. The supervisor stops the job instead of restarting it every few seconds, and `list` keeps showing `auth expired` until the next start | `gcloud auth login`, then `gtunnel start <name>` |
 | `list` shows `[restart budget spent: ...]` | gcloud died more than `max_restarts` times, each before `min_uptime`, for a reason gtunnel does not recognise. The supervisor stopped the job, and the log says why | Read the log, fix the cause, then `gtunnel start <name>`. To tune or disable the budget see [The restart budget](configuration.md#the-restart-budget) |
+| A tunnel installed before the restart budget keeps restarting | Its definition has no `--crash-marker` | Run any gtunnel command: it reinstalls the definition and prints `gtunnel: reinstalled ...` on stderr. If it prints `could not reinstall`, the reason follows; fix it and run a command again |
 | `4004` | IAP asked gcloud to reauthenticate; gcloud resumes the session on its own | Nothing, unless it repeats: then check the account's credentials with `gtunnel doctor` |
 | `Unable to reconnect within` | gcloud gave up reconnecting to IAP after 15 minutes and the clients on the tunnel were cut | Restart the tunnel; see [Limits](architecture.md#limits) |
 | `Address already in use` | Another process holds the local port | `gtunnel doctor`, or set `--local-port` |
@@ -270,7 +271,7 @@ staying up.
 | The ceiling a tunnel gets now | 4096, written into the unit by gtunnel |
 | What it was before | 256 on macOS, which a launchd job inherits and nothing chose |
 | Where it comes from | `SoftResourceLimits`/`NumberOfFiles` in the plist, `LimitNOFILE` in the systemd unit |
-| Applied when | The service is installed. A tunnel installed by an older gtunnel keeps the old ceiling until `gtunnel restart <name>` rewrites its unit |
+| Applied when | The service is installed. A tunnel installed by an older gtunnel gets the new ceiling from the next gtunnel command, which rewrites its unit |
 
 Four thousand descriptors is more than a tunnel needs, so hitting the new ceiling means
 something is holding connections open rather than closing them. `gtunnel doctor` reads the

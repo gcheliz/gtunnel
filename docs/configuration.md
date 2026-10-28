@@ -13,7 +13,7 @@ it reads. The words Access, Expose, target kind and lifetime are defined once in
 
 | Pitfall | What happens | Do instead |
 |---|---|---|
-| Editing `tunnels.toml` while a tunnel runs | The running job keeps its old settings. A launchd or systemd job is rewritten only on a restart | `restart`, or `R` in the TUI, after the edit |
+| Editing `tunnels.toml` while a tunnel runs | The running job keeps its old settings until its definition is rewritten, which the next gtunnel command does and restarts the job | Run any command, or `restart` (`R` in the TUI) to do it now |
 | Renaming a tunnel by hand | The old launchd or systemd job stays behind, because the service is named for the tunnel | `gtunnel rename`, which moves the record, the service and the log together |
 | Treating `name` as the identity | The identity is `name` plus `account_name`. The service and log are named `<account>-<name>`, so `prod` + `eu-api` and `prod-eu` + `api` collide | Pick a name that makes the joined label unique. `add` refuses a clash |
 | Reusing a local port | Two tunnels cannot share a `local_port`, in any account, and none may use a port a live `gtunnel run` holds | Give each tunnel its own port; the config page refuses a duplicate |
@@ -286,8 +286,16 @@ A supervisor reads the budget once, when it starts. A launchd or systemd job doe
 shell, so the `GTUNNEL_RESTART_*` variables set when a tunnel is started or installed are
 written into its service definition; a variable exported later reaches it on the next
 `start` or `restart`. Cost: a tunnel that needs longer than `min_uptime` to come up and keeps
-failing is judged fast-failing. A tunnel installed before this feature has no
-`--crash-marker` in its definition and keeps looping until its next `start` or `restart`.
+failing is judged fast-failing.
+
+A tunnel installed before this feature has no `--crash-marker` in its definition. The first
+command after an upgrade compares every installed definition with the one the new binary
+writes, and rewrites each that differs. A running tunnel is restarted so it reads the new
+definition, which drops its connections for a moment; a stopped tunnel stays stopped and its
+log is left alone. One line on stderr names what was reinstalled, and a failure names the
+service and the reason without changing the exit status. A tunnel whose service was never
+installed, a definition that already matches, and any run with `GTUNNEL_CONFIG_DIR` set are
+skipped, so a second run does nothing. A definition counts as out of date only when its argument list differs in shape or its binary no longer exists; the values of `--log-level` and `GTUNNEL_*`, which come from whichever shell ran the command, are ignored, so exporting `GTUNNEL_LOG_LEVEL` for one command restarts nothing.
 
 ## Environment
 
@@ -312,7 +320,7 @@ failing is judged fast-failing. A tunnel installed before this feature has no
 
 | Variable | Read by | Effect |
 |---|---|---|
-| `GTUNNEL_CONFIG_DIR` | every command | Moves `config.toml`, `tunnels.toml`, `lifecycle.json`, `run/` (including the watchdog heartbeat), `agents/` and `logs/` into that directory. The service label is still `com.gtunnel.<account>.<name>`, so give a throwaway configuration an account name of its own or `install` restarts the live job that shares the label |
+| `GTUNNEL_CONFIG_DIR` | every command | Also turns off the automatic reinstall of out-of-date service definitions, because the label is shared with the live job. Moves `config.toml`, `tunnels.toml`, `lifecycle.json`, `run/` (including the watchdog heartbeat), `agents/` and `logs/` into that directory. The service label is still `com.gtunnel.<account>.<name>`, so give a throwaway configuration an account name of its own or `install` restarts the live job that shares the label |
 | `GTUNNEL_LOG_LEVEL` | every command | `quiet`, `info` or `debug`. Beaten by `--log-level`, beats `log_level` in `config.toml`. An empty value counts as unset; anything else that is not a level is an error naming the variable. See [The log level](#the-log-level) |
 | `GTUNNEL_NO_NOTIFY` | every command | Silences desktop notifications when set to anything but empty or `0`. The integration tests set it, so `cargo test` never posts a banner |
 | `GTUNNEL_NO_DISCOVERY` | `list`, the TUI, `mcp` | For tests: when set to anything but empty or `0`, no process outside gtunnel is looked for, so `list` shows no `pid N` rows. The integration tests set it so a tunnel running on the host cannot change a row count |
