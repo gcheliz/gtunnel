@@ -3,6 +3,16 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.14](https://github.com/gcheliz/gtunnel/compare/v0.2.13...v0.2.14) - 2026-10-28
+
+### Documentation
+
+- *(architecture)* show that expired credentials stop the restart loop ([#203](https://github.com/gcheliz/gtunnel/pull/203))
+
+### Performance
+
+- *(tui)* probe each tunnel once per tick ([#204](https://github.com/gcheliz/gtunnel/pull/204))
+
 ## [0.2.13](https://github.com/gcheliz/gtunnel/compare/v0.2.12...v0.2.13) - 2026-10-28
 
 ### Fixed
