@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.15](https://github.com/gcheliz/gtunnel/compare/v0.2.14...v0.2.15) - 2026-10-28
+
+### Fixed
+
+- *(tui)* a panicked round no longer freezes the metrics ([#205](https://github.com/gcheliz/gtunnel/pull/205))
+
 ## [0.2.14](https://github.com/gcheliz/gtunnel/compare/v0.2.13...v0.2.14) - 2026-10-28
 
 ### Documentation
