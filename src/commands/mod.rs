@@ -99,6 +99,16 @@ impl ListRow {
         }
     }
 
+    /// A stopped tunnel whose supervisor gave up on expired credentials. The
+    /// reason rides in the trailing note, like a run's, so the status column
+    /// keeps the one word `stopped` that scripts and the layout already rely on.
+    pub fn stopped_for_credentials(mut self, marked: bool) -> Self {
+        if marked {
+            self.note = Some("  [auth expired]".to_string());
+        }
+        self
+    }
+
     pub fn render(&self, layout: &ListLayout) -> String {
         let note = self.note.as_deref().unwrap_or_default();
         format!(
@@ -288,6 +298,19 @@ mod tests {
         assert_eq!(columns[3], "access");
         assert_eq!(columns[4], "localhost:15432");
         assert_eq!(columns[5], "my-vm:5432");
+    }
+
+    #[test]
+    fn a_stopped_row_with_a_credentials_marker_says_auth_expired() {
+        let plain = vec![ListRow::from_tunnel(TunnelStatus::Stopped, &access())];
+        let marked =
+            vec![ListRow::from_tunnel(TunnelStatus::Stopped, &access())
+                .stopped_for_credentials(true)];
+        let before = plain[0].render(&ListLayout::fit(&plain));
+        let after = marked[0].render(&ListLayout::fit(&marked));
+        assert!(!before.contains("auth expired"), "{before}");
+        assert!(after.contains("auth expired"), "{after}");
+        assert!(after.starts_with(&before), "{after}");
     }
 
     #[test]

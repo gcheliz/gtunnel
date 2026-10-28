@@ -213,6 +213,10 @@ A live `gtunnel run` is listed with the mode it really is, `access` or `public`,
 after the target: `[run, stops at 14:32]` (local time) when it has a TTL, `[run]` when it does
 not. A run whose process is gone is not listed; `doctor` reports its leftover record.
 
+A stopped tunnel whose supervisor gave up on expired credentials carries `[auth expired]` in
+the same place, and `gtunnel_get_status` reports its `health` as `auth_expired`. Both clear on
+the next `gtunnel start`.
+
 The TUI tags the same row `[run, stops at 14:32]`, or `[ephemeral]` without a TTL, and its
 details pane counts down: `stops at  14:32 (in 25m)`.
 
