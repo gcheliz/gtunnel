@@ -49,19 +49,14 @@ fn spawn_chain(chain: Vec<Step>) -> std::thread::JoinHandle<()> {
     })
 }
 
-/// `GTUNNEL_NO_NOTIFY` set to anything but empty or `0` silences the desktop.
-/// The `Notifier` trait only protects unit tests; an integration test runs the
-/// real binary, whose announcements would otherwise land on the desktop of
-/// whoever ran `cargo test`. Taking the value as an argument keeps the rule
-/// testable without mutating the process environment.
-fn suppressed(value: Option<&str>) -> bool {
-    value.is_some_and(|v| !v.is_empty() && v != "0")
-}
-
 // Best effort: a desktop without a notifier is not an error. Every caller
 // reaches the desktop through here, so this is the one place the guard lives.
+// `notifications.enabled` or `GTUNNEL_NOTIFICATIONS` (or the older
+// `GTUNNEL_NO_NOTIFY`) is that guard. The `Notifier` trait only protects unit
+// tests; an integration test runs the real binary, whose announcements would
+// otherwise land on the desktop of whoever ran `cargo test`.
 pub fn notify(title: &str, body: &str) {
-    if suppressed(std::env::var("GTUNNEL_NO_NOTIFY").ok().as_deref()) {
+    if !crate::settings::current().notifications {
         return;
     }
     let _ = spawn_chain(vec![
@@ -95,15 +90,6 @@ mod tests {
         assert!(script.contains("\\\"hi\\\""), "{script}");
         assert!(script.contains("C:\\\\tmp"), "{script}");
         assert!(script.starts_with("display notification"), "{script}");
-    }
-
-    #[test]
-    fn the_guard_reads_set_and_non_empty_as_silence() {
-        assert!(suppressed(Some("1")));
-        assert!(suppressed(Some("yes")));
-        assert!(!suppressed(None), "unset: notifications stay on");
-        assert!(!suppressed(Some("")), "an empty value counts as unset");
-        assert!(!suppressed(Some("0")), "0 is how a shell says off");
     }
 
     #[test]

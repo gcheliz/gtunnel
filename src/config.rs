@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use crate::loglevel::LogLevel;
+use crate::settings;
 
 // A Cloud DNS managed zone registered with the relay, and the domain it serves
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -67,7 +68,7 @@ impl Account {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default)]
     pub selected_account: String,
@@ -77,7 +78,24 @@ pub struct Config {
     // `accounts` because toml writes a value before a table.
     #[serde(default)]
     pub log_level: LogLevel,
-    #[serde(default, skip_serializing_if = "NotifyConfig::is_default")]
+    // The four values below are kept raw (a duration string, a flag, a command
+    // line) and checked by `settings::resolve`, for the reason `RestartConfig`
+    // is: the reader of a bad one needs the key's name, not a line number.
+    // Like `[restart]` they are always written, so the file shows what there
+    // is to tune. Scalars come before the tables, as above.
+    #[serde(default = "settings::default_start_deadline")]
+    pub start_deadline: String,
+    #[serde(default = "settings::default_discovery")]
+    pub discovery: bool,
+    #[serde(default = "settings::default_service_call_timeout")]
+    pub service_call_timeout: String,
+    // Empty is "no editor chosen": TOML has no null, and an absent key would
+    // hide the setting from the one place a person looks for it
+    #[serde(default)]
+    pub editor: String,
+    // Always written, like `restart`, so `enabled` sits next to the four edge
+    // switches it overrules
+    #[serde(default)]
     pub notifications: NotifyConfig,
     // Always written, never skipped when it equals the defaults: it is the
     // part of the file a person opens to tune, and a missing key is
@@ -86,6 +104,22 @@ pub struct Config {
     pub restart: RestartConfig,
     #[serde(default)]
     pub accounts: Vec<Account>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            selected_account: String::new(),
+            log_level: LogLevel::default(),
+            start_deadline: settings::default_start_deadline(),
+            discovery: settings::default_discovery(),
+            service_call_timeout: settings::default_service_call_timeout(),
+            editor: String::new(),
+            notifications: NotifyConfig::default(),
+            restart: RestartConfig::default(),
+            accounts: Vec::new(),
+        }
+    }
 }
 
 /// The restart budget as written in `config.toml`.
@@ -206,6 +240,9 @@ impl RestartConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NotifyConfig {
+    /// The master switch: off, no edge reaches the desktop whatever the four
+    /// below say.
+    pub enabled: bool,
     pub up: bool,
     pub degraded: bool,
     pub recovered: bool,
@@ -215,17 +252,12 @@ pub struct NotifyConfig {
 impl Default for NotifyConfig {
     fn default() -> Self {
         Self {
+            enabled: true,
             up: false,
             degraded: true,
             recovered: true,
             failed: true,
         }
-    }
-}
-
-impl NotifyConfig {
-    fn is_default(&self) -> bool {
-        *self == Self::default()
     }
 }
 
@@ -389,6 +421,9 @@ pub fn load_config() -> Result<Config> {
     // would send the reader to the wrong place
     config
         .restart_budget_with(&|_| None)
+        .with_context(|| format!("In {}", path.display()))?;
+    // The same refusal for the settings keys, and for the same reason
+    crate::settings::resolve(&config, &|_| None)
         .with_context(|| format!("In {}", path.display()))?;
     Ok(config)
 }
@@ -793,6 +828,75 @@ mod tests {
         });
     }
 
+    const DEFAULT_SETTINGS: &str = "start_deadline = \"20s\"\ndiscovery = true\nservice_call_timeout = \"10s\"\neditor = \"\"\n\n[notifications]\nenabled = true\n";
+
+    #[test]
+    fn init_on_a_fresh_dir_writes_every_settings_key_at_its_default() {
+        with_temp_dir(|| {
+            update_or_init_config(|c| c.add_account(account("dev"))).expect("init");
+            let text = config_text();
+            assert!(text.contains(DEFAULT_SETTINGS), "{text}");
+            let at = |needle: &str| text.find(needle).expect(needle);
+            assert!(at("start_deadline") < at("[notifications]"), "{text}");
+            assert!(at("[notifications]") < at("[restart]"), "{text}");
+        });
+    }
+
+    #[test]
+    fn init_keeps_a_settings_value_already_in_the_file_and_fills_the_rest() {
+        with_temp_dir(|| {
+            std::fs::write(
+                config_path().expect("path"),
+                "selected_account = \"dev\"\nstart_deadline = \"90s\"\neditor = \"nano\"\n\n\
+                 [notifications]\nenabled = false\nup = true\n",
+            )
+            .expect("write");
+            update_or_init_config(|c| c.add_account(account("dev"))).expect("init");
+            let text = config_text();
+            for kept in [
+                "start_deadline = \"90s\"",
+                "editor = \"nano\"",
+                "enabled = false",
+                "up = true",
+            ] {
+                assert!(text.contains(kept), "{kept}: {text}");
+            }
+            for filled in ["discovery = true", "service_call_timeout = \"10s\""] {
+                assert!(text.contains(filled), "{filled}: {text}");
+            }
+        });
+    }
+
+    #[test]
+    fn load_config_refuses_a_bad_settings_key_with_exit_2() {
+        with_temp_dir(|| {
+            let cfg = Config {
+                start_deadline: "soon".to_string(),
+                ..Config::default()
+            };
+            save_config(&cfg).expect("save");
+            let err = load_config().expect_err("not a duration");
+            assert!(format!("{err:#}").contains("start_deadline"), "{err:#}");
+            assert_eq!(crate::error::kind_of(&err).exit_code(), 2);
+        });
+    }
+
+    #[test]
+    fn an_older_file_without_the_settings_keys_still_loads_with_the_defaults() {
+        with_temp_dir(|| {
+            std::fs::write(config_path().expect("path"), "selected_account = \"dev\"\n")
+                .expect("write");
+            let loaded = load_config().expect("loads");
+            assert_eq!(
+                loaded,
+                Config {
+                    selected_account: "dev".to_string(),
+                    ..Config::default()
+                }
+            );
+        });
+    }
+
     #[test]
     fn an_older_file_without_the_section_still_loads_with_the_defaults() {
         with_temp_dir(|| {
@@ -930,7 +1034,7 @@ mod tests {
 
     #[test]
     fn an_account_without_credential_file_round_trips_unchanged() {
-        let text = "selected_account = \"dev\"\nlog_level = \"info\"\n\n[restart]\nmax_restarts = 5\nwindow = \"10m\"\nmin_uptime = \"60s\"\nbase_backoff = \"10s\"\nmax_backoff = \"5m\"\n\n[[accounts]]\nname = \"dev\"\ngcloud_configuration = \"work\"\nproject = \"example-dev-1a2b\"\ndefault_zone = \"europe-west1-b\"\n";
+        let text = "selected_account = \"dev\"\nlog_level = \"info\"\nstart_deadline = \"20s\"\ndiscovery = true\nservice_call_timeout = \"10s\"\neditor = \"\"\n\n[notifications]\nenabled = true\nup = false\ndegraded = true\nrecovered = true\nfailed = true\n\n[restart]\nmax_restarts = 5\nwindow = \"10m\"\nmin_uptime = \"60s\"\nbase_backoff = \"10s\"\nmax_backoff = \"5m\"\n\n[[accounts]]\nname = \"dev\"\ngcloud_configuration = \"work\"\nproject = \"example-dev-1a2b\"\ndefault_zone = \"europe-west1-b\"\n";
         let cfg: Config = toml::from_str(text).expect("parse");
         assert_eq!(cfg.accounts[0].credential_file, None);
         let again = toml::to_string_pretty(&cfg).expect("serialize");
@@ -941,19 +1045,15 @@ mod tests {
         assert_eq!(again, text);
     }
 
+    // The section is the one place `enabled` can be found, so a file of
+    // defaults still carries it
     #[test]
-    fn default_notifications_are_not_written_back_to_config_toml() {
+    fn default_notifications_are_written_back_to_config_toml() {
         let text = toml::to_string_pretty(&Config::default()).expect("serialize");
-        assert!(!text.contains("notifications"), "{text}");
-        let custom = Config {
-            notifications: NotifyConfig {
-                up: true,
-                ..NotifyConfig::default()
-            },
-            ..Config::default()
-        };
-        let text = toml::to_string_pretty(&custom).expect("serialize");
-        assert!(text.contains("[notifications]"), "{text}");
+        assert!(
+            text.contains("[notifications]\nenabled = true\nup = false\n"),
+            "{text}"
+        );
     }
 
     use crate::state::{AccessTarget, PersistentTunnel, TunnelSpec, TunnelState};

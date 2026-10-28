@@ -422,6 +422,7 @@ mod tests {
     #[test]
     fn each_class_can_be_switched_off() {
         let off = NotifyConfig {
+            enabled: true,
             up: false,
             degraded: false,
             recovered: false,

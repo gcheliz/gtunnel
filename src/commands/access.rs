@@ -18,9 +18,6 @@ use crate::tunnel::diagnose_log_line;
 // A tunnel with nothing to listen for, a public one, has no readiness signal
 // to wait on, so it is given this long before its status is believed
 const EXPOSE_SETTLE: Duration = Duration::from_secs(3);
-// 20s because an ssh jump tunnel took 7s to listen in a real log, and a
-// deadline that close to the slowest start seen would fail a healthy one
-const START_DEADLINE: Duration = Duration::from_secs(20);
 const READY_POLL: Duration = Duration::from_millis(100);
 // A service that crashed is read from the manager, which is a subprocess, so
 // it is asked a few times a second and not on every poll
@@ -346,18 +343,11 @@ fn print_failed(e: anyhow::Error) -> anyhow::Error {
     }
 }
 
-/// How long a start waits for readiness before it fails.
-/// `GTUNNEL_START_DEADLINE_MS` overrides it, as `GTUNNEL_SERVICE_BOUND_MS` does
-/// for the service manager's bound, so a test or a slow link can move it.
+/// How long a start waits for readiness before it fails: `start_deadline` in
+/// `config.toml`, or `GTUNNEL_START_DEADLINE`, so a test or a slow link can
+/// move it. The default is in `settings`.
 pub fn start_deadline() -> Duration {
-    deadline_from(std::env::var("GTUNNEL_START_DEADLINE_MS").ok().as_deref())
-}
-
-fn deadline_from(value: Option<&str>) -> Duration {
-    value
-        .and_then(|v| v.parse::<u64>().ok())
-        .map(Duration::from_millis)
-        .unwrap_or(START_DEADLINE)
+    crate::settings::current().start_deadline
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1374,8 +1364,7 @@ mod tests {
     #[tokio::test]
     async fn wait_ready_fails_at_the_deadline_with_the_hint() {
         // The deadline an operator would set, read the way `start` reads it
-        let deadline = deadline_from(Some("200"));
-        assert_eq!(deadline, Duration::from_millis(200));
+        let deadline = Duration::from_millis(200);
         let dir = std::env::temp_dir().join(format!("gtunnel-never-{}", std::process::id()));
         let began = std::time::Instant::now();
         let got = wait_ready(
@@ -1395,12 +1384,6 @@ mod tests {
         };
         assert!(failed.to_string().contains("not listening after 1s"));
         assert!(failed.to_string().contains("Logs: gtunnel logs db"));
-    }
-
-    #[test]
-    fn the_start_deadline_defaults_to_twenty_seconds() {
-        assert_eq!(deadline_from(None), Duration::from_secs(20));
-        assert_eq!(deadline_from(Some("soon")), Duration::from_secs(20));
     }
 
     #[test]

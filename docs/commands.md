@@ -367,7 +367,7 @@ disagree — a plist left at login by an older gtunnel, say — `gtunnel doctor`
 drift and `doctor --fix` reconciles the service manager to the record.
 
 A start waits for the tunnel to listen. An Access tunnel, `--via` included, is given up to
-20 seconds (`GTUNNEL_START_DEADLINE_MS`) and passes as soon as its log reports the listener;
+20 seconds (`start_deadline`, or `GTUNNEL_START_DEADLINE`) and passes as soon as its log reports the listener;
 a public tunnel has no listener to wait for, so it is judged after a fixed 3 seconds. A
 tunnel whose service failed, or that is not listening by the deadline, is a failed start:
 the command prints the lines below on stdout, exits 1, and the record stays. The hint line appears when the log holds a line gtunnel recognises, and
@@ -748,6 +748,7 @@ alert (`3 tunnels: 2 unhealthy, 1 recovered`), not one per tunnel.
 
 ```toml
 [notifications]
+enabled = true
 up = false
 degraded = true
 recovered = true
@@ -755,7 +756,8 @@ failed = true
 ```
 
 An absent section is the defaults above, and a section with some keys keeps the defaults
-for the rest.
+for the rest. `enabled = false`, or `GTUNNEL_NOTIFICATIONS=false`, switches every notification
+off whatever the four keys say; `init` writes `enabled = true` at the top of the section.
 
 Every observer shares one ledger, `lifecycle.json` in the configuration directory, so a
 change is announced by whoever stores it first and never twice. The watchdog writes

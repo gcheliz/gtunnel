@@ -18,8 +18,19 @@ use std::path::{Path, PathBuf};
 /// nothing in an environment variable is ever interpreted as a command line.
 /// Quotes group a path with spaces and nothing else: there is no escaping,
 /// because a variable that needs it should be a wrapper script.
+#[cfg(test)]
 pub fn resolve_editor(visual: Option<&str>, editor: Option<&str>) -> (String, Vec<String>) {
-    for candidate in [visual, editor].into_iter().flatten() {
+    resolve_editor_from(&[visual, editor])
+}
+
+/// The first usable candidate, in the order given, or `vi`.
+///
+/// The caller orders them `GTUNNEL_EDITOR`, `VISUAL`, `EDITOR`, then the
+/// config file's `editor`: every variable outranks the file, and the file
+/// ranks above nothing but the platform default, so a person who set `$EDITOR`
+/// in their profile is not overruled by a key they wrote once.
+pub fn resolve_editor_from(candidates: &[Option<&str>]) -> (String, Vec<String>) {
+    for candidate in candidates.iter().copied().flatten() {
         let mut words = split_command(candidate);
         if !words.is_empty() {
             let program = words.remove(0);
@@ -554,6 +565,17 @@ mod tests {
 
     fn args(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn the_config_editor_ranks_below_visual_and_editor_and_above_vi() {
+        let chain =
+            |gtunnel, visual, editor, file| resolve_editor_from(&[gtunnel, visual, editor, file]).0;
+        assert_eq!(chain(Some("g"), Some("v"), Some("e"), Some("f")), "g");
+        assert_eq!(chain(None, Some("v"), Some("e"), Some("f")), "v");
+        assert_eq!(chain(None, None, Some("e"), Some("f")), "e");
+        assert_eq!(chain(None, Some(""), None, Some("f")), "f");
+        assert_eq!(chain(None, None, None, None), "vi");
     }
 
     #[test]

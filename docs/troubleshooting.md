@@ -149,8 +149,8 @@ emptied when its tunnel starts, so a line in it was written by the process runni
 ### A start that says `failed to start`
 
 `gtunnel start`, `restart` and `add -s` wait for the tunnel to come up. An Access tunnel,
-`--via` included, has up to 20 seconds to report it is listening (`GTUNNEL_START_DEADLINE_MS`
-moves the bound); an Expose tunnel is judged after a fixed 3 seconds.
+`--via` included, has up to 20 seconds to report it is listening (`start_deadline` in `config.toml`
+or `GTUNNEL_START_DEADLINE` moves the bound); an Expose tunnel is judged after a fixed 3 seconds.
 `<name> failed to start` means the service exited with an error or was not listening by then,
 so the command exits 1 and the TUI status line, or an MCP client's `isError` result, says the
 same. The line under it is the hint for the newest log line gtunnel recognises, from the table
