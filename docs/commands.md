@@ -61,7 +61,8 @@ The answers were `1`, `sandbox`, then Enter for the project, the service account
 `init` also writes the `[restart]` section of `config.toml` with its five keys at their
 defaults, adding only the keys that are missing and never changing one that is set, so the
 [restart budget](configuration.md#the-restart-budget) is visible and tunable from the first
-run. The `[watch]` section (`probe_timeout`, `degraded_after`, `interval`) is written the same
+run. The `[watch]` section (`probe_timeout`, `degraded_after`, `interval`) and the `[logs]` section
+(`max_size`, `keep_size`, `lines_per_minute`, `auth_exit_window`) are written the same
 way; see [Settings the environment can override](configuration.md#settings-the-environment-can-override).
 The same sections are written by every command that saves the file.
 
@@ -410,7 +411,7 @@ client's local port, so it names the process: `lsof -nP -iTCP:54321` finds it wh
 |---|---|
 | The open is written after two seconds, or with the close if that comes first | gtunnel's own health probe connects and closes in milliseconds; its source port is only known at the close |
 | A probe by gtunnel writes no line | `tcp_probe` records its source port in `run/probes/<port>` before it closes, and the supervisor drops the matching close. A probe by anything else, `nc -z` included, is a connection |
-| At most 60 connection lines a minute | a client that reconnects in a loop would bury the lines that explain a failure; the rest become `gtunnel: conn ... N more in the last minute` |
+| At most `logs.lines_per_minute` (60) connection lines a minute | a client that reconnects in a loop would bury the lines that explain a failure; the rest become `gtunnel: conn ... N more in the last minute` |
 | A jump tunnel counts only ssh channels, an instance tunnel only IAP connections | a jump tunnel's ssh rides on gcloud's own IAP connection to the bastion, which is the tunnel and never closes |
 | `quiet` writes none | and ssh and gcloud print none at that level either |
 | Only the supervisor writes them | the TUI never appends to a tunnel's log, so two open TUIs, or none, give the same log |

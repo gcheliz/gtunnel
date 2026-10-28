@@ -82,7 +82,7 @@ fn c_opens_a_page_with_the_path_the_text_the_count_and_the_restart_note() {
     let app = page_app();
     assert_eq!(app.input_mode, InputMode::Config);
     let on_disk = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
-    let screen = rows(&app, 120, 48).join("\n");
+    let screen = rows(&app, 120, 56).join("\n");
     let path = dir.path().join("config.toml");
     assert!(screen.contains(&path.display().to_string()), "{screen}");
     assert!(screen.contains("selected_account"), "{screen}");
@@ -772,7 +772,7 @@ fn a_blank_row_keeps_the_file_apart_from_what_is_said_about_it() {
     assert!(screen[last + 2].contains("not saved: line 2"));
 
     let mut app = page_app();
-    let screen = rows(&app, 120, 48);
+    let screen = rows(&app, 120, 56);
     let last = screen
         .iter()
         .position(|r| r.contains("default_zone"))

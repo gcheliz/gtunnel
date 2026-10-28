@@ -231,8 +231,6 @@ impl Backend {
     }
 }
 
-const CAP_PER_MINUTE: u32 = 60;
-
 /// At most `limit` connection lines per window; the rest are counted and
 /// reported once when the window ends. A port scan or a client that reconnects
 /// in a loop must not bury the lines that explain a failure.
@@ -297,10 +295,8 @@ pub struct Correlator {
     ready: Option<(PathBuf, Option<u16>)>,
     backend: Option<Backend>,
     last_credential_failure: Option<Instant>,
+    auth_exit_window: Duration,
 }
-
-/// How long before gcloud's exit a credential line still explains it.
-pub const AUTH_EXIT_WINDOW: Duration = Duration::from_secs(30);
 
 pub type SharedCorrelator = Arc<Mutex<Correlator>>;
 
@@ -310,11 +306,24 @@ impl Correlator {
             level,
             open: HashMap::new(),
             probes: None,
-            cap: RateCap::new(CAP_PER_MINUTE, Duration::from_secs(60)),
+            cap: RateCap::new(
+                crate::settings::LOGS_LINES_PER_MINUTE as u32,
+                Duration::from_secs(60),
+            ),
             ready: None,
             backend: None,
             last_credential_failure: None,
+            auth_exit_window: crate::settings::LOGS_AUTH_EXIT_WINDOW,
         }
+    }
+
+    /// The rate cap and the credential window the user configured. Separate
+    /// from `new` so the many tests that build a bare correlator keep the
+    /// defaults, and only the supervisor, which owns the process, reads config.
+    pub fn with_settings(mut self, settings: &crate::settings::Settings) -> Self {
+        self.cap = RateCap::new(settings.logs_lines_per_minute, Duration::from_secs(60));
+        self.auth_exit_window = settings.logs_auth_exit_window;
+        self
     }
 
     /// Count only this transport's connections. Unset, as for a unit written
@@ -364,14 +373,14 @@ impl Correlator {
         }
     }
 
-    /// Whether a line within `AUTH_EXIT_WINDOW` of `now` said gcloud's login
+    /// Whether a line within `logs.auth_exit_window` of `now` said gcloud's login
     /// expired. Read by the supervisor when gcloud exits: this sees both
     /// streams, so the answer does not depend on which one gcloud chose to
     /// complain on. A line from hours ago is not the reason for this exit: the
     /// user may have logged in again since and the tunnel died of the network.
     pub fn credentials_expired(&self, now: Instant) -> bool {
         self.last_credential_failure
-            .is_some_and(|at| now.saturating_duration_since(at) <= AUTH_EXIT_WINDOW)
+            .is_some_and(|at| now.saturating_duration_since(at) <= self.auth_exit_window)
     }
 
     /// One line in, the formatted lines it produces out.
@@ -636,7 +645,9 @@ mod tests {
         assert!(!c.credentials_expired(t0));
         c.feed("ERROR: Reauthentication required.", t0);
         assert!(c.credentials_expired(t0 + Duration::from_secs(5)));
-        assert!(!c.credentials_expired(t0 + AUTH_EXIT_WINDOW + Duration::from_secs(1)));
+        assert!(!c.credentials_expired(
+            t0 + crate::settings::LOGS_AUTH_EXIT_WINDOW + Duration::from_secs(1)
+        ));
         // A fresh line renews it
         let later = t0 + Duration::from_secs(3600);
         c.feed("Please run: gcloud auth login", later);

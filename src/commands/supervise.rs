@@ -81,7 +81,8 @@ pub async fn supervise(
     if let Some(file) = &ready_file {
         let _ = std::fs::remove_file(file);
     }
-    let mut conn = Correlator::new(crate::loglevel::current());
+    let mut conn =
+        Correlator::new(crate::loglevel::current()).with_settings(&crate::settings::current());
     // The probe ledger sits beside the ready file, so it is found by what the
     // installing process wrote down and not by this process's environment
     let probes = match (&ready_file, port) {

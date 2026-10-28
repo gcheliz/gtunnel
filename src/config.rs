@@ -106,6 +106,10 @@ pub struct Config {
     // the file's second-most tuned part and an absent key hides them
     #[serde(default)]
     pub watch: WatchConfig,
+    // Written for the same reason: the log's size and rate limits are a
+    // decision, and an absent key hides it
+    #[serde(default)]
+    pub logs: LogsConfig,
     #[serde(default)]
     pub accounts: Vec<Account>,
 }
@@ -122,6 +126,7 @@ impl Default for Config {
             notifications: NotifyConfig::default(),
             restart: RestartConfig::default(),
             watch: WatchConfig::default(),
+            logs: LogsConfig::default(),
             accounts: Vec::new(),
         }
     }
@@ -143,6 +148,27 @@ impl Default for WatchConfig {
             probe_timeout: settings::default_watch_probe_timeout(),
             degraded_after: settings::default_watch_degraded_after(),
             interval: settings::default_watch_interval(),
+        }
+    }
+}
+
+/// The log's limits as written in `config.toml`, raw like `WatchConfig`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LogsConfig {
+    pub max_size: String,
+    pub keep_size: String,
+    pub lines_per_minute: i64,
+    pub auth_exit_window: String,
+}
+
+impl Default for LogsConfig {
+    fn default() -> Self {
+        Self {
+            max_size: settings::default_logs_max_size(),
+            keep_size: settings::default_logs_keep_size(),
+            lines_per_minute: settings::default_logs_lines_per_minute(),
+            auth_exit_window: settings::default_logs_auth_exit_window(),
         }
     }
 }
@@ -940,6 +966,52 @@ mod tests {
         });
     }
 
+    const DEFAULT_LOGS: &str = "[logs]\nmax_size = \"8MiB\"\nkeep_size = \"2MiB\"\nlines_per_minute = 60\nauth_exit_window = \"30s\"\n";
+
+    #[test]
+    fn init_on_a_fresh_dir_writes_the_logs_section_at_its_defaults() {
+        with_temp_dir(|| {
+            update_or_init_config(|c| c.add_account(account("dev"))).expect("init");
+            let text = config_text();
+            assert!(text.contains(DEFAULT_LOGS), "{text}");
+        });
+    }
+
+    #[test]
+    fn init_keeps_a_logs_value_already_in_the_file_and_fills_the_rest() {
+        with_temp_dir(|| {
+            std::fs::write(
+                config_path().expect("path"),
+                "selected_account = \"dev\"\n\n[logs]\nmax_size = \"16MiB\"\n",
+            )
+            .expect("write");
+            update_or_init_config(|c| c.add_account(account("dev"))).expect("init");
+            let text = config_text();
+            assert!(text.contains("max_size = \"16MiB\""), "{text}");
+            assert!(text.contains("keep_size = \"2MiB\""), "{text}");
+            assert!(text.contains("lines_per_minute = 60"), "{text}");
+            let first = text;
+            update_or_init_config(|_| Ok(())).expect("again");
+            assert_eq!(config_text(), first, "a second init changes nothing");
+        });
+    }
+
+    #[test]
+    fn load_config_refuses_a_keep_size_that_is_not_below_max_size_naming_both() {
+        with_temp_dir(|| {
+            std::fs::write(
+                config_path().expect("path"),
+                "[logs]\nmax_size = \"1MiB\"\nkeep_size = \"3MiB\"\n",
+            )
+            .expect("write");
+            let err = load_config().expect_err("keep is above max");
+            let text = format!("{err:#}");
+            assert!(text.contains("logs.keep_size"), "{text}");
+            assert!(text.contains("logs.max_size"), "{text}");
+            assert_eq!(crate::error::kind_of(&err).exit_code(), 2);
+        });
+    }
+
     #[test]
     fn load_config_refuses_a_bad_settings_key_with_exit_2() {
         with_temp_dir(|| {
@@ -1107,7 +1179,7 @@ mod tests {
 
     #[test]
     fn an_account_without_credential_file_round_trips_unchanged() {
-        let text = "selected_account = \"dev\"\nlog_level = \"info\"\nstart_deadline = \"20s\"\ndiscovery = true\nservice_call_timeout = \"10s\"\neditor = \"\"\n\n[notifications]\nenabled = true\nup = false\ndegraded = true\nrecovered = true\nfailed = true\n\n[restart]\nmax_restarts = 5\nwindow = \"10m\"\nmin_uptime = \"60s\"\nbase_backoff = \"10s\"\nmax_backoff = \"5m\"\n\n[watch]\nprobe_timeout = \"3s\"\ndegraded_after = 2\ninterval = \"30s\"\n\n[[accounts]]\nname = \"dev\"\ngcloud_configuration = \"work\"\nproject = \"example-dev-1a2b\"\ndefault_zone = \"europe-west1-b\"\n";
+        let text = "selected_account = \"dev\"\nlog_level = \"info\"\nstart_deadline = \"20s\"\ndiscovery = true\nservice_call_timeout = \"10s\"\neditor = \"\"\n\n[notifications]\nenabled = true\nup = false\ndegraded = true\nrecovered = true\nfailed = true\n\n[restart]\nmax_restarts = 5\nwindow = \"10m\"\nmin_uptime = \"60s\"\nbase_backoff = \"10s\"\nmax_backoff = \"5m\"\n\n[watch]\nprobe_timeout = \"3s\"\ndegraded_after = 2\ninterval = \"30s\"\n\n[logs]\nmax_size = \"8MiB\"\nkeep_size = \"2MiB\"\nlines_per_minute = 60\nauth_exit_window = \"30s\"\n\n[[accounts]]\nname = \"dev\"\ngcloud_configuration = \"work\"\nproject = \"example-dev-1a2b\"\ndefault_zone = \"europe-west1-b\"\n";
         let cfg: Config = toml::from_str(text).expect("parse");
         assert_eq!(cfg.accounts[0].credential_file, None);
         let again = toml::to_string_pretty(&cfg).expect("serialize");

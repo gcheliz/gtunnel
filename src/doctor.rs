@@ -2313,6 +2313,23 @@ mod tests {
     }
 
     #[test]
+    fn doctor_names_a_logs_key_the_environment_overrides() {
+        let findings = setting_override_findings(&Config::default(), &|name| {
+            (name == "GTUNNEL_LOGS_MAX_SIZE").then(|| "4MiB".to_string())
+        });
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        let text = findings[0].describe();
+        for part in [
+            "logs.max_size",
+            "4MiB",
+            "'8MiB'",
+            "Unset GTUNNEL_LOGS_MAX_SIZE",
+        ] {
+            assert!(text.contains(part), "{part}: {text}");
+        }
+    }
+
+    #[test]
     fn doctor_says_nothing_about_settings_when_no_variable_differs() {
         let cfg = Config::default();
         assert!(setting_override_findings(&cfg, &|_| None).is_empty());

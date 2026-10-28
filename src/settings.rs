@@ -59,6 +59,41 @@ pub fn default_watch_interval() -> String {
     humantime::format_duration(WATCH_INTERVAL).to_string()
 }
 
+/// What a tunnel's log may reach before it is trimmed. Eight MiB is days of a
+/// chatty tunnel and still opens instantly in a pager.
+pub const LOGS_MAX_SIZE: u64 = 8 * 1024 * 1024;
+
+/// What survives a trim: a quarter of the cap, so a trim buys a long quiet
+/// stretch and is not repeated on the next line.
+pub const LOGS_KEEP_SIZE: u64 = 2 * 1024 * 1024;
+
+/// Connection lines let through per minute. A port scan or a client that
+/// reconnects in a loop must not bury the lines that explain a failure.
+pub const LOGS_LINES_PER_MINUTE: i64 = 60;
+
+/// How long before gcloud's exit a credential line still explains it.
+pub const LOGS_AUTH_EXIT_WINDOW: Duration = Duration::from_secs(30);
+
+const KIB: u64 = 1024;
+const MIB: u64 = KIB * 1024;
+const GIB: u64 = MIB * 1024;
+
+pub fn default_logs_max_size() -> String {
+    show_size(LOGS_MAX_SIZE)
+}
+
+pub fn default_logs_keep_size() -> String {
+    show_size(LOGS_KEEP_SIZE)
+}
+
+pub fn default_logs_lines_per_minute() -> i64 {
+    LOGS_LINES_PER_MINUTE
+}
+
+pub fn default_logs_auth_exit_window() -> String {
+    humantime::format_duration(LOGS_AUTH_EXIT_WINDOW).to_string()
+}
+
 /// How long the TUI trusts the watchdog's last heartbeat: three passes, never
 /// under the 90 s the default interval has always implied.
 ///
@@ -113,6 +148,26 @@ const WATCH_INTERVAL_KEY: Key = Key {
     var: "GTUNNEL_WATCH_INTERVAL",
     legacy: None,
 };
+const LOGS_MAX_SIZE_KEY: Key = Key {
+    name: "logs.max_size",
+    var: "GTUNNEL_LOGS_MAX_SIZE",
+    legacy: None,
+};
+const LOGS_KEEP_SIZE_KEY: Key = Key {
+    name: "logs.keep_size",
+    var: "GTUNNEL_LOGS_KEEP_SIZE",
+    legacy: None,
+};
+const LOGS_LINES_PER_MINUTE_KEY: Key = Key {
+    name: "logs.lines_per_minute",
+    var: "GTUNNEL_LOGS_LINES_PER_MINUTE",
+    legacy: None,
+};
+const LOGS_AUTH_EXIT_WINDOW_KEY: Key = Key {
+    name: "logs.auth_exit_window",
+    var: "GTUNNEL_LOGS_AUTH_EXIT_WINDOW",
+    legacy: None,
+};
 const EDITOR_KEY: Key = Key {
     name: "editor",
     var: "GTUNNEL_EDITOR",
@@ -131,6 +186,11 @@ pub struct Settings {
     /// Whole seconds: a launchd `StartInterval` and a systemd timer have no
     /// finer unit, so a finer value would be one the unit cannot honour.
     pub watch_interval: Duration,
+    /// Bytes. `logs_keep_size` is always below `logs_max_size`.
+    pub logs_max_size: u64,
+    pub logs_keep_size: u64,
+    pub logs_lines_per_minute: u32,
+    pub logs_auth_exit_window: Duration,
     /// `GTUNNEL_EDITOR`, which outranks `VISUAL` and `EDITOR` like any
     /// variable outranks the file.
     pub editor_env: Option<String>,
@@ -250,6 +310,44 @@ fn parse_whole_seconds(source: &str, raw: &str) -> Result<Duration> {
     Ok(d)
 }
 
+/// A byte count: bare bytes, or a number with `B`, `KiB`, `MiB` or `GiB`.
+/// Binary units only, because a log cap of "8MB" that means 8,000,000 to one
+/// reader and 8,388,608 to another is the ambiguity a setting must not have.
+fn parse_size(source: &str, raw: &str) -> Result<u64> {
+    let lower = raw.trim().to_ascii_lowercase();
+    let split = lower
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(lower.len());
+    let (digits, unit) = lower.split_at(split);
+    let factor = match unit.trim() {
+        "" | "b" => Some(1),
+        "kib" => Some(KIB),
+        "mib" => Some(MIB),
+        "gib" => Some(GIB),
+        _ => None,
+    };
+    match (digits.parse::<u64>().ok().filter(|n| *n > 0), factor) {
+        (Some(n), Some(f)) => n
+            .checked_mul(f)
+            .ok_or_else(|| bad(source, format!("'{raw}' is too large"))),
+        _ => Err(bad(
+            source,
+            format!("'{raw}' is not a size above zero like 8MiB, 512KiB or 1048576 bytes"),
+        )),
+    }
+}
+
+/// The largest binary unit that divides the count exactly, so a value read
+/// back from the file prints as it was written.
+fn show_size(bytes: u64) -> String {
+    match bytes {
+        n if n % GIB == 0 => format!("{}GiB", n / GIB),
+        n if n % MIB == 0 => format!("{}MiB", n / MIB),
+        n if n % KIB == 0 => format!("{}KiB", n / KIB),
+        n => format!("{n}B"),
+    }
+}
+
 fn parse_count(source: &str, raw: &str) -> Result<u32> {
     match raw.parse::<i64>() {
         Ok(n) if (1..=i64::from(u32::MAX)).contains(&n) => Ok(n as u32),
@@ -363,6 +461,58 @@ pub fn resolve(config: &Config, env: EnvFn) -> Result<Resolved> {
         shown,
         &mut overrides,
     )?;
+    let logs = &config.logs;
+    let logs_max_size = plain_key(
+        env,
+        &LOGS_MAX_SIZE_KEY,
+        &logs.max_size,
+        parse_size,
+        show_size,
+        &mut overrides,
+    )?;
+    let logs_keep_size = plain_key(
+        env,
+        &LOGS_KEEP_SIZE_KEY,
+        &logs.keep_size,
+        parse_size,
+        show_size,
+        &mut overrides,
+    )?;
+    if logs_keep_size >= logs_max_size {
+        // Name the variable only when it is what set the value: a variable the
+        // shell never exported is not a lead
+        let set = |key: &Key| {
+            var(env, key.var)
+                .map(|_| format!(" (set by {})", key.var))
+                .unwrap_or_default()
+        };
+        return Err(bad(
+            "logs.keep_size",
+            format!(
+                "{}{} must be smaller than logs.max_size {}{}, or a trim would keep the whole log",
+                show_size(logs_keep_size),
+                set(&LOGS_KEEP_SIZE_KEY),
+                show_size(logs_max_size),
+                set(&LOGS_MAX_SIZE_KEY),
+            ),
+        ));
+    }
+    let logs_lines_per_minute = plain_key(
+        env,
+        &LOGS_LINES_PER_MINUTE_KEY,
+        &logs.lines_per_minute.to_string(),
+        parse_count,
+        |n| n.to_string(),
+        &mut overrides,
+    )?;
+    let logs_auth_exit_window = plain_key(
+        env,
+        &LOGS_AUTH_EXIT_WINDOW_KEY,
+        &logs.auth_exit_window,
+        parse_duration,
+        shown,
+        &mut overrides,
+    )?;
     let editor_file = Some(config.editor.trim().to_string()).filter(|e| !e.is_empty());
     let editor_env = var(env, EDITOR_KEY.var);
     if let Some(chosen) = &editor_env
@@ -384,6 +534,10 @@ pub fn resolve(config: &Config, env: EnvFn) -> Result<Resolved> {
             watch_probe_timeout,
             watch_degraded_after,
             watch_interval,
+            logs_max_size,
+            logs_keep_size,
+            logs_lines_per_minute,
+            logs_auth_exit_window,
             editor_env,
             editor_file,
         },
@@ -752,5 +906,128 @@ mod tests {
         assert_eq!(heartbeat_fresh_secs(Duration::from_secs(30)), 90);
         assert_eq!(heartbeat_fresh_secs(Duration::from_secs(10)), 90);
         assert_eq!(heartbeat_fresh_secs(Duration::from_secs(60)), 180);
+    }
+
+    #[test]
+    fn the_logs_keys_default_to_what_the_constants_were() {
+        let s = settings_of("", &[]);
+        assert_eq!(s.logs_max_size, 8 * 1024 * 1024);
+        assert_eq!(s.logs_keep_size, 2 * 1024 * 1024);
+        assert_eq!(s.logs_lines_per_minute, 60);
+        assert_eq!(s.logs_auth_exit_window, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn the_file_sets_the_logs_keys() {
+        let s = settings_of(
+            "[logs]\nmax_size = \"16MiB\"\nkeep_size = \"512KiB\"\nlines_per_minute = 10\nauth_exit_window = \"1m\"\n",
+            &[],
+        );
+        assert_eq!(s.logs_max_size, 16 * 1024 * 1024);
+        assert_eq!(s.logs_keep_size, 512 * 1024);
+        assert_eq!(s.logs_lines_per_minute, 10);
+        assert_eq!(s.logs_auth_exit_window, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn a_logs_variable_beats_the_same_key_in_the_file() {
+        let file = "[logs]\nmax_size = \"16MiB\"\nkeep_size = \"512KiB\"\nlines_per_minute = 10\nauth_exit_window = \"1m\"\n";
+        let r = resolve_with(
+            file,
+            &[
+                ("GTUNNEL_LOGS_MAX_SIZE", "4MiB"),
+                ("GTUNNEL_LOGS_KEEP_SIZE", "1048576"),
+                ("GTUNNEL_LOGS_LINES_PER_MINUTE", "20"),
+                ("GTUNNEL_LOGS_AUTH_EXIT_WINDOW", "5s"),
+            ],
+        )
+        .expect("resolves");
+        assert_eq!(r.settings.logs_max_size, 4 * 1024 * 1024);
+        assert_eq!(r.settings.logs_keep_size, 1024 * 1024);
+        assert_eq!(r.settings.logs_lines_per_minute, 20);
+        assert_eq!(r.settings.logs_auth_exit_window, Duration::from_secs(5));
+        let seen: Vec<(&str, &str)> = r.overrides.iter().map(|o| (o.key, o.variable)).collect();
+        assert_eq!(
+            seen,
+            vec![
+                ("logs.max_size", "GTUNNEL_LOGS_MAX_SIZE"),
+                ("logs.keep_size", "GTUNNEL_LOGS_KEEP_SIZE"),
+                ("logs.lines_per_minute", "GTUNNEL_LOGS_LINES_PER_MINUTE"),
+                ("logs.auth_exit_window", "GTUNNEL_LOGS_AUTH_EXIT_WINDOW"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_bad_logs_variable_is_a_usage_error_naming_it() {
+        for (var, value) in [
+            ("GTUNNEL_LOGS_MAX_SIZE", "huge"),
+            ("GTUNNEL_LOGS_MAX_SIZE", "0"),
+            ("GTUNNEL_LOGS_MAX_SIZE", "8 parsecs"),
+            ("GTUNNEL_LOGS_KEEP_SIZE", "-1MiB"),
+            ("GTUNNEL_LOGS_LINES_PER_MINUTE", "lots"),
+            ("GTUNNEL_LOGS_LINES_PER_MINUTE", "0"),
+            ("GTUNNEL_LOGS_AUTH_EXIT_WINDOW", "soon"),
+            ("GTUNNEL_LOGS_AUTH_EXIT_WINDOW", "0s"),
+        ] {
+            let err = resolve_with("", &[(var, value)]).expect_err(var);
+            let (code, text) = exit_and_text(&err);
+            assert_eq!(code, 2, "{var}={value}: {text}");
+            assert!(text.contains(var), "{var}={value}: {text}");
+        }
+    }
+
+    #[test]
+    fn a_bad_logs_file_value_is_a_usage_error_naming_the_key() {
+        for (text, key) in [
+            ("[logs]\nmax_size = \"huge\"\n", "logs.max_size"),
+            ("[logs]\nkeep_size = \"0\"\n", "logs.keep_size"),
+            ("[logs]\nlines_per_minute = 0\n", "logs.lines_per_minute"),
+            (
+                "[logs]\nauth_exit_window = \"0s\"\n",
+                "logs.auth_exit_window",
+            ),
+        ] {
+            let err = resolve_with(text, &[]).expect_err(text);
+            let (code, msg) = exit_and_text(&err);
+            assert_eq!(code, 2, "{msg}");
+            assert!(msg.contains(key), "{msg}");
+        }
+    }
+
+    #[test]
+    fn keep_size_must_be_smaller_than_max_size_and_the_error_names_both_keys() {
+        for (text, vars) in [
+            ("[logs]\nmax_size = \"1MiB\"\n", vec![]),
+            ("[logs]\nmax_size = \"2MiB\"\n", vec![]),
+            ("", vec![("GTUNNEL_LOGS_KEEP_SIZE", "9MiB")]),
+            ("", vec![("GTUNNEL_LOGS_MAX_SIZE", "1MiB")]),
+        ] {
+            let err = resolve_with(text, &vars).expect_err(text);
+            let (code, msg) = exit_and_text(&err);
+            assert_eq!(code, 2, "{msg}");
+            assert!(msg.contains("logs.keep_size"), "{msg}");
+            assert!(msg.contains("logs.max_size"), "{msg}");
+        }
+        let err = resolve_with("", &[("GTUNNEL_LOGS_MAX_SIZE", "1MiB")]).expect_err("clash");
+        assert!(format!("{err:#}").contains("GTUNNEL_LOGS_MAX_SIZE"));
+    }
+
+    #[test]
+    fn a_size_reads_bytes_and_binary_units_and_prints_the_largest_whole_one() {
+        for (raw, bytes) in [
+            ("1048576", 1_048_576),
+            ("4096B", 4096),
+            ("8MiB", 8 << 20),
+            ("8 mib", 8 << 20),
+            ("512KiB", 512 << 10),
+            ("1GiB", 1 << 30),
+        ] {
+            assert_eq!(parse_size("k", raw).expect(raw), bytes, "{raw}");
+        }
+        assert_eq!(show_size(8 << 20), "8MiB");
+        assert_eq!(show_size(1536 << 10), "1536KiB");
+        assert_eq!(show_size(1000), "1000B");
+        assert_eq!(show_size(2 << 30), "2GiB");
     }
 }
