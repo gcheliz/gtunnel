@@ -3,6 +3,16 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.22](https://github.com/gcheliz/gtunnel/compare/v0.2.21...v0.2.22) - 2026-10-28
+
+### Documentation
+
+- credential file is read only by doctor, and the panic guard covers unwinding builds ([#221](https://github.com/gcheliz/gtunnel/pull/221))
+
+### Fixed
+
+- *(tui)* account add, remove and select no longer print onto the drawn screen ([#223](https://github.com/gcheliz/gtunnel/pull/223))
+
 ## [0.2.21](https://github.com/gcheliz/gtunnel/compare/v0.2.20...v0.2.21) - 2026-10-28
 
 ### Fixed
