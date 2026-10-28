@@ -179,6 +179,8 @@ Error: gtunnel is not initialized. Run `gtunnel init`.
 gtunnel init
 ```
 
+Running `gtunnel` with no arguments on a machine that has never been set up, from a terminal, starts the same prompts and then opens the TUI. A script or a pipe gets the error above instead.
+
 [init](commands.md#init) shows the prompts. The default zone is optional: Enter skips it, and
 the commands that reach an instance then need `--zone`. `gtunnel zones` lists the ones in the
 project.

@@ -27,7 +27,9 @@ variables are in [configuration.md](configuration.md).
 ## init
 
 Reads a gcloud configuration and writes a gtunnel account. It prompts for everything it
-cannot infer.
+cannot infer. A bare `gtunnel` runs it too when there is no `config.toml` and stdin and
+stdout are a terminal, then opens the TUI; without a terminal it prints the `not initialized`
+error and exits 1.
 
 ```
 $ gtunnel init

@@ -80,7 +80,7 @@ There is no `cargo install gtunnel`: that crates.io name is an unrelated crate. 
 A private port to a VM:
 
 ```
-gtunnel init                                     # read a gcloud configuration into a gtunnel account
+gtunnel init                                     # read a gcloud configuration into a gtunnel account (a bare `gtunnel` does this on a first run)
 gtunnel add db my-vm:5432 --local-port 15432 -s  # localhost:15432 -> my-vm:5432, started now
 psql -h localhost -p 15432
 ```
