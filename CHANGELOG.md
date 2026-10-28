@@ -3,6 +3,16 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.28](https://github.com/gcheliz/gtunnel/compare/v0.2.27...v0.2.28) - 2026-10-28
+
+### Added
+
+- *(config)* settings resolve flag, env, file, default; init writes them ([#243](https://github.com/gcheliz/gtunnel/pull/243))
+
+### Documentation
+
+- *(naming)* call the instance a GCP instance in the docs and the site ([#244](https://github.com/gcheliz/gtunnel/pull/244))
+
 ## [0.2.27](https://github.com/gcheliz/gtunnel/compare/v0.2.26...v0.2.27) - 2026-10-28
 
 ### Changed
