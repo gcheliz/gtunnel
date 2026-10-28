@@ -32,19 +32,14 @@ pub struct Snapshot {
     pub rows: Vec<ProcessRow>,
 }
 
-/// `GTUNNEL_NO_DISCOVERY` set to anything but empty or `0` makes the machine
-/// look like it runs no other process. An integration test isolates its config
-/// with `GTUNNEL_CONFIG_DIR`, but `ps` reads the whole user: any gcloud tunnel
-/// on the host, a maintainer's own or another worktree's test run, would add
-/// `pid N` rows and break exact row counts. Same reading as `GTUNNEL_NO_NOTIFY`,
-/// and the value is an argument so the rule is testable without mutating the
-/// process environment.
-fn disabled(value: Option<&str>) -> bool {
-    value.is_some_and(|v| !v.is_empty() && v != "0")
-}
-
+/// `discovery = false`, `GTUNNEL_DISCOVERY=false` or the older
+/// `GTUNNEL_NO_DISCOVERY` makes the machine look like it runs no other
+/// process. An integration test isolates its config with `GTUNNEL_CONFIG_DIR`,
+/// but `ps` reads the whole user: any gcloud tunnel on the host, a
+/// maintainer's own or another worktree's test run, would add `pid N` rows and
+/// break exact row counts.
 pub fn snapshot() -> Snapshot {
-    if disabled(std::env::var("GTUNNEL_NO_DISCOVERY").ok().as_deref()) {
+    if !crate::settings::current().discovery {
         return Snapshot::default();
     }
     let mut cmd = std::process::Command::new("ps");
@@ -205,15 +200,6 @@ fn descendants(snapshot: &Snapshot, roots: &HashSet<u32>) -> HashSet<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn discovery_is_switched_off_by_anything_but_empty_or_zero() {
-        assert!(disabled(Some("1")));
-        assert!(disabled(Some("yes")));
-        assert!(!disabled(Some("")));
-        assert!(!disabled(Some("0")));
-        assert!(!disabled(None));
-    }
 
     const PS: &str = "\
   501     1 /usr/bin/python3 /opt/homebrew/share/google-cloud-sdk/lib/gcloud.py compute start-iap-tunnel db-1 5432 --local-host-port=localhost:6000 --zone=us-central1-a

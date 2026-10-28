@@ -29,18 +29,11 @@ pub const LOCAL_TOOL_BOUND: Duration = Duration::from_secs(5);
 /// anything useful; the next one in the chain gets its turn.
 pub const NOTIFY_BOUND: Duration = Duration::from_secs(5);
 
-const SERVICE_BOUND_ENV: &str = "GTUNNEL_SERVICE_BOUND_MS";
-
-/// `SERVICE_BOUND`, or the milliseconds in `GTUNNEL_SERVICE_BOUND_MS`. The
+/// `SERVICE_BOUND`, or what `service_call_timeout` and its variable say. The
 /// override exists so a test of the timeout path does not wait ten seconds,
 /// and so a slow machine can be diagnosed without a rebuild.
 pub fn service_bound() -> Duration {
-    std::env::var(SERVICE_BOUND_ENV)
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .filter(|ms| *ms > 0)
-        .map(Duration::from_millis)
-        .unwrap_or(SERVICE_BOUND)
+    crate::settings::current().service_call_timeout
 }
 
 /// A typed error, not message text: `delete` must tell "the stop timed out,

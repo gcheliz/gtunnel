@@ -139,6 +139,15 @@ pub enum Finding {
         file: String,
         path: String,
     },
+    // A key in config.toml that an exported variable outvotes, so editing the
+    // file changes nothing. Report only: the variable is the shell's, and the
+    // person decides which of the two to unset.
+    SettingOverridden {
+        key: String,
+        variable: String,
+        file: String,
+        effective: String,
+    },
 }
 
 impl Finding {
@@ -296,6 +305,15 @@ impl Finding {
             Finding::UnknownKey { file, path } => format!(
                 "{file} has a key gtunnel ignores: {path}. Edit the file and remove or move it"
             ),
+            Finding::SettingOverridden {
+                key,
+                variable,
+                file,
+                effective,
+            } => format!(
+                "{key} is {effective} here because {variable} is set in the environment; \
+                 config.toml says '{file}' and is ignored for it. Unset {variable} to use the file"
+            ),
             Finding::WatchdogMissing => format!(
                 "No watchdog is installed, so a tunnel that wedges stays wedged until someone \
                  notices. Run `gtunnel watch install` to check every {}s",
@@ -357,6 +375,26 @@ pub fn unknown_key_findings(dir: &std::path::Path) -> Vec<Finding> {
         read("tunnels.toml").and_then(|t| crate::config::unknown_keys::<TunnelState>(&t).ok()),
     );
     out
+}
+
+/// One finding per key the environment overrides. `env` is a parameter so the
+/// finding is tested without touching the process environment.
+pub fn setting_override_findings(cfg: &Config, env: crate::settings::EnvFn) -> Vec<Finding> {
+    // A value that does not resolve is not an override: the command that was
+    // typed has already refused it by name
+    let Ok(resolved) = crate::settings::resolve(cfg, env) else {
+        return Vec::new();
+    };
+    resolved
+        .overrides
+        .into_iter()
+        .map(|o| Finding::SettingOverridden {
+            key: o.key.to_string(),
+            variable: o.variable.to_string(),
+            file: o.file,
+            effective: o.effective,
+        })
+        .collect()
 }
 
 /// Reads the file's `type` field and its mode, and nothing else: the rest of a
@@ -761,6 +799,10 @@ pub async fn run_doctor(
         for finding in unknown_key_findings(&config_dir) {
             out.push((String::new(), finding));
         }
+    }
+
+    for finding in setting_override_findings(cfg, &|name| std::env::var(name).ok()) {
+        out.push((String::new(), finding));
     }
 
     // Machine-wide like the watchdog: a service has no account the scan could
@@ -2228,6 +2270,44 @@ mod tests {
         let text = toml::to_string_pretty(&config).expect("serialize");
         std::fs::write(dir.path().join("config.toml"), text).expect("write");
         assert!(unknown_key_findings(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn doctor_names_a_setting_the_environment_overrides_and_what_to_unset() {
+        let cfg = Config {
+            start_deadline: "45s".to_string(),
+            ..Config::default()
+        };
+        let findings = setting_override_findings(&cfg, &|name| {
+            (name == "GTUNNEL_START_DEADLINE_MS").then(|| "1500".to_string())
+        });
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        let text = findings[0].describe();
+        for part in [
+            "start_deadline",
+            "1s 500ms",
+            "GTUNNEL_START_DEADLINE_MS",
+            "45s",
+            "Unset GTUNNEL_START_DEADLINE_MS",
+        ] {
+            assert!(text.contains(part), "{part}: {text}");
+        }
+        assert!(!findings[0].fixable(), "the variable is the shell's");
+    }
+
+    #[test]
+    fn doctor_says_nothing_about_settings_when_no_variable_differs() {
+        let cfg = Config::default();
+        assert!(setting_override_findings(&cfg, &|_| None).is_empty());
+        assert!(setting_override_findings(&cfg, &|name| {
+            (name == "GTUNNEL_DISCOVERY").then(|| "true".to_string())
+        })
+        .is_empty());
+        // A value that does not resolve is refused by name elsewhere
+        assert!(setting_override_findings(&cfg, &|name| {
+            (name == "GTUNNEL_START_DEADLINE").then(|| "soon".to_string())
+        })
+        .is_empty());
     }
 
     #[test]

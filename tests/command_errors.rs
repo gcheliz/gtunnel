@@ -120,6 +120,10 @@ impl Harness {
     }
 
     fn run(&self, args: &[&str]) -> Output {
+        self.run_with_env(args, &[])
+    }
+
+    fn run_with_env(&self, args: &[&str], vars: &[(&str, &str)]) -> Output {
         let root = self.dir.path();
         let path = format!(
             "{}:{}",
@@ -130,6 +134,7 @@ impl Harness {
         if let Some(ms) = self.service_bound_ms {
             cmd.env("GTUNNEL_SERVICE_BOUND_MS", ms.to_string());
         }
+        cmd.envs(vars.iter().copied());
         cmd.args(args)
             .env("PATH", path)
             .env("HOME", root)
@@ -156,6 +161,45 @@ fn logs_nonexistent_tunnel_fails_with_actionable_error() {
     let out = h.run(&["logs", "nope"]);
     assert_eq!(out.status.code(), Some(3));
     assert!(stderr(&out).contains("Error: Tunnel 'nope' not found for account 'demo'"));
+}
+
+#[test]
+fn a_bad_settings_variable_exits_2_naming_it_before_the_command_runs() {
+    let h = Harness::new();
+    for (var, value) in [
+        ("GTUNNEL_START_DEADLINE", "soon"),
+        ("GTUNNEL_START_DEADLINE_MS", "soon"),
+        ("GTUNNEL_SERVICE_CALL_TIMEOUT", "0s"),
+        ("GTUNNEL_DISCOVERY", "maybe"),
+        ("GTUNNEL_NOTIFICATIONS", "2"),
+    ] {
+        let out = h.run_with_env(&["list"], &[(var, value)]);
+        assert_eq!(out.status.code(), Some(2), "{var}: {}", stderr(&out));
+        assert!(stderr(&out).contains(var), "{var}: {}", stderr(&out));
+    }
+}
+
+#[test]
+fn a_bad_settings_key_in_config_toml_exits_2_naming_the_key() {
+    let h = Harness::new();
+    let path = h.dir.path().join("config/config.toml");
+    let text = fs::read_to_string(&path).unwrap();
+    fs::write(&path, format!("start_deadline = \"soon\"\n{text}")).unwrap();
+    let out = h.run(&["list"]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(stderr(&out).contains("start_deadline"), "{}", stderr(&out));
+}
+
+#[test]
+fn doctor_says_which_variable_overrides_a_key_in_config_toml() {
+    let h = Harness::new();
+    let path = h.dir.path().join("config/config.toml");
+    let text = fs::read_to_string(&path).unwrap();
+    fs::write(&path, format!("start_deadline = \"45s\"\n{text}")).unwrap();
+    let out = h.run_with_env(&["doctor"], &[("GTUNNEL_START_DEADLINE", "90s")]);
+    let all = format!("{}{}", String::from_utf8_lossy(&out.stdout), stderr(&out));
+    assert!(all.contains("start_deadline is 1m 30s"), "{all}");
+    assert!(all.contains("GTUNNEL_START_DEADLINE"), "{all}");
 }
 
 #[test]

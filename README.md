@@ -120,8 +120,8 @@ Four variables change how gtunnel behaves; the full list is in
 |---|---|
 | `GTUNNEL_CONFIG_DIR` | Keeps every file gtunnel writes in that directory instead of `~/.gtunnel` |
 | `GTUNNEL_LOG_LEVEL` | `quiet`, `info` or `debug` for every command; `--log-level` wins over it |
-| `GTUNNEL_START_DEADLINE_MS` | How long an Access tunnel has to start listening, default 20000 |
-| `VISUAL`, then `EDITOR` | The editor the TUI opens on `e` |
+| `GTUNNEL_START_DEADLINE` | How long an Access tunnel has to start listening, default `20s`; `GTUNNEL_START_DEADLINE_MS` still works |
+| `GTUNNEL_EDITOR`, then `VISUAL`, then `EDITOR` | The editor the TUI opens on `e` |
 
 ## Safety
 
