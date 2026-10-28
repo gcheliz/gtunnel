@@ -3,6 +3,16 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.18](https://github.com/gcheliz/gtunnel/compare/v0.2.17...v0.2.18) - 2026-10-28
+
+### Documentation
+
+- *(decisions)* restarts belong to launchd and systemd, and readiness is a file ([#210](https://github.com/gcheliz/gtunnel/pull/210))
+
+### Fixed
+
+- *(tui)* bound each metrics target so one slow tunnel cannot freeze the round ([#211](https://github.com/gcheliz/gtunnel/pull/211))
+
 ## [0.2.17](https://github.com/gcheliz/gtunnel/compare/v0.2.16...v0.2.17) - 2026-10-28
 
 ### Fixed
