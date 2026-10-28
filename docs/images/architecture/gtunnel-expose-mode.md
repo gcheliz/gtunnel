@@ -1,6 +1,6 @@
 ---
 title: "Expose mode"
-subtitle: "A global HTTPS load balancer in front of a relay VM"
+subtitle: "A global HTTPS load balancer in front of a relay instance"
 date: "2026-10-27"
 team: "gtunnel"
 audience: "Engineering"
@@ -19,7 +19,7 @@ nodes:
 - id: lb, label: "Global HTTPS LB", subtitle: "managed cert, host rule", icon: lb, parent: gcp
 - id: gate, label: "IAP sign-in", subtitle: "gated: expose --private", icon: iap, parent: gcp
 - id: vpc, label: "VPC (europe-west1)", style: vpc, type: container, parent: gcp
-- id: relay, label: "Relay VM", subtitle: "e2-micro, no public IP", icon: compute, parent: vpc
+- id: relay, label: "Relay instance", subtitle: "e2-micro, no public IP", icon: compute, parent: vpc
 - id: local, label: "Your laptop", style: external, type: container
 - id: svc, label: "Local service", subtitle: "localhost:3000", icon: server, parent: local
 edges:

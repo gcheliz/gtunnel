@@ -46,7 +46,7 @@ Enter
 Show
 
 Sleep 800ms
-Type "gtunnel run --ttl 30m db my-vm:5432 & sleep 2"
+Type "gtunnel run --ttl 30m db bastion:5432 & sleep 2"
 Sleep 600ms
 Enter
 # the port line and the stop time follow

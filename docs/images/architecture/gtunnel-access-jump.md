@@ -1,6 +1,6 @@
 ---
 title: "Access and jump tunnels"
-subtitle: "One hop to a VM, two hops to a host only the VM can reach"
+subtitle: "One hop to a GCP instance, two hops to a host only the instance can reach"
 date: "2026-10-27"
 team: "gtunnel"
 audience: "Engineering"
@@ -18,7 +18,7 @@ nodes:
 - id: gcp, label: "GCP example-dev-1a2b", style: gcp, type: container
 - id: iap, label: "IAP", subtitle: "35.235.240.0/20", icon: iap, parent: gcp
 - id: vpc, label: "VPC (europe-west1)", style: vpc, type: container, parent: gcp
-- id: vm, label: "my-vm", subtitle: "port 5432, no public IP", icon: compute, parent: vpc
+- id: vm, label: "my-instance", subtitle: "port 5432, no public IP", icon: compute, parent: vpc
 - id: bastion, label: "bastion", subtitle: "port 22, no public IP", icon: compute, parent: vpc
 - id: host, label: "db.internal", subtitle: "no route from laptop", icon: server, parent: vpc
 edges:

@@ -37,13 +37,13 @@ something the user does in Google, not in gtunnel.
 
 **Status:** Accepted, 0.1.0
 
-The common case is reaching one VM port from a laptop. Anything gtunnel creates to do that
+The common case is reaching one GCP instance port from a laptop. Anything gtunnel creates to do that
 is a resource someone has to remember to delete.
 
 An Access tunnel is a local process plus an IAP connection. No firewall rule, no public IP,
-no agent on the VM, no resource with a lifetime.
+no agent on the instance, no resource with a lifetime.
 
-Expose mode cannot make the same promise — a URL needs a relay VM, a load balancer and a
+Expose mode cannot make the same promise — a URL needs a relay instance, a load balancer and a
 certificate — so the two modes are documented with their costs side by side, and `relay
 down` removes all of it. The asymmetry is deliberate, not an oversight.
 
@@ -130,7 +130,7 @@ required before every commit.
 **Status:** Accepted, 0.1.0
 
 A public tunnel forwards with `ssh -R 0.0.0.0:<relay-port>:<target>`, so the port listens on
-every interface of the relay VM. It has to: the load balancer reaches it from another host,
+every interface of the relay instance. It has to: the load balancer reaches it from another host,
 and a loopback bind would leave the URL unreachable.
 
 gtunnel allocates the port. It never opens or closes a firewall rule for one.

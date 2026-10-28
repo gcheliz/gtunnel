@@ -11,7 +11,7 @@ reach the target port.
 Both inward paths, in one picture: the upper one is access mode, the lower one is the jump
 tunnel described in the next section.
 
-![Access and jump tunnels: a client on localhost reaching a VM through IAP, and a second client reaching a host behind a bastion](images/architecture/gtunnel-access-jump.png)
+![Access and jump tunnels: a client on localhost reaching a GCP instance through IAP, and a second client reaching a host behind a bastion](images/architecture/gtunnel-access-jump.png)
 
 The service runs:
 
@@ -61,10 +61,10 @@ open against a host that is gone.
 
 ## Expose mode
 
-A relay VM holds a reverse SSH tunnel back to your laptop. A global HTTPS load balancer
+A relay instance holds a reverse SSH tunnel back to your laptop. A global HTTPS load balancer
 terminates TLS and sends each hostname to the relay port that belongs to that tunnel.
 
-![Expose mode: a visitor reaching a global HTTPS load balancer, which forwards to a relay VM holding a reverse SSH tunnel back to the laptop, with IAP sign-in in front for a gated tunnel](images/architecture/gtunnel-expose-mode.png)
+![Expose mode: a visitor reaching a global HTTPS load balancer, which forwards to a relay instance holding a reverse SSH tunnel back to the laptop, with IAP sign-in in front for a gated tunnel](images/architecture/gtunnel-expose-mode.png)
 
 The load balancer is drawn as one card. Behind it a request crosses five resources, which
 [What belongs to whom](#what-belongs-to-whom) below lists in full: the forwarding rule
@@ -81,12 +81,12 @@ as `gated` rather than `public`.
 The tunnel process runs:
 
 ```
-gcloud compute ssh <relay-vm> --zone=<zone> --tunnel-through-iap --quiet -- \
+gcloud compute ssh <relay-instance> --zone=<zone> --tunnel-through-iap --quiet -- \
   -N -o ExitOnForwardFailure=yes -R 0.0.0.0:<relay-port>:localhost:<local-port>
 ```
 
 `ExitOnForwardFailure=yes` matters: without it SSH stays up after the remote bind fails and
-the tunnel looks healthy while serving nothing. The relay VM's startup script sets
+the tunnel looks healthy while serving nothing. The relay instance's startup script sets
 `GatewayPorts clientspecified` so the `0.0.0.0` bind is accepted, which is what lets the load
 balancer's health check reach the port.
 
@@ -94,7 +94,7 @@ balancer's health check reach the port.
 
 | Scope | Resource | Name | Created by |
 |---|---|---|---|
-| Per account | Relay VM | `gt-<acct>-relay` | `relay up` |
+| Per account | Relay instance | `gt-<acct>-relay` | `relay up` |
 | Per account | Instance group | `gt-<acct>-ig` | `relay up` |
 | Per account | Health check | `gt-<acct>-hc` | `relay up` |
 | Per account | Default backend | `gt-<acct>-default` | `relay up` |
@@ -111,7 +111,7 @@ balancer's health check reach the port.
 | Per tunnel | URL-map host rule | the hostname | `expose`, `run --public` |
 | Per tunnel | Cloud DNS A record, TTL 60 | `<tunnel>.<domain>.` | `expose`, `run --public` |
 
-Both firewall rules target the tag `gt-relay`, which only the relay VM carries. Every
+Both firewall rules target the tag `gt-relay`, which only the relay instance carries. Every
 backend service gtunnel creates carries `description: gtunnel:<account>`, and that tag,
 not the name, is what `doctor --fix` uses to decide whether a backend is gtunnel's. A
 backend someone created by hand that happens to match the naming scheme is never deleted.
@@ -122,7 +122,7 @@ reaching another tunnel.
 
 ### What `relay up` creates and `relay down` removes
 
-![What relay up creates: on your laptop, gtunnel relay up creates the per-account resources once (HTTPS front end with global address, forwarding rule and HTTPS proxy; URL map with default backend and health check; relay VM and its instance group; firewall rules gt-ACCT-iap-ssh and gt-ACCT-lb-hc; certificate map gt-ACCT-certs), gtunnel domains add creates the per-domain certificate, DNS authorization and apex and wildcard certificate-map entries, and gtunnel expose or run --public creates the per-tunnel backend service and named port, URL-map host rule and Cloud DNS A record with TTL 60, all in GCP example-prod-3c4d; the certificate-map entries are added to the certificate map and the host rule to the URL map](images/architecture/gtunnel-relay-resources.png)
+![What relay up creates: on your laptop, gtunnel relay up creates the per-account resources once (HTTPS front end with global address, forwarding rule and HTTPS proxy; URL map with default backend and health check; relay instance and its instance group; firewall rules gt-ACCT-iap-ssh and gt-ACCT-lb-hc; certificate map gt-ACCT-certs), gtunnel domains add creates the per-domain certificate, DNS authorization and apex and wildcard certificate-map entries, and gtunnel expose or run --public creates the per-tunnel backend service and named port, URL-map host rule and Cloud DNS A record with TTL 60, all in GCP example-prod-3c4d; the certificate-map entries are added to the certificate map and the host rule to the URL map](images/architecture/gtunnel-relay-resources.png)
 
 Only the per-tunnel backend service carries `description: gtunnel:<account>`. `doctor --fix`
 treats a host rule on the relay's URL map as orphaned when no tunnel claims its hostname, and a
@@ -133,7 +133,7 @@ holds a tagged backend, a host rule or a named port for the same tunnel.
 `relay down` removes the per-account and per-domain halves, in dependency order: forwarding
 rule, HTTPS proxy, global address, URL map, default backend, health check, each domain's
 certificate-map entries, certificate and DNS authorization, the certificate map, the instance
-group, the relay VM, then both firewall rules. It **refuses** while any expose tunnel or live
+group, the relay instance, then both firewall rules. It **refuses** while any expose tunnel or live
 `gtunnel run --public` still holds a route — `--force` deletes those tunnels' routes and
 services first. It never touches the Cloud DNS managed zone, which is yours.
 
@@ -152,7 +152,7 @@ services first. It never touches the Cloud DNS managed zone, which is yours.
 | TUI polling | Discovery, metrics and health are three pollers (health reuses the metrics probe where one ran), each with at most one round in flight: a round slower than its period is waited for, never started again on top of itself. A result carries the generation its round began under and is dropped when that is no longer current, which is what an account switch does to every round begun for the old account. Every `gcloud`, `launchctl` and `systemctl` call is bounded (30s and 10s) and fails with `<command> timed out after <n>s`; the child is killed on timeout. The `lsof` and `ps` reads run on the blocking pool. `delete` treats a timed-out stop as a failure and keeps the record, because removing it would orphan a job that may still be running |
 | Strangers | A `[not managed by gtunnel]` row is an IAP process nothing here accounts for. One `ps` snapshot is read, then a process is gtunnel's if it forwards a port that any account's `tunnels.toml` entry or any run record owns, or if it sits below a pid launchd or a run record names. The port is tried first because launchd reports a supervisor's pid before the supervisor has spawned its gcloud child, and a verdict that depends on that gap is a verdict that depends on timing |
 | Concurrent writes | Read-modify-write against a fingerprinted resource (URL map, named ports) retries up to 5 times on HTTP 412 |
-| Metrics | Latency every 5s, and health every 5s from the same probe: the health round skips a tunnel the metrics round probes that tick, because each probe is one IAP connection to the VM, and keeps the tunnels the metrics round does not cover. Load-balancer request counts every 60s over a 10-minute window. Connections are sampled every 500ms from one `lsof` listing covering every tunnel, and the 5s figure is the peak of that window: a request shorter than the window would otherwise be missed entirely |
+| Metrics | Latency every 5s, and health every 5s from the same probe: the health round skips a tunnel the metrics round probes that tick, because each probe is one IAP connection to the instance, and keeps the tunnels the metrics round does not cover. Load-balancer request counts every 60s over a 10-minute window. Connections are sampled every 500ms from one `lsof` listing covering every tunnel, and the 5s figure is the peak of that window: a request shorter than the window would otherwise be missed entirely |
 | What counts as healthy | The probe half-closes and reads the far end. Bytes are an answer; silence for the whole budget is not. A close with no bytes is ambiguous, because gcloud closes after IAP refuses and a Postgres, Redis or HTTP server closes when it sees no request, so the tunnel's own log decides: the close is healthy unless the log gained a refusal line (`4003`, `4033`, `Reauthentication required`, `gcloud auth login`, `Error while connecting`, or an ssh `open failed`) while the probe was open. The log is read 250 ms after the close, and a log that cannot be read counts the close as healthy |
 
 ### Service lifecycle
@@ -182,12 +182,12 @@ names where it comes from.
 | `start-iap-tunnel` opens one WebSocket and one thread per local TCP connection, with no cap; the listen backlog is 128 | gcloud 590, `command_lib/compute/iap_tunnel.py` |
 | A dropped WebSocket is retried from 1.5 s up to 20 s apart, for up to 15 minutes | gcloud 590, `api_lib/compute/iap_tunnel_websocket.py` |
 | Close code `4004` means IAP wants reauthentication; the session resumes | gcloud 590, `api_lib/compute/iap_tunnel_websocket_helper.py` |
-| A tunnel through a VM carries every connection over one WebSocket, kept busy by `ServerAliveInterval=30` | gtunnel, `src/tunnel.rs` (the command shown under [Jump tunnels](#jump-tunnels)) |
+| A tunnel through a GCP instance carries every connection over one WebSocket, kept busy by `ServerAliveInterval=30` | gtunnel, `src/tunnel.rs` (the command shown under [Jump tunnels](#jump-tunnels)) |
 | A gcloud that dies before `min_uptime` (60s) more than `max_restarts` (5) times inside `window` (10m) stops its job; the wait between restarts doubles from 10s to 5m. A tunnel slower than `min_uptime` to come up counts as failing | gtunnel, `src/restart_budget.rs`; [The restart budget](configuration.md#the-restart-budget) |
 
 The two shapes pay differently.
 
-| | Direct tunnel (`instance`, `dest_group`) | Through a VM (`jump`) |
+| | Direct tunnel (`instance`, `dest_group`) | Through a GCP instance (`jump`) |
 |---|---|---|
 | Cost of a connection | One WebSocket and one TLS handshake each | A channel on the one WebSocket |
 | One hour idle | Cuts that connection. An application's TCP keepalive does not help: it never leaves the local socket | Does not apply: ssh's keepalive keeps the one stream busy |
@@ -197,8 +197,8 @@ What to do about it:
 
 | If | Then |
 |---|---|
-| A pool holds connections idle for an hour or more | Set the pool's idle lifetime under 60 minutes, or route through a VM with `--via` |
-| A burst opens many connections | Reuse them, or route through a VM: each direct connection costs a handshake |
+| A pool holds connections idle for an hour or more | Set the pool's idle lifetime under 60 minutes, or route through a GCP instance with `--via` |
+| A burst opens many connections | Reuse them, or route through a GCP instance: each direct connection costs a handshake |
 | A large copy | Do not do it over IAP; the page above says it is not for bulk transfer |
 
 When gcloud reconnects, the log keeps the `4004` close and the `Reconnecting with URL` line,
@@ -261,7 +261,7 @@ locked update ([decision 16](decisions.md#16-state-files-are-written-atomically-
 
 ### The account and config model
 
-![The account and config model: tunnels.toml holds dev / kubernetes and prod / kubernetes, each identified by name plus account_name, and each derives its own artifacts: launchd plist com.gtunnel.dev.kubernetes, log logs/dev-kubernetes.log and localhost:8443 for dev, and com.gtunnel.prod.kubernetes, logs/prod-kubernetes.log and localhost:8444 for prod; config.toml holds accounts (gcloud configuration, project, zone) and default_account, and each account has its relay (VM, zone, load balancer) and its domains](images/architecture/gtunnel-config-model.png)
+![The account and config model: tunnels.toml holds dev / kubernetes and prod / kubernetes, each identified by name plus account_name, and each derives its own artifacts: launchd plist com.gtunnel.dev.kubernetes, log logs/dev-kubernetes.log and localhost:8443 for dev, and com.gtunnel.prod.kubernetes, logs/prod-kubernetes.log and localhost:8444 for prod; config.toml holds accounts (gcloud configuration, project, zone) and default_account, and each account has its relay (instance, zone, load balancer) and its domains](images/architecture/gtunnel-config-model.png)
 
 A tunnel is identified by its name **and** its account, never by name alone, which is what
 lets `kubernetes` exist once per account. Every artifact derived from a tunnel carries the

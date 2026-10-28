@@ -10,10 +10,10 @@ description: Manage GCP IAP TCP access tunnels and local service exposure using 
 gtunnel manages Google Cloud Identity-Aware Proxy (IAP) TCP access tunnels and local service exposure. It coordinates persistent background daemons (via launchd on macOS or systemd on Linux) to provide reliable, monitored port forwarding to private GCP resources without requiring external IP addresses or traditional VPNs.
 
 Key capabilities:
-- Persistent background access tunnels to GCP VMs, destination groups, and bastion jump hosts.
+- Persistent background access tunnels to GCP instances, destination groups, and bastion jump hosts.
 - Multi-account scoping with independent daemon management per account.
 - Active TCP health probing and automated daemon supervision.
-- Local service exposure through a GCP relay VM behind a global HTTPS load balancer.
+- Local service exposure through a GCP relay instance behind a global HTTPS load balancer.
 - Native Model Context Protocol (MCP) tool integration and machine-readable CLI commands.
 
 ## Hybrid Tool Routing
@@ -83,7 +83,7 @@ Configure tunnel destinations according to network topology:
 ### 1. Direct Compute Instance
 Connect directly to a Compute Engine virtual machine:
 ```bash
-gtunnel add my-vm-db my-vm:5432 -z europe-west1-b
+gtunnel add db bastion:5432 -z europe-west1-b
 ```
 Use `-z <zone>` if the instance is not in the account's default zone.
 
