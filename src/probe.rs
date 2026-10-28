@@ -115,6 +115,25 @@ pub fn failed_health(log_path: &Path, marker: Option<&Path>) -> HealthStatus {
     }
 }
 
+/// What a failed probe is read against: the tunnel's log and its credential
+/// marker. One value so the metrics probe and the health probe cannot be given
+/// different halves of it.
+pub struct Trail {
+    pub log: std::path::PathBuf,
+    pub marker: Option<std::path::PathBuf>,
+}
+
+impl Trail {
+    /// No log to read means a silent close is taken as an answer.
+    pub fn of(t: &PersistentTunnel) -> Self {
+        let label = daemon::platform_label(&t.account_name, &t.name);
+        Self {
+            log: t.log_path().unwrap_or_default(),
+            marker: daemon::auth_marker_path(&label).ok(),
+        }
+    }
+}
+
 /// The verdict on one TCP probe: an answer is healthy, and no answer is
 /// whatever the log says it was. Both the metrics probe and the health probe
 /// end here, because a probe costs an IAP connection to the VM and the TUI
@@ -659,7 +678,7 @@ pub async fn collect_metrics(
     let label = daemon::platform_label(&t.account_name, &t.name);
     let status = daemon::status(&label).await;
     let runtime = daemon::runtime_info(&label).await;
-    measure(cfg, t, include_lb, status, runtime, peaks).await
+    measure(cfg, t, include_lb, status, runtime, peaks, &Trail::of(t)).await
 }
 
 // An unmanaged tunnel has no service to ask: discovery saw the process, and
@@ -671,11 +690,23 @@ pub async fn collect_unmanaged(
     pid: u32,
     peaks: Option<&HashMap<u16, u64>>,
 ) -> TunnelMetrics {
+    collect_unmanaged_at(cfg, t, pid, peaks, &Trail::of(t)).await
+}
+
+// The trail is a parameter so a test can hand it a log and a marker of its own
+// rather than reading whatever the user's config directory holds
+pub(crate) async fn collect_unmanaged_at(
+    cfg: &Config,
+    t: &PersistentTunnel,
+    pid: u32,
+    peaks: Option<&HashMap<u16, u64>>,
+    trail: &Trail,
+) -> TunnelMetrics {
     let runtime = daemon::RuntimeInfo {
         pid: Some(pid),
         restarts: 0,
     };
-    measure(cfg, t, false, TunnelStatus::Running, runtime, peaks).await
+    measure(cfg, t, false, TunnelStatus::Running, runtime, peaks, trail).await
 }
 
 async fn measure(
@@ -685,6 +716,7 @@ async fn measure(
     status: TunnelStatus,
     runtime: daemon::RuntimeInfo,
     peaks: Option<&HashMap<u16, u64>>,
+    trail: &Trail,
 ) -> TunnelMetrics {
     let mut metrics = TunnelMetrics {
         restarts: runtime.restarts,
@@ -705,13 +737,9 @@ async fn measure(
             metrics.active_connections = blocking(move || connections_for(peaks.as_ref(), port))
                 .await
                 .unwrap_or(0);
-            // No log to read means a silent close is taken as an answer
-            let log = t.log_path().unwrap_or_default();
             let addr = format!("127.0.0.1:{local_port}");
-            let answer = probe_tunnel(&addr, TCP_TIMEOUT, &log).await;
-            let label = daemon::platform_label(&t.account_name, &t.name);
-            let marker = daemon::auth_marker_path(&label).ok();
-            metrics.health = Some(classify_probe(answer, &log, marker.as_deref()));
+            let answer = probe_tunnel(&addr, TCP_TIMEOUT, &trail.log).await;
+            metrics.health = Some(classify_probe(answer, &trail.log, trail.marker.as_deref()));
             if let Some(rtt) = answer {
                 metrics.latency = Some(rtt);
             } else {

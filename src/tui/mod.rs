@@ -289,6 +289,8 @@ struct Timers {
     sample: Instant,
     health: Poller,
     lb: Instant,
+    // The names the metrics round in flight was meant to measure
+    metrics_targets: Vec<String>,
 }
 
 impl Timers {
@@ -301,6 +303,7 @@ impl Timers {
             sample: past,
             health: Poller::due_now(),
             lb: past,
+            metrics_targets: Vec::new(),
         }
     }
 
@@ -517,14 +520,14 @@ fn apply_polled(app: &mut App, timers: &mut Timers, msg: Msg) {
             if !timers.metrics.finish(generation) {
                 return;
             }
+            // When the round began: its probes were taken from then on
+            let began = timers.metrics.last;
             // Whoever the round was meant to measure and came back without a
-            // verdict is owed a health probe; the others had theirs from it
-            let covered: Vec<String> = ops::metric_targets(&app.entries)
-                .into_iter()
-                .map(|t| t.tunnel.name)
-                .collect();
+            // verdict is owed a health probe; the others had theirs from it.
+            // The round's own targets, not today's rows: one that appeared
+            // since has not been asked yet.
             for entry in app.entries.iter_mut() {
-                let owed = covered.iter().any(|n| n == entry.name())
+                let owed = timers.metrics_targets.iter().any(|n| n == entry.name())
                     && !metrics
                         .iter()
                         .any(|(n, m)| n == entry.name() && m.health.is_some());
@@ -542,8 +545,14 @@ fn apply_polled(app: &mut App, timers: &mut Timers, msg: Msg) {
                         .observe(std::time::SystemTime::now(), m.restarts);
                     // The probe that timed the hop also says whether it
                     // answered; the health round skipped this tunnel for it
-                    if let Some(health) = m.health {
+                    // Unless a round that began later already said otherwise:
+                    // this one can outlast it, and its older answer would undo
+                    // the newer one and announce a recovery that never was
+                    if let Some(health) = m.health
+                        && entry.health_at.is_none_or(|at| at <= began)
+                    {
                         entry.health = settled_health(entry.crash_looping, health);
+                        entry.health_at = Some(began);
                     }
                     entry.metrics = Some(m);
                 }
@@ -554,10 +563,15 @@ fn apply_polled(app: &mut App, timers: &mut Timers, msg: Msg) {
             if !timers.health.finish(generation) {
                 return;
             }
+            let began = timers.health.last;
             for (name, health) in results {
                 let Some(entry) = app.entries.iter_mut().find(|e| e.name() == name) else {
                     continue;
                 };
+                if entry.health_at.is_some_and(|at| at > began) {
+                    continue;
+                }
+                entry.health_at = Some(began);
                 entry.health = settled_health(entry.crash_looping, health);
             }
             announce_round(app);
@@ -742,6 +756,20 @@ struct Probes {
 /// the health round rather than leaving the rows without a verdict.
 fn plan_probes(app: &mut App, timers: &mut Timers) -> Probes {
     let metrics = metrics_round(app, timers);
+    if let Some(round) = &metrics {
+        timers.metrics_targets = round
+            .targets
+            .iter()
+            .map(|t| t.tunnel.name.clone())
+            .collect();
+        // The two clocks share a tick, so the tunnels the metrics round covers
+        // are left out of the health round on every period and the ones it
+        // does not cover are still probed. A health round already out keeps
+        // its slot, and its begin instant is what its verdicts are dated by.
+        if !timers.health.in_flight {
+            timers.health.force();
+        }
+    }
     let mut health = health_round(app, timers);
     if let Some(round) = &metrics {
         let covered: std::collections::HashSet<&str> = round
@@ -790,6 +818,15 @@ fn metrics_round(app: &mut App, timers: &mut Timers) -> Option<MetricsRound> {
     if !timers.metrics.due(app::METRICS_EVERY) {
         return None;
     }
+    // Entries arrive asynchronously, so the first tick finds none. A round
+    // begun on nothing would spend the clock, and the round the list needs
+    // once it lands would then come round a period later than the health one,
+    // for good: the two would never share a tick and every tunnel would be
+    // probed twice per period.
+    let targets = ops::metric_targets(&app.entries);
+    if targets.is_empty() {
+        return None;
+    }
     let generation = timers.metrics.begin();
     let include_lb = timers.lb.elapsed() >= app::LB_EVERY;
     if include_lb {
@@ -797,7 +834,7 @@ fn metrics_round(app: &mut App, timers: &mut Timers) -> Option<MetricsRound> {
     }
     Some(MetricsRound {
         generation,
-        targets: ops::metric_targets(&app.entries),
+        targets,
         include_lb,
         peaks: app.take_peaks(),
     })

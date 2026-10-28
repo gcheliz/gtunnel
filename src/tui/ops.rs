@@ -18,7 +18,7 @@ use crate::expose::routes;
 use crate::gcp::GcpClient;
 use crate::probe::{
     classify_probe, collect_metrics, collect_unmanaged, http_probe, probe_tunnel, HealthStatus,
-    TCP_TIMEOUT,
+    Trail, TCP_TIMEOUT,
 };
 use crate::state::{AccessTarget, PersistentTunnel, TunnelSpec, TunnelState, TunnelStatus};
 use std::time::Duration;
@@ -215,6 +215,10 @@ fn clear_log(account: &str, name: &str) -> Result<String> {
 }
 
 pub async fn probe_health(tunnel: &PersistentTunnel) -> HealthStatus {
+    probe_health_at(tunnel, &Trail::of(tunnel)).await
+}
+
+async fn probe_health_at(tunnel: &PersistentTunnel, trail: &Trail) -> HealthStatus {
     match &tunnel.spec {
         TunnelSpec::Access { local_port, .. } => {
             // A tunnel started with --listen-on-stdin reveals no local port, so
@@ -222,13 +226,9 @@ pub async fn probe_health(tunnel: &PersistentTunnel) -> HealthStatus {
             if *local_port == 0 {
                 return HealthStatus::Unknown;
             }
-            // No log to read means a silent close is taken as an answer
-            let log = tunnel.log_path().unwrap_or_default();
             let addr = format!("127.0.0.1:{local_port}");
-            let label = daemon::platform_label(&tunnel.account_name, &tunnel.name);
-            let marker = daemon::auth_marker_path(&label).ok();
-            let answer = probe_tunnel(&addr, TCP_HEALTH_TIMEOUT, &log).await;
-            classify_probe(answer, &log, marker.as_deref())
+            let answer = probe_tunnel(&addr, TCP_HEALTH_TIMEOUT, &trail.log).await;
+            classify_probe(answer, &trail.log, trail.marker.as_deref())
         }
         TunnelSpec::Expose { hostname, .. } => http_probe(&format!("https://{hostname}")).await,
     }
@@ -742,17 +742,95 @@ mod tests {
             let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
             l.local_addr().expect("addr").port()
         };
+        // Closes without a byte after writing a refusal to the tunnel's log:
+        // the case only the log can tell from a server that speaks last
+        let log = std::env::temp_dir().join(format!("gtunnel-verdict-{}.log", std::process::id()));
+        std::fs::write(&log, "").expect("write log");
+        let refusing = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let refusing_port = refusing.local_addr().expect("addr").port();
+        let writer = log.clone();
+        tokio::spawn(async move {
+            use std::io::Write;
+            while let Ok((sock, _)) = refusing.accept().await {
+                let mut f = std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&writer)
+                    .expect("open log");
+                writeln!(f, "Error while connecting [4033: 'not authorized'].").expect("append");
+                drop(sock);
+            }
+        });
 
-        for (what, port, expected) in [
-            ("answered", answering_port, HealthStatus::Healthy),
-            ("refused", refused_port, HealthStatus::Unhealthy),
-            ("timed out", stalled_port, HealthStatus::Unhealthy),
+        // Every probe reads a temp log and a temp marker, never the user's
+        // config directory
+        let dir = std::env::temp_dir();
+        let pid = std::process::id();
+        let quiet = dir.join(format!("gtunnel-quiet-{pid}.log"));
+        std::fs::write(&quiet, "").expect("write log");
+        // What a supervisor leaves after stopping the job for expired credentials
+        let marker = dir.join(format!("gtunnel-auth-marker-{pid}"));
+        std::fs::write(&marker, "").expect("write marker");
+        let trail = |log: &std::path::Path, marker: Option<&std::path::Path>| Trail {
+            log: log.to_path_buf(),
+            marker: marker.map(std::path::Path::to_path_buf),
+        };
+        for (what, port, probe, expected) in [
+            (
+                "answered",
+                answering_port,
+                trail(&quiet, None),
+                HealthStatus::Healthy,
+            ),
+            (
+                "refused",
+                refused_port,
+                trail(&quiet, None),
+                HealthStatus::Unhealthy,
+            ),
+            (
+                "timed out",
+                stalled_port,
+                trail(&quiet, None),
+                HealthStatus::Unhealthy,
+            ),
+            (
+                "closed after a refusal",
+                refusing_port,
+                trail(&log, None),
+                HealthStatus::Unhealthy,
+            ),
+            (
+                "refused with a marker",
+                refused_port,
+                trail(&quiet, Some(&marker)),
+                HealthStatus::AuthExpired,
+            ),
+            (
+                "timed out with a marker",
+                stalled_port,
+                trail(&quiet, Some(&marker)),
+                HealthStatus::AuthExpired,
+            ),
+            (
+                "answered despite a marker",
+                answering_port,
+                trail(&quiet, Some(&marker)),
+                HealthStatus::Healthy,
+            ),
         ] {
             let tunnel = access("verdict", port);
-            let from_health = probe_health(&tunnel).await;
-            let from_metrics = collect_unmanaged(&config, &tunnel, std::process::id(), None)
-                .await
-                .health;
+            let from_health = probe_health_at(&tunnel, &probe).await;
+            let from_metrics = crate::probe::collect_unmanaged_at(
+                &config,
+                &tunnel,
+                std::process::id(),
+                None,
+                &probe,
+            )
+            .await
+            .health;
             assert_eq!(from_health, expected, "{what}: the health probe");
             assert_eq!(from_metrics, Some(from_health), "{what}: the metrics probe");
         }
