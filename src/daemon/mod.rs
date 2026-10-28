@@ -491,7 +491,7 @@ mod tests {
             auto_start: false,
             spec: TunnelSpec::Access {
                 target: crate::state::AccessTarget::Instance {
-                    instance: "my-vm".to_string(),
+                    instance: "bastion".to_string(),
                     zone: "europe-west1-b".to_string(),
                 },
                 remote_port: 5432,
@@ -537,7 +537,7 @@ mod tests {
             auto_start: false,
             spec: TunnelSpec::Access {
                 target: crate::state::AccessTarget::Instance {
-                    instance: "my-vm".to_string(),
+                    instance: "bastion".to_string(),
                     zone: "europe-west1-b".to_string(),
                 },
                 remote_port: 5432,
@@ -576,7 +576,7 @@ mod tests {
             auto_start: false,
             spec: TunnelSpec::Access {
                 target: crate::state::AccessTarget::Instance {
-                    instance: "my-vm".to_string(),
+                    instance: "bastion".to_string(),
                     zone: "europe-west1-b".to_string(),
                 },
                 remote_port: 5432,
@@ -620,7 +620,7 @@ mod tests {
             auto_start: false,
             spec: TunnelSpec::Access {
                 target: crate::state::AccessTarget::Instance {
-                    instance: "my-vm".to_string(),
+                    instance: "bastion".to_string(),
                     zone: "europe-west1-b".to_string(),
                 },
                 remote_port: 5432,
@@ -668,7 +668,7 @@ mod tests {
             auto_start: false,
             spec: TunnelSpec::Access {
                 target: crate::state::AccessTarget::Instance {
-                    instance: "my-vm".to_string(),
+                    instance: "bastion".to_string(),
                     zone: "europe-west1-b".to_string(),
                 },
                 remote_port: 5432,
@@ -728,7 +728,7 @@ mod tests {
             args: vec![
                 "compute".to_string(),
                 "start-iap-tunnel".to_string(),
-                "my vm".to_string(),
+                "my instance".to_string(),
                 "5432".to_string(),
                 "--local-host-port=localhost:15432".to_string(),
             ],
@@ -906,7 +906,7 @@ mod tests {
             plist.contains("<string>start-iap-tunnel</string>"),
             "{plist}"
         );
-        assert!(plist.contains("<string>my vm</string>"), "{plist}");
+        assert!(plist.contains("<string>my instance</string>"), "{plist}");
         assert!(plist.contains("<key>PATH</key>"), "{plist}");
         assert!(
             plist.contains("<string>/opt/homebrew/bin:/usr/bin:/bin</string>"),
@@ -1056,7 +1056,7 @@ mod tests {
         let unit = systemd::render_unit(&spec());
         assert!(
             unit.contains(
-                "ExecStart=/opt/homebrew/bin/gcloud compute start-iap-tunnel \"my vm\" 5432"
+                "ExecStart=/opt/homebrew/bin/gcloud compute start-iap-tunnel \"my instance\" 5432"
             ),
             "{unit}"
         );

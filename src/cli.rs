@@ -37,7 +37,7 @@ pub enum Commands {
     // Add a persistent Access tunnel (IAP TCP forward to localhost)
     //
     // Examples:
-    //   gtunnel add db my-vm:5432 -z europe-west1-b --start
+    //   gtunnel add db my-bastion:5432 -z europe-west1-b --start
     //   gtunnel add pg 10.0.0.5:5432 --dest-group prod --region europe-west1 --network default
     //   gtunnel add k8s 10.0.0.10:443 --via bastion --local-port 8443
     #[command(about = "Add a persistent Access tunnel (IAP TCP forward to localhost)")]
@@ -127,8 +127,8 @@ pub enum Commands {
     // Run an ephemeral tunnel in the foreground (stops on Ctrl+C)
     //
     // Examples:
-    //   gtunnel run my-vm:5432
-    //   gtunnel run db my-vm:5432 -z europe-west1-b
+    //   gtunnel run my-bastion:5432
+    //   gtunnel run db my-bastion:5432 -z europe-west1-b
     //   gtunnel run --public api localhost:3000
     #[command(about = "Run an ephemeral tunnel in the foreground (stops on Ctrl+C)")]
     Run {
@@ -531,10 +531,10 @@ pub enum DomainsCommands {
 
 #[derive(Subcommand, Debug, PartialEq, Eq)]
 pub enum RelayCommands {
-    // Create the relay VM, load balancer, certificate and DNS plumbing
-    #[command(about = "Create the relay VM, load balancer, certificate and DNS plumbing")]
+    // Create the relay instance, load balancer, certificate and DNS plumbing
+    #[command(about = "Create the relay instance, load balancer, certificate and DNS plumbing")]
     Up {
-        // Compute zone for the relay VM (overrides the account default)
+        // Compute zone for the relay instance (overrides the account default)
         #[arg(
             short,
             long,
@@ -542,7 +542,7 @@ pub enum RelayCommands {
         )]
         zone: Option<String>,
 
-        // VPC network for the relay VM
+        // VPC network for the relay instance
         #[arg(
             long,
             default_value = "default",
@@ -574,8 +574,8 @@ pub enum RelayCommands {
         yes: bool,
     },
 
-    // Show relay VM, address and certificate state
-    #[command(about = "Show relay VM, address and certificate state")]
+    // Show relay instance, address and certificate state
+    #[command(about = "Show relay instance, address and certificate state")]
     Status,
 }
 
@@ -816,7 +816,7 @@ mod tests {
             "gtunnel",
             "add",
             "db",
-            "my-vm:5432",
+            "my-bastion:5432",
             "-z",
             "europe-west1-b",
             "--local-port",
@@ -833,7 +833,7 @@ mod tests {
                 ..
             } => {
                 assert_eq!(name, "db");
-                assert_eq!(target, "my-vm:5432");
+                assert_eq!(target, "my-bastion:5432");
                 assert_eq!(zone.as_deref(), Some("europe-west1-b"));
                 assert_eq!(local_port, Some(15432));
                 assert!(start);
@@ -920,11 +920,11 @@ mod tests {
 
     #[test]
     fn run_accepts_target_only() {
-        let cli = parse(&["gtunnel", "run", "my-vm:5432"]);
+        let cli = parse(&["gtunnel", "run", "my-bastion:5432"]);
         match cli.command.expect("command") {
             Commands::Run { args, public, .. } => {
                 assert!(!public);
-                assert_eq!(args, vec!["my-vm:5432".to_string()]);
+                assert_eq!(args, vec!["my-bastion:5432".to_string()]);
             }
             other => panic!("expected Run, got {other:?}"),
         }
@@ -1035,11 +1035,11 @@ mod tests {
                 args
             );
         }
-        assert!(!parse(&["gtunnel", "add", "db", "vm:5432"])
+        assert!(!parse(&["gtunnel", "add", "db", "bastion:5432"])
             .command
             .expect("command")
             .needs_gcp_auth());
-        assert!(parse(&["gtunnel", "add", "db", "vm:5432", "-s"])
+        assert!(parse(&["gtunnel", "add", "db", "bastion:5432", "-s"])
             .command
             .expect("command")
             .needs_gcp_auth());
@@ -1057,7 +1057,7 @@ mod tests {
             .needs_gcp_auth());
         let check: [&[&str]; 7] = [
             &["gtunnel", "expose", "api", "3000"],
-            &["gtunnel", "run", "vm:5432"],
+            &["gtunnel", "run", "bastion:5432"],
             &["gtunnel", "start", "db"],
             &["gtunnel", "stop", "db"],
             &["gtunnel", "restart", "db"],

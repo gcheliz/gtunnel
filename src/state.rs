@@ -8,7 +8,7 @@ use crate::config;
 // Access tunnels listen here; one local port per tunnel
 pub const ACCESS_PORT_BASE: u16 = 15000;
 pub const ACCESS_PORT_SPAN: u16 = 1000;
-// Expose tunnels forward to a port on the relay VM; 30999 is the default backend
+// Expose tunnels forward to a port on the relay instance; 30999 is the default backend
 pub const RELAY_PORT_BASE: u16 = 30000;
 pub const RELAY_PORT_SPAN: u16 = 999;
 
@@ -303,7 +303,7 @@ impl TunnelState {
             .collect()
     }
 
-    // Relay ports live on one account's relay VM
+    // Relay ports live on one account's relay instance
     pub fn used_relay_ports(&self, account: &str) -> HashSet<u16> {
         self.tunnels
             .iter()
@@ -524,7 +524,7 @@ mod tests {
             auto_start: false,
             spec: TunnelSpec::Access {
                 target: AccessTarget::Instance {
-                    instance: "my-vm".to_string(),
+                    instance: "bastion".to_string(),
                     zone: "europe-west1-b".to_string(),
                 },
                 remote_port: 5432,
@@ -697,7 +697,7 @@ mod tests {
     fn display_helpers_describe_each_mode() {
         let db = access_instance("db", 15432);
         assert_eq!(db.display_url(), "localhost:15432");
-        assert_eq!(db.display_target(), "my-vm:5432 (europe-west1-b)");
+        assert_eq!(db.display_target(), "bastion:5432 (europe-west1-b)");
         assert_eq!(db.label(), "dev-db");
 
         let pg = access_dest_group("pg");
@@ -767,20 +767,20 @@ mod tests {
 
     #[test]
     fn instance_names_follow_gce_and_never_lead_with_a_dash() {
-        for ok in ["bastion", "my-vm", "a", "vm1", "postgres-1"] {
+        for ok in ["bastion", "my-instance", "a", "db1", "postgres-1"] {
             assert!(validate_instance_name(ok).is_ok(), "{ok}");
         }
         assert!(validate_instance_name(&"a".repeat(63)).is_ok());
         for bad in [
             "",
             "--command=id",
-            "-vm",
-            "My-VM",
-            "my vm",
-            "my_vm",
-            "1vm",
-            "vm-",
-            "vm;id",
+            "-db",
+            "My-DB",
+            "my db",
+            "my_db",
+            "1db",
+            "db-",
+            "db;id",
         ] {
             assert!(validate_instance_name(bad).is_err(), "{bad:?}");
         }
@@ -818,7 +818,7 @@ mod tests {
             "10.0.0.10",
             "db.internal",
             "cache.example.internal",
-            "my-vm",
+            "my-host",
             "::1",
             "fd00::10",
             "Redis.Example.Internal",

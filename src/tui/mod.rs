@@ -772,7 +772,7 @@ struct Probes {
 
 /// Which rounds start this tick, and for whom.
 ///
-/// A probe costs one IAP connection to the VM, and the metrics probe already
+/// A probe costs one IAP connection to the instance, and the metrics probe already
 /// carries a verdict (`TunnelMetrics::health`), so a tunnel the metrics round
 /// starts this tick is left out of the health round instead of being asked
 /// twice. Everything the metrics round does not cover keeps the health probe on

@@ -137,7 +137,7 @@ pub async fn list_zones(client: &GcpClient, project: &str) -> Result<Vec<String>
     Ok(raw.items.into_iter().map(|z| z.name).collect())
 }
 
-// The relay VM: no external IP, SSH reachable only through IAP
+// The relay instance: no external IP, SSH reachable only through IAP
 pub async fn insert_relay_instance(
     client: &GcpClient,
     project: &str,
@@ -1144,10 +1144,10 @@ mod tests {
               "items": {
                 "zones/europe-west1-b": {
                   "instances": [
-                    {"name":"my-vm","status":"RUNNING","tags":{"items":["db"]},
+                    {"name":"bastion","status":"RUNNING","tags":{"items":["db"]},
                      "networkInterfaces":[{"network":"https://x/networks/default","networkIP":"10.0.0.5"}],
                      "zone":"https://x/projects/p/zones/europe-west1-b"},
-                    {"name":"other-vm","status":"TERMINATED","tags":{},
+                    {"name":"other-instance","status":"TERMINATED","tags":{},
                      "networkInterfaces":[{"network":"https://x/networks/default","networkIP":"10.0.0.6"}],
                      "zone":"https://x/projects/p/zones/europe-west1-b"}
                   ]
@@ -1160,7 +1160,7 @@ mod tests {
 
         let got = list_instances(&client(&server), "p").await.expect("list");
         assert_eq!(got.len(), 2);
-        assert_eq!(got[0].name, "my-vm");
+        assert_eq!(got[0].name, "bastion");
         assert_eq!(got[0].zone, "europe-west1-b");
         assert_eq!(got[0].status, "RUNNING");
         assert_eq!(got[0].internal_ip.as_deref(), Some("10.0.0.5"));

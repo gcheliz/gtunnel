@@ -271,7 +271,7 @@ fn now_secs() -> u64 {
 // Every record counts, alive or not: a record is removed only once its relay
 // route is gone, so a dead one's port must not be handed to a new tunnel that
 // would then share the old hostname's named port
-// Relay ports are bound on the relay VM, so nothing local can probe them:
+// Relay ports are bound on the relay instance, so nothing local can probe them:
 // state and the live runs are the only record, and `expose` has to read both
 pub fn used_relay_ports(
     state: &TunnelState,
@@ -282,7 +282,7 @@ pub fn used_relay_ports(
     Ok(used)
 }
 
-/// Relay ports live on one account's relay VM, so another account's runs do not
+/// Relay ports live on one account's relay instance, so another account's runs do not
 /// compete for them.
 fn run_relay_ports(account: &str) -> Result<std::collections::HashSet<u16>> {
     let mut used = std::collections::HashSet::new();
@@ -750,7 +750,7 @@ mod tests {
     fn spec() -> TunnelSpec {
         TunnelSpec::Access {
             target: AccessTarget::Instance {
-                instance: "my-vm".to_string(),
+                instance: "bastion".to_string(),
                 zone: "europe-west1-b".to_string(),
             },
             remote_port: 5432,
@@ -908,7 +908,7 @@ mod tests {
         let pid = orphan_sleep(); // not a group leader of its own
         let old = format!(
             r#"{{"name":"gt-old","account_name":"dev","pid":{pid},"started_at":1700000000,
-"spec":{{"mode":"access","target":{{"kind":"instance","instance":"my-vm","zone":"z"}},"remote_port":5432,"local_port":15000}}}}"#
+"spec":{{"mode":"access","target":{{"kind":"instance","instance":"bastion","zone":"z"}},"remote_port":5432,"local_port":15000}}}}"#
         );
         let run: EphemeralRecord = serde_json::from_str(&old).expect("0.1.42 record parses");
         assert_eq!(run.pid_start, None);
@@ -1051,7 +1051,7 @@ mod tests {
     fn access(local_port: Option<u16>) -> RunShape {
         RunShape::Access {
             target: AccessTarget::Instance {
-                instance: "my-vm".to_string(),
+                instance: "bastion".to_string(),
                 zone: "europe-west1-b".to_string(),
             },
             remote_port: 5432,
@@ -1279,7 +1279,7 @@ mod tests {
     }
 
     // `expose` read tunnels.toml alone, so it handed out a relay port a live
-    // `gtunnel run --public` was already bound to on the relay VM
+    // `gtunnel run --public` was already bound to on the relay instance
     #[test]
     fn used_relay_ports_counts_a_live_run() {
         let _temp = TempConfigDir::new();
@@ -1331,7 +1331,7 @@ mod tests {
     #[test]
     fn an_old_record_without_ttl_secs_still_parses() {
         let old = r#"{"name":"gt-old","account_name":"dev","pid":42,"started_at":1700000000,
-"spec":{"mode":"access","target":{"kind":"instance","instance":"my-vm","zone":"z"},"remote_port":5432,"local_port":15000}}"#;
+"spec":{"mode":"access","target":{"kind":"instance","instance":"bastion","zone":"z"},"remote_port":5432,"local_port":15000}}"#;
         let record: EphemeralRecord = serde_json::from_str(old).expect("parse");
         assert_eq!(record.ttl_secs, None);
         assert_eq!(record.expires_at(), None);
