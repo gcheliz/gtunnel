@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.11](https://github.com/gcheliz/gtunnel/compare/v0.2.10...v0.2.11) - 2026-10-28
+
+### Fixed
+
+- *(tui)* collect the metrics round in parallel ([#195](https://github.com/gcheliz/gtunnel/pull/195))
+
 ## [0.2.10](https://github.com/gcheliz/gtunnel/compare/v0.2.9...v0.2.10) - 2026-10-27
 
 ### Documentation
