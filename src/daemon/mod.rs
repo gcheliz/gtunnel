@@ -201,6 +201,18 @@ pub fn platform_label(account: &str, name: &str) -> String {
     launchd::label_for(account, name)
 }
 
+/// The text of the service file gtunnel installed for `label`, or `None` when
+/// there is none. Existence of the file is what "installed" means: a service
+/// manager can be asked whether a job is loaded, but a stopped tunnel is
+/// still installed and still carries the argv it was installed with.
+pub fn installed_service_text(label: &str) -> Option<String> {
+    #[cfg(target_os = "macos")]
+    let path = launchd::plist_path(label).ok()?;
+    #[cfg(not(target_os = "macos"))]
+    let path = systemd::unit_path(label).ok()?;
+    std::fs::read_to_string(path).ok()
+}
+
 /// Whether `path` is inside `dir`, compared by component so `/tmp/cfg-ab` is
 /// not inside `/tmp/cfg-a`. A `..` anywhere refuses: it would pass the prefix
 /// test and then resolve somewhere else.

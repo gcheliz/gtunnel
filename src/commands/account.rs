@@ -8,6 +8,7 @@ use crate::config::{
 };
 use crate::gcp::projects::{self, Project};
 use crate::gcp::{compute, gcloud, GcpClient};
+use crate::state::validate_zone;
 
 // First run: turn a gcloud configuration into a gtunnel account
 pub async fn cmd_init() -> Result<()> {
@@ -281,12 +282,23 @@ pub struct AddOptions {
 // need not exist: gcloud still runs with it, but creates nothing and warns
 // "Could not open the configuration file" on every call. gtunnel does not
 // create it, because a gcloud configuration is the user's to make.
+//
+// An empty configuration is refused because gcloud reads `--configuration=` as
+// "the active one": the tunnel would run as whoever is logged in to the shell,
+// which is what pinning a configuration exists to prevent, and a CI script
+// with an unset variable reaches it silently.
 fn account_from_flags(configuration: &str, name: &str, opts: &AddOptions) -> Result<Account> {
+    if configuration.is_empty() {
+        return Err(GtunnelError::usage("--configuration cannot be empty").into());
+    }
     let project = opts
         .project
         .clone()
         .filter(|p| !p.is_empty())
-        .context("--project cannot be empty")?;
+        .ok_or_else(|| GtunnelError::usage("--project cannot be empty"))?;
+    if let Some(zone) = &opts.zone {
+        validate_zone(zone).map_err(|e| GtunnelError::usage(e.to_string()))?;
+    }
     if let Some(file) = &opts.credential_file {
         validate_credential_file(file)?;
     }
@@ -305,6 +317,11 @@ fn account_from_flags(configuration: &str, name: &str, opts: &AddOptions) -> Res
 // configuration they mean. It is async because listing configurations shells out
 // to gcloud, which `--project` makes unnecessary.
 pub async fn cmd_account_add(configuration: &str, name: &str, opts: AddOptions) -> Result<()> {
+    // Before the branch, so the gcloud path refuses it too: there it would
+    // only surface as "no configuration named ''" after a gcloud call
+    if configuration.is_empty() {
+        return Err(GtunnelError::usage("--configuration cannot be empty").into());
+    }
     let account = if opts.project.is_some() {
         account_from_flags(configuration, name, &opts)?
     } else {
@@ -316,6 +333,7 @@ pub async fn cmd_account_add(configuration: &str, name: &str, opts: AddOptions) 
             account.credential_file = Some(file.clone());
         }
         if let Some(zone) = &opts.zone {
+            validate_zone(zone).map_err(|e| GtunnelError::usage(e.to_string()))?;
             account.default_zone = zone.clone();
         }
         account
@@ -334,30 +352,131 @@ pub fn cmd_account_edit(
     zone: Option<&str>,
     credential_file: Option<&str>,
 ) -> Result<()> {
+    let edited = account_edit(name, project, zone, credential_file)?;
+    println!("Account '{name}' updated");
+    if let Some(line) = stale_line(&edited.stale) {
+        println!("{line}");
+    }
+    Ok(())
+}
+
+/// What an edit left behind: the installed tunnels whose service file still
+/// carries a value the edit replaced.
+#[derive(Debug, Default)]
+pub struct AccountEdited {
+    pub stale: Vec<String>,
+}
+
+/// The project and credential file an edit replaced, as (old, new). Only these
+/// two reach a service file: the zone is not in the argv, because every
+/// tunnel carries its own.
+#[derive(Debug, Default)]
+struct ServiceChange {
+    project: Option<(String, String)>,
+    credential_file: Option<(Option<String>, Option<String>)>,
+}
+
+// The core of `account edit`: it writes the config and reports, and prints
+// nothing, so a caller that is not a terminal can use it (decision 15).
+pub fn account_edit(
+    name: &str,
+    project: Option<&str>,
+    zone: Option<&str>,
+    credential_file: Option<&str>,
+) -> Result<AccountEdited> {
     if project.is_none() && zone.is_none() && credential_file.is_none() {
-        bail!("Nothing to change: pass --project, --zone, or both (or --credential-file)");
+        return Err(GtunnelError::usage(
+            "Nothing to change: pass --project, --zone, or both (or --credential-file)",
+        )
+        .into());
     }
     if project == Some("") || zone == Some("") {
-        bail!("A project or zone cannot be empty");
+        return Err(GtunnelError::usage("A project or zone cannot be empty").into());
     }
     if let Some(file) = credential_file.filter(|f| !f.is_empty()) {
         validate_credential_file(std::path::Path::new(file))?;
     }
-    update_config(|config| {
+    let change = update_config(|config| {
         let account = config.get_account_mut(Some(name))?;
+        let mut change = ServiceChange::default();
         if let Some(project) = project {
+            change.project = Some((account.project.clone(), project.to_string()));
             account.project = project.to_string();
         }
         if let Some(zone) = zone {
             account.default_zone = zone.to_string();
         }
         if let Some(file) = credential_file {
-            account.credential_file = (!file.is_empty()).then(|| file.into());
+            let new = (!file.is_empty()).then(|| std::path::PathBuf::from(file));
+            change.credential_file = Some((
+                account
+                    .credential_file
+                    .as_ref()
+                    .map(|p| p.display().to_string()),
+                new.as_ref().map(|p| p.display().to_string()),
+            ));
+            account.credential_file = new;
         }
-        Ok(())
+        Ok(change)
     })?;
-    println!("Account '{name}' updated");
-    Ok(())
+    let state = crate::state::TunnelState::load()?;
+    let tunnels = state.tunnels_for_account(name);
+    let stale = stale_tunnels(&tunnels, &change, |label| {
+        crate::daemon::installed_service_text(label)
+    });
+    Ok(AccountEdited { stale })
+}
+
+// Names the tunnels whose installed service file still holds a replaced value.
+// The test is whether the old value is in the file, and a value set for the
+// first time has no old one to find, so there the flag's absence is the
+// signal. A file that cannot be read is not installed, so it is not named.
+fn stale_tunnels(
+    tunnels: &[&crate::state::PersistentTunnel],
+    change: &ServiceChange,
+    read: impl Fn(&str) -> Option<String>,
+) -> Vec<String> {
+    const FLAG: &str = "--credential-file-override=";
+    tunnels
+        .iter()
+        .filter(|t| {
+            let Some(text) = read(&crate::daemon::platform_label(&t.account_name, &t.name)) else {
+                return false;
+            };
+            let project_stale = change
+                .project
+                .as_ref()
+                .is_some_and(|(old, new)| old != new && text.contains(&format!("--project={old}")));
+            let credential_stale =
+                change
+                    .credential_file
+                    .as_ref()
+                    .is_some_and(|(old, new)| match old {
+                        _ if old == new => false,
+                        Some(old) => text.contains(&format!("{FLAG}{old}")),
+                        None => !text.contains(FLAG),
+                    });
+            project_stale || credential_stale
+        })
+        .map(|t| t.name.clone())
+        .collect()
+}
+
+// One line, so a script reading the output sees one extra line at most. No
+// restart happens here: it drops live connections, which is the user's call.
+pub fn stale_line(stale: &[String]) -> Option<String> {
+    if stale.is_empty() {
+        return None;
+    }
+    let restarts = stale
+        .iter()
+        .map(|n| format!("`gtunnel restart {n}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!(
+        "Installed tunnels still use the old value: {}. Restart to apply: {restarts}",
+        stale.join(", ")
+    ))
 }
 
 #[cfg(test)]
@@ -513,6 +632,152 @@ mod tests {
             ..AddOptions::default()
         };
         assert!(account_from_flags("ci", "ci", &opts).is_err());
+    }
+
+    fn exit_of(err: &anyhow::Error) -> i32 {
+        crate::error::kind_of(err).exit_code()
+    }
+
+    #[test]
+    fn add_refuses_an_empty_configuration_as_a_usage_error() {
+        let opts = AddOptions {
+            project: Some("example-dev-1a2b".into()),
+            ..AddOptions::default()
+        };
+        let err = account_from_flags("", "x", &opts).unwrap_err();
+        assert_eq!(exit_of(&err), 2, "{err}");
+        assert!(err.to_string().contains("--configuration"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn add_with_an_empty_configuration_exits_2_and_writes_nothing() {
+        let dir = TempConfigDir::new();
+        let opts = AddOptions {
+            project: Some("p".into()),
+            ..AddOptions::default()
+        };
+        let err = cmd_account_add("", "x", opts).await.unwrap_err();
+        assert_eq!(exit_of(&err), 2, "{err}");
+        assert!(!dir.path().join("config.toml").exists());
+    }
+
+    #[test]
+    fn add_refuses_a_zone_that_is_not_one_as_a_usage_error() {
+        let opts = AddOptions {
+            project: Some("p".into()),
+            zone: Some("not a zone".into()),
+            ..AddOptions::default()
+        };
+        let err = account_from_flags("c", "x", &opts).unwrap_err();
+        assert_eq!(exit_of(&err), 2, "{err}");
+    }
+
+    #[test]
+    fn edit_refusals_are_usage_errors() {
+        let _dir = TempConfigDir::new();
+        save_accounts(&["dev"]);
+        for err in [
+            cmd_account_edit("dev", None, None, None).unwrap_err(),
+            cmd_account_edit("dev", Some(""), None, None).unwrap_err(),
+            cmd_account_edit("dev", None, Some(""), None).unwrap_err(),
+        ] {
+            assert_eq!(exit_of(&err), 2, "{err}");
+        }
+    }
+
+    // The service file carries the value as it was at install time, so the
+    // question is whether the old one is still in it. What is read is a
+    // closure, so the test needs no service manager and no home directory.
+    #[test]
+    fn a_tunnel_whose_service_file_holds_the_old_credential_file_is_stale() {
+        let a = tunnel("db", "ci");
+        let b = tunnel("cache", "ci");
+        let files = |label: &str| {
+            let name = crate::daemon::platform_label("ci", "db");
+            (label == name).then(|| {
+                "--credential-file-override=/secrets/old.json --project=example-dev-1a2b"
+                    .to_string()
+            })
+        };
+        let change = ServiceChange {
+            project: Some(("example-dev-1a2b".into(), "example-dev-1a2b".into())),
+            credential_file: Some((Some("/secrets/old.json".into()), None)),
+        };
+        assert_eq!(stale_tunnels(&[&a, &b], &change, files), vec!["db"]);
+    }
+
+    #[test]
+    fn a_credential_file_set_for_the_first_time_makes_an_installed_tunnel_stale() {
+        let a = tunnel("db", "ci");
+        let files = |_: &str| Some("--project=example-dev-1a2b".to_string());
+        let change = ServiceChange {
+            project: None,
+            credential_file: Some((None, Some("/secrets/new.json".into()))),
+        };
+        assert_eq!(stale_tunnels(&[&a], &change, files), vec!["db"]);
+    }
+
+    #[test]
+    fn a_changed_project_makes_the_tunnel_stale_and_an_unchanged_one_does_not() {
+        let a = tunnel("db", "ci");
+        let files = |_: &str| Some("--project=example-dev-1a2b".to_string());
+        let moved = ServiceChange {
+            project: Some(("example-dev-1a2b".into(), "example-dev-9z9z".into())),
+            credential_file: None,
+        };
+        assert_eq!(stale_tunnels(&[&a], &moved, files), vec!["db"]);
+        let same = ServiceChange {
+            project: Some(("example-dev-1a2b".into(), "example-dev-1a2b".into())),
+            credential_file: None,
+        };
+        assert!(stale_tunnels(&[&a], &same, files).is_empty());
+    }
+
+    #[test]
+    fn an_edit_that_touches_neither_project_nor_credential_names_nothing() {
+        let a = tunnel("db", "ci");
+        let files = |_: &str| Some("--project=example-dev-1a2b".to_string());
+        assert!(stale_tunnels(&[&a], &ServiceChange::default(), files).is_empty());
+    }
+
+    #[test]
+    fn the_stale_line_names_the_tunnels_and_the_restart_command() {
+        let line = stale_line(&["db".to_string(), "cache".to_string()]).expect("a line");
+        assert!(line.contains("db, cache"), "{line}");
+        assert!(line.contains("gtunnel restart"), "{line}");
+        assert_eq!(stale_line(&[]), None);
+    }
+
+    // Through the real core, with a plist written where launchd's job for
+    // this config directory would be. The other platform keeps its units in
+    // the home directory, which a test must not write.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn editing_the_credential_file_names_the_installed_tunnel_and_nothing_else() {
+        let dir = TempConfigDir::new();
+        let mut config = Config::default();
+        let mut ci = account("ci");
+        ci.credential_file = Some("/secrets/old.json".into());
+        config.add_account(ci).expect("fixture adds");
+        save_config(&config).expect("fixture saves");
+        let mut state = TunnelState::default();
+        state.add(tunnel("db", "ci")).expect("fixture adds");
+        state.add(tunnel("cache", "ci")).expect("fixture adds");
+        state.save().expect("fixture saves");
+
+        // nothing installed: nothing to name
+        let none = account_edit("ci", None, None, Some("/secrets/new.json")).expect("edits");
+        assert!(none.stale.is_empty(), "{:?}", none.stale);
+
+        let agents = dir.path().join("agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(
+            agents.join("com.gtunnel.ci.db.plist"),
+            "<string>--credential-file-override=/secrets/new.json</string>",
+        )
+        .unwrap();
+        let got = account_edit("ci", None, None, Some("/secrets/newer.json")).expect("edits");
+        assert_eq!(got.stale, vec!["db"]);
     }
 
     #[tokio::test]
