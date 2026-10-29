@@ -276,6 +276,7 @@ pub async fn expose_tunnel(account: Option<&str>, req: &ExposeRequest<'_>) -> Re
         .into());
     }
     state.check_label(&acct.name, name)?;
+    crate::ephemeral::check_name_free_of_runs(&acct.name, name)?;
 
     let relay_port = allocate_port(
         name,

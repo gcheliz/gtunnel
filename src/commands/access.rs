@@ -130,6 +130,7 @@ async fn save_tunnel(account: Option<&str>, req: &AddRequest<'_>) -> Result<Adde
         .into());
     }
     early.check_label(&acct.name, name)?;
+    crate::ephemeral::check_name_free_of_runs(&acct.name, name)?;
 
     let (host, remote_port) = parse_access_target(target)?;
     let access_target = match (dest_group, via) {
@@ -165,6 +166,7 @@ async fn save_tunnel(account: Option<&str>, req: &AddRequest<'_>) -> Result<Adde
     // The port choice reads the saved ports, so it belongs under the same lock
     // as the save; the gcloud checks above are outside it
     let tunnel = TunnelState::update(|state| {
+        crate::ephemeral::check_name_free_of_runs(&acct.name, name)?;
         let local_port = pick_local_port(state, name, local_port)?;
 
         let tunnel = new_access_tunnel(name, &acct.name, access_target, remote_port, local_port);

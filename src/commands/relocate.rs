@@ -427,6 +427,7 @@ pub async fn move_tunnel(
     let mut state = TunnelState::load()?;
     find_tunnel(&state, name, &src_acct.name)?;
     let new = target_name(name, rename_to);
+    crate::ephemeral::check_name_free_of_runs(&dst_acct.name, new)?;
     let src = LiveOps {
         client: GcpClient::for_account(&src_acct),
         config: config.clone(),
@@ -463,6 +464,7 @@ pub async fn rename_tunnel(account: Option<&str>, old: &str, new: &str) -> Resul
     let (config, acct) = resolve(account)?;
     let mut state = TunnelState::load()?;
     find_tunnel(&state, old, &acct.name)?;
+    crate::ephemeral::check_name_free_of_runs(&acct.name, new)?;
     let ops = LiveOps {
         client: GcpClient::for_account(&acct),
         config,
