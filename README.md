@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://gcheliz.github.io/gtunnel/"><img src="https://img.shields.io/badge/website-gcheliz.github.io%2Fgtunnel-4DD0E1?logo=githubpages&logoColor=white" alt="Website: gcheliz.github.io/gtunnel"></a>
+  <a href="https://gcheliz.github.io/gtunnel/"><img src="https://img.shields.io/badge/website-live-4DD0E1?logo=githubpages&logoColor=white" alt="Website: gcheliz.github.io/gtunnel"></a>
   <a href="https://github.com/gcheliz/gtunnel/releases/latest"><img src="https://img.shields.io/github/v/release/gcheliz/gtunnel?color=blue" alt="Latest release"></a>
   <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/rust-1.89%2B-orange.svg" alt="Rust 1.89 or newer"></a>
   <a href="Cargo.toml"><img src="https://img.shields.io/badge/edition-2024-orange.svg" alt="Rust 2024 edition"></a>

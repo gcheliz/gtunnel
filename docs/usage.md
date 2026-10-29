@@ -837,6 +837,18 @@ npx @modelcontextprotocol/inspector gtunnel mcp
 
 ### Client Configuration
 
+#### One-line install
+
+Each client registers the server with one command. Add `--scope user` to make it available in every project; the default scope is this project only.
+
+| Claude Code | Gemini CLI |
+|---|---|
+| `claude mcp add gtunnel -- gtunnel mcp` | `gemini mcp add gtunnel gtunnel mcp` |
+
+The `--` in the Claude Code command ends its own flags, so `mcp` reaches gtunnel.
+
+Gemini CLI refuses to write project settings in a workspace it does not trust; trust the folder first or add `--scope user`.
+
 #### Workspace Configuration (`.mcp.json`)
 
 To enable the `gtunnel` MCP server in your workspace, create a `.mcp.json` file in the project

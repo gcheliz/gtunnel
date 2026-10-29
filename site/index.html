@@ -164,11 +164,10 @@ code { color: var(--text); }
 .tgroup li { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 11px 0; border-bottom: 1px solid var(--line); }
 .tgroup li code { font-size: 13px; }
 .tgroup li span { font-size: 13px; color: var(--muted); text-align: right; }
-.res { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; padding: 14px 18px; background: var(--ground); border: 1px solid var(--line); border-radius: 12px; }
-.res .k { font-family: var(--mono); font-size: 12px; letter-spacing: 1px; color: var(--blue); }
-.res code { font-size: 13px; }
-.res span { font-size: 13px; color: var(--muted); }
-.res .div { width: 1px; height: 18px; background: var(--line); }
+.inst { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.inst > div { min-width: 0; padding: 14px 18px; background: var(--ground); border: 1px solid var(--line); border-radius: 12px; }
+.inst .k { display: block; font-family: var(--mono); font-size: 12px; letter-spacing: 1px; color: var(--blue); }
+.inst code { display: block; margin-top: 8px; font-size: 13px; overflow-x: auto; white-space: nowrap; }
 
 /* code panels */
 .snippet { position: relative; min-width: 0; display: flex; }
@@ -213,7 +212,7 @@ footer a:hover { color: var(--text); }
   .band { margin-top: clamp(56px, 10vw, 72px); }
   .three { grid-template-columns: minmax(0, 1fr); gap: 32px; }
   .tools { grid-template-columns: minmax(0, 1fr); row-gap: 24px; }
-  .res .div { display: none; }
+  .inst { grid-template-columns: minmax(0, 1fr); }
   .numbers .wrap { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .numbers .n { border-left: 0; padding: 20px 16px 20px 0; }
   .numbers .n:nth-child(even) { border-left: 1px solid var(--line); padding-left: 20px; padding-right: 0; }
@@ -387,11 +386,15 @@ GitHub</a>
 </ul>
 </div>
 </div>
-<div class="res">
-<span class="k">2 RESOURCES</span>
-<code>gtunnel://tunnels</code><span>JSON snapshot of every persistent tunnel</span>
-<i class="div"></i>
-<code>gtunnel://accounts</code><span>the selected account and every configured one</span>
+<div class="inst">
+<div>
+<span class="k">CLAUDE CODE</span>
+<code>claude mcp add gtunnel -- gtunnel mcp</code>
+</div>
+<div>
+<span class="k">GEMINI CLI</span>
+<code>gemini mcp add gtunnel gtunnel mcp</code>
+</div>
 </div>
 </div>
 </div>
