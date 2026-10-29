@@ -78,7 +78,7 @@ pub fn help(f: Field) -> &'static str {
              it, becomes local"
         }
         Field::JumpHost => {
-            "A host the GCP instance can reach, tunnelled through it over ssh. \
+            "The private host the GCP instance reaches and forwards to, over ssh. \
              Empty: the GCP instance itself"
         }
         Field::RemotePort => "The port on that GCP instance or host",

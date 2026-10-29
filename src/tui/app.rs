@@ -394,7 +394,7 @@ impl InputMode {
             InputMode::AccountZonePick => "Default zone (type to filter):",
             InputMode::AddName => "Name:",
             InputMode::AddInstance => "Instance (type to filter):",
-            InputMode::AddJumpHost => "Host it reaches (Enter for the instance itself):",
+            InputMode::AddJumpHost => "Target private host (Enter for the instance itself):",
             InputMode::AddRemotePort => "Remote port:",
             InputMode::AddLocalPort => "Local port (Enter keeps the suggestion):",
             InputMode::AddLocalTarget => "Local target (e.g. localhost:3000):",
