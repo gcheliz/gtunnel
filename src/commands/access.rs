@@ -776,7 +776,8 @@ pub struct ListRowJson {
     /// always present, so a reader never has to parse it out of `url`.
     pub local_port: Option<u16>,
     /// One of `health_word`'s words. Only a running row with a local port is
-    /// probed; every other row is `unknown`, which claims nothing either way.
+    /// probed; a row that is not running is `stopped`, and a running one that
+    /// cannot be probed is `unknown`, which claims nothing either way.
     pub health: &'static str,
 }
 
@@ -802,7 +803,12 @@ impl ListRowJson {
             run: false,
             expires_at: None,
             local_port: access_port(&tunnel.spec),
-            health: declared_health(false, marked, None, false, std::path::Path::new("")),
+            health: if status == TunnelStatus::Running {
+                // built before its probe lands, which then overwrites it
+                "unknown"
+            } else {
+                declared_health(false, marked, None, false, std::path::Path::new(""))
+            },
         }
     }
 
@@ -888,7 +894,9 @@ pub(crate) async fn probe_local(local_port: u16, log: &std::path::Path) -> Optio
 /// A probe that got no answer is named by the log: expired credentials are
 /// `auth_expired`, not just `unhealthy`. A crash loop needs restarts over
 /// time, which one call cannot see. A stopped row is not probed, so the marker
-/// is read where the row is built, not here.
+/// is read where the row is built, not here. A row that is not running is
+/// `stopped`, never `unknown`: `unknown` is for a running one that cannot be
+/// probed, so a reader can tell "down" from "no answer to give".
 pub(crate) fn health_word(
     running: bool,
     probe_latency_ms: Option<u128>,
@@ -901,7 +909,8 @@ pub(crate) fn health_word(
             crate::probe::HealthStatus::AuthExpired => "auth_expired",
             _ => "unhealthy",
         },
-        _ => "unknown",
+        (false, _) => "stopped",
+        (true, None) => "unknown",
     }
 }
 
@@ -1142,11 +1151,11 @@ mod tests {
     }
 
     #[test]
-    fn a_stopped_tunnel_is_unknown_whatever_a_probe_said() {
-        assert_eq!(health_word(false, None, true, NO_LOG.as_ref()), "unknown");
+    fn a_stopped_tunnel_is_stopped_whatever_a_probe_said() {
+        assert_eq!(health_word(false, None, true, NO_LOG.as_ref()), "stopped");
         assert_eq!(
             health_word(false, Some(3), true, NO_LOG.as_ref()),
-            "unknown"
+            "stopped"
         );
     }
 
@@ -1254,7 +1263,49 @@ mod tests {
             assert_eq!(row.health, "auth_expired", "{status:?}");
         }
         let row = ListRowJson::declared_with(&tunnel, TunnelStatus::Stopped, false);
+        assert_eq!(row.health, "stopped");
+    }
+
+    #[test]
+    fn a_stopped_row_reads_stopped_and_a_running_unprobed_row_does_not() {
+        let tunnel = access_tunnel();
+        for status in [TunnelStatus::Stopped, TunnelStatus::Error] {
+            let row = ListRowJson::declared_with(&tunnel, status, false);
+            assert_eq!(row.health, "stopped", "{status:?}");
+        }
+        // list_rows_json builds every declared row before its probe lands
+        let row = ListRowJson::declared_with(&tunnel, TunnelStatus::Running, false);
         assert_eq!(row.health, "unknown");
+    }
+
+    #[test]
+    fn a_running_public_row_stays_unknown_and_a_stopped_one_is_stopped() {
+        let running = ListRowJson::declared_with(&public_tunnel(), TunnelStatus::Running, false);
+        assert_eq!(running.health, "unknown");
+        let stopped = ListRowJson::declared_with(&public_tunnel(), TunnelStatus::Stopped, false);
+        assert_eq!(stopped.health, "stopped");
+    }
+
+    #[test]
+    fn a_run_row_is_never_stopped() {
+        let row = ListRowJson::from_run(&live_run("scratch", "dev", 15999));
+        assert_eq!(row.health, "unknown");
+    }
+
+    fn access_tunnel() -> PersistentTunnel {
+        PersistentTunnel {
+            name: "db".to_string(),
+            account_name: "dev".to_string(),
+            auto_start: false,
+            spec: TunnelSpec::Access {
+                target: crate::state::AccessTarget::Instance {
+                    instance: "bastion".to_string(),
+                    zone: "europe-west1-b".to_string(),
+                },
+                remote_port: 5432,
+                local_port: 15432,
+            },
+        }
     }
 
     #[test]
@@ -1264,7 +1315,7 @@ mod tests {
             declared_health(false, true, None, true, none),
             "auth_expired"
         );
-        assert_eq!(declared_health(false, false, None, true, none), "unknown");
+        assert_eq!(declared_health(false, false, None, true, none), "stopped");
         assert_eq!(declared_health(true, true, Some(3), true, none), "healthy");
     }
 

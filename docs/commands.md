@@ -307,7 +307,7 @@ $ gtunnel list --json
     "unmanaged": false,
     "run": false,
     "local_port": 15432,
-    "health": "unknown"
+    "health": "stopped"
   },
   {
     "status": "running",
@@ -338,12 +338,13 @@ $ gtunnel list --json
 | `run` | bool | A `gtunnel run`, which ends by itself |
 | `expires_at` | number | Unix seconds at which a run started with `--ttl` stops; absent otherwise |
 | `local_port` | number or null | The local port to connect to; `null` on a public tunnel |
-| `health` | string | `healthy`, `unhealthy`, `auth_expired` or `unknown` |
+| `health` | string | `healthy`, `unhealthy`, `auth_expired`, `stopped` or `unknown` |
 
 Only a running row with a local port is probed, and every such row is probed at once, so
 `list --json` waits at most about 750 ms however many tunnels run: one probe (500 ms, or
-`list_probe_timeout`), plus 250 ms to read the log on a silent close. A stopped tunnel, a
-public one and an unmanaged one are `unknown`. `gtunnel_list_tunnels` returns the same rows
+`list_probe_timeout`), plus 250 ms to read the log on a silent close. A tunnel that is not
+running is `stopped` (or `auth_expired` when its supervisor gave up on credentials); a running
+public one and an unmanaged one cannot be probed and stay `unknown`. `gtunnel_list_tunnels` returns the same rows
 less the unmanaged ones, so its `unmanaged` is always `false`.
 
 ```

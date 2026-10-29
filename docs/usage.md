@@ -465,13 +465,14 @@ the log says, so the fix is on screen instead of in the log:
 | auth expired | `⊗` | no answer, and the log in the last two minutes says `Reauthentication required` or `gcloud auth login`; or the tunnel stopped itself for that reason and has not been started since | `gcloud auth login`, then `s` (`R` while it still runs) |
 | crash loop | `↻` | the service restarted three times or more inside two minutes | check the log; a single restart after the machine wakes is expected: [troubleshooting](troubleshooting.md#restarts-after-the-laptop-wakes) |
 | checking | `…` | the first probe is still in flight | wait |
-| unknown | `?` | nothing to probe: stopped, or the local port is unknown | none |
+| stopped | `✗` | the tunnel is not running, so there is nothing to probe | `s` to start |
+| unknown | `?` | a running tunnel that cannot be probed: no local port is known | none |
 
 A `[4033:` line is not auth expired: IAP refused an identity that is logged in, so the fix is
 the `roles/iap.tunnelResourceAccessor` role, and the row stays unhealthy. The crash loop is
 counted from one TUI session's metrics rounds, so it is empty for the first seconds after
 `gtunnel` opens. `gtunnel list --json`, `gtunnel_list_tunnels` and `gtunnel_get_status`
-return `health` as `healthy`, `unhealthy`, `auth_expired` or `unknown`, and do not report
+return `health` as `healthy`, `unhealthy`, `auth_expired`, `stopped` or `unknown`, and do not report
 crash loops, which need restarts over time.
 
 The keymap page also carries a **SESSION PATHS** summary section showing the active loaded

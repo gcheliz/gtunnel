@@ -1674,11 +1674,7 @@ fn metrics_lines(entry: &TunnelEntry, width: usize) -> Vec<Line<'static>> {
         inline("restarts"),
         value(metrics.restarts.to_string()),
         inline("   health"),
-        value(format!(
-            "{} {}",
-            entry.health.symbol(),
-            entry.health.label()
-        )),
+        health_span(entry),
     ]));
     if let Some(action) = entry.health.action() {
         lines.push(Line::from(vec![inline("fix"), value(action.to_string())]));
@@ -1753,6 +1749,26 @@ fn field(label: &str) -> Span<'static> {
 /// work and leaves the numbers as the only punctuation on the row.
 fn inline(label: &str) -> Span<'static> {
     Span::styled(format!("{label} "), Style::default().fg(theme::LABEL))
+}
+
+/// Health is probed only while a tunnel runs, so a row that is not running has
+/// nothing to report and `Unknown` there would read as "no answer yet". It says
+/// `stopped`, muted because nothing is wrong. A credential failure still wins:
+/// it is the one thing the reader has to act on.
+fn health_span(entry: &TunnelEntry) -> Span<'static> {
+    if entry.status != TunnelStatus::Running && entry.health != HealthStatus::AuthExpired {
+        return Span::styled(
+            "\u{2717} stopped",
+            Style::default()
+                .fg(theme::MUTED)
+                .add_modifier(Modifier::BOLD),
+        );
+    }
+    value(format!(
+        "{} {}",
+        entry.health.symbol(),
+        entry.health.label()
+    ))
 }
 
 /// The figure beside an `inline` label. It is what the row exists for, so it
