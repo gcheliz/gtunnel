@@ -145,7 +145,6 @@ code { color: var(--text); }
 .band .wrap { padding-top: 56px; padding-bottom: 56px; display: flex; flex-direction: column; gap: 48px; }
 .figures { display: flex; gap: 32px; padding-top: 8px; }
 .figures > div { display: flex; flex-direction: column; gap: 2px; }
-.figures .rule { width: 1px; background: var(--line); }
 .mcp-lines { display: flex; padding: 20px 0; font-family: var(--mono); font-size: 14px; line-height: 1.75; }
 .mcp-lines .n { flex: none; width: 48px; padding-right: 16px; text-align: right; color: #52525B; user-select: none; white-space: pre; }
 .mcp-lines pre { margin: 0; flex: 1; min-width: 0; overflow-x: auto; font: inherit; color: var(--text); }
@@ -165,9 +164,11 @@ code { color: var(--text); }
 .tgroup li code { font-size: 13px; }
 .tgroup li span { font-size: 13px; color: var(--muted); text-align: right; }
 .inst { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-.inst > div { min-width: 0; padding: 14px 18px; background: var(--ground); border: 1px solid var(--line); border-radius: 12px; }
+.inst > div { position: relative; min-width: 0; padding: 14px 80px 14px 18px; background: var(--ground); border: 1px solid var(--line); border-radius: 12px; }
 .inst .k { display: block; font-family: var(--mono); font-size: 12px; letter-spacing: 1px; color: var(--blue); }
-.inst code { display: block; margin-top: 8px; font-size: 13px; overflow-x: auto; white-space: nowrap; }
+.inst pre { margin: 8px 0 0; font-family: var(--mono); font-size: 13px; overflow-x: auto; white-space: pre; }
+.inst .p { color: var(--cyan); }
+.inst .copy-sm { position: absolute; top: 10px; right: 10px; }
 
 /* code panels */
 .snippet { position: relative; min-width: 0; display: flex; }
@@ -323,8 +324,6 @@ GitHub</a>
 <p class="body"><code>gtunnel mcp</code> is built into the binary. Add it to your client's config and it can list, start, stop, run, add, delete, rename, move and expose tunnels for you.</p>
 <div class="figures">
 <div><span class="big c-blue">14</span><span class="label">tools</span></div>
-<div class="rule"></div>
-<div><span class="big c-blue">2</span><span class="label">live resources</span></div>
 </div>
 </div>
 <figure class="frame mcp">
@@ -389,11 +388,13 @@ GitHub</a>
 <div class="inst">
 <div>
 <span class="k">CLAUDE CODE</span>
-<code>claude mcp add gtunnel -- gtunnel mcp</code>
+<pre><span class="p">$ </span>claude mcp add gtunnel -- gtunnel mcp</pre>
+<button type="button" class="copy-sm" data-copy-for="claude mcp add gtunnel -- gtunnel mcp">Copy</button>
 </div>
 <div>
 <span class="k">GEMINI CLI</span>
-<code>gemini mcp add gtunnel gtunnel mcp</code>
+<pre><span class="p">$ </span>gemini mcp add gtunnel gtunnel mcp</pre>
+<button type="button" class="copy-sm" data-copy-for="gemini mcp add gtunnel gtunnel mcp">Copy</button>
 </div>
 </div>
 </div>
