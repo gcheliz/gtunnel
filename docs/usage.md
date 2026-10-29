@@ -418,14 +418,14 @@ the second probe counts: a login that exits 0 and still cannot mint a token fail
 sample; the login output is gcloud's:
 
 ```
-$ gtunnel list
+$ gtunnel start db
 gcloud has no usable credentials for account 'prod'.
 gtunnel requires an authenticated GCP account to establish tunnels.
 Do you want to log in now? [y/N] [n]: y
 Starting `gcloud auth login`.
 Your browser has been opened to visit: ...
 You are now logged in as [you@example.com].
-NAME  STATUS  ...
+● db  localhost:5432
 ```
 
 When the answer is no, the login fails, or there is no terminal (stdin or stdout redirected,
@@ -434,7 +434,7 @@ as under cron or CI), gtunnel exits 4 (`auth`, see
 opening a browser.
 
 ```
-$ gtunnel list < /dev/null
+$ gtunnel start db < /dev/null
 Error: gtunnel needs a logged-in Google account for 'prod'. Run `gcloud auth login`
 ```
 
