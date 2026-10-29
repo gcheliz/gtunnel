@@ -1859,6 +1859,69 @@ fn restarting_a_run_is_refused_and_says_to_import_it() {
     assert!(app.entries[0].pending.is_none());
 }
 
+// A run and a saved tunnel can share a name, and `Op::Delete` carries only the
+// name, so on a run's row `d` would delete the saved twin: nothing is asked
+// and nothing is sent
+#[test]
+fn deleting_a_run_is_refused_without_a_prompt_or_an_op() {
+    let mut app = app_with_two();
+    app.entries[0].kind = TunnelKind::Ephemeral;
+    assert_eq!(app.handle_key(key(KeyCode::Char('d'))), None);
+    assert_eq!(app.input_mode, InputMode::Normal);
+    assert_eq!(
+        app.status.as_deref(),
+        Some("db is a run: import it with m before deleting it")
+    );
+    assert!(app.status_error);
+    assert!(app.confirm_message.is_none());
+}
+
+// `A` and `s` build their op from the name alone too, so each would act on a
+// saved twin; `S` is not here because a run has its own stop
+#[test]
+fn auto_start_and_start_on_a_run_are_refused_and_send_no_op() {
+    let mut app = app_with_two();
+    app.entries[0].kind = TunnelKind::Ephemeral;
+    assert_eq!(app.handle_key(key(KeyCode::Char('A'))), None);
+    assert_eq!(
+        app.status.as_deref(),
+        Some("db is a run: import it with m before setting auto-start on it")
+    );
+    app.status = None;
+    assert_eq!(app.handle_key(key(KeyCode::Char('s'))), None);
+    assert_eq!(
+        app.status.as_deref(),
+        Some("db is a run: import it with m before starting it")
+    );
+    assert!(app.status_error);
+    assert!(app.entries[0].pending.is_none());
+}
+
+// A run and its saved twin share a name; the reload matched by name alone, so
+// the selection landed on whichever came first and the twin took the run's
+// carried history
+#[test]
+fn a_reload_keeps_the_selection_on_the_row_of_its_kind_when_two_share_a_name() {
+    let rows = |status| {
+        vec![
+            TunnelEntry::new(access("db", 15432), status, TunnelKind::Managed),
+            TunnelEntry::new(access("db", 15433), status, TunnelKind::Ephemeral),
+        ]
+    };
+    let mut app = App::new("dev");
+    app.entries = rows(TunnelStatus::Running);
+    app.selected = 1;
+    app.entries[1].crash_looping = true;
+    app.replace_entries(rows(TunnelStatus::Running), HashSet::new());
+    assert_eq!(app.selected, 1);
+    assert_eq!(app.entries[1].kind, TunnelKind::Ephemeral);
+    assert!(app.entries[1].crash_looping);
+    assert!(
+        !app.entries[0].crash_looping,
+        "the twin carries nothing of the run"
+    );
+}
+
 #[tokio::test]
 async fn a_stalled_tunnel_does_not_hold_back_the_metrics_of_the_others() {
     use std::sync::Arc;

@@ -92,7 +92,7 @@ Specify the release version and substitute your machine's file: `gtunnel-macos-a
 `gtunnel-macos-intel`, `gtunnel-linux-amd64` or `gtunnel-linux-arm64`.
 
 ```
-VERSION="v0.2.39"
+VERSION="v0.2.42"
 F="gtunnel-macos-arm64-${VERSION}.tar.gz"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F.sha256"
@@ -104,7 +104,7 @@ so they run on any glibc.
 
 ```
 $ gtunnel --version
-gtunnel 0.2.39
+gtunnel 0.2.42
 ```
 
 #### Already installed another way
@@ -441,11 +441,13 @@ Error: gtunnel needs a logged-in Google account for 'prod'. Run `gcloud auth log
 ### Update hint
 
 Every command except `update` prints a one-line hint when a cached check found a newer
-version. [update](commands.md#update) has the check itself.
+version, naming the command for how gtunnel was installed: `brew upgrade gtunnel` for
+Homebrew, `gtunnel update` for a downloaded binary. [update](commands.md#update) has the
+check itself. On a Homebrew install:
 
 ```
 $ gtunnel list
-gtunnel v9.9.9 is available (current: v0.2.39). Run `gtunnel update`.
+gtunnel v9.9.9 is available (current: v0.2.42). Run `brew upgrade gtunnel`.
 ```
 
 ## The TUI
@@ -458,8 +460,8 @@ configurations, projects, zones and instances.
 
 | Group | Keys |
 |---|---|
-| Tunnel | `s` start, `S` stop (a run too), `R` restart (refused on a run), `A` toggle auto-start, `h` health check now |
-| The list | `a` add, `e` edit, `d` delete, `m` import an ephemeral run as managed, `j` `k` or the arrows move the selection |
+| Tunnel | `s` start, `S` stop (a run too), `R` restart, `A` toggle auto-start (`s`, `R` and `A` are refused on a run), `h` health check now |
+| The list | `a` add, `e` edit, `d` delete (refused on a run), `m` import an ephemeral run as managed, `j` `k` or the arrows move the selection |
 | This tunnel's URL and log | `c` copy the URL, `l` copy the log to clipboard, `o` open it, `L` clear the log, `r` refresh the list, metrics and health |
 | The program | `;` cycle accounts (the relay and its domains change with the account), `:` the accounts page, `?` the keymap, `C` the config page, `q` quit, `Esc` close a page or cancel a prompt, `PgUp` `PgDn` and `g` `G` scroll the keymap page, `Ctrl+Z` suspend, `Ctrl+C` quit from anywhere |
 

@@ -653,6 +653,8 @@ Nothing, the first time: one failed check is a slow moment, two in a row is a pr
 | A failed check inside a wait | does nothing; at a 30s interval the earliest stop is six minutes after the first failed check |
 | Two passing checks in a row | clear the breaker; so does stopping the tunnel yourself |
 | After the stop | the log says what the watchdog saw and who held the connections. Nothing restarts it: the next pass forgets it. `gtunnel start <name>` brings it back, and the ladder starts over |
+| A tunnel you stop or park while a check is running | is left alone: the pass reads its state again before acting on what it saw |
+| Two passes at once | the second skips its round (`-v` says so), so neither overwrites the other's count |
 
 A tunnel stopped on a spent [restart budget](configuration.md#the-restart-budget) is skipped:
 restarting it would undo that decision with a fresh count.
@@ -826,7 +828,8 @@ Update available: v0.1.34 -> v0.1.35
 Run `gtunnel update` to install.
 ```
 
-A format sample; versions differ per run. On the latest release the second line is
+A format sample from a downloaded binary; versions differ per run. A Homebrew install names
+`brew upgrade gtunnel` instead. On the latest release the second line is
 `gtunnel v<version> is already the latest version.`
 
 Every other command prints a one-line hint when a cached check found a newer version: see

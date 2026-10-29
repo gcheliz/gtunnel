@@ -250,6 +250,22 @@ pub fn live_runs(account: &str) -> Result<Vec<EphemeralRecord>> {
         .collect())
 }
 
+/// The refusal `add`, `expose`, `rename` and `move` give for a name a live run
+/// holds: `check_run_name` stops a run taking a saved name, and this is the
+/// other direction. Two rows of one name share a log, and the TUI's `d` and
+/// `A` look a row up by name, so the saved twin would take the run's keys.
+/// It reads the run directory, so it sits in the commands and not in
+/// `TunnelState::add`, which stays a pure function of the state.
+pub fn check_name_free_of_runs(account: &str, name: &str) -> Result<()> {
+    if live_runs(account)?.iter().any(|r| r.name == name) {
+        return Err(GtunnelError::usage(format!(
+            "A run named '{name}' is live for account '{account}'; stop it or choose another name"
+        ))
+        .into());
+    }
+    Ok(())
+}
+
 const NAME_ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
 
 // An unnamed `run` still needs a name for the log line and the record
@@ -1070,6 +1086,25 @@ mod tests {
         crate::proc::stop_group(child, signalable(run.pid), Duration::from_millis(600))
             .await
             .expect("stop");
+    }
+
+    #[test]
+    fn a_saved_name_is_refused_while_a_live_run_holds_it_on_that_account() {
+        let _temp = TempConfigDir::new();
+        let live = EphemeralRecord {
+            pid: std::process::id(),
+            pid_start: crate::proc::start_token(std::process::id()),
+            ..record("db")
+        };
+        live.save().unwrap();
+        let err = check_name_free_of_runs("dev", "db").unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "A run named 'db' is live for account 'dev'; stop it or choose another name"
+        );
+        assert_eq!(crate::error::kind_of(&err), crate::error::ErrorKind::Usage);
+        check_name_free_of_runs("prod", "db").expect("another account");
+        check_name_free_of_runs("dev", "cache").expect("another name");
     }
 
     #[tokio::test]

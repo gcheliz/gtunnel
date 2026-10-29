@@ -3,6 +3,24 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.42](https://github.com/gcheliz/gtunnel/compare/v0.2.41...v0.2.42) - 2026-10-29
+
+### Fixed
+
+- *(watch)* re-check before acting and hold a lock for the pass ([#325](https://github.com/gcheliz/gtunnel/pull/325))
+
+## [0.2.41](https://github.com/gcheliz/gtunnel/compare/v0.2.40...v0.2.41) - 2026-10-29
+
+### Fixed
+
+- *(tui)* refuse delete, auto-start and start on a run row, and run names in add ([#322](https://github.com/gcheliz/gtunnel/pull/322))
+
+## [0.2.40](https://github.com/gcheliz/gtunnel/compare/v0.2.39...v0.2.40) - 2026-10-29
+
+### Fixed
+
+- *(update)* name the install method's command in the update hint ([#287](https://github.com/gcheliz/gtunnel/pull/287))
+
 ## [0.2.39](https://github.com/gcheliz/gtunnel/compare/v0.2.38...v0.2.39) - 2026-10-29
 
 ### Fixed

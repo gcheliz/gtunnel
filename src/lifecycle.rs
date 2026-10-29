@@ -166,6 +166,12 @@ pub fn announce(edges: &[Edge]) {
 struct Row {
     state: State,
     at: u64,
+    /// Whether a person wrote this row. Stored because "newer than what I
+    /// saw" is only a reason to keep a row when a person made it: an observer's
+    /// own row is exactly what a later observer is meant to replace. Absent in
+    /// a ledger written before this field, which reads as not a person's.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    user: bool,
 }
 
 type Ledger = BTreeMap<String, Row>;
@@ -216,12 +222,49 @@ pub fn transition_in(
     to: State,
     cause: Cause,
 ) -> Result<Option<Edge>> {
+    transition_at(dir, account, name, to, cause, None)
+}
+
+/// [`transition_in`] for a sighting made at `since` (seconds since the epoch).
+///
+/// An observer reads a status, may then wait out a probe, and only then
+/// stores what it saw. A row a person wrote in that gap is newer than the
+/// sighting and is the truth: a `stop` that lands mid-pass must stay stopped,
+/// and must not read as "stopped unexpectedly" a pass later. The sighting is
+/// dropped, with no edge. A person's own call is never dropped.
+pub fn transition_since_in(
+    dir: &Path,
+    account: &str,
+    name: &str,
+    to: State,
+    cause: Cause,
+    since: u64,
+) -> Result<Option<Edge>> {
+    transition_at(dir, account, name, to, cause, Some(since))
+}
+
+fn transition_at(
+    dir: &Path,
+    account: &str,
+    name: &str,
+    to: State,
+    cause: Cause,
+    since: Option<u64>,
+) -> Result<Option<Edge>> {
     update(dir, |ledger| {
+        let key = key(account, name);
+        if let (Some(since), Cause::Observed, Some(held)) = (since, cause, ledger.get(&key)) {
+            // Whole seconds on both sides, so a tie goes to the person
+            if held.user && held.at >= since {
+                return None;
+            }
+        }
         let row = Row {
             state: to,
             at: now_secs(),
+            user: cause == Cause::User,
         };
-        let from = ledger.insert(key(account, name), row)?.state;
+        let from = ledger.insert(key, row)?.state;
         (from != to).then(|| Edge {
             tunnel: name.to_string(),
             account: account.to_string(),
@@ -252,6 +295,22 @@ fn config_dir() -> Option<PathBuf> {
 
 pub fn transition(account: &str, name: &str, to: State, cause: Cause) -> Option<Edge> {
     transition_in(&config_dir()?, account, name, to, cause)
+        .ok()
+        .flatten()
+}
+
+/// [`transition`] for a sighting made at `since`; see [`transition_since_in`].
+pub fn transition_since(
+    account: &str,
+    name: &str,
+    to: State,
+    cause: Cause,
+    since: std::time::SystemTime,
+) -> Option<Edge> {
+    let since = since
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    transition_since_in(&config_dir()?, account, name, to, cause, since)
         .ok()
         .flatten()
 }
@@ -504,6 +563,67 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(json["dev/kubernetes"]["state"], "up");
         assert!(json["dev/kubernetes"]["at"].is_u64(), "{text}");
+    }
+
+    // The watchdog reads a status, probes for up to the probe timeout, then
+    // stores what it saw. A `stop` that lands inside that window is newer than
+    // the sighting, and the sighting must not undo it
+    #[test]
+    fn an_observation_older_than_a_stored_user_stop_does_not_overwrite_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, n) = ("dev", "kubernetes");
+        transition_in(dir.path(), a, n, State::Up, Cause::Observed).unwrap();
+        transition_in(dir.path(), a, n, State::Stopped, Cause::User).unwrap();
+        let stored_at = read(dir.path()).get(&key(a, n)).unwrap().at;
+
+        let edge = transition_since_in(
+            dir.path(),
+            a,
+            n,
+            State::Up,
+            Cause::Observed,
+            stored_at.saturating_sub(5),
+        )
+        .unwrap();
+        assert_eq!(edge, None, "an older sighting produces no edge");
+        assert_eq!(stored_in(dir.path(), a, n), Some(State::Stopped));
+    }
+
+    #[test]
+    fn an_observation_newer_than_a_user_stop_replaces_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, n) = ("dev", "kubernetes");
+        transition_in(dir.path(), a, n, State::Stopped, Cause::User).unwrap();
+        let stored_at = read(dir.path()).get(&key(a, n)).unwrap().at;
+
+        let edge = transition_since_in(dir.path(), a, n, State::Up, Cause::Observed, stored_at + 5)
+            .unwrap()
+            .expect("a later sighting is news");
+        assert_eq!((edge.from, edge.to), (State::Stopped, State::Up));
+        assert_eq!(stored_in(dir.path(), a, n), Some(State::Up));
+    }
+
+    #[test]
+    fn an_older_observed_row_is_replaced_by_a_newer_observation_as_before() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, n) = ("dev", "kubernetes");
+        transition_in(dir.path(), a, n, State::Up, Cause::Observed).unwrap();
+        let edge = transition_since_in(dir.path(), a, n, State::Degraded, Cause::Observed, 0)
+            .unwrap()
+            .expect("an edge");
+        assert_eq!(edge.to, State::Degraded);
+    }
+
+    // A ledger written before rows carried who made them has no such field
+    #[test]
+    fn a_row_written_before_causes_were_stored_still_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("lifecycle.json"),
+            r#"{"dev/kubernetes": {"state": "up", "at": 7}}"#,
+        )
+        .unwrap();
+        assert_eq!(stored_in(dir.path(), "dev", "kubernetes"), Some(State::Up));
     }
 
     #[test]

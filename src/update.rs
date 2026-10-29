@@ -182,12 +182,12 @@ pub async fn cmd_update(check_only: bool) -> Result<()> {
         return Ok(());
     }
     eprintln!("Update available: v{current} -> v{latest}");
+    let method = detect_install_method();
     if check_only {
-        eprintln!("\nRun `gtunnel update` to install.");
+        eprintln!("\nRun `{}` to install.", install_command(&method));
         return Ok(());
     }
 
-    let method = detect_install_method();
     match upgrade_hint(&method) {
         Some(hint) => eprintln!("\n{hint}"),
         None => {
@@ -214,14 +214,19 @@ fn notice_for(current: &str, latest: &str, method: &InstallMethod) -> Option<Upd
     if !is_newer(current, latest) {
         return None;
     }
-    let command = match method {
-        InstallMethod::Homebrew => "brew upgrade gtunnel",
-        InstallMethod::Binary(_) => "gtunnel update",
-    };
     Some(UpdateNotice {
         latest: latest.trim_start_matches('v').to_string(),
-        command,
+        command: install_command(method),
     })
+}
+
+// What installs a newer version for this copy: Homebrew owns its own files, so
+// `gtunnel update` there only redirects to brew
+fn install_command(method: &InstallMethod) -> &'static str {
+    match method {
+        InstallMethod::Homebrew => "brew upgrade gtunnel",
+        InstallMethod::Binary(_) => "gtunnel update",
+    }
 }
 
 /// A file read and nothing more: the TUI calls this on its own thread, where a
@@ -279,15 +284,20 @@ pub fn spawn_check_if_due() {
 // Reads the cache only: a CLI command must never wait on the network to print
 // its own output
 pub fn maybe_print_update_hint() {
-    let current = env!("CARGO_PKG_VERSION");
     if let Some(notice) = available_update() {
-        eprintln!(
-            "\ngtunnel v{} is available (current: v{current}). Run `gtunnel update`.",
-            notice.latest
-        );
+        eprintln!("\n{}", hint_line(env!("CARGO_PKG_VERSION"), &notice));
         return;
     }
     spawn_check_if_due();
+}
+
+// The command is the notice's, so a Homebrew install is sent to `brew upgrade`
+// here as it is in the TUI header, not to an `update` that only redirects
+fn hint_line(current: &str, notice: &UpdateNotice) -> String {
+    format!(
+        "gtunnel v{} is available (current: v{current}). Run `{}`.",
+        notice.latest, notice.command
+    )
 }
 
 // "<hex>  <filename>", as shasum and sha256sum both write it
@@ -597,6 +607,37 @@ mod tests {
                 .expect("a newer version is a notice")
                 .command,
             "brew upgrade gtunnel"
+        );
+    }
+
+    #[test]
+    fn the_cli_hint_names_the_command_for_the_install_method() {
+        let brew = notice_for("0.2.38", "9.9.9", &InstallMethod::Homebrew).expect("newer");
+        assert_eq!(
+            hint_line("0.2.38", &brew),
+            "gtunnel v9.9.9 is available (current: v0.2.38). Run `brew upgrade gtunnel`."
+        );
+        let binary = notice_for(
+            "0.2.38",
+            "9.9.9",
+            &InstallMethod::Binary(PathBuf::from("/x")),
+        )
+        .expect("newer");
+        assert_eq!(
+            hint_line("0.2.38", &binary),
+            "gtunnel v9.9.9 is available (current: v0.2.38). Run `gtunnel update`."
+        );
+    }
+
+    #[test]
+    fn update_check_names_the_same_command_as_the_hint() {
+        assert_eq!(
+            install_command(&InstallMethod::Homebrew),
+            "brew upgrade gtunnel"
+        );
+        assert_eq!(
+            install_command(&InstallMethod::Binary(PathBuf::from("/x"))),
+            "gtunnel update"
         );
     }
 
