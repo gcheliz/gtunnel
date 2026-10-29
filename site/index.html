@@ -130,7 +130,7 @@ code { color: var(--text); }
 .numbers .n:first-child { padding-left: 0; border-left: 0; }
 .numbers .n:last-child { padding-right: 0; }
 .big { font-family: var(--mono); font-weight: 800; font-size: 48px; line-height: 1; }
-.numbers .label, .figures .label { font-size: 14px; color: var(--muted); }
+.numbers .label { font-size: 14px; color: var(--muted); }
 
 /* CLI */
 .modes { margin: 0; display: flex; flex-direction: column; gap: 10px; }
@@ -143,8 +143,6 @@ code { color: var(--text); }
 /* MCP band */
 .band { margin-top: 72px; background: var(--surface); border-top: 1px solid var(--line-soft); border-bottom: 1px solid var(--line-soft); }
 .band .wrap { padding-top: 56px; padding-bottom: 56px; display: flex; flex-direction: column; gap: 48px; }
-.figures { display: flex; gap: 32px; padding-top: 8px; }
-.figures > div { display: flex; flex-direction: column; gap: 2px; }
 .mcp-lines { display: flex; padding: 20px 0; font-family: var(--mono); font-size: 14px; line-height: 1.75; }
 .mcp-lines .n { flex: none; width: 48px; padding-right: 16px; text-align: right; color: #52525B; user-select: none; white-space: pre; }
 .mcp-lines pre { margin: 0; flex: 1; min-width: 0; overflow-x: auto; font: inherit; color: var(--text); }
@@ -322,9 +320,6 @@ GitHub</a>
 <span class="kicker c-blue">MCP</span>
 <h2 class="h2" id="mcp-title">Ask your agent. <span class="c-blue">It opens the tunnel.</span></h2>
 <p class="body"><code>gtunnel mcp</code> is built into the binary. Add it to your client's config and it can list, start, stop, run, add, delete, rename, move and expose tunnels for you.</p>
-<div class="figures">
-<div><span class="big c-blue">14</span><span class="label">tools</span></div>
-</div>
 </div>
 <figure class="frame mcp">
 <div class="bar2 tool"><i></i><i></i><i></i><span class="grow">.mcp.json</span><button type="button" class="copy-sm" data-copy-for="the MCP configuration">Copy</button></div>
