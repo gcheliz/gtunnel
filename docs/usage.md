@@ -441,11 +441,13 @@ Error: gtunnel needs a logged-in Google account for 'prod'. Run `gcloud auth log
 ### Update hint
 
 Every command except `update` prints a one-line hint when a cached check found a newer
-version. [update](commands.md#update) has the check itself.
+version, naming the command for how gtunnel was installed: `brew upgrade gtunnel` for
+Homebrew, `gtunnel update` for a downloaded binary. [update](commands.md#update) has the
+check itself. On a Homebrew install:
 
 ```
 $ gtunnel list
-gtunnel v9.9.9 is available (current: v0.2.39). Run `gtunnel update`.
+gtunnel v9.9.9 is available (current: v0.2.39). Run `brew upgrade gtunnel`.
 ```
 
 ## The TUI

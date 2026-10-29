@@ -826,7 +826,8 @@ Update available: v0.1.34 -> v0.1.35
 Run `gtunnel update` to install.
 ```
 
-A format sample; versions differ per run. On the latest release the second line is
+A format sample from a downloaded binary; versions differ per run. A Homebrew install names
+`brew upgrade gtunnel` instead. On the latest release the second line is
 `gtunnel v<version> is already the latest version.`
 
 Every other command prints a one-line hint when a cached check found a newer version: see
