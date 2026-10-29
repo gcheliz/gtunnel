@@ -3002,7 +3002,7 @@ fn dialog_cases() -> Vec<(&'static str, App, Vec<&'static str>)> {
             InputMode::AddJumpHost,
             "10.0.0.10",
             vec![
-                "Host it reaches (Enter for the instance itself):",
+                "Target private host (Enter for the instance itself):",
                 "10.0.0.10_",
                 hint,
             ],
@@ -3200,7 +3200,7 @@ fn a_prompt_shows_how_to_cancel_at_the_sizes_a_terminal_starts_at() {
     }
 }
 
-// `Host it reaches (Enter for the instance itself):` is 48 cells and the
+// `Target private host (Enter for the instance itself):` is 52 cells and the
 // dialog was 60 percent of the width, so the end of the question, the part
 // that says what Enter does, was cut at every width under 83.
 #[test]
@@ -3209,7 +3209,7 @@ fn a_long_prompt_wraps_inside_the_dialog_instead_of_being_clipped() {
         let (app, _) = dialog_case("host");
         let text = dialog_text(&screen(&app, width, height));
         assert!(
-            text.contains("Host it reaches (Enter for the instance itself):"),
+            text.contains("Target private host (Enter for the instance itself):"),
             "{width}x{height}: {text}"
         );
     }
