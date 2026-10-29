@@ -109,12 +109,9 @@ Every variable gtunnel reads, with its default and what it beats: [docs/configur
 
 | Command | Removes |
 |---|---|
-| `gtunnel doctor --fix` | Only per-tunnel leftovers no live tunnel claims: backend services tagged `gtunnel:<account>`, and host rules, named ports and DNS records on the relay gtunnel created. The claim is re-checked immediately before each removal |
+| `gtunnel doctor --fix` | Only leftovers gtunnel can prove are its own and no live tunnel claims, after asking: [Leftovers](docs/troubleshooting.md#leftovers) |
 | `gtunnel reset` | Local state only |
 | `gtunnel relay down` | The relay and everything it owns in GCP, never the managed zone |
-
-A Cloud DNS record carries no description, so gtunnel treats one as its own only while it
-still holds a tagged backend, host rule or named port for the same tunnel.
 
 ## License
 

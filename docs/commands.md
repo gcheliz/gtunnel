@@ -58,14 +58,9 @@ No default zone saved; pass --zone to commands that need one
 
 The answers were `1`, `sandbox`, then Enter for the project, the service account and the zone, piped in, so they do not echo. This configuration has no zone, so Enter skipped it.
 
-`init` also writes the `[restart]` section of `config.toml` with its five keys at their
-defaults, adding only the keys that are missing and never changing one that is set, so the
-[restart budget](configuration.md#the-restart-budget) is visible and tunable from the first
-run. The `[watch]` section (`probe_timeout`, `degraded_after`, `interval`) and the `[logs]` section
-(`max_size`, `keep_size`, `lines_per_minute`, `auth_exit_window`) and `[gcp]` section
-(`token_ttl`, `operation_timeout`, `http_timeout`, `poll_interval`, `lock_deadline`,
-`fingerprint_attempts`) are written the same way; see [Settings the environment can override](configuration.md#settings-the-environment-can-override).
-The same sections are written by every command that saves the file.
+`init` also writes every tunable key of `config.toml` at its default, `[restart]`, `[watch]`,
+`[logs]` and `[gcp]` included, adding only the keys that are missing:
+[the block it writes](configuration.md#settings-the-environment-can-override).
 
 Every prompt is preceded by a line saying what the value sets, and, for a value you pick from
 something that exists, the command that lists it. The text is the one the TUI's account form
@@ -105,8 +100,8 @@ lacks `resourcemanager.projects.get` or the Cloud Resource Manager API is not en
 [troubleshooting.md](troubleshooting.md#could-not-list-projects).
 
 An account stores a gcloud configuration name, a project, a default zone, an optional
-service account to impersonate, and the relay once one exists. gtunnel never stores a
-credential: every token comes from `gcloud auth print-access-token` at the moment it is used.
+service account to impersonate, and the relay once one exists; never a credential
+([decision 1](decisions.md#1-gtunnel-stores-no-credential)).
 
 ## add
 
@@ -185,7 +180,9 @@ the TUI hides the suffix — but every command spells it out.
 
 A tunnel forwards to one host, so when the client picks its own destination over the
 tunnel, as MongoDB Compass does over SSH, give the tunnel the bastion and let the client
-choose. One tunnel per database behind it pins a hostname gtunnel has no reason to know.
+choose. One tunnel per database behind it pins a hostname gtunnel has no reason to know, and
+for a replica set a shard hostname that is not guaranteed to be the primary, which defeats
+failover.
 
 ### Reaching a host behind an instance
 
@@ -375,8 +372,12 @@ A start waits for the tunnel to listen. An Access tunnel, `--via` included, is g
 20 seconds (`start_deadline`, or `GTUNNEL_START_DEADLINE`) and passes as soon as its log reports the listener;
 a public tunnel has no listener to wait for, so it is judged after a fixed 3 seconds. A
 tunnel whose service failed, or that is not listening by the deadline, is a failed start:
-the command prints the lines below on stdout, exits 1, and the record stays. The hint line appears when the log holds a line gtunnel recognises, and
-the TUI status line carries the same text.
+the command prints the lines below on stdout, exits 1, and the record stays. A hint line
+appears under the first when the log holds a line gtunnel recognises (the newest such line,
+from [the log table](troubleshooting.md#what-the-log-says-and-what-it-means)), or reads
+`not listening after 20s` when the deadline ran out. The TUI status line carries the same
+text, and an MCP client gets it as an `isError` result. A public tunnel still connecting after
+its 3 seconds reads as running, so `gtunnel list` is the check for one that fails later.
 
 ```
 $ gtunnel start db
@@ -401,8 +402,9 @@ started, failed, or never existed at all.
 #### Connections in the log
 
 At log level `info` or `debug` the supervisor writes one line when a client connects and one
-when it leaves, in the same shape for an IAP tunnel and a jump tunnel. The source port is the
-client's local port, so it names the process: `lsof -nP -iTCP:54321` finds it while it is open.
+when it leaves, in the same shape for an IAP tunnel and a jump tunnel, whether or not the TUI
+is open. The source port is the client's local port, so it names the process:
+`lsof -nP -iTCP:54321` finds it while it is open, and the timestamp beside it afterwards.
 
 ```
 2026-10-27T10:15:02Z gtunnel: conn iap-7 open
@@ -417,6 +419,8 @@ client's local port, so it names the process: `lsof -nP -iTCP:54321` finds it wh
 | A jump tunnel counts only ssh channels, an instance tunnel only IAP connections | a jump tunnel's ssh rides on gcloud's own IAP connection to the bastion, which is the tunnel and never closes |
 | `quiet` writes none | and ssh and gcloud print none at that level either |
 | Only the supervisor writes them | the TUI never appends to a tunnel's log, so two open TUIs, or none, give the same log |
+| They come from the tools' own lines | the supervisor reads gcloud's `[N] Connecting with URL` and `[N] Client closed connection from [...]`, and ssh's `channel N: new` and `channel N: free: ... connect from H port P`, and pairs them by id |
+| A tunnel gtunnel does not manage gets none | it has no log here |
 
 Starting a public tunnel re-creates its backend, host rule, named port and DNS record if any
 of them went missing, so `gtunnel restart <name>` is the fix for a tunnel that comes up
@@ -534,8 +538,8 @@ A public tunnel forwards with `ssh -R 0.0.0.0:<relay-port>:<local target>`, so t
 listens on every interface of the relay instance: the load balancer reaches it from another host.
 Any other rule on that network that admits `30000-30999` from elsewhere, such as an
 allow-all, lets a client who knows the relay's address connect to the forwarded service
-directly. That skips the load balancer and, with `--private`, the IAP sign-in in front of it.
-Check the network's rules before the first `gtunnel expose`.
+directly. **That skips the load balancer and, with `--private`, the IAP sign-in in front of
+it.** Check the network's rules before the first `gtunnel expose`.
 
 ## account
 
@@ -792,11 +796,8 @@ account dev:
   - gcloud has no usable credentials for account 'dev'. Run `gcloud auth login --configuration=dev` and try again
 ```
 
-A service with no record is machine-wide, so it is filed under `gtunnel:` like the watchdog.
-It is a `com.gtunnel.*` plist (macOS) or `gtunnel-*.service` unit (Linux) whose label no
-record in any account produces and that belongs to this config directory: it sits in
-`<config dir>/agents`, or its log path is under `<config dir>/logs/`. A service another
-config directory installed is never reported, and neither is the watchdog:
+A service with no record is machine-wide, so it is filed under `gtunnel:` like the watchdog;
+which services count is in [Leftovers](troubleshooting.md#leftovers):
 
 ```
 $ gtunnel doctor
@@ -835,14 +836,10 @@ account ci:
 | `-a`, `--all` | Check every account, not only the selected one |
 | `--json` | Print the findings as a JSON array of `account`, `description` and `fixable` |
 
-`--fix` removes stale local records, services of this config directory that no record owns
-(a plist or unit left behind by a removed tunnel, which would otherwise keep its port at
-login), dead ephemeral records and per-tunnel relay leftovers no live tunnel claims,
-reconciles auto-start to what `tunnels.toml` says, and installs a missing watchdog;
-[troubleshooting.md](troubleshooting.md#leftovers) lists each finding. It
-re-checks the claim immediately before each removal, so a tunnel started during the scan is
-left alone. Findings it cannot fix, such as a missing firewall rule, are printed with the
-exact command that fixes them.
+`--fix` removes leftovers no live tunnel claims, reconciles auto-start to what `tunnels.toml`
+says, and installs a missing watchdog. Each finding, and how gtunnel decides a resource is its
+own, is in [Leftovers](troubleshooting.md#leftovers). Findings it cannot fix, such as a
+missing firewall rule, are printed with the exact command that fixes them.
 
 A reserved account name (`run` or `run-*`, see `account add`) is reported the same way and is
 never fixed for you: renaming an account means adding one and moving its tunnels.
@@ -911,7 +908,8 @@ Every other command prints a one-line hint when a cached check found a newer ver
 
 The check runs in the background and never blocks a command, at most once per
 [`update_check_interval`](configuration.md#settings-the-environment-can-override) (6 hours by
-default). A check that fails is recorded: it holds the next one off for the same interval, and the
+default). A check that fails is recorded: it holds the next one off for the same interval, so an
+offline laptop does not retry on every start, and the
 TUI says `update check failed` until a check succeeds. A
 downloaded binary and one in `~/.cargo/bin` replace themselves after verifying the published
 SHA-256; a Homebrew install is detected and pointed at `brew upgrade gtunnel` instead.

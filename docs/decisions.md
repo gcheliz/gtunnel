@@ -88,12 +88,11 @@ Names are already scoped per account — `src/state.rs` rejects a duplicate only
 account, and the service label carries the account — so an account segment in the name is
 redundant everywhere it appears.
 
-A name is `<platform>` or `<platform>-<service>`, lower case, up to 40 characters of
-`[a-z0-9-]`. No `-dev`, `-prod` or `-staging`.
+A name says what the tunnel reaches and carries no account segment; the rule itself is
+[Naming a tunnel](commands.md#naming-a-tunnel).
 
 The payoff is that the same command works in both accounts. The cost is that two accounts
-can only be told apart by their local ports, which is why those differ. Full rule:
-[Naming a tunnel](commands.md#naming-a-tunnel).
+can only be told apart by their local ports, which is why those differ.
 
 ## 6. One tunnel per target, not per destination behind it
 
@@ -107,7 +106,8 @@ tunnel points at the bastion and the client holds the destination.
 
 One tunnel per database would pin a shard hostname that is not guaranteed to be the
 primary, which defeats replica-set failover. The cost is that the user has to know the
-destination URI, which gtunnel does not store for them.
+destination URI, which gtunnel does not store for them. How to set it up:
+[Naming a tunnel](commands.md#naming-a-tunnel).
 
 ## 7. Documentation uses placeholders, never real configuration
 
@@ -317,7 +317,7 @@ changed and the record has not, which every one of those commands already had.
 The minimum Rust version is 1.89 because `File::lock`, `try_lock` and `unlock` are stable from
 there; the alternative was a dependency for one syscall. The costs: a package that builds with
 an older compiler must update, and the lock is advisory, so an editor writing `tunnels.toml`
-directly is not stopped by it.
+directly is not stopped by it. What a user sees of it: [Where the files live](configuration.md#where-the-files-live).
 
 ## 17. The release binary is built for size
 
@@ -426,15 +426,9 @@ failures and, over budget, stops the job the way an expired credential does: it 
 `run/<label>.crash` with the last exit reason and exits 0 on macOS or 78 on Linux. The
 tunnel then stays stopped until `gtunnel start`, which clears the marker and the count.
 The supervisor never retries by itself after it stops, and `gtunnel watch` skips a job that
-carries the marker. Credential expiry still wins: its marker and exit are unchanged.
-
-| Setting under `[restart]` in `config.toml` | Default | Meaning |
-|---|---|---|
-| `max_restarts` | 5 | Fast failures tolerated inside `window`; `0` disables the budget |
-| `window` | 10m | Failures older than this are forgotten |
-| `min_uptime` | 60s | A run at least this long clears the count |
-| `base_backoff` | 10s | Wait after the first failure; doubles on each next one |
-| `max_backoff` | 5m | Cap on the wait |
+carries the marker. Credential expiry still wins: its marker and exit are unchanged. The five
+settings under `[restart]`, their defaults and ranges are in
+[The restart budget](configuration.md#the-restart-budget).
 
 | Question | Answer |
 |---|---|

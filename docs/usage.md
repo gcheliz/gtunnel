@@ -440,7 +440,9 @@ token that cannot be minted, including an expired refresh token, counts as logge
 `doctor` is skipped because it reports broken credentials as a finding and a login prompt
 would hide it; `init` has no account yet; `mcp` speaks JSON-RPC on stdin and stdout, so a
 prompt there would corrupt the protocol. Background services run `gcloud` directly and never
-go through this check.
+go through this check. Only the selected account is checked: switching to another account in
+the TUI does not check again, so an account that is logged out surfaces as the error in that
+tunnel's log.
 
 On a terminal, a failed probe prompts for confirmation (`[y/N]`, defaulting to `No`)
 before running `gcloud auth login --configuration=<configuration>` with the terminal handed
@@ -623,8 +625,7 @@ The list is a table with a `NAME  MODE  URL` header. If a legacy tunnel carries 
 suffix (such as `k8s-dev` under `dev`), the list hides the redundant suffix so columns stay
 clean. The name column is as wide as the longest name; it shrinks, to no fewer than 8 cells
 and with a `…`, only when the pane could not otherwise hold a 12-cell URL. The Details pane
-shows the stored name. Tunnels should be named for what they reach (e.g. `k8s`) without
-account suffixes.
+shows the stored name. The naming rule is [Naming a tunnel](commands.md#naming-a-tunnel).
 
 The layout follows the terminal. From 121 columns the list is the left 46% and Details, Logs
 and Metrics are stacked on the right; below 121 the list takes the full width above them,
