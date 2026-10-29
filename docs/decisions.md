@@ -40,8 +40,9 @@ something the user does in Google, not in gtunnel.
 The common case is reaching one GCP instance port from a laptop. Anything gtunnel creates to do that
 is a resource someone has to remember to delete.
 
-An Access tunnel is a local process plus an IAP connection. No firewall rule, no public IP,
-no agent on the instance, no resource with a lifetime.
+An Access tunnel is a local process plus an IAP connection. No public IP, no port open to the
+internet, no agent on the instance, no resource with a lifetime. The only ingress is a rule for
+IAP's range, which `gtunnel doctor` prints the command for.
 
 Expose mode cannot make the same promise — a URL needs a relay instance, a load balancer and a
 certificate — so the two modes are documented with their costs side by side, and `relay
@@ -92,7 +93,7 @@ A name is `<platform>` or `<platform>-<service>`, lower case, up to 40 character
 
 The payoff is that the same command works in both accounts. The cost is that two accounts
 can only be told apart by their local ports, which is why those differ. Full rule:
-[usage.md](usage.md).
+[Naming a tunnel](commands.md#naming-a-tunnel).
 
 ## 6. One tunnel per target, not per destination behind it
 
@@ -139,7 +140,7 @@ Leaving `30000-30999` open to the internet lets anyone who knows the relay addre
 port reach the forwarded service directly, skipping the load balancer and, with
 `--private`, the IAP sign-in in front of it. The alternative — gtunnel managing firewall
 rules — would mean a tool that silently widens a VPC. Documented in
-[commands.md](commands.md#relay).
+[commands.md](commands.md#the-relays-firewall-is-yours-to-close).
 
 ## 9. Linux releases are static musl binaries
 
@@ -214,8 +215,8 @@ commit reaches `main` without the gate having run on that exact tree.
 A feature whose behaviour is only discoverable by reading the source is not finished, and
 documentation written later is written from memory.
 
-`docs/` holds one file per category — usage, architecture, troubleshooting, design,
-decisions — and a change that alters behaviour updates the relevant one in the same pull
+`docs/` holds one file per category — usage, commands, configuration, gcp, architecture,
+troubleshooting, design, decisions — and a change that alters behaviour updates the relevant one in the same pull
 request. Command output in the docs is captured from a real run, not written by hand.
 
 The cost is that a code-only pull request is rare. The alternative is a README that

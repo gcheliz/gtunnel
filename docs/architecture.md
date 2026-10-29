@@ -2,6 +2,9 @@
 
 [Home](../README.md) / [Usage](usage.md) / [Commands](commands.md) / [Configuration](configuration.md) / Architecture / [Troubleshooting](troubleshooting.md)
 
+What runs on your laptop, what lands in GCP and under which name, so you can audit every
+resource gtunnel touches.
+
 ## Access mode
 
 A local port forwarded to a port inside the VPC. Nothing is created in GCP: IAP already

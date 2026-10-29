@@ -8,6 +8,10 @@ Contents:
 - [What the log says, and what it means](#what-the-log-says-and-what-it-means)
 - [Local port collisions](#local-port-collisions)
 - [gtunnel needs a logged-in Google account](#gtunnel-needs-a-logged-in-google-account)
+- [credential_file must be an absolute path](#credential_file-must-be-an-absolute-path)
+- [Failed to parse .../config.toml](#failed-to-parse-configtoml)
+- [Connections drop after an hour](#connections-drop-after-an-hour)
+- [Restarts after the laptop wakes](#restarts-after-the-laptop-wakes)
 - [no zone for account](#no-zone-for-account)
 - [Could not list projects](#could-not-list-projects)
 - [IAP firewall](#iap-firewall)
@@ -18,11 +22,8 @@ Contents:
 - [Cost](#cost)
 - [Leftovers](#leftovers)
 
-Start with `gtunnel doctor`. It reports everything below that can be detected, and prints
-the exact command for the things it cannot fix itself.
-
-`doctor` runs after gtunnel is installed and working, so the installation problems come
-first: nothing below the next section is reachable until `gtunnel --version` answers.
+Run `gtunnel doctor` first: it finds most of what follows and prints the exact fix. It needs
+a working install, so installation problems come first.
 
 ## Installation
 
