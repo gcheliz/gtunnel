@@ -203,11 +203,20 @@ pub async fn run() -> Result<()> {
     while let Ok(Some(line)) = reader.next_line().await {
         if let Some(resp) = handle_message(&line).await {
             let serialized = serde_json::to_string(&resp)?;
-            stdout.write_all(serialized.as_bytes()).await?;
-            stdout.write_all(b"\n").await?;
-            stdout.flush().await?;
+            match write_line(&mut stdout, &serialized).await {
+                // The client closed its end: it has gone, which ends the
+                // session rather than failing it
+                Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => return Ok(()),
+                other => other?,
+            }
         }
     }
 
     Ok(())
+}
+
+async fn write_line(stdout: &mut tokio::io::Stdout, line: &str) -> std::io::Result<()> {
+    stdout.write_all(line.as_bytes()).await?;
+    stdout.write_all(b"\n").await?;
+    stdout.flush().await
 }

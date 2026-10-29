@@ -52,8 +52,12 @@ pub fn cmd_completions(shell: Shell) -> Result<()> {
     // The script calls back into `gtunnel` by name, so it follows whichever
     // copy is first on PATH instead of freezing the path it was printed from
     completer.write_registration("COMPLETE", "gtunnel", "gtunnel", "gtunnel", &mut buf)?;
-    std::io::stdout().write_all(&buf)?;
-    Ok(())
+    match std::io::stdout().write_all(&buf) {
+        // The reader stopped early, as `head` does: see
+        // `dispatch::exit_quietly_on_broken_pipe`
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        other => Ok(other?),
+    }
 }
 
 /// Tunnel names of the selected account that start with what is typed.

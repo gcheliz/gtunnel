@@ -872,6 +872,10 @@ line.
 | `auth` | 4 | gcloud has no usable credentials for the account |
 | `gcloud` | 5 | A gcloud call ran and failed |
 
+A reader that stops early, such as `gtunnel list | head -1`, a pager quit with `q`, or an MCP
+client that closes its end, ends the command with exit 0 and nothing on stderr: the reader
+chose to stop, so there is no failure to report.
+
 `list --json`, `account list --json` and `doctor --json` print the failure on stdout as one
 object, and nothing on stderr. `message` is the whole cause chain joined with `: `.
 
