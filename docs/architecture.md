@@ -52,10 +52,9 @@ gcloud compute ssh <instance> --zone=<zone> --tunnel-through-iap --quiet \
   -o LogLevel=DEBUG -L <local-port>:<host>:<remote-port>
 ```
 
-`--verbosity` governs gcloud, not the `ssh` it execs, so the forward needs its own level,
-and the two are spelled on different scales. One setting drives both: the mapping, and why
-the default reaches ssh as `DEBUG` rather than `VERBOSE`, is in
-[troubleshooting.md](troubleshooting.md#one-level-two-scales).
+`--verbosity` governs gcloud, not the `ssh` it execs, so the forward carries its own
+`LogLevel`; one setting drives both, mapped in
+[One level, two scales](troubleshooting.md#one-level-two-scales).
 
 Two consequences follow from the command being `ssh` rather than `start-iap-tunnel`:
 there is no local listener inside gcloud, so nothing prints `Listening on port`; and the
@@ -115,9 +114,9 @@ balancer's health check reach the port.
 | Per tunnel | Cloud DNS A record, TTL 60 | `<tunnel>.<domain>.` | `expose`, `run --public` |
 
 Both firewall rules target the tag `gt-relay`, which only the relay instance carries. Every
-backend service gtunnel creates carries `description: gtunnel:<account>`, and that tag,
-not the name, is what `doctor --fix` uses to decide whether a backend is gtunnel's. A
-backend someone created by hand that happens to match the naming scheme is never deleted.
+backend service gtunnel creates carries `description: gtunnel:<account>`; how `doctor --fix`
+uses that tag, and when it counts a host rule, named port or DNS record as its own, is in
+[Leftovers](troubleshooting.md#leftovers).
 
 Port ranges: local ports 15000-15999, relay ports 30000-30998. Relay port 30999 is the
 default backend, which has no listener, so an unknown hostname gets a 503 instead of
@@ -130,12 +129,6 @@ reaching another tunnel.
 ![Several services, one relay: web, api and docs on your laptop are each a supervised ssh -R session over IAP to one relay instance in the VPC; a global HTTPS load balancer with a host rule and Cloud DNS A record per service fronts the relay for visitors; the 30 second machine watchdog probes the supervisors and the TUI polls the load balancer every 5 seconds, both dashed](images/architecture/gtunnel-multi-service-relay.png)
 
 Every published service is its own supervised session to the same relay, on its own relay port.
-
-Only the per-tunnel backend service carries `description: gtunnel:<account>`. `doctor --fix`
-treats a host rule on the relay's URL map as orphaned when no tunnel claims its hostname, and a
-named port on the relay's instance group when it starts `gt-` and no tunnel claims it. A Cloud
-DNS record has no description field, so gtunnel treats one as its own only while it still
-holds a tagged backend, a host rule or a named port for the same tunnel.
 
 `relay down` removes the per-account and per-domain halves, in dependency order: forwarding
 rule, HTTPS proxy, global address, URL map, default backend, health check, each domain's
@@ -151,10 +144,10 @@ services first. It never touches the Cloud DNS managed zone, which is yours.
 | Concern | Decision |
 |---|---|
 | Supervision | launchd on macOS, systemd `--user` on Linux. Both restart on failure |
-| Reboot | Auto-start is per tunnel; off by default, toggled with `A` in the TUI. On macOS it is the presence of the plist in `~/Library/LaunchAgents`, because launchd loads everything there at login and a `KeepAlive` job runs the moment it is loaded. The definition gtunnel starts and stops itself lives outside that directory |
+| Reboot | Auto-start is per tunnel; off by default, toggled with `A` in the TUI or `autostart`. How each platform holds it is under [Service lifecycle](#service-lifecycle) |
 | Wedged tunnels | Supervision only catches a process that exits. A tunnel that stays up and refuses connections is caught instead by one watchdog job for the whole machine, which wakes every 30s by default (`watch.interval`), makes one pass over every tunnel and exits. It is an interval job rather than a supervised one precisely because it is supposed to exit every time |
 | PATH | A daemon does not inherit a shell, so gcloud's directory is written into the unit. Without it the service dies at every start |
-| Credentials | None stored. Each API call shells out to `gcloud auth print-access-token` for the account's configuration. An account with a `credential_file` adds `--credential-file-override=<path>` to every gcloud call, so the path is what gtunnel holds: it never copies, stores or logs the file, and `doctor` reads it to check its type and mode |
+| Credentials | None stored ([decision 1](decisions.md#1-gtunnel-stores-no-credential)). Each API call shells out to `gcloud auth print-access-token` for the account's configuration, and an account with a `credential_file` adds `--credential-file-override=<path>` to every gcloud call |
 | Ephemeral runs | `run` writes a record with gcloud's pid and that pid's start time, so `list`, the TUI and `doctor` see it and a recycled pid reads as gone. Every exit path stops gcloud's process group and tears the route down, including signals |
 | TUI polling | Discovery, metrics and health are three pollers (health reuses the metrics probe where one ran), each with at most one round in flight: a round slower than its period is waited for, never started again on top of itself. A result carries the generation its round began under and is dropped when that is no longer current, which is what an account switch does to every round begun for the old account. Every `gcloud`, `launchctl` and `systemctl` call is bounded (30s and 10s; the 10s is `service_call_timeout`, see [Settings the environment can override](configuration.md#settings-the-environment-can-override)) and fails with `<command> timed out after <n>s`; the child is killed on timeout. The `lsof` and `ps` reads run on the blocking pool. `delete` treats a timed-out stop as a failure and keeps the record, because removing it would orphan a job that may still be running |
 | Strangers | A `[not managed by gtunnel]` row is an IAP process nothing here accounts for. One `ps` snapshot is read, then a process is gtunnel's if it forwards a port that any account's `tunnels.toml` entry or any run record owns, or if it sits below a pid launchd or a run record names. The port is tried first because launchd reports a supervisor's pid before the supervisor has spawned its gcloud child, and a verdict that depends on that gap is a verdict that depends on timing |
@@ -190,8 +183,8 @@ names where it comes from.
 | A dropped WebSocket is retried from 1.5 s up to 20 s apart, for up to 15 minutes | gcloud 590, `api_lib/compute/iap_tunnel_websocket.py` |
 | Close code `4004` means IAP wants reauthentication; the session resumes | gcloud 590, `api_lib/compute/iap_tunnel_websocket_helper.py` |
 | A tunnel through a GCP instance carries every connection over one WebSocket, kept busy by `ServerAliveInterval=30` | gtunnel, `src/tunnel.rs` (the command shown under [Jump tunnels](#jump-tunnels)) |
-| `start_deadline`, `service_call_timeout`, `list_probe_timeout` (500ms), `update_check_interval` (6h), `discovery`, `notifications.enabled`, `editor` the three `watch` keys (`probe_timeout` 3s, `degraded_after` 2, `interval` 30s) the four `logs` keys (`max_size` 8MiB, `keep_size` 2MiB, `lines_per_minute` 60, `auth_exit_window` 30s) and the six `gcp` keys (`token_ttl` 45m, `operation_timeout` 10m, `http_timeout` 30s, `poll_interval` 2s, `lock_deadline` 5s, `fingerprint_attempts` 5) resolve in one place: a variable beats `config.toml`, which beats the default, and `dispatch` refuses a bad variable with exit 2 before any command runs; the supervisor is exempt and falls back instead | gtunnel, `src/settings.rs`; [Settings the environment can override](configuration.md#settings-the-environment-can-override) |
-| A gcloud that dies before `min_uptime` (60s) more than `max_restarts` (5) times inside `window` (10m) stops its job; the wait between restarts doubles from 10s to 5m. A tunnel slower than `min_uptime` to come up counts as failing | gtunnel, `src/restart_budget.rs`; [The restart budget](configuration.md#the-restart-budget) |
+| Every tunable setting resolves in one place: a variable beats `config.toml`, which beats the default | gtunnel, `src/settings.rs`; [Settings the environment can override](configuration.md#settings-the-environment-can-override) |
+| A gcloud that keeps dying before `min_uptime` stops its job after `max_restarts` fast failures | gtunnel, `src/restart_budget.rs`; [The restart budget](configuration.md#the-restart-budget) |
 
 The two shapes pay differently.
 
@@ -257,15 +250,8 @@ Keys, defaults and the traps of editing `config.toml` and `tunnels.toml` are in
 | `<config>/logs/run-<account>-<name>.log` | Output of a `gtunnel run` that `gtunnel_run_tunnel` started. A run started in a terminal prints there and has no file |
 | `<config>/update-check.json` | Last version check |
 
-Every file gtunnel writes is written to a sibling `<name>.<pid>.new` and renamed into place,
-so a crash or a full disk leaves the previous file whole, and with mode 0600 because the
-contents name accounts, projects and hosts. No lock is held while a command waits on gcloud
-or a service manager: the daemon work happens first, then the record is changed in one short
-locked update ([decision 16](decisions.md#16-state-files-are-written-atomically-under-an-advisory-lock)).
-
-`<config>` is `~/.gtunnel`. A legacy `~/Library/Application Support/gtunnel` on macOS or
-`~/.config/gtunnel` on Linux is used only when it exists and `~/.gtunnel` does not.
-`GTUNNEL_CONFIG_DIR` overrides both.
+Where `<config>` is, and how every file in it is written (atomically, mode 0600, under a
+lock), is in [Where the files live](configuration.md#where-the-files-live).
 
 ### The account and config model
 

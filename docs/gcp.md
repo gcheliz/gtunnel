@@ -71,7 +71,7 @@ HTTPS load balancer ([how](architecture.md#expose-mode)).
 | Relay | One per account: instance, instance group, load balancer, certificate map | `gtunnel relay up --managed-zone my-zone` |
 | More domains | Each needs a certificate and a DNS authorization | `gtunnel domains add <zone>` |
 | APIs gtunnel calls | `compute`, `dns`, `certificatemanager`, `iap`, `monitoring` (the TUI's request counts), each under `googleapis.com` | none |
-| Cost | A global forwarding rule (about USD 18 a month) and an `e2-micro` instance (about USD 7 a month) | `relay up` asks before creating either |
+| Cost | About USD 25/month per account for the relay; the breakdown is in [Cost](troubleshooting.md#cost) | `relay up` asks before creating it |
 
 ### Firewall rules `relay up` creates
 

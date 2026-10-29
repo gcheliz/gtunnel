@@ -150,15 +150,11 @@ emptied when its tunnel starts, so a line in it was written by the process runni
 
 ### A start that says `failed to start`
 
-`gtunnel start`, `restart` and `add -s` wait for the tunnel to come up. An Access tunnel,
-`--via` included, has up to 20 seconds to report it is listening (`start_deadline` in `config.toml`
-or `GTUNNEL_START_DEADLINE` moves the bound); an Expose tunnel is judged after a fixed 3 seconds.
-`<name> failed to start` means the service exited with an error or was not listening by then,
-so the command exits 1 and the TUI status line, or an MCP client's `isError` result, says the
-same. The line under it is the hint for the newest log line gtunnel recognises, from the table
-above, or `not listening after 20s`; `gtunnel logs <name>` shows the rest. An Expose tunnel
-still connecting after 3 seconds reads as running, so `gtunnel list` is the check for one that
-fails later.
+The service exited with an error, or an Access tunnel was not listening within the start
+deadline (20 seconds by default). The line under it matches a row of the table above, or reads
+`not listening after 20s`; `gtunnel logs <name>` shows the rest. For a tunnel that is only slow,
+raise `start_deadline` or `GTUNNEL_START_DEADLINE`. How a start is judged:
+[start](commands.md#start-stop-restart-autostart-logs-list-delete).
 
 ### One level, two scales
 
@@ -185,10 +181,8 @@ and `Testing if tunnel connection works.` at every start, because those are user
 rather than log records and `--verbosity` does not govern them. What `quiet` removes is
 the per-connection line, which is a log record.
 
-Set it with `--log-level`, `GTUNNEL_LOG_LEVEL` or `log_level` in `config.toml`, in that
-order of precedence — see [configuration.md](configuration.md#the-log-level). A running tunnel keeps the
-level it started under until its service is reinstalled, which `start`, `restart`,
-`autostart` and an edit in the TUI all do.
+Where to set it, and when a running tunnel picks up a new level, is in
+[The log level](configuration.md#the-log-level).
 
 ### Who writes what
 
@@ -213,12 +207,8 @@ The shapes below are what each kind of line looks like, not a captured transcrip
 | Expose, forward up | `debug1: Remote connections from 0.0.0.0:30001 forwarded to local address 127.0.0.1:3000` | ssh |
 | Expose, a visitor arrives | `debug1: client_request_forwarded_tcpip: listen 0.0.0.0 port 30001, originator ...` | ssh |
 
-The `conn` lines are written by the tunnel's own supervisor, which reads gcloud's
-`[N] Connecting with URL` and `[N] Client closed connection from [...]` and ssh's
-`channel N: new` and `channel N: free: ... connect from H port P` and pairs them by id.
-They are there whether or not the TUI is open. A connection gtunnel itself makes to check
-the tunnel's health writes no line, at most 60 lines a minute (`logs.lines_per_minute`) are written per tunnel, and
-the `quiet` level writes none.
+How the `conn` lines are made, what they leave out and how to find the client from one:
+[Connections in the log](commands.md#connections-in-the-log).
 
 A `--via` tunnel never prints `Listening on port`. It runs `gcloud compute ssh
 --tunnel-through-iap`, which is a different command from `start-iap-tunnel` rather than a
@@ -227,14 +217,6 @@ ssh's forwarding line.
 
 Every ssh line in the table above is a debug one, which is why the default level
 reaches ssh as `DEBUG`; see [One level, two scales](#one-level-two-scales).
-
-### A connection is in the log with the port it came from
-
-Each `conn` close line names the client's address and source port, so `lsof -nP -iTCP:54321`
-while it is still open, or the time next to it afterwards, says which program it was.
-The connection count in the TUI's Metrics pane is sampled and is not written to the log.
-
-A tunnel gtunnel does not manage owns no log here, so it gets neither kind of line.
 
 ### How large a log gets
 
@@ -352,10 +334,7 @@ not finish or it was not allowed to start.
 | The account names a `credential_file` | gtunnel never offers a login for it. The error names the file and ends with gcloud's own reason (`; gcloud said: ERROR: ...`): check that it exists, is a service-account key or a workload identity federation file, and that its identity is not disabled. `gtunnel doctor` names the file and repeats the reason |
 | The account impersonates a service account | `gcloud auth login` is run without `--impersonate-service-account`, because it rejects that flag. It logs in the user whose credentials mint the impersonation token, so that user needs `roles/iam.serviceAccountTokenCreator` on the service account |
 
-Only the selected account (or `--account`) is checked at startup. Switching to another
-account in the TUI does not check again, so an account that is logged out surfaces as the
-error in that tunnel's log. `doctor`, `account`, `init`, `reset`, `demo` and `update` skip
-the check.
+Which commands run the check, for which account, and what the prompt does: [Startup](usage.md#startup).
 
 ## `credential_file must be an absolute path`
 
@@ -513,10 +492,9 @@ launchctl bootout gui/$(id -u)/com.gtunnel.<account>.<name>
 cat "$HOME/.gtunnel/agents/com.gtunnel.<account>.<name>.plist"
 ```
 
-A plist in `~/Library/LaunchAgents` means auto-start is on for that tunnel, nothing more:
-launchd loads everything in that directory at login, and a `KeepAlive` job runs the moment
-it is loaded. The definition `gtunnel start` and `gtunnel stop` load and unload lives in
-gtunnel's own directory, so a stopped tunnel is a label launchd does not have.
+A plist in `~/Library/LaunchAgents` means auto-start is on for that tunnel, nothing more; a
+stopped tunnel is a label launchd does not have. Turn it off with `gtunnel autostart <name> --off`
+or `A` ([why the file is the flag](architecture.md#service-lifecycle)).
 
 ### Linux, systemd user units
 
@@ -562,7 +540,7 @@ So a relay is about USD 25/month per account, and a tunnel on top of it is free.
 | Dead ephemeral | A `run` record whose process is gone |
 | Auto-start drift | Nothing: the service manager is brought to the `auto_start` in `tunnels.toml` |
 | Missing watchdog | Nothing: the watchdog agent is installed |
-| Orphan service | A `com.gtunnel.*` plist (macOS) or `gtunnel-*.service` unit (Linux) that no record in `tunnels.toml` produces a label for. Only a service that belongs to this config directory counts: the plist in `<config dir>/agents`, or a `LaunchAgents` plist or systemd unit whose log path is under `<config dir>/logs/`. A file whose log path cannot be read is left alone, and so is a loaded job that came from another config directory. The watchdog is never reported |
+| Orphan service | A `com.gtunnel.*` plist (macOS) or `gtunnel-*.service` unit (Linux) that no record in `tunnels.toml` produces a label for, which would otherwise keep its port at login. Only a service that belongs to this config directory counts: the plist in `<config dir>/agents`, or a `LaunchAgents` plist or systemd unit whose log path is under `<config dir>/logs/`. A file whose log path cannot be read is left alone, and so is a loaded job that came from another config directory. The watchdog is never reported |
 | Orphan backend | A backend service whose description is `gtunnel:<account>` and that no tunnel in `tunnels.toml` claims |
 | Orphan host rule | A host rule on the relay's URL map for a hostname no tunnel claims |
 | Orphan named port | A named port starting `gt-` on the relay's instance group that no tunnel claims |
