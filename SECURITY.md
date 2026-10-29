@@ -4,8 +4,8 @@
 
 | Version | Supported |
 |---|---|
-| 0.1.x | Yes |
-| Older | There are none; 0.1.0 is the first release |
+| Latest 0.2.x release | Yes |
+| Anything older | No; upgrade to the latest release |
 
 Only the latest release gets fixes. gtunnel is a single binary with no server
 side, so upgrading is replacing the binary: `gtunnel update`, Homebrew, or

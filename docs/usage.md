@@ -11,9 +11,10 @@ Contents:
 - [The TUI](#the-tui)
 - [Model Context Protocol (MCP) and AI Agent Integration](#model-context-protocol-mcp-and-ai-agent-integration)
 
-Getting set up, the concepts, startup, the TUI and the MCP server. The commands are in
-[commands.md](commands.md) and the files in [configuration.md](configuration.md). Outputs were captured from a real run unless the
-section says the opposite.
+From a bare laptop to a working tunnel in seven steps, then the TUI, CI runs and the AI agents
+you use every day. The commands are in [commands.md](commands.md) and the files in
+[configuration.md](configuration.md). Outputs were captured from a real run unless the section
+says the opposite.
 
 `--account <name>` and `--log-level <level>` work on every command, and override the
 default account and the configured log level respectively; see
@@ -649,7 +650,7 @@ bottom row (`1-16 of 29 lines`) says where the window is. A file that does not e
 so: `tunnels.toml` is absent until the first `add`. `Esc` or `q` closes the page. The demo has
 no config files, so `C` there says so and opens nothing.
 
-`e` edits the file on screen in `$VISUAL`, then `$EDITOR`, then the `editor` key of `config.toml`, then `vi`. The value is split on
+`e` edits the file on screen in `$GTUNNEL_EDITOR`, then `$VISUAL`, then `$EDITOR`, then the `editor` key of `config.toml`, then `vi`. The value is split on
 whitespace, so `code -w` works, and a quoted path with a space stays one program. gtunnel
 leaves the screen while the editor runs and takes it back when the editor exits, whatever
 way it exits.
@@ -742,8 +743,9 @@ The same page after an editor that wrote text which is not TOML:
 
 ## Model Context Protocol (MCP) and AI Agent Integration
 
-gtunnel provides first-class support for AI agents through both an in-repo Skill and a native
-Model Context Protocol (MCP) server.
+Your agent opens, checks and closes tunnels with the binary you already have: 14 tools over
+stdio, and a temporary tunnel it opens closes itself after a TTL of 1 to 480 minutes. An
+in-repo Skill tells the agent how to use them.
 
 ### The in-repo Skill
 

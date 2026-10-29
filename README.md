@@ -14,47 +14,30 @@
 
 ## What gtunnel is
 
-gtunnel gives you private access to what runs inside a GCP VPC, and an HTTPS address for what
-runs on your laptop. It needs no inbound firewall rule, no public IP on the target and no stored
-credential. One binary, two modes, each persistent or ephemeral ([Concepts](docs/usage.md#concepts)):
-**Access** puts a GCP instance, or a host behind it, on a port of `localhost` through Identity-Aware Proxy.
-**Expose** publishes a local service at an HTTPS URL through a relay in your own project.
-
-You drive it three ways, all over the same tunnels. The **TUI** is the daily surface: every
-tunnel with its live latency, connections and log, showing whether a tunnel carries traffic and
-not merely whether a process is up. The **CLI** covers the same ground for scripts, from
-`gtunnel add` to `gtunnel doctor --fix`, with `--json` where a script needs it. The **MCP
-server** (`gtunnel mcp`, 14 tools) lets an AI agent list, start, expose and diagnose tunnels; an
-expose stays private unless the agent asks for a public one.
-
-Tunnels are declared once and run as supervised user services, launchd on macOS and systemd on
-Linux. They outlive the terminal, restart on failure and can start at login.
+Put any port inside your GCP VPC on `localhost`, or give a laptop service an HTTPS URL, with
+one command. No public IP, no port open to the internet, no stored credential. Healthy means
+the far end answered, not that a process exists. The TUI, the CLI and your AI agent see the
+same tunnels and the same health.
 
 <p align="center">
   <img src="docs/demo-tui.gif" alt="The gtunnel TUI: tunnel list, details, logs and metrics, the edit and add choosers, the accounts page and the key map" width="720">
 </p>
 
-| Property | What it means in practice |
+One Rust binary, two modes, each persistent or ephemeral ([Concepts](docs/usage.md#concepts)).
+It orchestrates gcloud instead of reimplementing Google's protocols.
+
+| Part | What you get |
 |---|---|
-| Nothing is exposed | No inbound firewall rule, no public IP on the target, no agent on the instance. IAP authorises each connection against your own Google identity |
-| Nothing is stored | gtunnel keeps no credential. Every token comes from `gcloud auth print-access-token` at connect time |
-| Access mode creates nothing in GCP | A private port is a local process plus an IAP connection: no resource left behind, no cost |
-| Tunnels survive the terminal | launchd on macOS, systemd `--user` on Linux: restart on failure, optional start at login, one log per tunnel |
-| The dashboard tells the truth | Live latency, active connections, load-balancer request counts and the tunnel's own log, not merely a running process |
-| Agents can drive it | `gtunnel mcp` is a stdio MCP server with 14 tools and 2 resources, and an agent skill ships in the repo |
+| **Access** | `gcloud compute start-iap-tunnel` puts a GCP instance port on `localhost` through Identity-Aware Proxy; a **jump tunnel** reaches a host behind that instance. Creates nothing in GCP, costs nothing |
+| **Expose** | A **relay instance** in your own project, with no public IP, holds a **reverse SSH** tunnel to your laptop through IAP. A **global HTTPS load balancer** with a **managed certificate** and a **Cloud DNS** record routes each hostname to its relay port; a gated tunnel adds **IAP sign-in** |
+| **Exposure** | No public IP on the target, no agent on the instance. The only ingress is from IAP's range, and `gtunnel doctor` prints the command for it. IAP authorises each connection against your own Google identity |
+| **Credentials** | None stored. Every token comes from `gcloud auth print-access-token` at connect time |
+| **Supervision** | Each tunnel is a user service (launchd on macOS, systemd `--user` on Linux): one supervisor around one gcloud child, one log per tunnel. It outlives the terminal, restarts on failure and can start at login. A **machine watchdog** checks every tunnel every 30s and restarts one that is up but refusing connections |
+| **TUI** | The daily surface: every tunnel with live latency, active connections, load-balancer request counts and its own log |
+| **CLI** | The same ground for scripts, from `gtunnel add` to `gtunnel doctor --fix`, with `--json` where a script needs it |
+| **MCP** | `gtunnel mcp`, a stdio server with 14 tools and 2 resources: an agent lists, starts, exposes and diagnoses tunnels. An expose stays private unless the agent asks for a public one. An agent skill ships in the repo |
 
-## Architecture
-
-gtunnel is a **single Rust binary** that **orchestrates gcloud** instead of reimplementing
-Google's protocols. It opens every connection with **your own Google identity** and keeps
-**no credential** of its own.
-
-| Layer | How it works |
-|---|---|
-| **Access mode** | `gcloud compute start-iap-tunnel` binds a `localhost` port to a GCP instance port through **Identity-Aware Proxy**. A **jump tunnel** reaches a host behind that instance. Nothing is created in GCP |
-| **Expose mode** | A **relay instance** with no public IP holds a **reverse SSH** tunnel to your laptop, opened through IAP. A **global HTTPS load balancer** with a **managed certificate** and a **Cloud DNS** record routes each hostname to its relay port; a gated tunnel adds **IAP sign-in** in front |
-| **Supervision** | Each tunnel is a **user service** (launchd on macOS, systemd `--user` on Linux) running one **supervisor** around one gcloud child, with **one log per tunnel**. A **machine watchdog** checks every tunnel every 30s and restarts one that is up but refusing connections |
-| **Control surfaces** | The **TUI**, the **CLI** and the **MCP server** share the same per-**account** tunnel list and the same **health probe**: a tunnel is healthy when it **answers**, not when its process exists |
+All three surfaces share the per-account tunnel list and the same health probe.
 
 ![gtunnel topology: a private port inward through IAP, a public URL outward through a relay instance with optional IAP sign-in, and the TUI or an MCP client driving gtunnel](docs/images/architecture/gtunnel-overview.png)
 
@@ -120,15 +103,7 @@ gtunnel expose web 3000 -s                   # https://web.example.com -> localh
 
 ## Environment variables
 
-Four variables change how gtunnel behaves; the full list is in
-[docs/configuration.md](docs/configuration.md#environment).
-
-| Variable | Effect |
-|---|---|
-| `GTUNNEL_CONFIG_DIR` | Keeps every file gtunnel writes in that directory instead of `~/.gtunnel` |
-| `GTUNNEL_LOG_LEVEL` | `quiet`, `info` or `debug` for every command; `--log-level` wins over it |
-| `GTUNNEL_START_DEADLINE` | How long an Access tunnel has to start listening, default `20s`; `GTUNNEL_START_DEADLINE_MS` still works |
-| `GTUNNEL_EDITOR`, then `VISUAL`, then `EDITOR` | The editor the TUI opens on `e` |
+Every variable gtunnel reads, with its default and what it beats: [docs/configuration.md](docs/configuration.md#environment).
 
 ## Safety
 

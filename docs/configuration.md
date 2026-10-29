@@ -2,8 +2,8 @@
 
 [Home](../README.md) / [Usage](usage.md) / [Commands](commands.md) / Configuration / [Architecture](architecture.md) / [Troubleshooting](troubleshooting.md)
 
-Every file gtunnel writes, every key in the two you may edit, and every environment variable
-it reads. The words Access, Expose, target kind and lifetime are defined once in
+Two files you may edit, every default, and the variables that beat them. Read the pitfalls
+first. The words Access, Expose, target kind and lifetime are defined once in
 [Concepts](usage.md#concepts).
 
 ## Read before you edit
@@ -508,6 +508,5 @@ The value of `VISUAL` or `EDITOR` is split into a program and its arguments here
 handed to a shell, so `code -w` works and nothing in the variable is interpreted as a
 command line. Quotes group a path containing spaces and do nothing else.
 
-With `GTUNNEL_CONFIG_DIR` unset the directory is `~/.gtunnel` (falling back to
-`~/Library/Application Support/gtunnel` on macOS and `$XDG_CONFIG_HOME/gtunnel` on
-Linux if `~/.gtunnel` does not exist).
+With `GTUNNEL_CONFIG_DIR` unset the directory is `~/.gtunnel`, unless only a legacy
+directory exists: [Where the files live](#where-the-files-live).

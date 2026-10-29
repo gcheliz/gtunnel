@@ -257,7 +257,7 @@ GitHub</a>
 </div>
 <div class="row">
 <div class="col copy">
-<p class="lead">Reach instances that have no public IP, watch every tunnel live, and let your AI agent drive the same tunnels.</p>
+<p class="lead">Reach instances with no public IP, publish a local service at an HTTPS URL, and watch every tunnel answer, from your terminal or your agent.</p>
 <div class="install">
 <div class="tabs" role="tablist" aria-label="Install method">
 <button type="button" role="tab" aria-selected="true" aria-controls="install-cmd-box" data-cmd="brew install gcheliz/tap/gtunnel">brew</button>
@@ -284,7 +284,7 @@ GitHub</a>
 
 <section class="numbers" aria-label="By the numbers">
 <div class="wrap">
-<div class="n"><span class="big c-cyan">0</span><span class="label">inbound firewall rules</span></div>
+<div class="n"><span class="big c-cyan">0</span><span class="label">ports open to the internet</span></div>
 <div class="n"><span class="big c-green">0</span><span class="label">credentials stored by gtunnel</span></div>
 <div class="n"><span class="big c-amber">2</span><span class="label">modes: access, expose</span></div>
 <div class="n"><span class="big c-blue">14</span><span class="label">MCP tools for your agent</span></div>
@@ -416,7 +416,7 @@ GitHub</a>
 <span class="prompt">$</span> psql -h localhost -p 15432
 
 <span class="c"># or a one-off tunnel that closes itself</span>
-<span class="prompt">$</span> gtunnel run bastion:5432 --local-port 15432 --ttl 30m</pre>
+<span class="prompt">$</span> gtunnel run bastion:5432 --local-port 15433 --ttl 30m</pre>
 <button type="button" class="copy-sm" data-copy-for="the quick start commands">Copy</button>
 </div>
 </section>
@@ -428,7 +428,7 @@ GitHub</a>
 <div class="col" style="gap: 16px">
 <h3>Nothing<br><span class="c-cyan">exposed.</span></h3>
 <span class="rule"></span>
-<p class="body">No firewall rule or public IP. IAP checks every connection.</p>
+<p class="body">No public IP, no port open to the internet. IAP checks every connection.</p>
 </div>
 <div class="col" style="gap: 16px">
 <h3>Nothing<br><span class="c-green">stored.</span></h3>
@@ -438,7 +438,7 @@ GitHub</a>
 <div class="col" style="gap: 16px">
 <h3>Nothing<br><span class="c-amber">left behind.</span></h3>
 <span class="rule"></span>
-<p class="body">Ctrl+C or <code>--ttl</code> closes a run. Declared ones restart on failure.</p>
+<p class="body">Access creates nothing in GCP; <code>relay down</code> deletes the relay and everything it created.</p>
 </div>
 </div>
 </div>

@@ -21,7 +21,7 @@ Contents:
 - [Errors and exit codes](#errors-and-exit-codes)
 - [Shell completions](#shell-completions)
 
-Every command, its flags and its real output. The two modes, the target kinds and the
+Every command with the output it really prints, success and failure alike. The two modes, the target kinds and the
 lifetime axis are defined once in [Concepts](usage.md#concepts); the files and environment
 variables are in [configuration.md](configuration.md).
 

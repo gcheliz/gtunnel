@@ -2,8 +2,8 @@
 
 [Home](../README.md) / [Usage](usage.md) / [Commands](commands.md) / [Configuration](configuration.md) / [Architecture](architecture.md) / [Troubleshooting](troubleshooting.md)
 
-Every requirement gtunnel places on a GCP project, by mode. Find your mode, run the one-off
-commands, then confirm with `gtunnel doctor`, which checks the IAP role and the firewall rule
+Access needs one role and one firewall rule for IAP's range; Expose adds a relay instance at
+about USD 25/month per account. Find your mode, run the one-off commands, then confirm with `gtunnel doctor`, which checks the IAP role and the firewall rule
 for every tunnel. The rest of the roles surface as a permission error when the command that
 needs them runs.
 

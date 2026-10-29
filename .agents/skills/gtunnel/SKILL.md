@@ -7,7 +7,7 @@ description: Manage GCP IAP TCP access tunnels and local service exposure using 
 
 ## Overview
 
-gtunnel manages Google Cloud Identity-Aware Proxy (IAP) TCP access tunnels and local service exposure. It coordinates persistent background daemons (via launchd on macOS or systemd on Linux) to provide reliable, monitored port forwarding to private GCP resources without requiring external IP addresses or traditional VPNs.
+Reach private GCP ports for the user, or publish a local service at an HTTPS URL. Prefer a TTL run for one-off access, and prove health before reporting done. gtunnel forwards through Google Cloud Identity-Aware Proxy (IAP) with no external IP on the target and no VPN, and supervises persistent tunnels as background services (launchd on macOS, systemd on Linux).
 
 Key capabilities:
 - Persistent background access tunnels to GCP instances, destination groups, and bastion jump hosts.
@@ -37,7 +37,7 @@ If `gtunnel_*` MCP tools are available in the current environment, prioritize th
 - `gtunnel_list_accounts`: List configured GCP accounts and the active selection (`selected_account`, and `selected` on each account). The `gtunnel://accounts` resource returns the same object.
 - `gtunnel_doctor`: Run diagnostic checks on prerequisites, permissions, and daemon configurations.
 
-The JSON tools (`gtunnel_list_tunnels`, `gtunnel_get_status`, `gtunnel_run_tunnel`, `gtunnel_list_accounts`, `gtunnel_doctor`) also return `structuredContent`; the list is `{"tunnels": [...]}` and the doctor `{"findings": [...]}`. A failure is `{"error": {"kind", "message"}}`. Tools annotated `readOnlyHint` change nothing, so call them freely.
+The JSON tools (`gtunnel_list_tunnels`, `gtunnel_get_status`, `gtunnel_run_tunnel`, `gtunnel_expose_tunnel`, `gtunnel_list_accounts`, `gtunnel_doctor`) also return `structuredContent`; the list is `{"tunnels": [...]}` and the doctor `{"findings": [...]}`. A failure is `{"error": {"kind", "message"}}`. Tools annotated `readOnlyHint` change nothing, so call them freely.
 
 Routing: for short-lived access (a query, a one-off check) prefer `gtunnel_run_tunnel`: it needs no cleanup. Use `gtunnel_add_tunnel` only for something the user keeps. Choose the TTL for the task at hand, not the maximum.
 
