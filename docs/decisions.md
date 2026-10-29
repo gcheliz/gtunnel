@@ -255,6 +255,14 @@ the tag would never build, and a pull request opened with it waits for a manual 
 of its CI. That approval and the second merge it led to are what the release pull request
 cost, and why it is gone.
 
+The Homebrew tap is another repository, `gcheliz/homebrew-tap`, so its formula is bumped by
+a last `tap` job that runs once the release is public. It reads the four `.sha256` files the
+build jobs wrote, rewrites the url and hash pairs in `Formula/gtunnel.rb` and pushes with
+`HOMEBREW_TAP_TOKEN`, a second fine-grained token with Contents: write on the tap only, so
+neither token reaches the other repository. A failed bump leaves the release as published and
+the formula on the previous version, which `brew upgrade` reads as no update; re-running the
+job retries it.
+
 A tag is a request to sign and publish, so two checks stand in front of it. The
 `release-tags` ruleset lets only an admin create, move or delete a `v*` tag, and the tag
 run publishes only a tag that points at a commit on `main`, names the version that commit
