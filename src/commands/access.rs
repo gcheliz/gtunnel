@@ -1,4 +1,4 @@
-use crate::error::GtunnelError;
+use crate::error::{ErrorKind, GtunnelError};
 use anyhow::{bail, Context, Result};
 use std::time::Duration;
 
@@ -302,6 +302,9 @@ pub struct Started {
 pub struct StartFailed {
     pub name: String,
     pub hint: Option<String>,
+    /// `Auth` when the cause was expired or missing credentials, so the exit
+    /// code says what to do next; `Internal` otherwise, as before kinds.
+    pub kind: ErrorKind,
 }
 
 impl std::fmt::Display for StartFailed {
@@ -523,9 +526,19 @@ async fn start_inner(account: Option<&str>, name: &str) -> Result<Started> {
             )),
             (None, _) => None,
         };
+        // The marker is the supervisor's own word that it stopped for
+        // credentials; the log diagnosis is the same finding read from the
+        // text when no marker was written
+        let kind = if stopped_for_credentials(&tunnel) || hint.as_deref().is_some_and(is_auth_hint)
+        {
+            ErrorKind::Auth
+        } else {
+            ErrorKind::Internal
+        };
         return Err(StartFailed {
             name: name.to_string(),
             hint,
+            kind,
         }
         .into());
     }
@@ -547,6 +560,11 @@ fn print_started(started: &Started) {
 pub async fn cmd_start(account: Option<&str>, name: &str) -> Result<()> {
     print_started(&start_tunnel(account, name).await.map_err(print_failed)?);
     Ok(())
+}
+
+// The log table's two expired-credentials entries share this text
+fn is_auth_hint(hint: &str) -> bool {
+    hint.starts_with("gcloud credentials expired")
 }
 
 // The newest log line gtunnel recognises, turned into an explanation
@@ -1431,6 +1449,7 @@ mod tests {
         let failed = StartFailed {
             name: "db".into(),
             hint: Some(hint),
+            kind: ErrorKind::Internal,
         };
         assert!(failed.to_string().contains("not listening after 1s"));
         assert!(failed.to_string().contains("Logs: gtunnel logs db"));
@@ -1441,6 +1460,7 @@ mod tests {
         let e = StartFailed {
             name: "db".into(),
             hint: Some("IAP refused the connection".into()),
+            kind: ErrorKind::Internal,
         };
         assert_eq!(
             e.to_string(),
@@ -1449,10 +1469,24 @@ mod tests {
     }
 
     #[test]
+    fn both_expired_credentials_log_lines_read_as_an_auth_hint() {
+        for line in [
+            "Reauthentication required, please rerun gcloud auth login",
+            "ERROR: please run gcloud auth login",
+        ] {
+            let hint = diagnose_log_line(line).expect("a hint");
+            assert!(is_auth_hint(hint), "{line}");
+        }
+        let other = diagnose_log_line("bind: Address already in use").expect("a hint");
+        assert!(!is_auth_hint(other));
+    }
+
+    #[test]
     fn a_failed_start_without_a_hint_has_two_lines() {
         let e = StartFailed {
             name: "db".into(),
             hint: None,
+            kind: ErrorKind::Internal,
         };
         assert_eq!(e.to_string(), "db failed to start\n  Logs: gtunnel logs db");
     }

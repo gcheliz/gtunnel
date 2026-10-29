@@ -37,7 +37,7 @@ If `gtunnel_*` MCP tools are available, prefer them over the CLI:
 - `gtunnel_list_accounts`: accounts and the selection (`selected_account`, `selected` on each). The `gtunnel://accounts` resource returns the same object.
 - `gtunnel_doctor`: diagnostics on prerequisites, permissions and service configuration.
 
-The JSON tools (`gtunnel_list_tunnels`, `gtunnel_get_status`, `gtunnel_run_tunnel`, `gtunnel_expose_tunnel`, `gtunnel_list_accounts`, `gtunnel_doctor`) also return `structuredContent`; the list is `{"tunnels": [...]}` and the doctor `{"findings": [...]}`. A failure is `{"error": {"kind", "message"}}`. Tools annotated `readOnlyHint` change nothing, so call them freely.
+The JSON tools (`gtunnel_list_tunnels`, `gtunnel_get_status`, `gtunnel_run_tunnel`, `gtunnel_expose_tunnel`, `gtunnel_list_accounts`, `gtunnel_doctor`) also return `structuredContent`; the list is `{"tunnels": [...]}` and the doctor `{"findings": [...]}`. A failure is `{"error": {"kind", "message"}}`, and `message` carries the whole cause, such as the line and column of a broken `tunnels.toml`. Tools annotated `readOnlyHint` change nothing, so call them freely.
 
 Routing: for short-lived access (a query, a one-off check) prefer `gtunnel_run_tunnel`: it needs no cleanup. Use `gtunnel_add_tunnel` only for something the user keeps. Choose the TTL for the task at hand, not the maximum.
 
