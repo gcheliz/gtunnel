@@ -3,6 +3,16 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.33](https://github.com/gcheliz/gtunnel/compare/v0.2.32...v0.2.33) - 2026-10-29
+
+### Documentation
+
+- *(usage)* add Homebrew as a way to install Rust ([#252](https://github.com/gcheliz/gtunnel/pull/252))
+
+### Fixed
+
+- *(tui)* pickers cut a long name and show the highlighted one in full ([#253](https://github.com/gcheliz/gtunnel/pull/253))
+
 ## [0.2.32](https://github.com/gcheliz/gtunnel/compare/v0.2.31...v0.2.32) - 2026-10-28
 
 ### Added
