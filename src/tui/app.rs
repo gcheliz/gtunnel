@@ -124,6 +124,13 @@ pub struct TunnelEntry {
 const NOT_MANAGED: &str = "[not managed by gtunnel]";
 
 impl TunnelEntry {
+    /// A stop has been asked for and the reload has not yet shown it land. The
+    /// row is still `Running` until then, so the pending op is the only thing
+    /// that knows the health reading is about to have nothing left to report.
+    pub fn is_stopping(&self) -> bool {
+        self.pending.is_some_and(|p| p.verb == "stop")
+    }
+
     pub fn new(tunnel: PersistentTunnel, status: TunnelStatus, kind: TunnelKind) -> Self {
         Self {
             tunnel,
@@ -795,6 +802,8 @@ pub struct App {
     pub health_stale: bool,
     // The demo carries its own data and has no runtime to reload it from
     pub demo: bool,
+    // The demo's per-row logs and the activity that extends them
+    pub demo_logs: super::demo::DemoLogs,
     // What `c` and `o` reach outside the process, as plain function pointers
     // so a test can swap them without a trait object or a generic on `App`.
     // The defaults are the real clipboard and browser; under test they refuse,
@@ -880,6 +889,7 @@ impl App {
             follow_up_at: None,
             health_stale: false,
             demo: false,
+            demo_logs: Default::default(),
             #[cfg(not(test))]
             clipboard: copy_to_clipboard,
             #[cfg(test)]
@@ -1434,9 +1444,6 @@ impl App {
                         self.set_status(format!("{} is not running", entry.name()));
                         return None;
                     }
-                }
-                if let Some(entry) = self.entries.get_mut(self.selected) {
-                    entry.health = HealthStatus::Unknown;
                 }
                 let is_run = self
                     .selected_entry()

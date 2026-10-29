@@ -3433,14 +3433,14 @@ fn the_design_doc_names_every_colour_the_theme_exports() {
 
 // The row used to say "unhealthy" for a log that said "gcloud auth login"
 // and for a service that restarts every few seconds. Both now say so, in
-// Details, with the one thing to do about it.
+// Metrics, by its own symbol and the one thing to do about it.
 #[test]
-fn details_name_expired_credentials_and_the_command_that_fixes_them() {
+fn metrics_name_expired_credentials_by_symbol_and_the_command_that_fixes_them() {
     let mut app = app_with_two();
     app.entries[0].metrics = Some(crate::probe::TunnelMetrics::default());
     app.entries[0].health = HealthStatus::AuthExpired;
     let text = text_of(&screen(&app, 160, 40)).join("\n");
-    assert!(text.contains("auth expired"), "{text}");
+    assert!(!text.contains("auth expired"), "{text}");
     assert!(text.contains("gcloud auth login"), "{text}");
     assert!(text.contains(HealthStatus::AuthExpired.symbol()), "{text}");
 }
@@ -3453,7 +3453,8 @@ fn details_of_a_stopped_tunnel_say_stopped_not_unknown() {
     app.entries[0].status = TunnelStatus::Stopped;
     app.entries[0].health = HealthStatus::Unknown;
     let text = text_of(&screen(&app, 160, 40)).join("\n");
-    assert!(text.contains("\u{2717} stopped"), "{text}");
+    assert!(text.contains("health \u{25cb}"), "{text}");
+    assert!(!text.contains("stopped"), "{text}");
     assert!(!text.contains("unknown"), "{text}");
 }
 
@@ -3465,13 +3466,13 @@ fn the_stopped_health_is_muted_and_a_running_unknown_is_not_stopped() {
     let span = lines
         .iter()
         .flat_map(|l| l.spans.iter())
-        .find(|s| s.content.contains("stopped"))
+        .find(|s| s.content.contains("\u{25cb}"))
         .expect("a stopped span");
     assert_eq!(span.style.fg, Some(theme::MUTED));
 
     app.entries[0].status = TunnelStatus::Running;
     let text = text_of(&screen(&app, 160, 40)).join("\n");
-    assert!(!text.contains("stopped"), "{text}");
+    assert!(!text.contains("health \u{25cb}"), "{text}");
 }
 
 #[test]
@@ -3480,9 +3481,103 @@ fn an_auth_expired_stopped_tunnel_keeps_its_auth_text() {
     app.entries[0].status = TunnelStatus::Stopped;
     app.entries[0].health = HealthStatus::AuthExpired;
     let text = text_of(&screen(&app, 160, 40)).join("\n");
-    assert!(text.contains("auth expired"), "{text}");
+    assert!(
+        text.contains(&format!("health {}", HealthStatus::AuthExpired.symbol())),
+        "{text}"
+    );
     assert!(text.contains("gcloud auth login"), "{text}");
-    assert!(!text.contains("\u{2717} stopped"), "{text}");
+    assert!(!text.contains("health \u{25cb}"), "{text}");
+}
+
+fn health_text(entry: &TunnelEntry) -> String {
+    super::metrics_lines(entry, 160)
+        .iter()
+        .map(|l| {
+            l.spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+// The icon is the whole reading: the word beside it was the same fact twice,
+// and a stop in flight must not borrow `?` from the cleared verdict.
+#[test]
+fn each_health_state_shows_its_symbol_and_never_its_word() {
+    let mut app = app_with_two();
+    app.entries[0].metrics = Some(crate::probe::TunnelMetrics::default());
+    for (h, word) in [
+        (HealthStatus::Unknown, "unknown"),
+        (HealthStatus::Healthy, "healthy"),
+        (HealthStatus::Unhealthy, "unhealthy"),
+        (HealthStatus::Checking, "checking"),
+        (HealthStatus::AuthExpired, "auth expired"),
+        (HealthStatus::CrashLooping, "crash loop"),
+    ] {
+        app.entries[0].status = TunnelStatus::Running;
+        app.entries[0].health = h;
+        let text = health_text(&app.entries[0]);
+        assert!(
+            text.contains(&format!("health {}", h.symbol())),
+            "{h:?}: {text}"
+        );
+        assert!(!text.contains(word), "{h:?}: {text}");
+    }
+    app.entries[0].health = HealthStatus::Unknown;
+    app.entries[0].status = TunnelStatus::Stopped;
+    let text = health_text(&app.entries[0]);
+    assert!(text.contains("health \u{25cb}"), "{text}");
+    assert!(!text.contains("stopped"), "{text}");
+}
+
+#[test]
+fn health_symbols_take_the_theme_roles() {
+    let mut app = app_with_two();
+    app.entries[0].metrics = Some(crate::probe::TunnelMetrics::default());
+    let colour_of = |entry: &TunnelEntry, symbol: &str| {
+        super::metrics_lines(entry, 160)
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .find(|s| s.content.contains(symbol))
+            .and_then(|s| s.style.fg)
+    };
+    for (h, want) in [
+        (HealthStatus::Healthy, theme::OK),
+        (HealthStatus::Checking, theme::WARN),
+        (HealthStatus::Unknown, theme::WARN),
+        (HealthStatus::Unhealthy, theme::BAD),
+        (HealthStatus::AuthExpired, theme::BAD),
+        (HealthStatus::CrashLooping, theme::BAD),
+    ] {
+        app.entries[0].health = h;
+        assert_eq!(colour_of(&app.entries[0], h.symbol()), Some(want), "{h:?}");
+    }
+}
+
+#[test]
+fn pressing_stop_on_a_running_row_never_shows_a_question_mark() {
+    let mut app = app_with_two();
+    app.entries[0].metrics = Some(crate::probe::TunnelMetrics::default());
+    app.entries[0].status = TunnelStatus::Running;
+    app.entries[0].health = HealthStatus::Healthy;
+    assert!(app.handle_key(key(KeyCode::Char('S'))).is_some());
+    // The row is still `Running` until the reload, which is the point
+    assert_eq!(app.entries[0].status, TunnelStatus::Running);
+    let text = health_text(&app.entries[0]);
+    assert!(!text.contains('?'), "{text}");
+    assert!(text.contains("health \u{25cb}"), "{text}");
+}
+
+#[test]
+fn a_stop_in_flight_on_an_expired_row_still_says_auth_expired() {
+    let mut app = app_with_two();
+    app.entries[0].metrics = Some(crate::probe::TunnelMetrics::default());
+    app.entries[0].health = HealthStatus::AuthExpired;
+    app.handle_key(key(KeyCode::Char('S')));
+    let text = health_text(&app.entries[0]);
+    assert!(text.contains(HealthStatus::AuthExpired.symbol()), "{text}");
 }
 
 // A run's stop time, in its tag and in the details pane
