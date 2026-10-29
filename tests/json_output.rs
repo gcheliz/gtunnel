@@ -440,7 +440,7 @@ fn a_running_run_carries_its_local_port_and_the_probes_health() {
 }
 
 #[test]
-fn a_stopped_tunnel_carries_its_local_port_and_unknown_health() {
+fn a_stopped_tunnel_carries_its_local_port_and_stopped_health() {
     let h = Harness::new();
     let out = h.run(&["list", "--json"]);
     assert!(out.status.success(), "stderr: {}", stderr(&out));
@@ -448,5 +448,5 @@ fn a_stopped_tunnel_carries_its_local_port_and_unknown_health() {
     let db = &val.as_array().unwrap()[0];
     assert_eq!(db["status"], "stopped", "{db}");
     assert_eq!(db["local_port"], 15432, "{db}");
-    assert_eq!(db["health"], "unknown", "{db}");
+    assert_eq!(db["health"], "stopped", "{db}");
 }

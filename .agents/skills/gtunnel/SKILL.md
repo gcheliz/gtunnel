@@ -22,11 +22,11 @@ When executing tunnel operations, select tools according to availability:
 
 ### 1. Primary: Native MCP Tools
 If `gtunnel_*` MCP tools are available in the current environment, prioritize them over CLI commands:
-- `gtunnel_list_tunnels`: List configured tunnels and live runs, each with `status`, `local_port` (`null` on a public tunnel) and `health` (`healthy`, `unhealthy`, `auth_expired` or `unknown`). One call answers whether every tunnel works; call `gtunnel_get_status` only for the pid, restarts or probe latency of one.
+- `gtunnel_list_tunnels`: List configured tunnels and live runs, each with `status`, `local_port` (`null` on a public tunnel) and `health` (`healthy`, `unhealthy`, `auth_expired`, `stopped` or `unknown`). One call answers whether every tunnel works; call `gtunnel_get_status` only for the pid, restarts or probe latency of one.
 - `gtunnel_start_tunnel`: Start a tunnel daemon.
 - `gtunnel_stop_tunnel`: Stop a running tunnel daemon, or a live run.
 - `gtunnel_restart_tunnel`: Restart a tunnel daemon.
-- `gtunnel_get_status`: Inspect `status`, `health` (`healthy`, `unhealthy`, `auth_expired` or `unknown`), process PID, restart count, and active probe latency, for a tunnel or a live run (`"run": true`, with `local_port` and `expires_at`).
+- `gtunnel_get_status`: Inspect `status`, `health` (`healthy`, `unhealthy`, `auth_expired`, `stopped` or `unknown`), process PID, restart count, and active probe latency, for a tunnel or a live run (`"run": true`, with `local_port` and `expires_at`).
 - `gtunnel_get_logs`: Read the last `lines` lines (default 50) of the log of a tunnel or of a run launched by `gtunnel_run_tunnel`. It returns the raw lines: you read the error code in them.
 - `gtunnel_add_tunnel`: Create and register a persistent access tunnel.
 - `gtunnel_run_tunnel`: Open a short-lived access tunnel that closes by itself after `ttl_minutes` (1 to 480, required). Never public. `gtunnel_stop_tunnel` closes it early.

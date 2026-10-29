@@ -3445,6 +3445,46 @@ fn details_name_expired_credentials_and_the_command_that_fixes_them() {
     assert!(text.contains(HealthStatus::AuthExpired.symbol()), "{text}");
 }
 
+// Health is probed only while a tunnel runs, so a stopped row's `Unknown` is
+// not "no answer yet" but "nothing to ask". The row says which it is.
+#[test]
+fn details_of_a_stopped_tunnel_say_stopped_not_unknown() {
+    let mut app = app_with_two();
+    app.entries[0].status = TunnelStatus::Stopped;
+    app.entries[0].health = HealthStatus::Unknown;
+    let text = text_of(&screen(&app, 160, 40)).join("\n");
+    assert!(text.contains("\u{2717} stopped"), "{text}");
+    assert!(!text.contains("unknown"), "{text}");
+}
+
+#[test]
+fn the_stopped_health_is_muted_and_a_running_unknown_is_not_stopped() {
+    let mut app = app_with_two();
+    app.entries[0].status = TunnelStatus::Stopped;
+    let lines = super::metrics_lines(&app.entries[0], 160);
+    let span = lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .find(|s| s.content.contains("stopped"))
+        .expect("a stopped span");
+    assert_eq!(span.style.fg, Some(theme::MUTED));
+
+    app.entries[0].status = TunnelStatus::Running;
+    let text = text_of(&screen(&app, 160, 40)).join("\n");
+    assert!(!text.contains("stopped"), "{text}");
+}
+
+#[test]
+fn an_auth_expired_stopped_tunnel_keeps_its_auth_text() {
+    let mut app = app_with_two();
+    app.entries[0].status = TunnelStatus::Stopped;
+    app.entries[0].health = HealthStatus::AuthExpired;
+    let text = text_of(&screen(&app, 160, 40)).join("\n");
+    assert!(text.contains("auth expired"), "{text}");
+    assert!(text.contains("gcloud auth login"), "{text}");
+    assert!(!text.contains("\u{2717} stopped"), "{text}");
+}
+
 // A run's stop time, in its tag and in the details pane
 mod run_stop_time {
     use super::super::*;

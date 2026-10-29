@@ -189,7 +189,7 @@ pub fn all_tools() -> Vec<ToolDefinition> {
             title: "List tunnels".to_string(),
             annotations: ToolAnnotations::new(true,false,true,false),
             output_schema: Some(list_tunnels_schema()),
-            description: "List all configured tunnels and live short-lived runs (run: true, with expires_at when they have a TTL) for the given or default account, each with its status, local_port (null on a public tunnel) and probed health (healthy, unhealthy, auth_expired or unknown)".to_string(),
+            description: "List all configured tunnels and live short-lived runs (run: true, with expires_at when they have a TTL) for the given or default account, each with its status, local_port (null on a public tunnel) and probed health (healthy, unhealthy, auth_expired, stopped or unknown)".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -269,7 +269,7 @@ pub fn all_tools() -> Vec<ToolDefinition> {
             title: "Get tunnel status".to_string(),
             annotations: ToolAnnotations::new(true,false,true,false),
             output_schema: Some(get_status_schema()),
-            description: "Get detailed runtime status, PID, restarts, health (healthy, unhealthy, auth_expired, unknown) and active TCP probe latency for a tunnel or a live run (a run reports pid, local port and expires_at)".to_string(),
+            description: "Get detailed runtime status, PID, restarts, health (healthy, unhealthy, auth_expired, stopped, unknown) and active TCP probe latency for a tunnel or a live run (a run reports pid, local port and expires_at)".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {

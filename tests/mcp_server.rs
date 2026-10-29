@@ -395,6 +395,16 @@ fn list_tunnels_structured_output_matches_its_schema() {
 }
 
 #[test]
+fn a_stopped_tunnel_reads_stopped_in_list_and_in_get_status() {
+    let h = Harness::new();
+    let rows = json_text(&call(&h, "gtunnel_list_tunnels", "{}"));
+    assert_eq!(rows[0]["health"], "stopped", "{rows}");
+    let s = json_text(&call(&h, "gtunnel_get_status", r#"{"name":"db"}"#));
+    assert_eq!(s["status"], "stopped", "{s}");
+    assert_eq!(s["health"], "stopped", "{s}");
+}
+
+#[test]
 fn list_tunnels_with_no_tunnels_is_an_empty_array() {
     let h = Harness::new();
     fs::write(h.dir.path().join("config/tunnels.toml"), "").unwrap();
@@ -457,7 +467,7 @@ fn json_tool_text_is_unchanged() {
     "unmanaged": false,
     "run": false,
     "local_port": 15432,
-    "health": "unknown"
+    "health": "stopped"
   }
 ]"#;
     assert_eq!(text, expected);
