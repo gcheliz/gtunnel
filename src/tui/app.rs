@@ -819,6 +819,9 @@ pub struct App {
     // Read from the update cache, never fetched here: the TUI thread must not
     // wait on the network, and the header rule only shows what is already known
     pub update: Option<crate::update::UpdateNotice>,
+    // Read from the same cache: the last check ended in an error and none has
+    // succeeded since, so "no notice" does not mean "up to date"
+    pub update_check_failed: bool,
 }
 
 impl App {
@@ -894,6 +897,7 @@ impl App {
             peaks: HashMap::new(),
             flash: None,
             update: None,
+            update_check_failed: false,
         }
     }
 

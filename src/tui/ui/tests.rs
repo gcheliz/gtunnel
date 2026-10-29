@@ -635,6 +635,66 @@ fn no_notice_leaves_the_rule_as_it_was() {
     }
 }
 
+// The plan's check at the width the issue named: the notice must be on
+// screen at 80 columns, not shed to nothing.
+#[test]
+fn the_notice_is_visible_at_eighty_columns() {
+    let mut app = app_with_two();
+    app.update = Some(sample_notice());
+    let buffer = screen(&app, 80, 24);
+    let rule: String = row_chars(&buffer, (ui::HEADER_HEIGHT_FULL - 1) as usize as u16)
+        .iter()
+        .collect();
+    assert!(
+        rule.contains("\u{2191} v9.9.9 \u{b7} gtunnel update"),
+        "{rule:?}"
+    );
+    assert_eq!(rule.chars().count(), 80);
+}
+
+#[test]
+fn a_failed_check_leaves_a_hint_in_the_rule_when_no_notice_shows() {
+    let mut app = app_with_two();
+    app.update_check_failed = true;
+    let buffer = screen(&app, 80, 24);
+    let rule = row_chars(&buffer, (ui::HEADER_HEIGHT_FULL - 1) as usize as u16);
+    let text: String = rule.iter().collect();
+    assert!(text.contains("update check failed"), "{text:?}");
+    assert_eq!(rule.len(), 80);
+    // Never both rules
+    assert_eq!(
+        render_to_string(&app, 80, 24)
+            .matches("update check failed")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn a_notice_outranks_the_failed_check_hint() {
+    let mut app = app_with_two();
+    app.update = Some(sample_notice());
+    app.update_check_failed = true;
+    let text = render_to_string(&app, 120, 30);
+    assert!(text.contains("v9.9.9"), "{text}");
+    assert!(!text.contains("update check failed"), "{text}");
+}
+
+// Like the notice, the hint is dropped whole rather than cut
+#[test]
+fn the_failed_check_hint_sheds_whole_as_the_width_drops() {
+    let hint = "update check failed";
+    assert_eq!(hint.chars().count(), 19);
+    for w in 2..=140usize {
+        let line = ui::rule_line_noting(w, None, true);
+        let text = line_text(&line);
+        assert_eq!(text.chars().count(), w, "width {w}: {text:?}");
+        let wanted = w >= hint.chars().count() + 6 + ui::RULE_LEAD;
+        assert_eq!(text.contains(hint), wanted, "width {w}: {text:?}");
+        assert!(wanted || !text.contains("check"), "width {w}: {text:?}");
+    }
+}
+
 // Under 16 rows there is no header, and the footer rule is the only rule
 // left that can carry it.
 #[test]

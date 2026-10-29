@@ -108,6 +108,7 @@ pub async fn run_tui(initial_account: Option<&str>) -> Result<()> {
     // cache, so what is shown is what an earlier run already learned
     crate::update::spawn_check_if_due();
     app.update = crate::update::available_update();
+    app.update_check_failed = crate::update::last_check_failed();
 
     // Once per session, off the event loop: the TUI only notifies while it is
     // open and no watchdog is running, so someone without one is told how to
@@ -687,6 +688,7 @@ fn schedule(app: &mut App, timers: &mut Timers, tx: &mpsc::UnboundedSender<Msg>)
         // One small file read, so a check that finishes while the TUI is open
         // shows up within a round
         app.update = crate::update::available_update();
+        app.update_check_failed = crate::update::last_check_failed();
         let tx = tx.clone();
         let account = account.clone();
         spawn_round(

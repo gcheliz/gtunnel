@@ -2,7 +2,6 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 pub const REPO: &str = "gcheliz/gtunnel";
-const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
 
 fn parse_version(v: &str) -> (u64, u64, u64) {
     let parts: Vec<u64> = v
@@ -25,6 +24,10 @@ fn is_newer(current: &str, latest: &str) -> bool {
 struct UpdateCache {
     latest_version: String,
     checked_at: u64,
+    // When the last check failed, if it did. A cache written before this field
+    // existed has none, and reads as "never failed"
+    #[serde(default)]
+    failed_at: Option<u64>,
 }
 
 fn cache_path() -> Option<PathBuf> {
@@ -42,6 +45,24 @@ fn write_cache(cache: &UpdateCache) -> Result<()> {
     }
     std::fs::write(path, serde_json::to_string(cache)?)?;
     Ok(())
+}
+
+// Keeps what the last success learned, so a failed check does not erase a
+// notice that is still true. With no cache yet the empty version is never
+// newer than anything, and `checked_at` 0 makes the failure the newer event
+fn record_failure(now: u64) {
+    let cache = match read_cache() {
+        Some(cache) => UpdateCache {
+            failed_at: Some(now),
+            ..cache
+        },
+        None => UpdateCache {
+            latest_version: String::new(),
+            checked_at: 0,
+            failed_at: Some(now),
+        },
+    };
+    let _ = write_cache(&cache);
 }
 
 fn now_secs() -> u64 {
@@ -142,11 +163,18 @@ fn detect_install_method_from_path(exe: &Path) -> InstallMethod {
 pub async fn cmd_update(check_only: bool) -> Result<()> {
     let current = env!("CARGO_PKG_VERSION");
     eprintln!("Checking for updates...");
-    let latest = fetch_latest_version().await?;
+    let latest = match fetch_latest_version().await {
+        Ok(latest) => latest,
+        Err(e) => {
+            record_failure(now_secs());
+            return Err(e);
+        }
+    };
 
     let _ = write_cache(&UpdateCache {
         latest_version: latest.clone(),
         checked_at: now_secs(),
+        failed_at: None,
     });
 
     if !is_newer(current, &latest) {
@@ -208,18 +236,35 @@ pub fn available_update() -> Option<UpdateNotice> {
 }
 
 // A cache dated in the future is not due: a clock that stepped back would
-// otherwise respawn the check on every start
-fn check_due(cache: Option<&UpdateCache>, now: u64) -> bool {
+// otherwise respawn the check on every start. A failure counts as a check for
+// this: an offline laptop would otherwise ask GitHub on every start
+fn check_due(cache: Option<&UpdateCache>, now: u64, interval: std::time::Duration) -> bool {
     match cache {
-        Some(cache) => now.saturating_sub(cache.checked_at) >= CHECK_INTERVAL_SECS,
+        Some(cache) => {
+            let last = cache.checked_at.max(cache.failed_at.unwrap_or(0));
+            now.saturating_sub(last) >= interval.as_secs()
+        }
         None => true,
     }
 }
 
-/// Starts `update --check` detached when the cache is missing or a day old.
-/// It never waits for it: the answer lands in the cache for the next read.
+// Newer than the last success, so one good check clears the hint
+fn check_failed(cache: &UpdateCache) -> bool {
+    cache.failed_at.is_some_and(|at| at > cache.checked_at)
+}
+
+/// Whether the last check ended in an error and nothing has succeeded since.
+/// A file read, like `available_update`, for the same reason.
+pub fn last_check_failed() -> bool {
+    read_cache().is_some_and(|cache| check_failed(&cache))
+}
+
+/// Starts `update --check` detached when the cache is missing or older than
+/// `update_check_interval`. It never waits for it: the answer lands in the
+/// cache for the next read.
 pub fn spawn_check_if_due() {
-    if !check_due(read_cache().as_ref(), now_secs()) {
+    let interval = crate::settings::current().update_check_interval;
+    if !check_due(read_cache().as_ref(), now_secs(), interval) {
         return;
     }
     if let Ok(exe) = std::env::current_exe() {
@@ -561,17 +606,72 @@ mod tests {
         assert_eq!(notice_for("1.2.3", "1.2.2", &InstallMethod::Homebrew), None);
     }
 
-    #[test]
-    fn a_missing_or_day_old_cache_is_due_and_a_fresh_one_is_not() {
-        let cache = |checked_at| UpdateCache {
+    fn cache_at(checked_at: u64, failed_at: Option<u64>) -> UpdateCache {
+        UpdateCache {
             latest_version: "9.9.9".to_string(),
             checked_at,
-        };
-        let now = 10 * CHECK_INTERVAL_SECS;
-        assert!(check_due(None, now));
-        assert!(check_due(Some(&cache(now - CHECK_INTERVAL_SECS)), now));
-        assert!(!check_due(Some(&cache(now - CHECK_INTERVAL_SECS + 1)), now));
+            failed_at,
+        }
+    }
+
+    #[test]
+    fn a_missing_or_stale_cache_is_due_and_a_fresh_one_is_not() {
+        let hours = |h: u64| std::time::Duration::from_secs(h * 3600);
+        let now = 100 * 3600;
+        assert!(check_due(None, now, hours(6)));
+        assert!(check_due(
+            Some(&cache_at(now - 6 * 3600, None)),
+            now,
+            hours(6)
+        ));
+        assert!(!check_due(
+            Some(&cache_at(now - 6 * 3600 + 1, None)),
+            now,
+            hours(6)
+        ));
+        // The same cache is due under a shorter interval and not under a longer one
+        let cache = cache_at(now - 3 * 3600, None);
+        assert!(check_due(Some(&cache), now, hours(1)));
+        assert!(!check_due(Some(&cache), now, hours(24)));
         // A clock that stepped back must not read as a check due forever
-        assert!(!check_due(Some(&cache(now + 5)), now));
+        assert!(!check_due(Some(&cache_at(now + 5, None)), now, hours(6)));
+    }
+
+    #[test]
+    fn a_recent_failure_postpones_the_next_check_like_a_success() {
+        let interval = std::time::Duration::from_secs(6 * 3600);
+        let now = 100 * 3600;
+        let failed = cache_at(now - 24 * 3600, Some(now - 3600));
+        assert!(!check_due(Some(&failed), now, interval));
+        let long_ago = cache_at(now - 24 * 3600, Some(now - 7 * 3600));
+        assert!(check_due(Some(&long_ago), now, interval));
+    }
+
+    #[test]
+    fn a_failure_newer_than_the_last_success_is_a_failed_check_and_a_success_clears_it() {
+        assert!(check_failed(&cache_at(100, Some(200))));
+        assert!(!check_failed(&cache_at(300, Some(200))));
+        assert!(!check_failed(&cache_at(100, None)));
+    }
+
+    #[test]
+    fn a_cache_from_before_failures_were_recorded_still_reads() {
+        let old = r#"{"latest_version":"1.2.3","checked_at":1700000000}"#;
+        let cache: UpdateCache = serde_json::from_str(old).expect("an old cache parses");
+        assert_eq!(cache.latest_version, "1.2.3");
+        assert_eq!(cache.failed_at, None);
+        assert!(!check_failed(&cache));
+    }
+
+    #[test]
+    fn a_failure_with_no_cache_yet_is_a_failed_check_and_no_notice() {
+        let blank = UpdateCache {
+            latest_version: String::new(),
+            checked_at: 0,
+            failed_at: Some(500),
+        };
+        assert!(check_failed(&blank));
+        let binary = InstallMethod::Binary(PathBuf::from("/usr/local/bin/gtunnel"));
+        assert_eq!(notice_for("0.1.0", &blank.latest_version, &binary), None);
     }
 }

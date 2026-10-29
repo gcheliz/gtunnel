@@ -554,9 +554,10 @@ When a newer release is cached, the header's closing rule carries it at its righ
 |---|---|
 | Where | the rule under the header; the rule above the footer when the header is hidden (under 16 rows) or is the one-line form |
 | What it says | `↑ v<latest> · <command>`: `brew upgrade gtunnel` for a Homebrew install, `gtunnel update` otherwise |
-| Where it comes from | the daily background `update --check` (see [update](commands.md#update)); the TUI starts one when the cache is missing or a day old, and re-reads the cache every minute |
+| Where it comes from | the background `update --check` (see [update](commands.md#update)); the TUI starts one when the cache is missing or older than `update_check_interval` (6 hours by default), and re-reads the cache every minute |
+| When the check fails | the same place says `update check failed` in the muted colour, only while no update is showing, until a check succeeds. Silence then means "not known", not "up to date" |
 | Waits on the network | never; it shows what an earlier check already learned, so the first run after a release shows nothing until a check finishes |
-| When it narrows | the command goes first, leaving `↑ v<latest>`, then the whole notice; a step shows only when at least 8 dashes stay before it, and a string is never cut |
+| When it narrows | the command goes first, leaving `↑ v<latest>`, then the whole notice (the failed-check hint goes whole); a step shows only when at least 8 dashes stay before it, and a string is never cut |
 | `gtunnel demo` | shows no notice and starts no check |
 
 Details repeats the project under the `target` row it qualifies. The header carries it

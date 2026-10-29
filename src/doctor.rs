@@ -2313,6 +2313,23 @@ mod tests {
     }
 
     #[test]
+    fn doctor_names_the_update_check_interval_the_environment_overrides() {
+        let findings = setting_override_findings(&Config::default(), &|name| {
+            (name == "GTUNNEL_UPDATE_CHECK_INTERVAL").then(|| "1h".to_string())
+        });
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        let text = findings[0].describe();
+        for part in [
+            "update_check_interval",
+            "1h",
+            "'6h'",
+            "Unset GTUNNEL_UPDATE_CHECK_INTERVAL",
+        ] {
+            assert!(text.contains(part), "{part}: {text}");
+        }
+    }
+
+    #[test]
     fn doctor_names_a_watch_key_the_environment_overrides() {
         let findings = setting_override_findings(&Config::default(), &|name| {
             (name == "GTUNNEL_WATCH_INTERVAL").then(|| "10s".to_string())

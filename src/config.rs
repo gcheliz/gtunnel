@@ -78,7 +78,7 @@ pub struct Config {
     // `accounts` because toml writes a value before a table.
     #[serde(default)]
     pub log_level: LogLevel,
-    // The five values below are kept raw (a duration string, a flag, a command
+    // The six values below are kept raw (a duration string, a flag, a command
     // line) and checked by `settings::resolve`, for the reason `RestartConfig`
     // is: the reader of a bad one needs the key's name, not a line number.
     // Like `[restart]` they are always written, so the file shows what there
@@ -91,6 +91,8 @@ pub struct Config {
     pub service_call_timeout: String,
     #[serde(default = "settings::default_list_probe_timeout")]
     pub list_probe_timeout: String,
+    #[serde(default = "settings::default_update_check_interval")]
+    pub update_check_interval: String,
     // Empty is "no editor chosen": TOML has no null, and an absent key would
     // hide the setting from the one place a person looks for it
     #[serde(default)]
@@ -129,6 +131,7 @@ impl Default for Config {
             discovery: settings::default_discovery(),
             service_call_timeout: settings::default_service_call_timeout(),
             list_probe_timeout: settings::default_list_probe_timeout(),
+            update_check_interval: settings::default_update_check_interval(),
             editor: String::new(),
             notifications: NotifyConfig::default(),
             restart: RestartConfig::default(),
@@ -916,7 +919,7 @@ mod tests {
         });
     }
 
-    const DEFAULT_SETTINGS: &str = "start_deadline = \"20s\"\ndiscovery = true\nservice_call_timeout = \"10s\"\nlist_probe_timeout = \"500ms\"\neditor = \"\"\n\n[notifications]\nenabled = true\n";
+    const DEFAULT_SETTINGS: &str = "start_deadline = \"20s\"\ndiscovery = true\nservice_call_timeout = \"10s\"\nlist_probe_timeout = \"500ms\"\nupdate_check_interval = \"6h\"\neditor = \"\"\n\n[notifications]\nenabled = true\n";
 
     #[test]
     fn init_on_a_fresh_dir_writes_every_settings_key_at_its_default() {
@@ -953,6 +956,7 @@ mod tests {
                 "discovery = true",
                 "service_call_timeout = \"10s\"",
                 "list_probe_timeout = \"500ms\"",
+                "update_check_interval = \"6h\"",
             ] {
                 assert!(text.contains(filled), "{filled}: {text}");
             }
@@ -1279,7 +1283,7 @@ mod tests {
 
     #[test]
     fn an_account_without_credential_file_round_trips_unchanged() {
-        let text = "selected_account = \"dev\"\nlog_level = \"info\"\nstart_deadline = \"20s\"\ndiscovery = true\nservice_call_timeout = \"10s\"\nlist_probe_timeout = \"500ms\"\neditor = \"\"\n\n[notifications]\nenabled = true\nup = false\ndegraded = true\nrecovered = true\nfailed = true\n\n[restart]\nmax_restarts = 5\nwindow = \"10m\"\nmin_uptime = \"60s\"\nbase_backoff = \"10s\"\nmax_backoff = \"5m\"\n\n[watch]\nprobe_timeout = \"3s\"\ndegraded_after = 2\ninterval = \"30s\"\n\n[logs]\nmax_size = \"8MiB\"\nkeep_size = \"2MiB\"\nlines_per_minute = 60\nauth_exit_window = \"30s\"\n\n[gcp]\ntoken_ttl = \"45m\"\noperation_timeout = \"10m\"\nhttp_timeout = \"30s\"\npoll_interval = \"2s\"\nlock_deadline = \"5s\"\nfingerprint_attempts = 5\n\n[[accounts]]\nname = \"dev\"\ngcloud_configuration = \"work\"\nproject = \"example-dev-1a2b\"\ndefault_zone = \"europe-west1-b\"\n";
+        let text = "selected_account = \"dev\"\nlog_level = \"info\"\nstart_deadline = \"20s\"\ndiscovery = true\nservice_call_timeout = \"10s\"\nlist_probe_timeout = \"500ms\"\nupdate_check_interval = \"6h\"\neditor = \"\"\n\n[notifications]\nenabled = true\nup = false\ndegraded = true\nrecovered = true\nfailed = true\n\n[restart]\nmax_restarts = 5\nwindow = \"10m\"\nmin_uptime = \"60s\"\nbase_backoff = \"10s\"\nmax_backoff = \"5m\"\n\n[watch]\nprobe_timeout = \"3s\"\ndegraded_after = 2\ninterval = \"30s\"\n\n[logs]\nmax_size = \"8MiB\"\nkeep_size = \"2MiB\"\nlines_per_minute = 60\nauth_exit_window = \"30s\"\n\n[gcp]\ntoken_ttl = \"45m\"\noperation_timeout = \"10m\"\nhttp_timeout = \"30s\"\npoll_interval = \"2s\"\nlock_deadline = \"5s\"\nfingerprint_attempts = 5\n\n[[accounts]]\nname = \"dev\"\ngcloud_configuration = \"work\"\nproject = \"example-dev-1a2b\"\ndefault_zone = \"europe-west1-b\"\n";
         let cfg: Config = toml::from_str(text).expect("parse");
         assert_eq!(cfg.accounts[0].credential_file, None);
         let again = toml::to_string_pretty(&cfg).expect("serialize");
