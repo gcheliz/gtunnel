@@ -3,6 +3,16 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.35](https://github.com/gcheliz/gtunnel/compare/v0.2.34...v0.2.35) - 2026-10-29
+
+### Added
+
+- *(config)* the wait for one list probe is a setting ([#260](https://github.com/gcheliz/gtunnel/pull/260))
+
+### Documentation
+
+- *(site)* the hero says what gtunnel does for a reader who has not seen it ([#259](https://github.com/gcheliz/gtunnel/pull/259))
+
 ## [0.2.34](https://github.com/gcheliz/gtunnel/compare/v0.2.33...v0.2.34) - 2026-10-29
 
 ### Fixed
