@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.39](https://github.com/gcheliz/gtunnel/compare/v0.2.38...v0.2.39) - 2026-10-29
+
+### Fixed
+
+- *(cli)* end quietly when the reader of the output has gone ([#285](https://github.com/gcheliz/gtunnel/pull/285))
+
 ## [0.2.38](https://github.com/gcheliz/gtunnel/compare/v0.2.37...v0.2.38) - 2026-10-29
 
 ### Documentation
