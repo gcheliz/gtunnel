@@ -355,7 +355,8 @@ pub fn parse_launchctl_print(text: &str) -> (TunnelStatus, RuntimeInfo) {
         } else if let Some(rest) = line.strip_prefix("runs = ") {
             runs = rest.trim().parse::<u32>().unwrap_or(0);
         } else if let Some(rest) = line.strip_prefix("last exit code = ") {
-            last_exit = rest.trim().parse::<i32>().ok();
+            // `78: EX_CONFIG` names the code; only the number before the colon is it
+            last_exit = rest.split(':').next().and_then(|n| n.trim().parse().ok());
         }
     }
 

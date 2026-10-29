@@ -504,7 +504,8 @@ shows the operation running (`add sandbox`) until its result replaces it.
 Every form field has a line under its label saying what the value is for, and the title counts
 the steps: `New account 1/2`, `Edit account 2/2`, `New access tunnel 3/5`, `New public URL 2/3`.
 The tunnel edit dialog labels its value `Ports (remote:local):` for Access and `Local target:`
-for Expose.
+for Expose. A new local port meets the rules `add` applies: not 0, not another tunnel's, not
+a live run's and not bound on the machine; an empty local target is refused.
 
 `e` opens a chooser:
 
