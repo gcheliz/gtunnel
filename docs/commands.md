@@ -341,8 +341,8 @@ $ gtunnel list --json
 | `health` | string | `healthy`, `unhealthy`, `auth_expired` or `unknown` |
 
 Only a running row with a local port is probed, and every such row is probed at once, so
-`list --json` waits at most about 750 ms however many tunnels run: one 500 ms probe, plus
-250 ms to read the log on a silent close. A stopped tunnel, a
+`list --json` waits at most about 750 ms however many tunnels run: one probe (500 ms, or
+`list_probe_timeout`), plus 250 ms to read the log on a silent close. A stopped tunnel, a
 public one and an unmanaged one are `unknown`. `gtunnel_list_tunnels` returns the same rows
 less the unmanaged ones, so its `unmanaged` is always `false`.
 

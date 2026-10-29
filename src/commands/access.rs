@@ -872,18 +872,17 @@ fn access_port(spec: &TunnelSpec) -> Option<u16> {
     }
 }
 
-/// The wait for one probe to connect and to read an answer. `list` runs its
-/// probes at once, so it waits one probe's worth however many tunnels are
-/// running; a silent close adds the probe's settle time to read the log.
-pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
-
 /// The round trip of a probe of a local tunnel port, or `None` without an
 /// answer. `log` is read to tell a refusal from a silent close; no log to read
 /// means a silent close is taken as an answer.
 pub(crate) async fn probe_local(local_port: u16, log: &std::path::Path) -> Option<u128> {
-    crate::probe::probe_tunnel(&format!("127.0.0.1:{local_port}"), PROBE_TIMEOUT, log)
-        .await
-        .map(|d| d.as_millis())
+    crate::probe::probe_tunnel(
+        &format!("127.0.0.1:{local_port}"),
+        crate::settings::current().list_probe_timeout,
+        log,
+    )
+    .await
+    .map(|d| d.as_millis())
 }
 
 /// A probe that got no answer is named by the log: expired credentials are

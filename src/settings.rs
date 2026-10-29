@@ -29,6 +29,17 @@ pub fn default_service_call_timeout() -> String {
     humantime::format_duration(crate::proc::SERVICE_BOUND).to_string()
 }
 
+/// The wait for one `list` or TUI probe to connect and read an answer. Short
+/// because `list` probes every running tunnel at once and so waits one
+/// probe's worth however many there are; a silent close adds the probe's
+/// settle time to read the log. Not `[watch] probe_timeout`, which is the
+/// watchdog's wait and is generous because a false trip costs a restart.
+pub const LIST_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
+
+pub fn default_list_probe_timeout() -> String {
+    humantime::format_duration(LIST_PROBE_TIMEOUT).to_string()
+}
+
 pub fn default_discovery() -> bool {
     true
 }
@@ -169,6 +180,11 @@ const SERVICE_CALL_TIMEOUT_KEY: Key = Key {
     var: "GTUNNEL_SERVICE_CALL_TIMEOUT",
     legacy: Some("GTUNNEL_SERVICE_BOUND_MS"),
 };
+const LIST_PROBE_TIMEOUT_KEY: Key = Key {
+    name: "list_probe_timeout",
+    var: "GTUNNEL_LIST_PROBE_TIMEOUT",
+    legacy: None,
+};
 const DISCOVERY_KEY: Key = Key {
     name: "discovery",
     var: "GTUNNEL_DISCOVERY",
@@ -255,6 +271,7 @@ const EDITOR_KEY: Key = Key {
 pub struct Settings {
     pub start_deadline: Duration,
     pub service_call_timeout: Duration,
+    pub list_probe_timeout: Duration,
     pub discovery: bool,
     pub notifications: bool,
     pub watch_probe_timeout: Duration,
@@ -511,6 +528,14 @@ pub fn resolve(config: &Config, env: EnvFn) -> Result<Resolved> {
         &config.service_call_timeout,
         &mut overrides,
     )?;
+    let list_probe_timeout = plain_key(
+        env,
+        &LIST_PROBE_TIMEOUT_KEY,
+        &config.list_probe_timeout,
+        parse_duration,
+        shown,
+        &mut overrides,
+    )?;
     let discovery = switch_key(env, &DISCOVERY_KEY, config.discovery, &mut overrides)?;
     let notifications = switch_key(
         env,
@@ -628,6 +653,7 @@ pub fn resolve(config: &Config, env: EnvFn) -> Result<Resolved> {
         settings: Settings {
             start_deadline,
             service_call_timeout,
+            list_probe_timeout,
             discovery,
             notifications,
             watch_probe_timeout,
@@ -908,6 +934,63 @@ mod tests {
                 ("editor", "GTUNNEL_EDITOR"),
             ]
         );
+    }
+
+    #[test]
+    fn the_list_probe_wait_defaults_to_what_the_constant_was() {
+        let s = settings_of("", &[]);
+        assert_eq!(s.list_probe_timeout, Duration::from_millis(500));
+    }
+
+    #[test]
+    fn the_file_sets_the_list_probe_wait() {
+        let s = settings_of("list_probe_timeout = \"1s\"\n", &[]);
+        assert_eq!(s.list_probe_timeout, Duration::from_secs(1));
+    }
+
+    #[test]
+    fn a_variable_beats_the_list_probe_wait_in_the_file_and_doctor_can_name_it() {
+        let r = resolve_with(
+            "list_probe_timeout = \"1s\"\n",
+            &[("GTUNNEL_LIST_PROBE_TIMEOUT", "2s")],
+        )
+        .expect("resolves");
+        assert_eq!(r.settings.list_probe_timeout, Duration::from_secs(2));
+        assert_eq!(
+            r.overrides,
+            vec![Override {
+                key: "list_probe_timeout",
+                variable: "GTUNNEL_LIST_PROBE_TIMEOUT",
+                file: "1s".to_string(),
+                effective: "2s".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_bad_list_probe_variable_is_a_usage_error_naming_it() {
+        for value in ["soon", "0s", "-1", "0"] {
+            let err = resolve_with("", &[("GTUNNEL_LIST_PROBE_TIMEOUT", value)]).expect_err(value);
+            let (code, text) = exit_and_text(&err);
+            assert_eq!(code, 2, "{value}: {text}");
+            assert!(
+                text.contains("GTUNNEL_LIST_PROBE_TIMEOUT"),
+                "{value}: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bad_list_probe_file_value_is_a_usage_error_naming_the_key() {
+        for text in [
+            "list_probe_timeout = \"0s\"\n",
+            "list_probe_timeout = \"x\"\n",
+        ] {
+            let err = resolve_with(text, &[]).expect_err(text);
+            let (code, msg) = exit_and_text(&err);
+            assert_eq!(code, 2, "{msg}");
+            assert!(msg.contains("list_probe_timeout"), "{msg}");
+        }
     }
 
     #[test]
