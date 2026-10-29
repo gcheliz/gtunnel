@@ -321,7 +321,9 @@ mod tests {
     async fn a_run_past_min_uptime_resets_the_count() {
         let dir = tempfile::tempdir().expect("tempdir");
         let history = dir.path().join("com.gtunnel.dev.db.restarts");
-        let budget = tiny(2, Duration::from_millis(300));
+        // A fast failure must stay under min_uptime even on a loaded runner, so
+        // the bound is seconds wide, not milliseconds
+        let budget = tiny(2, Duration::from_secs(2));
         run_once(dir.path(), "exit 1", budget).await;
         run_once(dir.path(), "exit 1", budget).await;
         assert_eq!(
@@ -332,7 +334,7 @@ mod tests {
             2
         );
         // It worked for longer than min_uptime, then died
-        assert_eq!(run_once(dir.path(), "sleep 1; exit 1", budget).await, 1);
+        assert_eq!(run_once(dir.path(), "sleep 3; exit 1", budget).await, 1);
         assert_eq!(std::fs::read_to_string(&history).expect("history"), "");
         assert_eq!(
             run_once(dir.path(), "exit 1", budget).await,

@@ -476,8 +476,21 @@ mod tests {
 
         #[tokio::test]
         async fn a_child_that_ignores_sigterm_is_killed_after_the_grace() {
-            let (mut child, pgid) = spawn_sh(r#"trap "" TERM; while :; do sleep 1; done"#);
-            tokio::time::sleep(Duration::from_millis(300)).await;
+            let dir = tempfile::tempdir().unwrap();
+            let ready = dir.path().join("ready");
+            let (mut child, pgid) = spawn_sh(&format!(
+                r#"trap "" TERM; : > {}; while :; do sleep 1; done"#,
+                ready.display()
+            ));
+            // The file appears only once the trap is installed; a fixed sleep
+            // let TERM land first on a loaded machine and end the child unkilled
+            for _ in 0..100 {
+                if ready.exists() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            assert!(ready.exists(), "sh never installed its trap");
             let started = std::time::Instant::now();
             let status = stop_group(&mut child, pgid, SHORT).await.expect("stop");
             let took = started.elapsed();
