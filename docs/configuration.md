@@ -259,33 +259,23 @@ The order is resolved in one place (`src/settings.rs`). A bad variable stops a c
 exit 2 before it runs. The supervisor is exempt, because it must not die of a typo and restart
 into it: it falls back to the file with the environment, then the file alone, then the defaults.
 
-Sizes are bytes (`1048576`) or a number with `B`, `KiB`, `MiB` or `GiB`; there are no decimal
-units, so `8MB` is refused instead of meaning two things. A `keep_size` that is not below
-`max_size` fails with exit 2 naming both keys, and the variable that set either.
-`token_ttl` is how long gtunnel reuses an access token before asking gcloud for another; Google
-issues them for an hour, so a value past `1h` makes requests fail with 401 until it lapses.
-`lock_deadline` and `fingerprint_attempts` sit under `[gcp]` for want of a section of their own:
-the first is how long a command waits for the lock another gtunnel holds on a file it is writing,
-the second how many times a change to a URL map or named port is redone after a concurrent edit.
-`list_probe_timeout` is the wait for one probe of a running tunnel's local port, in `list` and
-the MCP list and status tools; the TUI's own probes keep a fixed 2 seconds. `list` probes every tunnel at once, so it waits one probe's worth however many tunnels
-run; a longer value helps a slow far end and makes `list` slower when one tunnel is silent. It is
-not `watch.probe_timeout` (3s), which is how long the watchdog waits before it counts a probe as
-failed.
-`update_check_interval` paces the background release check described under
-[update](commands.md#update). The tunnels' file-descriptor limit (4096) has no key: it is checked at compile time
-(above 256, at most the kernel's 61440), it is written into the launchd plist and the systemd
-unit, and a change needs a reinstall of every service, so a value in `config.toml` would not
-reach a running tunnel.
-Durations are `humantime` text (`500ms`, `20s`, `1m30s`, `1h30m`). Booleans take `true`, `false`, `yes`,
-`no`, `on`, `off`, `1` or `0`. The older variables keep working: `GTUNNEL_START_DEADLINE_MS` and
-`GTUNNEL_SERVICE_BOUND_MS` are whole milliseconds above zero, and `GTUNNEL_NO_DISCOVERY` and
-`GTUNNEL_NO_NOTIFY` turn the feature off when set to anything but empty or `0`. When both
-spellings of one key are set the plain one wins. An empty variable counts as unset.
+| Value | Rule |
+|---|---|
+| Durations | `humantime` text: `500ms`, `20s`, `1m30s`, `1h30m` |
+| Booleans | `true`, `false`, `yes`, `no`, `on`, `off`, `1` or `0` |
+| Sizes | bytes (`1048576`) or a number with `B`, `KiB`, `MiB` or `GiB`; no decimal units, so `8MB` is refused. A `keep_size` not below `max_size` fails with exit 2 naming both keys and the variable that set either |
+| Older variables | `GTUNNEL_START_DEADLINE_MS` and `GTUNNEL_SERVICE_BOUND_MS` are whole milliseconds above zero; `GTUNNEL_NO_DISCOVERY` and `GTUNNEL_NO_NOTIFY` turn the feature off when set to anything but empty or `0`. When both spellings are set the plain one wins. An empty variable counts as unset |
 
-A bad `config.toml` value fails every command with exit 2 naming the key; a bad variable fails
-with exit 2 naming the variable. The older variables are checked now too, where they used to be
-ignored when they did not parse:
+| Key | What to know |
+|---|---|
+| `token_ttl` | how long an access token is reused; Google issues them for an hour, so a value past `1h` gets 401s until it lapses |
+| `lock_deadline`, `fingerprint_attempts` | under `[gcp]` for want of a section of their own: the wait for a lock another gtunnel holds on a file, and the redos of a URL map or named port change after a concurrent edit |
+| `list_probe_timeout` | one probe of a running tunnel's local port, in `list` and the MCP list and status tools; the TUI's probes keep a fixed 2 seconds. `list` probes all tunnels at once, so it waits one probe however many run. Longer helps a slow far end and slows `list` when a tunnel is silent. Not `watch.probe_timeout` (3s), the watchdog's wait |
+| `update_check_interval` | paces the background release check of [update](commands.md#update) |
+| File-descriptor limit (4096) | no key: checked at compile time (above 256, at most the kernel's 61440) and written into the plist and the unit, so a change needs every service reinstalled and a file value would not reach a running tunnel |
+
+A bad `config.toml` value fails every command with exit 2 naming the key; a bad variable,
+older spellings included, fails with exit 2 naming the variable:
 
 ```
 $ GTUNNEL_START_DEADLINE=soon gtunnel list
@@ -293,8 +283,8 @@ Error: GTUNNEL_START_DEADLINE: 'soon' is not a duration like 30s or 1m (expected
 ```
 
 `editor` ranks below `$VISUAL` and `$EDITOR`: `GTUNNEL_EDITOR`, then `$VISUAL`, then
-`$EDITOR`, then the file, then `vi`. A person who set `$EDITOR` in a profile is not overruled by
-a key written once.
+`$EDITOR`, then the file, then `vi`, so a profile's `$EDITOR` is not overruled by a key written
+once.
 
 `gtunnel init` writes all of these at their defaults, with `editor = ""` for none chosen, so the
 file shows what can be tuned. It adds only the keys that are missing and never changes a value
@@ -385,20 +375,21 @@ $ GTUNNEL_RESTART_WINDOW=soon gtunnel list
 Error: GTUNNEL_RESTART_WINDOW: 'soon' is not a duration (expected number at 0)
 ```
 
-A supervisor reads the budget once, when it starts. A launchd or systemd job does not see your
-shell, so the `GTUNNEL_RESTART_*` variables set when a tunnel is started or installed are
-written into its service definition; a variable exported later reaches it on the next
-`start` or `restart`. Cost: a tunnel that needs longer than `min_uptime` to come up and keeps
-failing is judged fast-failing.
+A supervisor reads the budget once, at start. A launchd or systemd job does not see your shell,
+so the `GTUNNEL_RESTART_*` variables set at start or install are written into its service
+definition; one exported later arrives on the next `start` or `restart`. Cost: a tunnel that
+needs longer than `min_uptime` to come up and keeps failing is judged fast-failing.
 
-A tunnel installed before this feature has no `--crash-marker` in its definition. The first
-command after an upgrade compares every installed definition with the one the new binary
-writes, and rewrites each that differs. A running tunnel is restarted so it reads the new
-definition, which drops its connections for a moment; a stopped tunnel stays stopped and its
-log is left alone. One line on stderr names what was reinstalled, and a failure names the
-service and the reason without changing the exit status. A tunnel whose service was never
-installed, a definition that already matches, and any run with `GTUNNEL_CONFIG_DIR` set are
-skipped, so a second run does nothing. A definition counts as out of date only when its argument list differs in shape or its binary no longer exists; the values of `--log-level` and `GTUNNEL_*`, which come from whichever shell ran the command, are ignored, so exporting `GTUNNEL_LOG_LEVEL` for one command restarts nothing.
+The first command after an upgrade compares each installed service definition with the one
+the new binary writes, and rewrites each that differs, such as one without `--crash-marker`.
+
+| Case | Result |
+|---|---|
+| A running tunnel | restarted to read the new definition, which drops its connections for a moment |
+| A stopped tunnel | stays stopped, its log untouched |
+| Reporting | one line on stderr names what was reinstalled; a failure names the service and the reason without changing the exit status |
+| Skipped | a tunnel whose service was never installed, a definition that already matches, any run with `GTUNNEL_CONFIG_DIR` set; so a second run does nothing |
+| Out of date means | the argument list differs in shape, or the binary no longer exists. The values of `--log-level` and `GTUNNEL_*` come from the calling shell and are ignored, so exporting `GTUNNEL_LOG_LEVEL` for one command restarts nothing |
 
 ## Environment
 

@@ -84,9 +84,8 @@ creates no further rule. Resource names are in
 | `gt-<acct>-iap-ssh` | `tcp:22` | `35.235.240.0/20`, IAP |
 | `gt-<acct>-lb-hc` | `tcp:30000-30999`, the relay ports | `130.211.0.0/22` and `35.191.0.0/16`, the load balancer and its health checkers |
 
-An Expose tunnel that returns 502 with no error in the log is usually the second rule: the
-health check cannot reach the relay port, so the backend has no healthy instance. A rule on
-the same network that admits `30000-30999` from elsewhere skips the load balancer, and with
+A 502 with no error in the log usually means the second rule is missing:
+[IAP firewall](troubleshooting.md#iap-firewall). A rule on the same network that admits `30000-30999` from elsewhere skips the load balancer, and with
 `--private` the sign-in too: [The relay's firewall is yours to close](commands.md#the-relays-firewall-is-yours-to-close).
 
 ## CI

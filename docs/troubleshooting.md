@@ -29,21 +29,17 @@ a working install, so installation problems come first.
 
 ### `cargo install gtunnel` installed something else
 
-`gtunnel` on crates.io is an unrelated crate by another author, published in 2022. It is a
-tcp-over-grpc proxy and has nothing to do with this project. Installing it is harmless but
-useless, and it leaves two foreign binaries behind:
+`gtunnel` on crates.io is an unrelated tcp-over-grpc proxy by another author, published in
+2022. Installing it is harmless but leaves two foreign binaries behind:
 
 ```
 $ ls ~/.cargo/bin
 gtunnel  gtunnel-client  gtunnel-server
 ```
 
-`gtunnel-client` and `gtunnel-server` are the stranger's. Your own `gtunnel`, if you have
-one, is untouched — that crate ships neither binary under that name, which is the only
-reason a bare `cargo install` does not overwrite it.
-
-If you also have a real gtunnel, cargo now has two packages under one name and refuses to
-guess which you mean:
+`gtunnel-client` and `gtunnel-server` are the other crate's; your own `gtunnel` is untouched,
+because that crate ships no binary under that name. With a real gtunnel installed too, cargo
+has two packages under one name and refuses to guess:
 
 ```
 $ cargo uninstall gtunnel
@@ -53,8 +49,7 @@ help: re-run this command with one of the following specifications
   registry+https://github.com/rust-lang/crates.io-index#gtunnel@0.1.0
 ```
 
-That error is the useful part: it prints both specifications, and the one to remove is
-always the `registry+` line. Pass it verbatim, quoted, because it contains a `#`:
+Remove the `registry+` line, verbatim and quoted, because it contains a `#`:
 
 ```
 $ cargo uninstall 'registry+https://github.com/rust-lang/crates.io-index#gtunnel@0.1.0'
@@ -62,8 +57,8 @@ $ cargo uninstall 'registry+https://github.com/rust-lang/crates.io-index#gtunnel
     Removing /Users/you/.cargo/bin/gtunnel-server
 ```
 
-With no real gtunnel installed there is nothing to disambiguate and a bare
-`cargo uninstall gtunnel` works. Either way, install the right one afterwards:
+With no real gtunnel installed, a bare `cargo uninstall gtunnel` works. Then install the right
+one:
 
 ```
 cargo install --git https://github.com/gcheliz/gtunnel --force
@@ -72,15 +67,10 @@ cargo install --git https://github.com/gcheliz/gtunnel --force
 `cargo install --list` shows what is left. The entry you want names a `git+` or `path+`
 source, never `registry+https://github.com/rust-lang/crates.io-index`.
 
-A v0.1.0 binary is the usual way here: its `gtunnel update` printed `cargo install gtunnel`
-for a cargo-installed copy. Current versions replace a cargo-installed binary themselves, as
-they do a download, and point only a Homebrew install at `brew upgrade gtunnel`.
-
 ### `gtunnel --version` reports an older version than the latest release
 
-A binary reports the version its source tree carried when it was compiled, not the newest
-one published. A `cargo install --path .` from a checkout that is behind `main` produces
-exactly this, and nothing about it is broken.
+A binary reports the version of the source it was compiled from. A `cargo install --path .`
+from a checkout behind `main` does this, and nothing is broken.
 
 | Check | Command | What it means |
 |---|---|---|
@@ -139,7 +129,7 @@ emptied when its tunnel starts, so a line in it was written by the process runni
 | A public URL answers `503` (nothing in the log) | The tunnel's backend, host rule, named port or DNS record is missing | `gtunnel restart <name>` re-creates them, see [the log](commands.md#start-stop-restart-autostart-logs-list-delete) |
 | `Reauthentication required` | gcloud credentials expired. The supervisor stops the job instead of restarting it every few seconds, and `list` keeps showing `auth expired` until the next start | `gcloud auth login`, then `gtunnel start <name>` |
 | `list` shows `[restart budget spent: ...]` | gcloud died more than `max_restarts` times, each before `min_uptime`, for a reason gtunnel does not recognise. The supervisor stopped the job, and the log says why | Read the log, fix the cause, then `gtunnel start <name>`. To tune or disable the budget see [The restart budget](configuration.md#the-restart-budget) |
-| A tunnel installed before the restart budget keeps restarting | Its definition has no `--crash-marker` | Run any gtunnel command: it reinstalls the definition and prints `gtunnel: reinstalled ...` on stderr. If it prints `could not reinstall`, the reason follows; fix it and run a command again |
+| A tunnel keeps restarting and never shows `[restart budget spent: ...]` | Its definition has no `--crash-marker` | Run any gtunnel command: it reinstalls the definition and prints `gtunnel: reinstalled ...` on stderr. If it prints `could not reinstall`, the reason follows; fix it and run a command again |
 | `4004` | IAP asked gcloud to reauthenticate; gcloud resumes the session on its own | Nothing, unless it repeats: then check the account's credentials with `gtunnel doctor` |
 | `Unable to reconnect within` | gcloud gave up reconnecting to IAP after 15 minutes and the clients on the tunnel were cut | Restart the tunnel; see [Limits](architecture.md#limits) |
 | `Address already in use` | Another process holds the local port | `gtunnel doctor`, or set `--local-port` |
@@ -168,18 +158,12 @@ to both rather than making you set two:
 | `info` (default) | `info` | `DEBUG` | The listener or forward coming up, and one line per client connecting |
 | `debug` | `debug` | `DEBUG3` | The above plus gcloud's and ssh's own internals, for a tunnel that will not carry traffic |
 
-`info` maps to ssh `DEBUG`, one step further than the name suggests, because ssh's levels
-run `QUIET < FATAL < ERROR < INFO < VERBOSE < DEBUG` and both lines a person means by
-"tell me it is working" are `debug()` calls; at `VERBOSE` ssh prints three lines for a
-whole session and nothing per connection.
+`info` maps to ssh `DEBUG` because ssh's forward-up and per-connection lines are `debug()` calls.
+`quiet` maps to `ERROR`, not `QUIET`, because `QUIET` hides the failures.
 
-`quiet` maps to ssh `ERROR` rather than `QUIET`, because `QUIET` suppresses the failure
-messages that are the only reason to open a quiet tunnel's log at all.
-
-`quiet` is not silence. An Access tunnel still writes gcloud's `Listening on port [N].`
-and `Testing if tunnel connection works.` at every start, because those are user output
-rather than log records and `--verbosity` does not govern them. What `quiet` removes is
-the per-connection line, which is a log record.
+`quiet` is not silence: an Access tunnel still writes gcloud's `Listening on port [N].` and
+`Testing if tunnel connection works.` at every start, which `--verbosity` does not govern.
+`quiet` removes the per-connection line.
 
 Where to set it, and when a running tunnel picks up a new level, is in
 [The log level](configuration.md#the-log-level).
@@ -195,7 +179,7 @@ the tunnel runs; a gtunnel command or the TUI adds the few facts only it knows.
 | The tunnel's supervisor | `gtunnel: conn ...` lines, prefixed and timestamped | Always, from start to exit |
 | gtunnel | every other `gtunnel: <message>` line, prefixed and timestamped | Only while the TUI or a gtunnel command is running |
 
-The shapes below are what each kind of line looks like, not a captured transcript:
+Shapes, not a transcript:
 
 | Kind | Looks like | Written by |
 |---|---|---|
@@ -210,18 +194,13 @@ The shapes below are what each kind of line looks like, not a captured transcrip
 How the `conn` lines are made, what they leave out and how to find the client from one:
 [Connections in the log](commands.md#connections-in-the-log).
 
-A `--via` tunnel never prints `Listening on port`. It runs `gcloud compute ssh
---tunnel-through-iap`, which is a different command from `start-iap-tunnel` rather than a
-flag on it, and there is no listener inside gcloud to announce one. Its equivalent is
-ssh's forwarding line.
-
-Every ssh line in the table above is a debug one, which is why the default level
-reaches ssh as `DEBUG`; see [One level, two scales](#one-level-two-scales).
+A `--via` tunnel never prints `Listening on port`: it runs `gcloud compute ssh
+--tunnel-through-iap`, which has no listener inside gcloud. Its equivalent is ssh's forwarding
+line. Every ssh line above is a debug one ([One level, two scales](#one-level-two-scales)).
 
 ### How large a log gets
 
-The default level makes a tunnel talkative: around 90 lines per ssh handshake, and a line
-or two per client connection after that. The level is the lever on that figure.
+The level sets how fast a log grows:
 
 | Level | Per ssh handshake | Per client connection |
 |---|---|---|
@@ -229,36 +208,29 @@ or two per client connection after that. The level is the lever on that figure.
 | `info` (default) | around 90 lines | a line or two |
 | `debug` | substantially more, gcloud's and ssh's internals included | several |
 
-The bound is the same at all three: a log is emptied when its tunnel starts, and past
-8 MiB (`logs.max_size`) gtunnel keeps the last 2 MiB (`logs.keep_size`) and replaces the rest with a first line saying it did.
-The rate of reaching it is not: at `debug` a busy tunnel covers 8 MiB in minutes rather
-than weeks, and the paragraph below is why that matters for a tunnel left unattended.
+The bound is the same at all three: a log is emptied when its tunnel starts, and past 8 MiB
+(`logs.max_size`) gtunnel keeps the last 2 MiB (`logs.keep_size`) behind a first line saying so.
+At `debug` a busy tunnel reaches 8 MiB in minutes rather than weeks.
 
-That trim runs when a gtunnel process writes to the log, which is while the TUI is open
-or a command is running. A tunnel nobody has looked at for a month is bounded the next
-time somebody does, not before, so `du -sh` over the logs directory is still worth a
-look; `gtunnel restart <name>` empties one outright.
+The trim runs only when a gtunnel process writes to the log (the TUI open or a command
+running), so an unattended tunnel grows until someone looks. `du -sh` over the logs directory
+is worth a look; `gtunnel restart <name>` empties one.
 
 ### A tunnel that stops accepting connections
 
-The worst shape a tunnel takes: the service is `Running`, the process is alive, and every
-new client is refused. Nothing exits, so nothing restarts it, and `gtunnel list` says it is
-up because by its own lights it is.
-
-The usual cause is file descriptors. Each client of a forwarding tunnel costs one, and a
-service that has run out writes `Too many open files` and then refuses everything while
-staying up.
+The service is `Running`, the process is alive, and every new client is refused. Nothing
+exits, so nothing restarts it, and `gtunnel list` says it is up. The usual cause is file
+descriptors: each client costs one, and a service that runs out writes `Too many open files`
+and refuses everything while staying up.
 
 | | |
 |---|---|
-| The ceiling a tunnel gets now | 4096, written into the unit by gtunnel |
-| What it was before | 256 on macOS, which a launchd job inherits and nothing chose |
+| The ceiling a tunnel gets | 4096, written into the unit by gtunnel; a launchd job left alone inherits 256 on macOS |
 | Where it comes from | `SoftResourceLimits`/`NumberOfFiles` in the plist, `LimitNOFILE` in the systemd unit |
-| Applied when | The service is installed. A tunnel installed by an older gtunnel gets the new ceiling from the next gtunnel command, which rewrites its unit |
+| Applied when | The service is installed; an older unit is rewritten by the next gtunnel command |
 
-Four thousand descriptors is more than a tunnel needs, so hitting the new ceiling means
-something is holding connections open rather than closing them. `gtunnel doctor` reads the
-tunnel's log, and when it finds that line it names the process holding the connections:
+4096 is more than a tunnel needs, so hitting it means something holds connections open.
+`gtunnel doctor` finds the line in the log and names the process holding them:
 
 ```
 $ gtunnel doctor
@@ -266,17 +238,13 @@ account dev:
   ! Tunnel 'k8s' ran out of file descriptors: my-client (pid 4471) is holding 3804 of its connections right now. Deal with that, then `gtunnel restart k8s`
 ```
 
-The numbers above are an example; the shape is what the line looks like.
+Example numbers; the shape is real. gtunnel names the client, not the listener, which is only
+the victim. The check runs before the credentials check, because a wedged tunnel and an
+expired login tend to arrive together.
 
-Both ends of a loopback connection are listed, which is why the two counts match: the
-tunnel's own process holds one end of every one of them. gtunnel names the client, because
-naming the listener would only ever point at the victim. The
-check runs before the credentials check, because a wedged tunnel and an expired login tend
-to arrive together and the one must not hide the other.
-
-By hand, the same question is `lsof` on the tunnel's local port. Ask for the whole command
-name — without `+c 0` lsof cuts it to nine characters, which is enough to mislead and not
-enough to grep for:
+By hand, run `lsof` on the local port, with `+c 0` for the whole command name (lsof otherwise
+cuts it to nine characters). Both ends of each loopback connection are listed, so the two
+counts match:
 
 ```
 $ lsof -nP +c 0 -iTCP:8443 -sTCP:ESTABLISHED | awk 'NR>1{print $1, $2}' | sort | uniq -c | sort -rn
@@ -284,15 +252,13 @@ $ lsof -nP +c 0 -iTCP:8443 -sTCP:ESTABLISHED | awk 'NR>1{print $1, $2}' | sort |
 3804 ssh 1545
 ```
 
-A tunnel in this state is what the watchdog exists for: it restarts one that is running but
-refusing connections, and stops one that will not come back. See `watch` in
-[commands.md](commands.md#watch).
+The watchdog restarts a tunnel in this state and stops one that will not come back:
+[watch](commands.md#watch).
 
 ## Local port collisions
 
-A tunnel needs an unused local port to bind to. gtunnel checks both against its own
-configured tunnels and against listening sockets on the machine before writing the
-tunnel record.
+Before writing a tunnel record, gtunnel checks the local port against its own tunnels and
+the machine's listening sockets.
 
 When another gtunnel tunnel already uses the port:
 
@@ -322,8 +288,8 @@ Pass a different port with `--local-port <port>`, or stop the conflicting servic
 Error: gtunnel needs a logged-in Google account for 'prod'. Run `gcloud auth login`
 ```
 
-gtunnel could not get an access token for the account at startup and either the login did
-not finish or it was not allowed to start.
+gtunnel could not get an access token at startup, and the login did not finish or could not
+start.
 
 | Cause | Fix |
 |---|---|
@@ -338,9 +304,8 @@ Which commands run the check, for which account, and what the prompt does: [Star
 
 ## `credential_file must be an absolute path`
 
-An account whose `credential_file` is relative or starts with `~` stops that account's tunnels
-with exit 2, naming the account. Every other account, and every command that edits or lists
-accounts, keeps working, so the fix is one command:
+A relative or `~` `credential_file` stops that account's tunnels with exit 2, naming the
+account. Other accounts, and the commands that edit or list accounts, keep working:
 
 ```
 gtunnel doctor                                   # names the account and the value
@@ -379,7 +344,7 @@ After the machine sleeps, a tunnel's restart count goes up by one and the tunnel
 | Wake | gcloud notices the dead socket, ssh exits with 255, and the service manager restarts the tunnel |
 | Recovered | The listener is back about 40 seconds after the wake |
 
-The log shows the sequence (placeholder names; the shape of the lines, not a captured transcript):
+The log shows the sequence (placeholder names; the shape, not a transcript):
 
 ```
 Connection to bastion closed by remote host.
@@ -399,9 +364,9 @@ Local forwarding listening on 127.0.0.1 port 8443.
 Error: no zone for account 'work': pass --zone, or set a default with gtunnel account edit work --zone <zone>
 ```
 
-Exit code 2, before any request is made. `gtunnel init` lets the default zone be skipped, so an
-account can exist without one, and the commands that reach an instance by zone refuse it:
-`add --via`, `add` to an instance, `run` to an instance and `relay up`.
+Exit code 2, before any request. An account saved without a default zone cannot run the
+commands that reach an instance by zone: `add --via`, `add` and `run` to an instance, and
+`relay up`.
 
 | Fix | Command |
 |---|---|
@@ -433,8 +398,9 @@ never blocks the account: the prompt falls back to a typed project id.
 The rule for a tunnel's port, and the relay's two rules, are listed in
 [What GCP needs](gcp.md#access); `doctor` prints the exact command for the port it checks.
 
-An Expose tunnel that returns 502 with no error in the log is usually the second rule: the
-load balancer's health check cannot reach the relay port, so the backend has no healthy
+An Expose tunnel that returns 502 with no error in the log is usually the relay's
+`gt-<acct>-lb-hc` rule: the load balancer's health check cannot reach the relay port
+(`tcp:30000-30999` from `130.211.0.0/22` and `35.191.0.0/16`), so the backend has no healthy
 instance.
 
 ## IAM
@@ -512,9 +478,8 @@ logout:
 loginctl enable-linger $USER
 ```
 
-A service that starts and dies immediately is almost always PATH: the unit must carry
-gcloud's directory, which gtunnel writes into it. `gtunnel restart <name>` rewrites the unit
-and is the fix after gcloud moves.
+A service that starts and dies at once is almost always PATH: gtunnel writes gcloud's
+directory into the unit, and `gtunnel restart <name>` rewrites it after gcloud moves.
 
 ## Cost
 
@@ -546,23 +511,21 @@ So a relay is about USD 25/month per account, and a tunnel on top of it is free.
 | Orphan named port | A named port starting `gt-` on the relay's instance group that no tunnel claims |
 | Orphan DNS record | An A record aimed at the relay that one of the above still ties to the tunnel |
 
-It re-checks the claim against `tunnels.toml` and the live runs immediately before each
-removal, so a tunnel created while the scan was running is never torn out from under you.
-Only backend services carry the `gtunnel:<account>` tag, so a hand-made backend is left
-alone even when its name matches gtunnel's scheme. Host rules and named ports live on the
-relay's own URL map and instance group, which gtunnel created.
+Each claim is re-checked against `tunnels.toml` and the live runs right before removal, so a
+tunnel created during the scan is never removed. Only backend services carry the
+`gtunnel:<account>` tag, so a hand-made backend is left alone even when its name matches.
+Host rules and named ports live on the relay's own URL map and instance group.
 
-A Cloud DNS record set carries no description, so pointing at the relay address is not proof
-of ownership. gtunnel treats such a record as its own only while it still holds a tagged
-backend, a host rule or a named port for the same tunnel. Any other record aimed at the relay
-is reported with the `gcloud dns record-sets delete` command and left in place.
+A DNS record set has no description, so aiming at the relay is not proof of ownership.
+gtunnel removes one only while a tagged backend, host rule or named port ties it to the same
+tunnel; any other record aimed at the relay is reported with its
+`gcloud dns record-sets delete` command and left in place.
 
-A command that fails with `<config>/tunnels.lock is held by another gtunnel process` (or
-`config.lock`) waited 5 seconds (`gcp.lock_deadline`) for another gtunnel to finish saving. Find it with
-`pgrep -fl gtunnel`: a `gtunnel` command left waiting on a prompt or a stopped terminal is the
-usual holder, and ending it releases the lock. A `.lock` file that is left behind is harmless,
-because the lock is held by the process and not by the file; delete it only when no gtunnel
-runs.
+`<config>/tunnels.lock is held by another gtunnel process` (or `config.lock`) means the
+command waited 5 seconds (`gcp.lock_deadline`) for another gtunnel to finish saving. The usual
+holder is a `gtunnel` waiting on a prompt or in a stopped terminal: find it with
+`pgrep -fl gtunnel` and end it. A leftover `.lock` file is harmless, because the process holds
+the lock, not the file; delete it only when no gtunnel runs.
 
 To confirm nothing is left in GCP after `relay down`:
 
@@ -577,4 +540,4 @@ gcloud compute instances list --filter="name~^gt-"
 | Symptom | Meaning |
 |---|---|
 | The row is listed from the first refresh | It is real: an IAP process forwarding a port no tunnel in `tunnels.toml` and no run record owns. Find it with `lsof -nP -iTCP:<port> -sTCP:LISTEN`, then stop it or take it over with `m` in the TUI |
-| A tunnel you just started is shown as stranger for a moment | Not expected: a process on a port one of your tunnels owns is never listed, whichever account started it. If you see this, report it with the `ps` line |
+| A tunnel you started a moment ago shows as a stranger briefly | Not expected: a process on a port one of your tunnels owns is never listed, whichever account started it. If you see this, report it with the `ps` line |

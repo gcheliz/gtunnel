@@ -89,9 +89,9 @@ tapes in [docs/tapes](docs/tapes) with `vhs docs/tapes/<name>.tape`.
 
 ### Placeholders, always
 
-This repository is public, and a set of individually harmless identifiers is an inventory
-of somebody's network. Nothing in `README.md`, `docs/`, doc comments, help text or test
-fixtures may carry a real value.
+Nothing in `README.md`, `docs/`, doc comments, help text or test fixtures may carry a real
+value; a fixture counts, because it reads as an example. Why:
+[decision 7](docs/decisions.md#7-documentation-uses-placeholders-never-real-configuration).
 
 | Kind | Write |
 |---|---|
@@ -102,23 +102,16 @@ fixtures may carry a real value.
 | Internal hostname | `db.internal` |
 | Username in captured output | `you` |
 
-Zones and regions such as `europe-west1-b` stay real: they are public GCP identifiers and a
-reader needs a valid one to copy. A test fixture counts as an example, because that is how
-it reads.
-
-To capture real command output for a doc without leaking anything, point gtunnel at a
-throwaway configuration:
+Zones and regions such as `europe-west1-b` stay real. Capture output against a throwaway
+configuration:
 
 ```
 GTUNNEL_CONFIG_DIR=/tmp/gtunnel-demo cargo run -- add k8s 10.0.0.10:443 --via bastion
 ```
 
-That moves `config.toml`, `tunnels.toml`, `agents/` and `logs/` into that directory. Give
-the throwaway account a name of its own: the service label is
-`com.gtunnel.<account>.<name>`, so reusing a live account's name restarts its job.
-
-Then substitute only the value under discussion. A transcript edited further is no longer
-evidence of anything.
+Give the throwaway account a name of its own: the service label is
+`com.gtunnel.<account>.<name>`, so a live account's name restarts its job. Then substitute only
+the value under discussion.
 
 ## Issues
 
@@ -160,50 +153,31 @@ history. Write the pull request title as the commit message you want on `main`.
 
 ## Releases
 
-You do not need to think about versions when you contribute. Use the right commit prefix
-and the rest follows.
+You do not pick versions. Every merge to `main` runs [`release.yml`](.github/workflows/release.yml):
+[`release-plz`](https://release-plz.dev) reads the commit subjects since the last tag,
+computes the version, and the workflow tests the merge, commits the bump (`Cargo.toml`,
+`Cargo.lock`, a `CHANGELOG.md` entry), tags it, builds and publishes. There is no release pull
+request. Why it works this way: [decision 14](docs/decisions.md#14-releases-are-computed-and-published-automatically).
 
-Every merge to `main` is released by [`release.yml`](.github/workflows/release.yml) in
-one run. [`release-plz`](https://release-plz.dev) reads the conventional-commit subjects
-since the last tag and works out the next version; the workflow tests the merge, opens a
-draft release, commits the bump (`Cargo.toml`, `Cargo.lock`, a `CHANGELOG.md` entry) and
-pushes it with the tag. There is no release pull request to merge.
-
-gtunnel is below 1.0, and semver treats a `0.x` version as unstable throughout, so every
-bump is smaller than it would be after 1.0. The right-hand column is what happens today,
-not after the first stable release.
+Below 1.0 every bump is one step smaller than semver after 1.0:
 
 | Prefix | Version | Changelog |
 |---|---|---|
-| `feat` | patch, because a feature is not breaking and `0.x` has no minor to spend on it | Added |
+| `feat` | patch (`0.x` has no minor to spend on a non-breaking change) | Added |
 | `fix` | patch | Fixed |
 | `perf` | patch | Performance |
 | `refactor` | patch | Changed |
-| `feat!`, or a `BREAKING CHANGE:` trailer | minor; it becomes major at 1.0 | under its own prefix |
-| `docs` | patch | Documentation |
+| `feat!`, or a `BREAKING CHANGE:` trailer | minor; major at 1.0 | under its own prefix |
+| `docs` | none on its own: the line ships with the next release | Documentation |
 | `test`, `ci`, `chore`, `build` | none | none |
 | any prefix, changing only `Cargo.lock` | patch | Dependencies |
 
-Every row that writes a changelog line releases on merge, with nothing to dispatch. The
-`test` to `build` row writes none and changes nothing a user gets, so it releases nothing;
-its commits reach users with the next release.
+A lockfile-only merge (a Dependabot cargo update) releases only while it is the sole change
+since the last tag; a second merge on top hides it until the next release.
 
-A lockfile-only merge, such as a Dependabot cargo update, is the exception to reading the
-title: release-plz ignores `Cargo.lock` when it attributes commits, so it never sees the
-prefix. When the merge is the only change since the last tag, it notices the locked
-dependencies changed and releases them under Dependencies. The one way to lose it is a
-second merge landing on top before it is released, for example after a failed release run;
-the update then reaches users with the next release.
-
-**The pull request title is the commit message.** `main` takes squash merges, so the title
-is the only subject that reaches the history and the only one release-plz reads. A branch
-whose commits are a `feat` and two `docs` merged under a `docs:` title ships the feature
-with no Added line and no sign of it in the release. Title the pull request after the most
-significant change in it.
-
-The tag push starts `release.yml` again on the tag: it builds the four targets, writes a
-`.sha256` beside each tarball, attests every asset, and publishes the draft as the latest
-release. See [decision 14](docs/decisions.md).
+**The pull request title is the commit message.** The squash keeps only the title, and
+release-plz reads only that. A `feat` merged under a `docs:` title ships with no Added line
+and no release. Title the pull request after its most significant change.
 
 A maintainer can rehearse the train without releasing anything:
 
