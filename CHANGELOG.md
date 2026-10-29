@@ -3,6 +3,16 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.37](https://github.com/gcheliz/gtunnel/compare/v0.2.36...v0.2.37) - 2026-10-29
+
+### Documentation
+
+- *(install)* add the Homebrew tap as a way to install ([#269](https://github.com/gcheliz/gtunnel/pull/269))
+
+### Fixed
+
+- *(list)* report health stopped for a stopped tunnel ([#272](https://github.com/gcheliz/gtunnel/pull/272))
+
 ## [0.2.36](https://github.com/gcheliz/gtunnel/compare/v0.2.35...v0.2.36) - 2026-10-29
 
 ### Added
