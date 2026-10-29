@@ -101,3 +101,13 @@ step](usage.md#running-in-ci)).
 | Firewall | Ingress from `35.235.240.0/20` to the target port | see [Access](#access) |
 | Account | Declared from flags, no gcloud configuration to read | [Declare the account from flags](usage.md#declare-the-account-from-flags) |
 | Impersonation | `roles/iam.serviceAccountTokenCreator` on the service account, granted to the identity that impersonates it | none |
+
+## When many connections arrive at once
+
+gtunnel does not accept, pool or smooth connections. It supervises the process that does,
+and the two shapes of tunnel pay differently for each one.
+
+![Connection burst: many local clients connect to localhost. In the direct lane, gcloud start-iap-tunnel opens one WebSocket and one TLS handshake per local connection, with no cap and a listen backlog of 128. In the jump lane, ssh carries every connection as a channel on one WebSocket that ServerAliveInterval 30 keeps busy. Both lanes reach Identity-Aware Proxy and then the GCP instance. The gtunnel supervisor restarts the process, the 30 second machine watchdog checks it, and a 4096 file descriptor limit applies to it](images/architecture/gtunnel-connection-burst.png)
+
+The numbers and their sources are in [Limits](architecture.md#limits); IAP publishes no
+quota and says it is not for bulk transfer.
