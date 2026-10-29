@@ -61,19 +61,28 @@ Without the role a tunnel starts and then fails with `4033`; the
 
 ### 4. Install gtunnel
 
-Four routes, in rough order of how most people arrive:
+Six routes. Homebrew comes first on macOS and Linux; the rest are for machines without it:
 
 | Route | Command |
 |---|---|
+| Homebrew (macOS and Linux) | `brew install gcheliz/tap/gtunnel` |
 | A published binary | the block below |
 | From the repository | `cargo install --git https://github.com/gcheliz/gtunnel` |
 | From a clone | `cargo install --path .` |
-| Already installed | [`gtunnel update`](commands.md#update) |
+| Upgrade a Homebrew install | `brew upgrade gtunnel` |
+| Upgrade a download or cargo install | [`gtunnel update`](commands.md#update) |
 
 There is no `cargo install gtunnel`. The name on crates.io belongs to an unrelated crate
 by another author, so a bare name would install somebody else's binary. If you have
 already run it, [troubleshooting.md](troubleshooting.md#cargo-install-gtunnel-installed-something-else)
 says what it left behind and how to undo it.
+
+The Homebrew route installs a prebuilt binary from the `gcheliz/tap` tap, so it needs no Rust
+toolchain. `brew tap gcheliz/tap` then `brew install gtunnel` is the same thing in two steps.
+Tarballs cover macOS arm64 and Intel and Linux amd64 and arm64; only macOS arm64 has been
+exercised end to end. `brew upgrade gtunnel` upgrades it; the tap follows each release, so a new
+version shows up once the tap carries it. `gtunnel update` is for a downloaded or cargo-installed
+binary and points a Homebrew install at `brew upgrade` instead.
 
 Specify the release version and substitute your machine's file: `gtunnel-macos-arm64`,
 `gtunnel-macos-intel`, `gtunnel-linux-amd64` or `gtunnel-linux-arm64`.
@@ -125,7 +134,7 @@ the file you downloaded. Attestations begin with v0.1.1; v0.1.0 predates them.
 #### Building from source
 
 The two cargo routes compile gtunnel on your machine, so they need Rust 1.89 or newer and
-a C compiler: the TLS stack builds C code. A published binary needs neither. A release
+a C compiler: the TLS stack builds C code. Homebrew and a published binary need neither. A release
 build takes about three minutes from clean on an Apple silicon laptop, because the release
 profile uses fat LTO.
 

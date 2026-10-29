@@ -260,11 +260,12 @@ GitHub</a>
 <p class="lead">Reach instances that have no public IP, watch every tunnel live, and let your AI agent drive the same tunnels.</p>
 <div class="install">
 <div class="tabs" role="tablist" aria-label="Install method">
-<button type="button" role="tab" aria-selected="true" aria-controls="install-cmd-box" data-cmd="cargo install --git https://github.com/gcheliz/gtunnel">cargo</button>
+<button type="button" role="tab" aria-selected="true" aria-controls="install-cmd-box" data-cmd="brew install gcheliz/tap/gtunnel">brew</button>
+<button type="button" role="tab" aria-selected="false" aria-controls="install-cmd-box" tabindex="-1" data-cmd="cargo install --git https://github.com/gcheliz/gtunnel">cargo</button>
 <button type="button" role="tab" aria-selected="false" aria-controls="install-cmd-box" tabindex="-1" data-cmd="gh release download -R gcheliz/gtunnel -p '*macos-arm64*'">release binary</button>
 </div>
 <div class="cmd" id="install-cmd-box" role="tabpanel">
-<code><span class="p">$ </span><span id="install-cmd">cargo install --git https://<wbr>github.com/<wbr>gcheliz/<wbr>gtunnel</span></code>
+<code><span class="p">$ </span><span id="install-cmd">brew install gcheliz/<wbr>tap/<wbr>gtunnel</span></code>
 <button type="button" id="copy" aria-label="Copy install command" title="Copy"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg><svg class="ok" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg></button>
 </div>
 </div>
@@ -403,8 +404,8 @@ GitHub</a>
 <p class="body">Needs the Google Cloud SDK.</p>
 </div>
 <div class="snippet">
-<pre class="code start"><span class="c"># 1 · install</span>
-<span class="prompt">$</span> cargo install --git https://github.com/gcheliz/gtunnel
+<pre class="code start"><span class="c"># 1 · install (or: cargo install --git ...)</span>
+<span class="prompt">$</span> brew install gcheliz/tap/gtunnel
 
 <span class="c"># 2 · check</span>
 <span class="prompt">$</span> gtunnel init
@@ -445,7 +446,7 @@ GitHub</a>
 
 <section class="wrap close" id="install" aria-labelledby="install-title">
 <h2 class="h2" id="install-title">Stop <span class="c-cyan">opening ports.</span></h2>
-<code class="oneline"><span class="prompt">$ </span>cargo install --git https://github.com/gcheliz/gtunnel</code>
+<code class="oneline"><span class="prompt">$ </span>brew install gcheliz/tap/gtunnel</code>
 <div class="actions">
 <a class="button solid" href="https://github.com/gcheliz/gtunnel/releases/latest">Download v<span data-gtunnel-version>0.2.36</span></a>
 <a class="button" href="https://github.com/gcheliz/gtunnel/blob/main/docs/usage.md">Read the guide</a>

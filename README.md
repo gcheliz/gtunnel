@@ -61,7 +61,13 @@ Google's protocols. It opens every connection with **your own Google identity** 
 ## Install
 
 Needs macOS or Linux and a logged-in `gcloud` ([what GCP needs](docs/gcp.md), [getting set up](docs/usage.md#getting-set-up)).
-Pick the file for your machine from the
+With Homebrew, no Rust needed:
+
+```
+brew install gcheliz/tap/gtunnel
+```
+
+`brew upgrade gtunnel` upgrades it; the tap follows each release. Without Homebrew, pick the file for your machine from the
 [latest release](https://github.com/gcheliz/gtunnel/releases/latest):
 
 ```
@@ -72,7 +78,7 @@ curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F.
 shasum -a 256 -c "$F.sha256" && tar -xzf "$F" && sudo mv gtunnel /usr/local/bin/
 ```
 
-Other machines, `cargo install`, the build attestation and upgrades: [docs/usage.md](docs/usage.md#4-install-gtunnel).
+Other machines, `cargo install`, the build attestation and upgrades (`gtunnel update` for a download or cargo install): [docs/usage.md](docs/usage.md#4-install-gtunnel).
 There is no `cargo install gtunnel`: that crates.io name is an unrelated crate. Run `gtunnel doctor` next.
 
 ## Quick start
