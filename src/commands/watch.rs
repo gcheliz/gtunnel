@@ -631,6 +631,7 @@ mod tests {
     fn a_public_tunnel_is_skipped_and_said_to_be_skipped() {
         let state = crate::state::TunnelState {
             tunnels: vec![access("kubernetes"), expose("docs")],
+            ..Default::default()
         };
         let (watched, skipped) = targets(&state);
 

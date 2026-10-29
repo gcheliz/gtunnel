@@ -502,6 +502,7 @@ So a relay is about USD 25/month per account, and a tunnel on top of it is free.
 | Finding | What it removes |
 |---|---|
 | Stale local record | A tunnel in `tunnels.toml` with no service installed |
+| Stale reservation | An `expose` that claimed a name and relay port in `tunnels.toml` ten minutes ago and never finished, so the port stays held. A reservation is not a tunnel: `list`, `status` and the TUI do not show it |
 | Dead ephemeral | A `run` record whose process is gone |
 | Auto-start drift | Nothing: the service manager is brought to the `auto_start` in `tunnels.toml` |
 | Missing watchdog | Nothing: the watchdog agent is installed |

@@ -556,7 +556,10 @@ mod tests {
     }
 
     fn state(tunnels: Vec<PersistentTunnel>) -> TunnelState {
-        TunnelState { tunnels }
+        TunnelState {
+            tunnels,
+            ..Default::default()
+        }
     }
 
     fn text_of(tunnels: Vec<PersistentTunnel>) -> String {

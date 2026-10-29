@@ -64,6 +64,11 @@ pub enum Finding {
     StaleState {
         tunnel: String,
     },
+    // An `expose` that claimed a name and a relay port and never finished, so
+    // the port stays held until this is cleared
+    StaleReservation {
+        tunnel: String,
+    },
     // A service on this machine that no record in tunnels.toml owns: the mirror of
     // StaleState. Machine-wide, so it carries a label and no account.
     OrphanService {
@@ -157,6 +162,7 @@ impl Finding {
         matches!(
             self,
             Finding::StaleState { .. }
+                | Finding::StaleReservation { .. }
                 | Finding::OrphanService { .. }
                 | Finding::AutoStartDrift { .. }
                 | Finding::DeadEphemeral { .. }
@@ -217,6 +223,11 @@ impl Finding {
             Finding::StaleState { tunnel } => {
                 format!("Tunnel '{tunnel}' is in tunnels.toml but has no service installed")
             }
+            Finding::StaleReservation { tunnel } => format!(
+                "Tunnel '{tunnel}' claimed a relay port more than {} minutes ago and never \
+                 finished exposing",
+                crate::state::RESERVATION_STALE_SECS / 60
+            ),
             Finding::OrphanService { label } => format!(
                 "Service {label} is installed but no tunnel in tunnels.toml owns it, so it may \
                  still hold a local port at login"
@@ -813,6 +824,10 @@ pub async fn run_doctor(
         }
     }
 
+    for (account, tunnel) in stale_reservations(state, now_secs()) {
+        out.push((account, Finding::StaleReservation { tunnel }));
+    }
+
     for (record, alive) in list_ephemeral().unwrap_or_default() {
         if !alive {
             out.push((
@@ -831,6 +846,54 @@ pub async fn run_doctor(
         );
     }
     out
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Reservations old enough that the `expose` which made them is not coming
+/// back, as (account, tunnel).
+fn stale_reservations(state: &TunnelState, now: u64) -> Vec<(String, String)> {
+    state
+        .reservations
+        .iter()
+        .filter(|r| r.is_stale(now))
+        .map(|r| (r.tunnel.account_name.clone(), r.tunnel.name.clone()))
+        .collect()
+}
+
+/// The saved tunnels plus the ones an `expose` is still building. Both own
+/// their relay resources: the route exists before the record is committed, so
+/// without the reservations `doctor` would call a route in progress an orphan.
+fn owners(state: &TunnelState) -> Vec<PersistentTunnel> {
+    state
+        .tunnels
+        .iter()
+        .chain(state.reservations.iter().map(|r| &r.tunnel))
+        .cloned()
+        .collect()
+}
+
+/// The StaleState removal, decided against the state as it is now. The scan saw
+/// a record with no service, but `add` writes the record before it installs the
+/// service, so by the time the fix runs the service may exist. Records carry no
+/// creation time, so this re-check is the whole guard.
+fn remove_stale_record(
+    state: &mut TunnelState,
+    account: &str,
+    tunnel: &str,
+    installed: bool,
+    stopped: bool,
+) -> Result<()> {
+    if installed || !stopped {
+        anyhow::bail!("a tunnel claimed it since the scan");
+    }
+    state.remove_for_account(tunnel, account);
+    Ok(())
 }
 
 // The same advice `run` gives, and for a credential file the same `; gcloud
@@ -983,7 +1046,7 @@ async fn account_findings(_cfg: &Config, state: &TunnelState, acct: &Account) ->
     }
 
     if let Some(expose) = &acct.expose {
-        findings.extend(relay_findings(&client, acct, expose, &tunnels).await);
+        findings.extend(relay_findings(&client, acct, expose, &owners(state)).await);
     }
 
     findings
@@ -1033,7 +1096,7 @@ async fn relay_findings(
     client: &GcpClient,
     acct: &Account,
     expose: &crate::config::ExposeConfig,
-    tunnels: &[&crate::state::PersistentTunnel],
+    owned: &[PersistentTunnel],
 ) -> Vec<Finding> {
     let names = Names::new(&acct.name);
     let mut findings = Vec::new();
@@ -1060,18 +1123,7 @@ async fn relay_findings(
         return findings;
     };
 
-    let state_hostnames: HashSet<String> = tunnels
-        .iter()
-        .filter_map(|t| match &t.spec {
-            TunnelSpec::Expose { hostname, .. } => Some(hostname.clone()),
-            _ => None,
-        })
-        .collect();
-    let mut state_names: HashSet<String> = tunnels
-        .iter()
-        .filter(|t| t.is_expose())
-        .map(|t| t.name.clone())
-        .collect();
+    let (state_hostnames, mut state_names) = live_ownership(owned, &[], &acct.name);
 
     let (ephemeral_hostnames, ephemeral_names) =
         ephemeral_ownership(&list_ephemeral().unwrap_or_default(), &acct.name);
@@ -1224,7 +1276,7 @@ async fn apply_fix(
     // Re-read both owners: `gtunnel expose` writes tunnels.toml and `gtunnel
     // run` writes a record, and either can land between the scan and here
     let (hostnames, tunnels) = live_ownership(
-        &state.tunnels,
+        &owners(state),
         &list_ephemeral().unwrap_or_default(),
         account_name,
     );
@@ -1232,8 +1284,34 @@ async fn apply_fix(
         anyhow::bail!("a tunnel claimed it since the scan");
     }
     match finding {
-        Finding::StaleState { tunnel } => TunnelState::update(|state| {
-            state.remove_for_account(tunnel, account_name);
+        Finding::StaleState { tunnel } => {
+            // The status is awaited here because the closure holds the lock and
+            // cannot; the install check stays inside it
+            let label = crate::daemon::platform_label(account_name, tunnel);
+            let stopped =
+                crate::daemon::status(&label).await == crate::state::TunnelStatus::Stopped;
+            TunnelState::update(|state| {
+                remove_stale_record(
+                    state,
+                    account_name,
+                    tunnel,
+                    service_installed(&label),
+                    stopped,
+                )
+            })
+        }
+        // The age is judged again under the lock: the expose may have finished,
+        // or a new one taken the name, since the scan
+        Finding::StaleReservation { tunnel } => TunnelState::update(|state| {
+            let still_stale = state.reservations.iter().any(|r| {
+                r.tunnel.name == *tunnel
+                    && r.tunnel.account_name == account_name
+                    && r.is_stale(now_secs())
+            });
+            if !still_stale {
+                anyhow::bail!("a tunnel claimed it since the scan");
+            }
+            state.release_reservation(tunnel, account_name);
             Ok(())
         }),
         // Re-checked against the record set just loaded: a tunnel added since the
@@ -1683,6 +1761,93 @@ mod tests {
         );
     }
 
+    fn saved_expose(account: &str, name: &str, port: u16) -> PersistentTunnel {
+        PersistentTunnel {
+            spec: TunnelSpec::Expose {
+                local_target: "3000".to_string(),
+                domain: "example.com".to_string(),
+                hostname: format!("{name}.example.com"),
+                relay_port: port,
+                private: false,
+            },
+            name: name.to_string(),
+            account_name: account.to_string(),
+            auto_start: false,
+        }
+    }
+
+    fn state_with_record(account: &str, name: &str) -> TunnelState {
+        let mut state = TunnelState::default();
+        state
+            .add(saved_expose(account, name, 30001))
+            .expect("fixture adds");
+        state
+    }
+
+    // `add` writes the record and then installs the service, so a scan that
+    // ran between the two named a tunnel that is not stale
+    #[test]
+    fn a_stale_state_fix_for_a_tunnel_whose_service_now_exists_removes_nothing() {
+        let mut state = state_with_record("dev", "web");
+        let err = remove_stale_record(&mut state, "dev", "web", true, true).unwrap_err();
+        assert!(
+            err.to_string().contains("claimed it since the scan"),
+            "{err}"
+        );
+        assert!(state.find_for_account("web", "dev").is_some());
+    }
+
+    #[test]
+    fn a_stale_state_fix_for_a_tunnel_that_is_now_running_removes_nothing() {
+        let mut state = state_with_record("dev", "web");
+        assert!(remove_stale_record(&mut state, "dev", "web", false, false).is_err());
+        assert!(state.find_for_account("web", "dev").is_some());
+    }
+
+    #[test]
+    fn a_stale_state_fix_removes_a_record_that_is_still_stale() {
+        let mut state = state_with_record("dev", "web");
+        remove_stale_record(&mut state, "dev", "web", false, true).expect("removed");
+        assert!(state.tunnels.is_empty());
+    }
+
+    #[test]
+    fn only_a_reservation_past_the_window_is_stale_and_it_is_fixable() {
+        let mut state = TunnelState::default();
+        for name in ["old", "new"] {
+            let at = if name == "old" { 1_000 } else { 5_000 };
+            state
+                .reserve_relay_port(name, "dev", &HashSet::new(), at, |p| {
+                    saved_expose("dev", name, p)
+                })
+                .expect("reserved");
+        }
+        let now = 1_000 + crate::state::RESERVATION_STALE_SECS + 1;
+        assert_eq!(
+            stale_reservations(&state, now),
+            vec![("dev".to_string(), "old".to_string())]
+        );
+        assert!(Finding::StaleReservation {
+            tunnel: "old".to_string()
+        }
+        .fixable());
+    }
+
+    // The route exists before the record is committed; counting only saved
+    // tunnels would make doctor delete a route that is being built
+    #[test]
+    fn a_route_being_built_is_owned_by_its_reservation() {
+        let mut state = TunnelState::default();
+        state
+            .reserve_relay_port("web", "dev", &HashSet::new(), 0, |p| {
+                saved_expose("dev", "web", p)
+            })
+            .expect("reserved");
+        let (hostnames, names) = live_ownership(&owners(&state), &[], "dev");
+        assert!(hostnames.contains("web.example.com"));
+        assert!(names.contains("web"));
+    }
+
     // What gtunnel created, it may remove; what it only found, it explains
     #[test]
     fn only_gtunnels_own_leftovers_are_fixable() {
@@ -1892,6 +2057,9 @@ mod tests {
             Finding::NumpyMissing,
             Finding::StaleState {
                 tunnel: "db".to_string(),
+            },
+            Finding::StaleReservation {
+                tunnel: "web".to_string(),
             },
             Finding::MissingInstance {
                 tunnel: "db".to_string(),
