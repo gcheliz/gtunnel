@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.34](https://github.com/gcheliz/gtunnel/compare/v0.2.33...v0.2.34) - 2026-10-29
+
+### Fixed
+
+- *(tui)* the step 3 prompt asks for the target private host ([#258](https://github.com/gcheliz/gtunnel/pull/258))
+
 ## [0.2.33](https://github.com/gcheliz/gtunnel/compare/v0.2.32...v0.2.33) - 2026-10-29
 
 ### Documentation
