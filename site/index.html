@@ -417,7 +417,10 @@ GitHub</a>
 
 <span class="c"># 3 · connect</span>
 <span class="prompt">$</span> gtunnel add db bastion:5432 --local-port 15432 -s
-<span class="prompt">$</span> psql -h localhost -p 15432</pre>
+<span class="prompt">$</span> psql -h localhost -p 15432
+
+<span class="c"># or a one-off tunnel that closes itself</span>
+<span class="prompt">$</span> gtunnel run bastion:5432 --local-port 15432 --ttl 30m</pre>
 <button type="button" class="copy-sm" data-copy-for="the quick start commands">Copy</button>
 </div>
 </section>
