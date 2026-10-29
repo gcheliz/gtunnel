@@ -450,21 +450,8 @@ never blocks the account: the prompt falls back to a typed project id.
 
 ## IAP firewall
 
-IAP connects from `35.235.240.0/20`, and that range must be allowed to the exact port you
-are tunnelling to. `doctor` prints the rule it would create:
-
-```
-gcloud compute firewall-rules create gt-allow-iap-<port> --project=<project> \
-  --network=<network> --direction=INGRESS --allow=tcp:<port> \
-  --source-ranges=35.235.240.0/20
-```
-
-The relay instance's two rules are created by `relay up` and target the tag `gt-relay`:
-
-| Rule | Source | Ports |
-|---|---|---|
-| `gt-<acct>-iap-ssh` | `35.235.240.0/20` | 22 |
-| `gt-<acct>-lb-hc` | `130.211.0.0/22`, `35.191.0.0/16` | 30000-30999 |
+The rule for a tunnel's port, and the relay's two rules, are listed in
+[What GCP needs](gcp.md#access); `doctor` prints the exact command for the port it checks.
 
 An Expose tunnel that returns 502 with no error in the log is usually the second rule: the
 load balancer's health check cannot reach the relay port, so the backend has no healthy
@@ -472,17 +459,9 @@ instance.
 
 ## IAM
 
-| Role | On | Needed for |
-|---|---|---|
-| `roles/iap.tunnelResourceAccessor` | The instance, destination group or project | Every tunnel |
-| `roles/compute.viewer` | The project | Listing instances and zones |
-| `roles/compute.instanceAdmin.v1` | The project | `relay up` and `relay down` |
-| `roles/compute.networkAdmin` | The project | Load balancer and firewall rules |
-| `roles/dns.admin` | The managed zone | `domains add` and Expose tunnels |
-| `roles/certificatemanager.owner` | The project | Managed certificates |
-| `roles/iap.admin` | The project | `expose --private` |
+Every role, and what each is needed for, is in [What GCP needs](gcp.md#expose).
 
-`doctor` checks the first one for every tunnel, for instances and destination groups alike.
+`doctor` checks `roles/iap.tunnelResourceAccessor` for every tunnel, for instances and destination groups alike.
 The rest surface as a permission error at the moment the command runs.
 
 ## Cloud DNS managed zones
@@ -494,12 +473,7 @@ project to publish public hostnames. If the project has none configured:
 Error: No Cloud DNS managed zones in project 'example-dev-1a2b'. Create one with `gcloud dns managed-zones create`, then run `gtunnel domains add`
 ```
 
-Creating a managed zone requires `roles/dns.admin` on the GCP project:
-
-```
-gcloud dns managed-zones create my-zone --dns-name=example.com. --description="gtunnel zone"
-```
-
+The command to create one, and the role it needs, are in [What GCP needs](gcp.md#expose).
 Once created, register it with gtunnel:
 
 ```

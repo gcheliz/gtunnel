@@ -53,15 +53,11 @@ configuration per environment now — `gcloud config configurations create <name
 
 ### 3. Grant yourself IAP access
 
-Tunnelling needs `roles/iap.tunnelResourceAccessor` on the instance, the destination group,
-or the project:
-[cloud.google.com/iap/docs/using-tcp-forwarding](https://cloud.google.com/iap/docs/using-tcp-forwarding#grant-permission).
-Without it a tunnel starts and then fails with `4033`; the
+Tunnelling needs one IAP role and one firewall rule. [What GCP needs](gcp.md) lists them
+for every mode, with the one-off commands; `gtunnel doctor` checks both for each tunnel and
+prints the exact `gcloud compute firewall-rules create` for the port you are tunnelling to.
+Without the role a tunnel starts and then fails with `4033`; the
 [error table](troubleshooting.md) lists what each code means.
-
-IAP also connects from a fixed range, so the target port needs a firewall rule allowing
-`35.235.240.0/20`. `gtunnel doctor` prints the exact `gcloud compute firewall-rules create`
-for the port you are tunnelling to rather than making you compose it.
 
 ### 4. Install gtunnel
 
@@ -286,10 +282,7 @@ Reach for a key last.
 
 ### What the identity needs
 
-| Need | Value | Where it is set |
-|---|---|---|
-| Role | `roles/iap.tunnelResourceAccessor` on the project or the instance | [IAM](troubleshooting.md#iam) |
-| Firewall | Ingress from `35.235.240.0/20` to the target port | [IAP firewall](troubleshooting.md#iap-firewall) |
+The role and the firewall rule are the Access ones: [What GCP needs, CI](gcp.md#ci).
 
 ### Declare the account from flags
 
