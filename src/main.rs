@@ -5,7 +5,10 @@ use gtunnel::dispatch;
 
 #[tokio::main]
 async fn main() {
-    // First, so a completion request is answered before anything can write
+    // Before anything prints, so a reader that stops early ends every command
+    // the same way
+    dispatch::exit_quietly_on_broken_pipe();
+    // Then, so a completion request is answered before anything can write
     // to stdout or load a config
     dispatch::answer_if_asked();
     let args = Cli::parse();

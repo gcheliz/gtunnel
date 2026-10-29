@@ -10,6 +10,37 @@ use crate::cli::{
 pub use crate::commands::completions::answer_if_asked;
 use crate::{commands, config, doctor, ephemeral, gcp, loglevel, mcp, settings, tui, update};
 
+/// Ends the process quietly when the reader of stdout or stderr has gone, as
+/// `head -1` or a pager quit with `q` does: the reader chose to stop, so there
+/// is nothing to report. Rust ignores SIGPIPE and `println!` panics on the
+/// resulting EPIPE, and restoring the default signal instead would let a write
+/// to a closed tunnel socket kill the supervisor. Every other panic goes on to
+/// the default hook.
+pub fn exit_quietly_on_broken_pipe() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let payload = info.payload();
+        let message = payload
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| payload.downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        if is_broken_pipe_panic(message) {
+            std::process::exit(0);
+        }
+        default(info);
+    }));
+}
+
+// The message std panics with, `failed printing to stdout: <error>`. The
+// error's text comes from the platform, so it is built here rather than spelled
+fn is_broken_pipe_panic(message: &str) -> bool {
+    let epipe = std::io::Error::from_raw_os_error(libc::EPIPE).to_string();
+    ["stdout", "stderr"]
+        .iter()
+        .any(|stream| message == format!("failed printing to {stream}: {epipe}"))
+}
+
 /// Prints a failure the way the caller asked for it and ends the process
 /// with the code its kind maps to.
 pub fn exit_with(e: &anyhow::Error, json: bool) -> ! {
@@ -320,6 +351,19 @@ pub async fn run(args: Cli) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::first_run_needed;
+
+    #[test]
+    fn only_a_print_to_a_closed_pipe_is_a_broken_pipe_panic() {
+        let epipe = std::io::Error::from_raw_os_error(libc::EPIPE).to_string();
+        let quiet = super::is_broken_pipe_panic;
+        assert!(quiet(&format!("failed printing to stdout: {epipe}")));
+        assert!(quiet(&format!("failed printing to stderr: {epipe}")));
+        // A full disk or a closed descriptor is a real failure and keeps its panic
+        let enospc = std::io::Error::from_raw_os_error(libc::ENOSPC).to_string();
+        assert!(!quiet(&format!("failed printing to stdout: {enospc}")));
+        assert!(!quiet("called `Option::unwrap()` on a `None` value"));
+        assert!(!quiet(&epipe));
+    }
 
     #[test]
     fn only_commands_that_are_not_services_or_setup_refresh_definitions() {
