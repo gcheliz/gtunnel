@@ -78,16 +78,19 @@ already run it, [troubleshooting.md](troubleshooting.md#cargo-install-gtunnel-in
 says what it left behind and how to undo it.
 
 The Homebrew route installs a prebuilt binary from the `gcheliz/tap` tap, so it needs no Rust
-toolchain. `brew tap gcheliz/tap` then `brew install gtunnel` is the same thing in two steps.
+toolchain. The command taps `gcheliz/tap` for you, so no `brew tap` comes first. Tapping by hand
+and then running `brew install gtunnel` is not the same: Homebrew 6 and later does not load a short
+name from an untrusted tap, so that form needs `brew trust --formula gcheliz/tap/gtunnel` in between.
 Tarballs cover macOS arm64 and Intel and Linux amd64 and arm64; only macOS arm64 has been
 exercised end to end. `brew upgrade gtunnel` upgrades it; the tap follows each release, so a new
 version shows up once the tap carries it. `gtunnel update` is for a downloaded or cargo-installed
 binary and points a Homebrew install at `brew upgrade` instead.
 
-Homebrew loads a formula from a non-official tap only after you trust it (`brew trust --help`).
-If `brew install` refuses, read the formula at
-[gcheliz/homebrew-tap](https://github.com/gcheliz/homebrew-tap/blob/main/Formula/gtunnel.rb),
-then run `brew trust --formula gcheliz/tap/gtunnel`. gtunnel never runs `brew trust` for you.
+Homebrew 6 and later requires trust for a non-official tap. Installing a fully qualified name, as
+above, trusts that one formula and nothing else in the tap, and prints
+`Trusted formula gcheliz/tap/gtunnel`. The formula is readable first at
+[gcheliz/homebrew-tap](https://github.com/gcheliz/homebrew-tap/blob/main/Formula/gtunnel.rb).
+Older Homebrew has no trust step. gtunnel never runs `brew trust` for you.
 
 Specify the release version and substitute your machine's file: `gtunnel-macos-arm64`,
 `gtunnel-macos-intel`, `gtunnel-linux-amd64` or `gtunnel-linux-arm64`.
