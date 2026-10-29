@@ -455,6 +455,8 @@ gtunnel v9.9.9 is available (current: v0.2.42). Run `brew upgrade gtunnel`.
 `gtunnel` with no subcommand opens the TUI. `gtunnel demo` opens it with synthetic data: no
 GCP, no config file, no login, and its forms open the real pickers filled with placeholder
 configurations, projects, zones and instances.
+A SIGTERM or SIGHUP, from `kill` or a closed terminal window, closes the TUI the way `q` does,
+so the shell gets a working terminal back.
 
 `?` opens the full keymap, in the same four groups:
 

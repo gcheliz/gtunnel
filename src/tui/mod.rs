@@ -150,8 +150,9 @@ async fn demo_loop(
     app: &mut App,
     rx: &mut mpsc::UnboundedReceiver<Msg>,
 ) -> Result<()> {
+    let mut stop = Stop::new()?;
     terminal.draw(|f| ui::render(f, app))?;
-    while let Some(msg) = rx.recv().await {
+    while let Some(msg) = next_message(rx, &mut stop).await {
         match msg {
             Msg::Key(key) => {
                 if let Some(op) = app.handle_key(key) {
@@ -345,9 +346,10 @@ async fn event_loop(
     // The tunnel whose running op empties its log, held until the op is done
     let mut forget_after: Option<String> = None;
 
+    let mut stop = Stop::new()?;
     terminal.draw(|f| ui::render(f, app))?;
 
-    while let Some(msg) = rx.recv().await {
+    while let Some(msg) = next_message(rx, &mut stop).await {
         match msg {
             Msg::Key(key) => {
                 if let Some(op) = app.handle_key(key) {
@@ -974,6 +976,57 @@ where
     out
 }
 
+// SIGTERM and SIGHUP end the loop through its normal exit, because that exit
+// is the only path that calls `ratatui::restore()`. The default action kills
+// the process where it stands, with the terminal still raw on the alternate
+// screen: `pkill gtunnel` and a closed terminal window both do that.
+struct Stop {
+    #[cfg(unix)]
+    term: tokio::signal::unix::Signal,
+    #[cfg(unix)]
+    hup: tokio::signal::unix::Signal,
+}
+
+impl Stop {
+    // Built before the screen is: a failure to register leaves the terminal
+    // as it was found
+    #[cfg(unix)]
+    fn new() -> Result<Self> {
+        use tokio::signal::unix::{signal, SignalKind};
+        Ok(Self {
+            term: signal(SignalKind::terminate())?,
+            hup: signal(SignalKind::hangup())?,
+        })
+    }
+
+    #[cfg(not(unix))]
+    fn new() -> Result<Self> {
+        Ok(Self {})
+    }
+
+    #[cfg(unix)]
+    async fn requested(&mut self) {
+        tokio::select! {
+            _ = self.term.recv() => {}
+            _ = self.hup.recv() => {}
+        }
+    }
+
+    #[cfg(not(unix))]
+    async fn requested(&mut self) {
+        std::future::pending::<()>().await
+    }
+}
+
+// The next message, or None when the loop is to end: the channel closed or a
+// termination signal arrived
+async fn next_message(rx: &mut mpsc::UnboundedReceiver<Msg>, stop: &mut Stop) -> Option<Msg> {
+    tokio::select! {
+        msg = rx.recv() => msg,
+        () = stop.requested() => None,
+    }
+}
+
 #[cfg(unix)]
 fn suspend(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
     ratatui::restore();
@@ -997,3 +1050,39 @@ mod accounts_page_tests;
 mod config_page_tests;
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, unix))]
+mod stop_tests {
+    use super::*;
+
+    // Raised at the process, as `pkill gtunnel` and a closing terminal do. The
+    // handler Stop installs is what keeps the default action from killing the
+    // test run, so reaching the assertion is part of the proof.
+    #[tokio::test]
+    async fn a_termination_signal_ends_the_loop_instead_of_the_process() {
+        for signal in [libc::SIGTERM, libc::SIGHUP] {
+            let (_tx, mut rx) = mpsc::unbounded_channel::<Msg>();
+            let mut stop = Stop::new().expect("register");
+            // SAFETY: raise(3) takes one integer and no pointer
+            unsafe { libc::raise(signal) };
+            let next = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                next_message(&mut rx, &mut stop),
+            )
+            .await
+            .expect("the signal was noticed");
+            assert!(next.is_none(), "signal {signal} ends the loop");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_message_still_arrives_when_no_signal_does() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<Msg>();
+        let mut stop = Stop::new().expect("register");
+        tx.send(Msg::Tick).unwrap();
+        assert!(matches!(
+            next_message(&mut rx, &mut stop).await,
+            Some(Msg::Tick)
+        ));
+    }
+}

@@ -362,6 +362,56 @@ pub fn read_from(path: &std::path::Path, offset: u64) -> String {
     String::from_utf8_lossy(&raw).into_owned()
 }
 
+/// What a follower prints next, and the offset to resume from. The offset is
+/// the bytes this call read, never a length measured beforehand: a line
+/// appended between the two would sit below the new offset and print twice.
+/// A file shorter than `offset` was rewritten, so it is read from the start.
+/// A character cut off at the end of what was read is left for the next call,
+/// because its other half is in the next write and each half alone would
+/// print as U+FFFD.
+pub fn read_follow(path: &std::path::Path, offset: u64) -> (String, u64) {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return (String::new(), offset);
+    };
+    let from = match file.metadata() {
+        Ok(meta) if meta.len() < offset => 0,
+        Ok(_) => offset,
+        Err(_) => return (String::new(), offset),
+    };
+    if from > 0 && file.seek(SeekFrom::Start(from)).is_err() {
+        return (String::new(), offset);
+    }
+    let mut raw = Vec::new();
+    if file.read_to_end(&mut raw).is_err() {
+        return (String::new(), offset);
+    }
+    raw.truncate(raw.len() - incomplete_tail(&raw));
+    (
+        String::from_utf8_lossy(&raw).into_owned(),
+        from + raw.len() as u64,
+    )
+}
+
+// How many trailing bytes start a UTF-8 sequence that has not finished. Only
+// the last three can: a lead byte announces at most four, and a byte that is
+// invalid anywhere else is not waiting for anything
+fn incomplete_tail(raw: &[u8]) -> usize {
+    for back in 1..=raw.len().min(3) {
+        let byte = raw[raw.len() - back];
+        let needed = match byte {
+            0xC0..=0xDF => 2,
+            0xE0..=0xEF => 3,
+            0xF0..=0xF7 => 4,
+            // A continuation byte: keep looking for its lead
+            0x80..=0xBF => continue,
+            _ => return 0,
+        };
+        return if needed > back { back } else { 0 };
+    }
+    0
+}
+
 /// The last `max_bytes` of a file, from a line boundary.
 pub fn read_tail(path: &std::path::Path, max_bytes: u64) -> String {
     let Ok(meta) = std::fs::metadata(path) else {
@@ -470,6 +520,74 @@ pub fn remove_log(path: &std::path::Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+
+    fn append(path: &std::path::Path, bytes: &[u8]) {
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .unwrap();
+        file.write_all(bytes).unwrap();
+    }
+
+    // The offset is what was read, not the length measured before reading, so
+    // a line appended in between is neither skipped nor printed twice
+    #[test]
+    fn a_followed_log_prints_each_line_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.log");
+        append(&path, b"one\n");
+        let (text, offset) = read_follow(&path, 0);
+        assert_eq!((text.as_str(), offset), ("one\n", 4));
+
+        append(&path, b"two\n");
+        append(&path, b"three\n");
+        let (text, offset) = read_follow(&path, offset);
+        assert_eq!((text.as_str(), offset), ("two\nthree\n", 14));
+
+        let (text, offset) = read_follow(&path, offset);
+        assert_eq!(
+            (text.as_str(), offset),
+            ("", 14),
+            "nothing is printed again"
+        );
+    }
+
+    #[test]
+    fn a_character_split_across_two_reads_prints_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.log");
+        // U+00E9 is two bytes: the first lands before the second
+        append(&path, b"caf\xC3");
+        let (text, offset) = read_follow(&path, 0);
+        assert_eq!((text.as_str(), offset), ("caf", 3), "the half waits");
+
+        append(&path, b"\xA9\n");
+        let (text, offset) = read_follow(&path, offset);
+        assert_eq!((text.as_str(), offset), ("\u{e9}\n", 6));
+    }
+
+    #[test]
+    fn a_truncated_log_is_followed_from_its_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.log");
+        append(&path, b"a long first line\n");
+        let (_, offset) = read_follow(&path, 0);
+        std::fs::write(&path, "new\n").unwrap();
+        let (text, offset) = read_follow(&path, offset);
+        assert_eq!((text.as_str(), offset), ("new\n", 4));
+    }
+
+    #[test]
+    fn a_byte_that_is_not_utf8_is_replaced_not_held() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.log");
+        append(&path, b"a\xFFb\n");
+        let (text, offset) = read_follow(&path, 0);
+        assert_eq!((text.as_str(), offset), ("a\u{fffd}b\n", 4));
+    }
+
     use super::*;
     use crate::state::TunnelStatus;
 

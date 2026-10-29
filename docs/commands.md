@@ -381,7 +381,7 @@ $ echo $?
 `add -s` and `restart` start the tunnel the same way, so a tunnel `add -s` could not start is
 still added and the command exits 1.
 
-`logs -f` follows. `restart` rewrites the service file before starting, so it also picks up
+`logs -f` follows, printing each line once even while the tunnel writes. `restart` rewrites the service file before starting, so it also picks up
 an edited target. Starting a tunnel empties its log first, so what the pane shows belongs to
 the run in front of you; `L` in the TUI clears the selected tunnel's log without restarting it. `delete` removes the relay route first, then the service, then the record and the log.
 

@@ -739,22 +739,17 @@ pub async fn cmd_logs(account: Option<&str>, name: &str, follow: bool, lines: us
     let mut offset = std::fs::metadata(&path).map_or(0, |m| m.len());
     loop {
         tokio::time::sleep(FOLLOW_INTERVAL).await;
-        let Ok(meta) = std::fs::metadata(&path) else {
-            continue;
-        };
-        if meta.len() < offset {
-            offset = 0;
-        }
-        if meta.len() == offset {
-            continue;
-        }
         // Only what arrived since the last look, so following a large log
-        // does not re-read it on every tick
-        let fresh = daemon::read_from(&path, offset);
+        // does not re-read it on every tick. The offset moves by what was
+        // read, not by a length taken before the read.
+        let (fresh, next) = daemon::read_follow(&path, offset);
+        offset = next;
+        if fresh.is_empty() {
+            continue;
+        }
         print!("{fresh}");
         use std::io::Write;
         std::io::stdout().flush().ok();
-        offset = meta.len();
     }
 }
 
