@@ -81,8 +81,11 @@ The Homebrew route installs a prebuilt binary from the `gcheliz/tap` tap, so it 
 toolchain. The command taps `gcheliz/tap` for you, so no `brew tap` comes first. Tapping by hand
 and then running `brew install gtunnel` is not the same: Homebrew 6 and later does not load a short
 name from an untrusted tap, so that form needs `brew trust --formula gcheliz/tap/gtunnel` in between.
-Tarballs cover macOS arm64 and Intel and Linux amd64 and arm64; only macOS arm64 has been
-exercised end to end. `brew upgrade gtunnel` upgrades it; the tap follows each release, so a new
+Tarballs cover macOS arm64 and Intel and Linux amd64 and arm64. macOS arm64 has been exercised end
+to end; on Linux amd64 and arm64 the formula installs and `gtunnel --version` runs in a container;
+macOS Intel is untested. On a Linux whose glibc is older than 2.39, such as Ubuntu 22.04, Homebrew
+first installs its own `glibc`, `gcc` and `binutils`, about 550 MB, as it does for any formula; on
+glibc 2.39 or newer it installs gtunnel alone. `brew upgrade gtunnel` upgrades it; the tap follows each release, so a new
 version shows up once the tap carries it. `gtunnel update` is for a downloaded or cargo-installed
 binary and points a Homebrew install at `brew upgrade` instead.
 
