@@ -2673,6 +2673,91 @@ fn the_instance_picker_starts_at_the_top() {
     assert!(rendered.contains("1/36"), "no position counter");
 }
 
+const LONG_INSTANCE: &str = "sample-instance-with-a-name-far-too-long-for-the-column-0";
+
+fn app_with_a_long_instance(selected: usize) -> App {
+    let mut app = app_with_two();
+    app.instances = (0..12)
+        .map(|i| InstanceChoice {
+            name: if i == 0 {
+                LONG_INSTANCE.to_string()
+            } else {
+                format!("short-instance-{i:02}")
+            },
+            zone: "europe-west1-b".to_string(),
+        })
+        .collect();
+    app.input_mode = InputMode::AddInstance;
+    app.instance_selected = selected;
+    app
+}
+
+fn lines_with(app: &App, width: u16, height: u16, needle: &str) -> Vec<String> {
+    text_of(&screen(app, width, height))
+        .into_iter()
+        .filter(|l| l.contains(needle))
+        .collect()
+}
+
+#[test]
+fn a_long_instance_name_is_cut_and_the_zone_stays() {
+    let app = app_with_a_long_instance(1);
+    let cut = lines_with(&app, 80, 30, "\u{2026}");
+    assert_eq!(cut.len(), 1, "{cut:?}");
+    assert!(cut[0].contains("sample-instance-with"), "{}", cut[0]);
+    assert!(cut[0].contains("europe-west1-b"), "{}", cut[0]);
+    assert!(!cut[0].contains(LONG_INSTANCE), "{}", cut[0]);
+}
+
+#[test]
+fn a_short_name_is_not_cut() {
+    let app = app_with_many_instances(0);
+    let text = render_to_string(&app, 80, 30);
+    assert!(!text.contains('\u{2026}'), "{text}");
+    let row = lines_with(&app, 80, 30, "instance-00");
+    assert_eq!(row.len(), 1, "{row:?}");
+    assert!(row[0].contains("europe-west1-b"), "{}", row[0]);
+}
+
+#[test]
+fn the_detail_line_names_the_highlighted_row_only() {
+    let on_long = app_with_a_long_instance(0);
+    let on_short = app_with_a_long_instance(1);
+    // Full, and only in the detail line: the list row for it is cut
+    assert_eq!(lines_with(&on_long, 80, 30, LONG_INSTANCE).len(), 1);
+    assert!(lines_with(&on_short, 80, 30, LONG_INSTANCE).is_empty());
+    // The detail line is the second sight of the highlighted name
+    assert_eq!(lines_with(&on_short, 80, 30, "short-instance-01").len(), 2);
+    // Moving the selection changes the detail line, not where a list row sits
+    let first_row = |app: &App| {
+        text_of(&screen(app, 80, 30))
+            .iter()
+            .position(|l| l.contains("short-instance-02"))
+    };
+    assert_eq!(first_row(&on_long), first_row(&on_short));
+    assert!(first_row(&on_long).is_some());
+}
+
+#[test]
+fn the_detail_line_is_dropped_before_a_row() {
+    let app = app_with_a_long_instance(0);
+    let rows = |h: u16| lines_with(&app, 80, h, "europe-west1-b").len();
+    let detail = |h: u16| !lines_with(&app, 80, h, LONG_INSTANCE).is_empty();
+    assert!(detail(30), "the detail line shows when there is room");
+    let mut dropped = false;
+    for h in 12..=30u16 {
+        if !detail(h) {
+            dropped = true;
+            assert!(rows(h) >= super::PICKER_ROWS_KEPT, "{h}: {} rows", rows(h));
+        } else {
+            // The detail line is one of the lines carrying a zone, so the
+            // list proper still has its three rows
+            assert!(rows(h) > super::PICKER_ROWS_KEPT, "{h}: {} rows", rows(h));
+        }
+    }
+    assert!(dropped, "a short terminal never loses the detail line");
+}
+
 #[test]
 fn the_instance_picker_draws_the_error_set_for_it() {
     let mut app = at_the_name_prompt();

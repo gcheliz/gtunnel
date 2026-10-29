@@ -2987,12 +2987,65 @@ struct Picker<'a> {
     // What the choice is for, under the prompt; empty for none
     description: &'a str,
     filter: &'a str,
-    rows: Vec<String>,
+    // One row per choice, one cell per column; the first column is the
+    // flexible one and the others keep their width
+    rows: Vec<Vec<String>>,
     selected: usize,
     // Why the dialog came back, drawn where the dialog covers the status line
     error: Option<&'a str>,
     // Said in place of `nothing matches` while the rows are still on their way
     loading: Option<String>,
+}
+
+/// What the name column keeps before the other columns are cut instead: a
+/// name this wide still reads as itself, and the identity of a row is its
+/// name, not the zone or project beside it.
+const PICKER_NAME_FLOOR: usize = 16;
+
+/// The cells of a picker's rows laid out in `width` cells: the first column
+/// takes the room the others leave, up to its widest value, and is cut with
+/// `fit` when it does not fit; the others keep their width so the zone or the
+/// project name stays on the row. Returns the rows and whether any was cut.
+fn picker_columns(rows: &[Vec<String>], width: usize) -> (Vec<String>, bool) {
+    let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
+    let widest = |c: usize| {
+        rows.iter()
+            .map(|r| r.get(c).map_or(0, |cell| cells(cell)))
+            .max()
+            .unwrap_or(0)
+    };
+    let others: usize = (1..columns)
+        .map(widest)
+        .filter(|w| *w > 0)
+        .map(|w| w + 1)
+        .sum();
+    let first = widest(0);
+    let room = width.saturating_sub(2);
+    let name = first.min(
+        room.saturating_sub(others)
+            .max(PICKER_NAME_FLOOR.min(first)),
+    );
+    let mut cut = false;
+    let laid = rows
+        .iter()
+        .map(|row| {
+            let head = row.first().map_or("", String::as_str);
+            cut |= cells(head) > name;
+            let mut line = format!("{:<name$}", fit(head, name));
+            for c in 1..columns {
+                let w = widest(c);
+                if w > 0 {
+                    line.push(' ');
+                    line.push_str(&format!("{:<w$}", row.get(c).map_or("", String::as_str)));
+                }
+            }
+            let line = line.trim_end().to_string();
+            // The other columns alone can outrun a narrow frame
+            cut |= cells(&line) > room;
+            fit(&line, room)
+        })
+        .collect();
+    (laid, cut)
 }
 
 /// A dialog whose row list is taller than the dialog: the header is fixed and
@@ -3018,9 +3071,10 @@ fn render_picker(f: &mut Frame, p: Picker) {
         String::new()
     };
     let widest = (cells(prompt) + cells(&counter))
-        .max(rows.iter().map(|r| cells(r) + 2).max().unwrap_or(0))
+        .max(picker_natural_width(&rows))
         .max(cells(description).min(DESCRIPTION_WIDTH));
     render_dialog(f, title, dialog_width(widest, title), |width, room| {
+        let (laid, cut) = picker_columns(&rows, width);
         let mut ask = wrapped_indent(prompt, 0, width, Style::default().fg(theme::WARN));
         // The counter rides on the prompt's last row, or takes one of its own
         let muted = Style::default().fg(theme::MUTED);
@@ -3058,7 +3112,35 @@ fn render_picker(f: &mut Frame, p: Picker) {
             }
         }
 
-        let visible = room.saturating_sub(head.len());
+        // Under the list, for the highlighted row only: the full value of a
+        // name the list had to cut. Dropped before any list row, and absent
+        // when nothing was cut, since it would only repeat the row.
+        let said = |row: &Vec<String>| {
+            let said = row
+                .iter()
+                .filter(|c| !c.is_empty())
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(" ");
+            wrapped_indent(&said, 2, width, muted)
+        };
+        // Padded to the tallest any row would be, so the frame does not
+        // change height, and the list does not move, as the selection does
+        let mut detail = match rows.get(selected.min(total.saturating_sub(1))) {
+            Some(row) if cut => said(row),
+            _ => Vec::new(),
+        };
+        if cut {
+            let tallest = rows.iter().map(|r| said(r).len()).max().unwrap_or(0);
+            detail.resize(tallest, Line::raw(""));
+        }
+        let below = room.saturating_sub(head.len());
+        let detail = if below >= detail.len() + PICKER_ROWS_KEPT {
+            detail
+        } else {
+            Vec::new()
+        };
+        let visible = below - detail.len();
         let mut lines = head;
         if total == 0 {
             let said = loading.unwrap_or_else(|| "nothing matches".to_string());
@@ -3066,22 +3148,29 @@ fn render_picker(f: &mut Frame, p: Picker) {
         } else {
             let start = (selected.min(total - 1) + 1).saturating_sub(visible);
             lines.extend(
-                rows.iter()
+                laid.iter()
                     .enumerate()
                     .skip(start)
                     .take(visible)
                     .map(|(i, row)| picker_row(row, i == selected)),
             );
+            lines.extend(detail);
         }
         lines
     });
 }
 
+/// The width the rows would take unconstrained, two cells of indent included.
+fn picker_natural_width(rows: &[Vec<String>]) -> usize {
+    let (laid, _) = picker_columns(rows, usize::MAX);
+    laid.iter().map(|r| cells(r) + 2).max().unwrap_or(0)
+}
+
 fn render_instance_picker(f: &mut Frame, app: &App) {
-    let rows: Vec<String> = app
+    let rows = app
         .filtered_instances()
         .iter()
-        .map(|i| format!("{:<30} {}", i.name, i.zone))
+        .map(|i| vec![i.name.clone(), i.zone.clone()])
         .collect();
     render_picker(
         f,
@@ -3099,14 +3188,10 @@ fn render_instance_picker(f: &mut Frame, app: &App) {
 }
 
 fn render_project_picker(f: &mut Frame, app: &App) {
-    let rows: Vec<String> = app
+    let rows = app
         .filtered_projects()
         .iter()
-        .map(|p| {
-            format!("{:<30} {}", p.project_id, p.name)
-                .trim_end()
-                .to_string()
-        })
+        .map(|p| vec![p.project_id.clone(), p.name.clone()])
         .collect();
     render_picker(
         f,
@@ -3124,7 +3209,11 @@ fn render_project_picker(f: &mut Frame, app: &App) {
 }
 
 fn render_zone_picker(f: &mut Frame, app: &App) {
-    let rows: Vec<String> = app.filtered_zones().iter().map(|z| z.to_string()).collect();
+    let rows = app
+        .filtered_zones()
+        .iter()
+        .map(|z| vec![z.to_string()])
+        .collect();
     render_picker(
         f,
         Picker {
@@ -3141,18 +3230,15 @@ fn render_zone_picker(f: &mut Frame, app: &App) {
 }
 
 fn render_configuration_picker(f: &mut Frame, app: &App) {
-    let rows: Vec<String> = app
+    let rows = app
         .filtered_configurations()
         .iter()
         .map(|c| {
-            format!(
-                "{:<20} {:<30} {}",
-                c.name,
-                c.project.as_deref().unwrap_or("no project"),
-                if c.is_active { "(active)" } else { "" }
-            )
-            .trim_end()
-            .to_string()
+            vec![
+                c.name.clone(),
+                c.project.as_deref().unwrap_or("no project").to_string(),
+                if c.is_active { "(active)" } else { "" }.to_string(),
+            ]
         })
         .collect();
     render_picker(
@@ -3181,7 +3267,7 @@ fn render_account_picker(f: &mut Frame, app: &App) {
             prompt: InputMode::MoveTo.prompt(),
             description: "",
             filter: "",
-            rows: app.other_accounts(),
+            rows: app.other_accounts().into_iter().map(|a| vec![a]).collect(),
             selected: app.move_selected,
             error: app.draft_error.as_deref(),
             loading: None,
@@ -3197,7 +3283,7 @@ fn render_domain_picker(f: &mut Frame, app: &App) {
             prompt: InputMode::AddDomain.prompt(),
             description: InputMode::AddDomain.describe(),
             filter: "",
-            rows: app.domains.clone(),
+            rows: app.domains.iter().map(|d| vec![d.clone()]).collect(),
             selected: app.domain_selected,
             error: app.draft_error.as_deref(),
             loading: None,
