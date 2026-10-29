@@ -3,6 +3,22 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.38](https://github.com/gcheliz/gtunnel/compare/v0.2.37...v0.2.38) - 2026-10-29
+
+### Documentation
+
+- *(usage)* show the login check on a command that runs it ([#280](https://github.com/gcheliz/gtunnel/pull/280))
+- trim every page to what the reader needs ([#278](https://github.com/gcheliz/gtunnel/pull/278))
+- give each repeated topic one owner and link to it elsewhere ([#277](https://github.com/gcheliz/gtunnel/pull/277))
+- lead every page with what it gives and fix the facts that were wrong ([#276](https://github.com/gcheliz/gtunnel/pull/276))
+- *(install)* say what Homebrew pulls on an older Linux and which platforms ran ([#275](https://github.com/gcheliz/gtunnel/pull/275))
+- *(install)* correct the tap and trust steps for Homebrew 6 ([#274](https://github.com/gcheliz/gtunnel/pull/274))
+- *(install)* say how to trust the tap and what to do with a second copy ([#273](https://github.com/gcheliz/gtunnel/pull/273))
+
+### Fixed
+
+- *(tui)* show health as its icon, read stopped during a stop, fill the demo logs ([#283](https://github.com/gcheliz/gtunnel/pull/283))
+
 ## [0.2.37](https://github.com/gcheliz/gtunnel/compare/v0.2.36...v0.2.37) - 2026-10-29
 
 ### Documentation
