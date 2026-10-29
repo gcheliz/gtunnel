@@ -190,6 +190,21 @@ pub const RULE_LEAD: usize = 8;
 /// never cuts a string, since half a command is worse than none. The total is
 /// `w` cells either way, so a caller can swap one for the other.
 pub fn rule_line_with(w: usize, notice: Option<&UpdateNotice>) -> Line<'static> {
+    rule_line_noting(w, notice, false)
+}
+
+/// The words a failed check leaves where the notice would be. Without them a
+/// laptop that cannot reach GitHub looks the same as one that is up to date.
+pub const CHECK_FAILED_HINT: &str = "update check failed";
+
+/// `rule_line_with`, and when no update is available and the last check
+/// failed, the failed-check hint in the notice's place. An update outranks the
+/// hint: a version already cached is still true news.
+pub fn rule_line_noting(
+    w: usize,
+    notice: Option<&UpdateNotice>,
+    check_failed: bool,
+) -> Line<'static> {
     let muted = Style::default().fg(theme::MUTED);
     let version = notice.map(|n| format!("\u{2191} v{}", n.latest));
 
@@ -216,6 +231,9 @@ pub fn rule_line_with(w: usize, notice: Option<&UpdateNotice>) -> Line<'static> 
             text_cells = version_cells;
             tail = vec![Span::styled(version, warn)];
         }
+    } else if check_failed && fits(CHECK_FAILED_HINT.chars().count()) {
+        text_cells = CHECK_FAILED_HINT.chars().count();
+        tail = vec![Span::styled(CHECK_FAILED_HINT, muted)];
     }
 
     if tail.is_empty() {
@@ -832,18 +850,22 @@ pub fn render(f: &mut Frame, app: &App) {
     };
     let notice_in_header = header.len() > 1;
     if let (true, Some(last)) = (notice_in_header, header.last_mut()) {
-        *last = rule_line_with(width as usize, app.update.as_ref());
+        *last = rule_line_noting(width as usize, app.update.as_ref(), app.update_check_failed);
     }
 
     // The design closes the panes off from the footer the same way it closes
     // the header off from them, so the two rules bracket the work area.
-    let footer_notice = if notice_in_header {
-        None
+    let (footer_notice, footer_failed) = if notice_in_header {
+        (None, false)
     } else {
-        app.update.as_ref()
+        (app.update.as_ref(), app.update_check_failed)
     };
     f.render_widget(
-        Paragraph::new(rule_line_with(width as usize, footer_notice)),
+        Paragraph::new(rule_line_noting(
+            width as usize,
+            footer_notice,
+            footer_failed,
+        )),
         main[2],
     );
 

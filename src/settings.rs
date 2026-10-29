@@ -40,6 +40,15 @@ pub fn default_list_probe_timeout() -> String {
     humantime::format_duration(LIST_PROBE_TIMEOUT).to_string()
 }
 
+/// How old the cached release answer may get before the next TUI or CLI start
+/// asks GitHub again. Six hours, not a day: a release is news the same
+/// afternoon, and the check is one small request made detached.
+pub const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+
+pub fn default_update_check_interval() -> String {
+    humantime::format_duration(UPDATE_CHECK_INTERVAL).to_string()
+}
+
 pub fn default_discovery() -> bool {
     true
 }
@@ -185,6 +194,11 @@ const LIST_PROBE_TIMEOUT_KEY: Key = Key {
     var: "GTUNNEL_LIST_PROBE_TIMEOUT",
     legacy: None,
 };
+const UPDATE_CHECK_INTERVAL_KEY: Key = Key {
+    name: "update_check_interval",
+    var: "GTUNNEL_UPDATE_CHECK_INTERVAL",
+    legacy: None,
+};
 const DISCOVERY_KEY: Key = Key {
     name: "discovery",
     var: "GTUNNEL_DISCOVERY",
@@ -272,6 +286,7 @@ pub struct Settings {
     pub start_deadline: Duration,
     pub service_call_timeout: Duration,
     pub list_probe_timeout: Duration,
+    pub update_check_interval: Duration,
     pub discovery: bool,
     pub notifications: bool,
     pub watch_probe_timeout: Duration,
@@ -536,6 +551,14 @@ pub fn resolve(config: &Config, env: EnvFn) -> Result<Resolved> {
         shown,
         &mut overrides,
     )?;
+    let update_check_interval = plain_key(
+        env,
+        &UPDATE_CHECK_INTERVAL_KEY,
+        &config.update_check_interval,
+        parse_duration,
+        shown,
+        &mut overrides,
+    )?;
     let discovery = switch_key(env, &DISCOVERY_KEY, config.discovery, &mut overrides)?;
     let notifications = switch_key(
         env,
@@ -654,6 +677,7 @@ pub fn resolve(config: &Config, env: EnvFn) -> Result<Resolved> {
             start_deadline,
             service_call_timeout,
             list_probe_timeout,
+            update_check_interval,
             discovery,
             notifications,
             watch_probe_timeout,
@@ -991,6 +1015,53 @@ mod tests {
             assert_eq!(code, 2, "{msg}");
             assert!(msg.contains("list_probe_timeout"), "{msg}");
         }
+    }
+
+    #[test]
+    fn the_update_check_defaults_to_six_hours_and_the_file_sets_it() {
+        assert_eq!(
+            settings_of("", &[]).update_check_interval,
+            Duration::from_secs(6 * 3600)
+        );
+        let s = settings_of("update_check_interval = \"12h\"\n", &[]);
+        assert_eq!(s.update_check_interval, Duration::from_secs(12 * 3600));
+    }
+
+    #[test]
+    fn a_variable_beats_the_update_check_interval_in_the_file_and_doctor_can_name_it() {
+        let r = resolve_with(
+            "update_check_interval = \"12h\"\n",
+            &[("GTUNNEL_UPDATE_CHECK_INTERVAL", "1h")],
+        )
+        .expect("resolves");
+        assert_eq!(r.settings.update_check_interval, Duration::from_secs(3600));
+        assert_eq!(
+            r.overrides,
+            vec![Override {
+                key: "update_check_interval",
+                variable: "GTUNNEL_UPDATE_CHECK_INTERVAL",
+                file: "12h".to_string(),
+                effective: "1h".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_bad_update_check_variable_or_file_value_is_a_usage_error_naming_it() {
+        for value in ["soon", "0s", "-1", "0"] {
+            let err =
+                resolve_with("", &[("GTUNNEL_UPDATE_CHECK_INTERVAL", value)]).expect_err(value);
+            let (code, text) = exit_and_text(&err);
+            assert_eq!(code, 2, "{value}: {text}");
+            assert!(
+                text.contains("GTUNNEL_UPDATE_CHECK_INTERVAL"),
+                "{value}: {text}"
+            );
+        }
+        let err = resolve_with("update_check_interval = \"0s\"\n", &[]).expect_err("zero");
+        let (code, msg) = exit_and_text(&err);
+        assert_eq!(code, 2, "{msg}");
+        assert!(msg.contains("update_check_interval"), "{msg}");
     }
 
     #[test]

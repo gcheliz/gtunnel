@@ -908,7 +908,10 @@ the latest release the second line is `gtunnel v<version> is already the latest 
 Every other command prints a one-line hint when a cached check found a newer version: see
 [Update hint](usage.md#update-hint).
 
-The check runs at most once a day, in the background, and never blocks a command. A
+The check runs in the background and never blocks a command, at most once per
+[`update_check_interval`](configuration.md#settings-the-environment-can-override) (6 hours by
+default). A check that fails is recorded: it holds the next one off for the same interval, and the
+TUI says `update check failed` until a check succeeds. A
 downloaded binary and one in `~/.cargo/bin` replace themselves after verifying the published
 SHA-256; a Homebrew install is detected and pointed at `brew upgrade gtunnel` instead.
 
