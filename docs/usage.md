@@ -84,6 +84,11 @@ exercised end to end. `brew upgrade gtunnel` upgrades it; the tap follows each r
 version shows up once the tap carries it. `gtunnel update` is for a downloaded or cargo-installed
 binary and points a Homebrew install at `brew upgrade` instead.
 
+Homebrew loads a formula from a non-official tap only after you trust it (`brew trust --help`).
+If `brew install` refuses, read the formula at
+[gcheliz/homebrew-tap](https://github.com/gcheliz/homebrew-tap/blob/main/Formula/gtunnel.rb),
+then run `brew trust --formula gcheliz/tap/gtunnel`. gtunnel never runs `brew trust` for you.
+
 Specify the release version and substitute your machine's file: `gtunnel-macos-arm64`,
 `gtunnel-macos-intel`, `gtunnel-linux-amd64` or `gtunnel-linux-arm64`.
 
@@ -102,6 +107,33 @@ so they run on any glibc.
 $ gtunnel --version
 gtunnel 0.2.37
 ```
+
+#### Already installed another way
+
+A machine can hold two copies: one from `cargo install` in `~/.cargo/bin` and one from Homebrew in
+`/opt/homebrew/bin`. They share one config directory, one tunnel list and the same service labels.
+The copy first on `PATH` is the one a bare `gtunnel` runs, and each installed service names the
+binary that wrote it.
+
+| Check | Command |
+|---|---|
+| Which copies exist, in `PATH` order | `type -a gtunnel` |
+| Which version each one is | `gtunnel --version`, and `/opt/homebrew/bin/gtunnel --version` |
+
+Keep one. To move to Homebrew, remove the other copy, then run any command that lists or starts
+tunnels with the Homebrew binary. An installed service whose binary no longer exists is rewritten to
+name the running one on the first such command, and gtunnel prints
+`gtunnel: reinstalled N services to match this version`. `gtunnel restart <name>` does the same for
+a single tunnel: it stops it, rewrites the service and starts it.
+
+```
+$ rm ~/.cargo/bin/gtunnel
+$ hash -r
+$ gtunnel list
+```
+
+A cargo or download copy upgrades with `gtunnel update`, a Homebrew copy with
+`brew upgrade gtunnel`. Each command upgrades only the copy it belongs to.
 
 #### Proving where the binary came from
 
