@@ -1752,23 +1752,29 @@ fn inline(label: &str) -> Span<'static> {
 }
 
 /// Health is probed only while a tunnel runs, so a row that is not running has
-/// nothing to report and `Unknown` there would read as "no answer yet". It says
-/// `stopped`, muted because nothing is wrong. A credential failure still wins:
+/// nothing to report and `Unknown` there would read as "no answer yet". It shows
+/// the stopped circle, muted because nothing is wrong, and not the list's `✗`,
+/// which is what unhealthy already uses. A stop in flight reads the same, since
+/// the row stays `Running` until the reload and would otherwise show a verdict
+/// about a tunnel the reader has just ended. A credential failure still wins:
 /// it is the one thing the reader has to act on.
+///
+/// The symbol alone, because the colour and the glyph already say it and the
+/// word beside it was the same fact twice; `docs/usage.md` carries the legend.
 fn health_span(entry: &TunnelEntry) -> Span<'static> {
-    if entry.status != TunnelStatus::Running && entry.health != HealthStatus::AuthExpired {
+    let stopped = entry.status != TunnelStatus::Running || entry.is_stopping();
+    if stopped && entry.health != HealthStatus::AuthExpired {
         return Span::styled(
-            "\u{2717} stopped",
+            TunnelStatus::Stopped.symbol(),
             Style::default()
                 .fg(theme::MUTED)
                 .add_modifier(Modifier::BOLD),
         );
     }
-    value(format!(
-        "{} {}",
+    Span::styled(
         entry.health.symbol(),
-        entry.health.label()
-    ))
+        status_style(TunnelStatus::Running, entry.health).add_modifier(Modifier::BOLD),
+    )
 }
 
 /// The figure beside an `inline` label. It is what the row exists for, so it

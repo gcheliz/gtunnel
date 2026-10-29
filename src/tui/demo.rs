@@ -8,24 +8,19 @@ use crate::gcp::monitoring::LbStats;
 use crate::probe::{HealthStatus, MetricsHistory, TunnelMetrics};
 use crate::state::{AccessTarget, PersistentTunnel, TunnelSpec, TunnelStatus};
 
-// The shape `logfilter::format_line` writes: an RFC 3339 stamp, then either
-// gcloud's own line or the one normalised `gtunnel: conn <id> ...` line that
-// pairs a connection's open with its close and carries the client's source port
-const DEMO_LOG: &[&str] = &[
-    "2026-10-27T09:14:02Z Testing if tunnel connection works.",
-    "2026-10-27T09:14:03Z Listening on port [15432].",
-    "2026-10-27T09:14:03Z WARNING: `gcloud compute start-iap-tunnel` is in beta for this instance.",
-    "2026-10-27T09:31:40Z gtunnel: conn iap-3 open from 127.0.0.1:52118",
-    "2026-10-27T09:31:52Z gtunnel: conn iap-3 from 127.0.0.1:52118 closed after 12.4s",
-    "2026-10-27T09:33:07Z gtunnel: conn iap-4 open from 127.0.0.1:52119",
-    "2026-10-27T09:33:07Z gtunnel: conn iap-5 open from 127.0.0.1:52120",
-];
+// Every row of the demo has a log of its own, written in the shapes the real
+// files hold: gtunnel's `gtunnel: ...` events, which `daemon::log_event` stamps,
+// then gcloud's own lines, then the normalised `gtunnel: conn <id> ...` lines
+// that `logfilter` pairs per connection. The first stamp of a row is a fixed
+// date, so the lines read the same in every recording and no clock is involved.
+const LOG_START: &str = "2026-10-27T09:14:02Z";
 
-const STAGING_LOG: &[&str] = &[
-    "2026-10-27T08:02:11Z Testing if tunnel connection works.",
-    "2026-10-27T08:02:12Z Listening on port [15379].",
-    "2026-10-27T08:20:45Z gtunnel: conn iap-1 open from 127.0.0.1:61204",
-];
+// How long each demo connection lasts, in tenths of a second, cycling. Fixed so
+// the lines a recording shows do not depend on when it was made.
+const CONN_TENTHS: [u64; 4] = [32, 124, 18, 75];
+
+// Ticks between one connection event and the next: 25 of `TICK`, about 3 seconds
+const EVENT_EVERY: u32 = 25;
 
 fn access(
     account: &str,
@@ -349,15 +344,411 @@ impl App {
         } else {
             demo_entries()
         };
-        self.logs = if staging { STAGING_LOG } else { DEMO_LOG }
-            .iter()
-            .map(|l| l.to_string())
-            .collect();
+        // The other account's rows are other tunnels, so nothing carries over
+        self.demo_logs = DemoLogs::default();
+        self.logs.clear();
         self.has_relay = !staging;
         self.domains = if staging {
             Vec::new()
         } else {
             vec!["demo.example.com".to_string()]
         };
+        self.sync_demo_logs();
+    }
+
+    /// Puts the selected row's log in the pane when the selection or the account
+    /// has changed, as the real loop refetches on a change of name. The pane is
+    /// a copy of the row's file, which lives in the cache: moving the selection
+    /// clears the pane before this runs, so the pane cannot be what is kept.
+    pub fn sync_demo_logs(&mut self) {
+        let key = self
+            .selected_entry()
+            .map(|e| format!("{}/{}", e.tunnel.account_name, e.name()));
+        if key == self.demo_logs.shown {
+            return;
+        }
+        self.logs = match (&key, self.entries.get(self.selected)) {
+            (Some(key), Some(entry)) => {
+                if !self.demo_logs.cache.contains_key(key) {
+                    let (lines, next) = demo_log(entry);
+                    self.demo_logs.cache.insert(key.clone(), lines);
+                    self.demo_logs.flow.insert(key.clone(), next);
+                }
+                self.demo_logs.cache[key].clone()
+            }
+            _ => Vec::new(),
+        };
+        self.demo_logs.shown = key;
+    }
+
+    /// One tick of the demo's activity: every few seconds the selected row gains
+    /// a connection open, and on the next beat its close. Only a row whose log
+    /// carries connection lines in real life gets them, so a jump tunnel and a
+    /// public URL stay as quiet as they are.
+    pub fn tick_demo_logs(&mut self) {
+        self.demo_logs.ticks += 1;
+        if !self.demo_logs.ticks.is_multiple_of(EVENT_EVERY) {
+            return;
+        }
+        let Some(entry) = self.selected_entry() else {
+            return;
+        };
+        if entry.status != TunnelStatus::Running || !has_connection_lines(&entry.tunnel) {
+            return;
+        }
+        let Some(key) = self.demo_logs.shown.clone() else {
+            return;
+        };
+        let Some(next) = self.demo_logs.flow.get_mut(&key) else {
+            return;
+        };
+        let Some(lines) = self.demo_logs.cache.get_mut(&key) else {
+            return;
+        };
+        let last = lines
+            .last()
+            .and_then(|l| l.split(' ').next())
+            .and_then(|stamp| humantime::parse_rfc3339(stamp).ok());
+        let Some(last) = last else {
+            return;
+        };
+        let line = match next.open.take() {
+            None => {
+                let id = next.id;
+                next.id += 1;
+                let port = source_port(id);
+                next.open = Some((id, port));
+                let at = last + Duration::from_secs(6);
+                format!(
+                    "{} gtunnel: conn iap-{id} open from 127.0.0.1:{port}",
+                    humantime::format_rfc3339_seconds(at)
+                )
+            }
+            Some((id, port)) => {
+                let tenths = CONN_TENTHS[id as usize % CONN_TENTHS.len()];
+                let at = last + Duration::from_secs(tenths.div_ceil(10));
+                format!(
+                    "{} gtunnel: conn iap-{id} from 127.0.0.1:{port} closed after {}.{}s",
+                    humantime::format_rfc3339_seconds(at),
+                    tenths / 10,
+                    tenths % 10
+                )
+            }
+        };
+        lines.push(line);
+        let excess = lines.len().saturating_sub(super::ui::LOG_LINES);
+        lines.drain(..excess);
+        self.logs = lines.clone();
+    }
+
+    /// What the runtime's reload would show once an op had landed. The demo has
+    /// no runtime, so without this a stop leaves the row running as it was, and
+    /// the Metrics line of a row the reader has just stopped reads healthy.
+    pub fn land_demo_op(&mut self, op: &super::app::Op) {
+        use super::app::Op;
+        let (name, status, health) = match op {
+            Op::Stop(name) | Op::StopRun(name) => {
+                (name, TunnelStatus::Stopped, HealthStatus::Unknown)
+            }
+            Op::Start(name) => (name, TunnelStatus::Running, HealthStatus::Healthy),
+            _ => return,
+        };
+        if let Some(entry) = self.entries.iter_mut().find(|e| e.name() == name) {
+            entry.status = status;
+            entry.health = health;
+        }
+    }
+}
+
+/// What the pane keeps between rows and between ticks.
+#[derive(Debug, Clone, Default)]
+pub struct DemoLogs {
+    // `account/name` of the row whose log is in `App::logs`
+    shown: Option<String>,
+    // The logs of the rows not on screen
+    cache: std::collections::HashMap<String, Vec<String>>,
+    // The next connection id and the connection waiting for its close, per row
+    flow: std::collections::HashMap<String, Flow>,
+    ticks: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Flow {
+    id: u32,
+    open: Option<(u32, u16)>,
+}
+
+// The client's port, which is what tells two connections apart on screen
+fn source_port(id: u32) -> u16 {
+    52_117 + id as u16
+}
+
+// A jump tunnel's ssh logs no connection of its own, and an expose tunnel runs
+// without `--conns`: only an access tunnel straight to an instance or a
+// destination group has the `gtunnel: conn` lines.
+fn has_connection_lines(tunnel: &PersistentTunnel) -> bool {
+    matches!(
+        &tunnel.spec,
+        TunnelSpec::Access {
+            target: AccessTarget::Instance { .. } | AccessTarget::DestGroup { .. },
+            ..
+        }
+    )
+}
+
+/// The log file a row would have, and the id its next connection takes. An
+/// unmanaged row has none: gtunnel never installed it, so there is no file to
+/// read and the real pane says so too.
+fn demo_log(entry: &TunnelEntry) -> (Vec<String>, Flow) {
+    let quiet = Flow { id: 1, open: None };
+    if entry.kind == TunnelKind::External {
+        return (Vec::new(), quiet);
+    }
+    let t = &entry.tunnel;
+    // The two lines every install writes, whatever the tunnel is
+    let mut lines = vec![
+        format!("{LOG_START} gtunnel: {} -> {}", t.name, t.display_target()),
+        format!(
+            "{LOG_START} gtunnel: starting {} on {}",
+            t.name,
+            t.display_url()
+        ),
+    ];
+    if entry.status != TunnelStatus::Running {
+        lines.push("2026-10-27T09:40:19Z gtunnel: stopped by gtunnel".to_string());
+        return (lines, quiet);
+    }
+    if !has_connection_lines(t) {
+        return (lines, quiet);
+    }
+    let TunnelSpec::Access { local_port, .. } = &t.spec else {
+        return (lines, quiet);
+    };
+    lines.push("2026-10-27T09:14:03Z Testing if tunnel connection works.".to_string());
+    lines.push(format!(
+        "2026-10-27T09:14:03Z Listening on port [{local_port}]."
+    ));
+    // One finished connection, then as many still open as the metrics count,
+    // so the pane and the Metrics line tell the same story
+    lines.push(format!(
+        "2026-10-27T09:31:40Z gtunnel: conn iap-1 open from 127.0.0.1:{}",
+        source_port(1)
+    ));
+    lines.push(format!(
+        "2026-10-27T09:31:52Z gtunnel: conn iap-1 from 127.0.0.1:{} closed after 12.4s",
+        source_port(1)
+    ));
+    let held = entry
+        .metrics
+        .as_ref()
+        .map_or(0, |m| m.active_connections)
+        .min(2) as u32;
+    for id in 2..2 + held {
+        lines.push(format!(
+            "2026-10-27T09:33:07Z gtunnel: conn iap-{id} open from 127.0.0.1:{}",
+            source_port(id)
+        ));
+    }
+    (
+        lines,
+        Flow {
+            id: 2 + held,
+            open: None,
+        },
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::app::Op;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn press(app: &mut App, code: KeyCode) {
+        app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+        app.sync_demo_logs();
+    }
+
+    fn select(app: &mut App, name: &str) {
+        app.selected = app
+            .entries
+            .iter()
+            .position(|e| e.name() == name)
+            .expect("a row of that name");
+        app.sync_demo_logs();
+    }
+
+    fn ticks(app: &mut App, n: u32) {
+        for _ in 0..n {
+            app.tick_demo_logs();
+        }
+    }
+
+    #[test]
+    fn moving_the_selection_fills_the_pane_with_that_rows_log() {
+        let mut app = App::new_demo();
+        let first = app.logs.clone();
+        assert!(!first.is_empty());
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.selected_entry().expect("row").name(), "redis");
+        assert!(
+            !app.logs.is_empty(),
+            "a jump tunnel still has its install lines"
+        );
+        assert_ne!(app.logs, first);
+        press(&mut app, KeyCode::Down);
+        assert!(
+            app.logs.iter().any(|l| l.contains("10.0.0.5:5432")),
+            "{:?}",
+            app.logs
+        );
+    }
+
+    #[test]
+    fn every_managed_row_in_both_accounts_has_a_log() {
+        let mut app = App::new_demo();
+        for account in ["demo", "staging"] {
+            app.account = account.to_string();
+            app.load_demo_account();
+            for i in 0..app.entries.len() {
+                app.selected = i;
+                app.sync_demo_logs();
+                let entry = app.selected_entry().expect("row");
+                if entry.kind == TunnelKind::External {
+                    assert!(app.logs.is_empty(), "an unmanaged row has no file");
+                } else {
+                    assert!(!app.logs.is_empty(), "{}", entry.name());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_jump_tunnel_stays_silent_and_an_unmanaged_row_has_no_log() {
+        let mut app = App::new_demo();
+        select(&mut app, "redis");
+        let before = app.logs.clone();
+        ticks(&mut app, EVENT_EVERY * 4);
+        assert_eq!(app.logs, before);
+        assert!(!app.logs.iter().any(|l| l.contains("conn ")));
+        select(&mut app, "cache-1:6379");
+        assert!(app.logs.is_empty());
+    }
+
+    #[test]
+    fn every_line_has_the_shape_the_binary_writes() {
+        let mut app = App::new_demo();
+        for name in ["db", "pg-hosts", "api", "gt-7f3a91", "gt-3b2c10"] {
+            select(&mut app, name);
+            ticks(&mut app, EVENT_EVERY * 2);
+            for line in &app.logs {
+                let (stamp, rest) = line.split_once(' ').expect("a stamp then text");
+                humantime::parse_rfc3339(stamp).unwrap_or_else(|_| panic!("{line}"));
+                assert!(!rest.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn ticks_open_a_connection_then_close_it() {
+        let mut app = App::new_demo();
+        let before = app.logs.len();
+        ticks(&mut app, EVENT_EVERY - 1);
+        assert_eq!(app.logs.len(), before, "nothing arrives before the beat");
+        ticks(&mut app, 1);
+        assert_eq!(app.logs.len(), before + 1);
+        assert!(app
+            .logs
+            .last()
+            .expect("line")
+            .contains(" open from 127.0.0.1:"));
+        ticks(&mut app, EVENT_EVERY);
+        let close = app.logs.last().expect("line");
+        assert!(close.contains(" closed after "), "{close}");
+        let id = app.logs[before].split("conn ").nth(1).expect("id");
+        let id = id.split(' ').next().expect("id");
+        assert!(close.contains(&format!("conn {id} from ")), "{close}");
+    }
+
+    #[test]
+    fn the_stamps_only_move_forward() {
+        let mut app = App::new_demo();
+        ticks(&mut app, EVENT_EVERY * 12);
+        let stamps: Vec<_> = app
+            .logs
+            .iter()
+            .map(|l| humantime::parse_rfc3339(l.split(' ').next().expect("stamp")).expect("parse"))
+            .collect();
+        assert!(stamps.windows(2).all(|w| w[0] <= w[1]), "{:?}", app.logs);
+    }
+
+    #[test]
+    fn activity_never_grows_the_pane_past_the_cap() {
+        let mut app = App::new_demo();
+        ticks(
+            &mut app,
+            EVENT_EVERY * (super::super::ui::LOG_LINES as u32 + 50),
+        );
+        assert_eq!(app.logs.len(), super::super::ui::LOG_LINES);
+    }
+
+    #[test]
+    fn a_row_keeps_its_new_lines_when_the_reader_comes_back() {
+        let mut app = App::new_demo();
+        ticks(&mut app, EVENT_EVERY * 3);
+        let grown = app.logs.clone();
+        // By the keys, which clear the pane before the demo loop refills it
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        assert_ne!(app.logs, grown);
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.logs, grown);
+    }
+
+    #[test]
+    fn the_same_ticks_always_write_the_same_lines() {
+        let run = || {
+            let mut app = App::new_demo();
+            ticks(&mut app, EVENT_EVERY * 6);
+            app.logs
+        };
+        assert_eq!(run(), run());
+    }
+
+    #[test]
+    fn cycling_the_account_loads_the_new_rows_log() {
+        let mut app = App::new_demo();
+        app.next_account();
+        app.load_demo_account();
+        assert_eq!(app.account, "staging");
+        assert!(
+            app.logs.iter().any(|l| l.contains("cache")),
+            "{:?}",
+            app.logs
+        );
+    }
+
+    #[test]
+    fn a_stopped_row_gains_no_activity_and_reads_stopped() {
+        let mut app = App::new_demo();
+        app.land_demo_op(&Op::Stop("db".to_string()));
+        let before = app.logs.len();
+        ticks(&mut app, EVENT_EVERY * 3);
+        assert_eq!(app.logs.len(), before);
+        assert_eq!(app.entries[0].status, TunnelStatus::Stopped);
+    }
+
+    #[test]
+    fn stopping_in_the_demo_shows_the_stopped_circle() {
+        let mut app = App::new_demo();
+        let mut seen = None;
+        if let Some(op) = app.handle_key(KeyEvent::new(KeyCode::Char('S'), KeyModifiers::NONE)) {
+            app.land_demo_op(&op);
+            seen = Some(op);
+        }
+        assert_eq!(seen, Some(Op::Stop("db".to_string())));
+        assert_eq!(app.entries[0].status, TunnelStatus::Stopped);
+        assert_eq!(app.entries[0].health, HealthStatus::Unknown);
     }
 }

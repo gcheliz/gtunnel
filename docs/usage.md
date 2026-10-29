@@ -463,7 +463,7 @@ configurations, projects, zones and instances.
 | This tunnel's URL and log | `c` copy the URL, `l` copy the log to clipboard, `o` open it, `L` clear the log, `r` refresh the list, metrics and health |
 | The program | `;` cycle accounts (the relay and its domains change with the account), `:` the accounts page, `?` the keymap, `C` the config page, `q` quit, `Esc` close a page or cancel a prompt, `PgUp` `PgDn` and `g` `G` scroll the keymap page, `Ctrl+Z` suspend, `Ctrl+C` quit from anywhere |
 
-Details shows the tunnel's health as a symbol and a word. A failed probe is named by what
+The Metrics pane shows the tunnel's health as a symbol. A failed probe is named by what
 the log says, so the fix is on screen instead of in the log:
 
 | Health | Symbol | Meaning | Do |
@@ -473,7 +473,7 @@ the log says, so the fix is on screen instead of in the log:
 | auth expired | `⊗` | no answer, and the log in the last two minutes says `Reauthentication required` or `gcloud auth login`; or the tunnel stopped itself for that reason and has not been started since | `gcloud auth login`, then `s` (`R` while it still runs) |
 | crash loop | `↻` | the service restarted three times or more inside two minutes | check the log; a single restart after the machine wakes is expected: [troubleshooting](troubleshooting.md#restarts-after-the-laptop-wakes) |
 | checking | `…` | the first probe is still in flight | wait |
-| stopped | `✗` | the tunnel is not running, so there is nothing to probe | `s` to start |
+| stopped | `○` | the tunnel is not running, or a stop is in flight, so there is nothing to probe | `s` to start |
 | unknown | `?` | a running tunnel that cannot be probed: no local port is known | none |
 
 A `[4033:` line is not auth expired: IAP refused an identity that is logged in, so the fix is

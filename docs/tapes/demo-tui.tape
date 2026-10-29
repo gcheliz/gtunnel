@@ -35,17 +35,20 @@ Sleep 3s
 # Rows: an Access tunnel, a jump through `bastion`, a destination group, a run an
 # agent opened (its tag and detail pane show when it stops), an IAP process
 # gtunnel did not start, a public URL with load-balancer traffic, and an
-# ephemeral URL behind IAP sign-in. The header rule shows an available update
-Sleep 4s
+# ephemeral URL behind IAP sign-in. The header rule shows an available update.
+# Each managed row has its own log, and the selected Access row gains a
+# connection open and close every few seconds: the first and third rows rest
+# long enough for those lines to arrive in the Logs pane
+Sleep 9s
 Down
-Sleep 2000ms
+Sleep 2500ms
 Down
-Sleep 2000ms
+Sleep 7s
 Down
 Sleep 3500ms
 
-# `S` stops the selected run. The demo schedules no work, so the row stays;
-# the scene shows the key on a run row, where `s` would be refused
+# `S` stops the selected run. The demo has no runtime, so it lands the stop at
+# once: the row reads stopped and its health in Metrics is the stopped circle
 Type "S"
 Sleep 2500ms
 Down

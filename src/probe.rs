@@ -41,18 +41,6 @@ impl HealthStatus {
         }
     }
 
-    /// The words for Details, where the symbol alone would have to be learned.
-    pub fn label(&self) -> &'static str {
-        match self {
-            HealthStatus::Unknown => "unknown",
-            HealthStatus::Healthy => "healthy",
-            HealthStatus::Unhealthy => "unhealthy",
-            HealthStatus::Checking => "checking",
-            HealthStatus::AuthExpired => "auth expired",
-            HealthStatus::CrashLooping => "crash loop",
-        }
-    }
-
     /// What the reader does next, for the states that have one.
     pub fn action(&self) -> Option<&'static str> {
         match self {
@@ -1583,10 +1571,9 @@ LISTEN 0      128    127.0.0.1:15432     0.0.0.0:*
     }
 
     #[test]
-    fn the_new_states_have_one_cell_symbols_and_a_label() {
+    fn the_new_states_have_one_cell_symbols() {
         for h in [HealthStatus::AuthExpired, HealthStatus::CrashLooping] {
             assert_eq!(h.symbol().chars().count(), 1, "{h:?}");
-            assert!(!h.label().is_empty());
         }
         assert_eq!(
             HealthStatus::AuthExpired.action(),

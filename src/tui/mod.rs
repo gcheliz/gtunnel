@@ -142,7 +142,9 @@ pub async fn run_demo() -> Result<()> {
     result
 }
 
-// The demo draws and reacts to keys, but never schedules work
+// The demo draws and reacts to keys, but never schedules work. Its Logs pane is
+// the one exception: it follows the selection and gains lines on a tick, as the
+// real pane does, because an empty pane says nothing about what it is for
 async fn demo_loop(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
@@ -153,6 +155,7 @@ async fn demo_loop(
         match msg {
             Msg::Key(key) => {
                 if let Some(op) = app.handle_key(key) {
+                    app.land_demo_op(&op);
                     app.apply(OpResult {
                         message: format!("demo: {op:?} does nothing here"),
                         ok: true,
@@ -178,9 +181,13 @@ async fn demo_loop(
                 if app.spinner.is_running() || app.list_loading.is_some() {
                     app.spinner.tick();
                 }
+                app.tick_demo_logs();
             }
             _ => {}
         }
+        // After every message, as the real loop does after each pass, so a move
+        // of the selection and a `;` both land on the right row's log
+        app.sync_demo_logs();
         terminal.draw(|f| ui::render(f, app))?;
     }
     Ok(())
