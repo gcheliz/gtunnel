@@ -212,6 +212,10 @@ The bound is the same at all three: a log is emptied when its tunnel starts, and
 (`logs.max_size`) gtunnel keeps the last 2 MiB (`logs.keep_size`) behind a first line saying so.
 At `debug` a busy tunnel reaches 8 MiB in minutes rather than weeks.
 
+A log that cannot be written, on a full disk for example, stops growing but does not stop the
+tunnel: the supervisor keeps reading gcloud's output, so it still stops the job on expired
+credentials.
+
 The trim runs only when a gtunnel process writes to the log (the TUI open or a command
 running), so an unattended tunnel grows until someone looks. `du -sh` over the logs directory
 is worth a look; `gtunnel restart <name>` empties one.

@@ -134,7 +134,7 @@ services first. It never touches the Cloud DNS managed zone, which is yours.
 
 | Concern | Decision |
 |---|---|
-| Supervision | launchd on macOS, systemd `--user` on Linux. Both restart on failure |
+| Supervision | launchd on macOS, systemd `--user` on Linux. Both restart on failure. The supervisor answers a stop at once, during its restart backoff too. When gcloud exits it stops the rest of gcloud's process group (ssh, the IAP proxy), and a supervisor that was killed leaves its group's id beside the ready file for the next one to end, so nothing is left holding the port |
 | Reboot | Auto-start is per tunnel; off by default, toggled with `A` in the TUI or `autostart`. How each platform holds it is under [Service lifecycle](#service-lifecycle) |
 | Wedged tunnels | Supervision only catches a process that exits. A tunnel that stays up and refuses connections is caught instead by one watchdog job for the whole machine, which wakes every 30s by default (`watch.interval`), makes one pass over every tunnel and exits. It is an interval job rather than a supervised one precisely because it is supposed to exit every time |
 | PATH | A daemon does not inherit a shell, so gcloud's directory is written into the unit. Without it the service dies at every start |
