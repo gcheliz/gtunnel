@@ -48,17 +48,15 @@ gcloud auth login           # the credential gtunnel will mint tokens from
 gcloud config list          # confirm account and project
 ```
 
-A gtunnel account wraps one gcloud configuration, so getting this right is what `gtunnel
-init` reads in the next step. If you work across environments, make one gcloud
-configuration per environment now — `gcloud config configurations create <name>`.
+A gtunnel account wraps one gcloud configuration, which `gtunnel init` reads next. Across
+environments, make one configuration each: `gcloud config configurations create <name>`.
 
 ### 3. Grant yourself IAP access
 
-Tunnelling needs one IAP role and one firewall rule. [What GCP needs](gcp.md) lists them
-for every mode, with the one-off commands; `gtunnel doctor` checks both for each tunnel and
-prints the exact `gcloud compute firewall-rules create` for the port you are tunnelling to.
-Without the role a tunnel starts and then fails with `4033`; the
-[error table](troubleshooting.md) lists what each code means.
+Tunnelling needs one IAP role and one firewall rule. [What GCP needs](gcp.md) lists them per
+mode with the commands; `gtunnel doctor` checks both and prints the exact
+`gcloud compute firewall-rules create` for your port. Without the role a tunnel starts, then
+fails with `4033` ([error table](troubleshooting.md)).
 
 ### 4. Install gtunnel
 
@@ -78,23 +76,17 @@ by another author, so a bare name would install somebody else's binary. If you h
 already run it, [troubleshooting.md](troubleshooting.md#cargo-install-gtunnel-installed-something-else)
 says what it left behind and how to undo it.
 
-The Homebrew route installs a prebuilt binary from the `gcheliz/tap` tap, so it needs no Rust
-toolchain. The command taps `gcheliz/tap` for you, so no `brew tap` comes first. Tapping by hand
-and then running `brew install gtunnel` is not the same: Homebrew 6 and later does not load a short
-name from an untrusted tap, so that form needs `brew trust --formula gcheliz/tap/gtunnel` in between.
-Tarballs cover macOS arm64 and Intel and Linux amd64 and arm64. macOS arm64 has been exercised end
-to end; on Linux amd64 and arm64 the formula installs and `gtunnel --version` runs in a container;
-macOS Intel is untested. On a Linux whose glibc is older than 2.39, such as Ubuntu 22.04, Homebrew
-first installs its own `glibc`, `gcc` and `binutils`, about 550 MB, as it does for any formula; on
-glibc 2.39 or newer it installs gtunnel alone. `brew upgrade gtunnel` upgrades it; the tap follows each release, so a new
-version shows up once the tap carries it. `gtunnel update` is for a downloaded or cargo-installed
-binary and points a Homebrew install at `brew upgrade` instead.
+The Homebrew route installs a prebuilt binary, so it needs no Rust toolchain, and it taps
+`gcheliz/tap` itself. The tap follows each release.
 
-Homebrew 6 and later requires trust for a non-official tap. Installing a fully qualified name, as
-above, trusts that one formula and nothing else in the tap, and prints
-`Trusted formula gcheliz/tap/gtunnel`. The formula is readable first at
-[gcheliz/homebrew-tap](https://github.com/gcheliz/homebrew-tap/blob/main/Formula/gtunnel.rb).
-Older Homebrew has no trust step. gtunnel never runs `brew trust` for you.
+| Homebrew fact | Detail |
+|---|---|
+| Trust | Homebrew 6 and later requires trust for a non-official tap. The fully qualified name above trusts that one formula only and prints `Trusted formula gcheliz/tap/gtunnel`. Older Homebrew has no trust step; gtunnel never runs `brew trust` for you |
+| Tapping by hand | `brew tap` then `brew install gtunnel` fails on Homebrew 6: a short name from an untrusted tap needs `brew trust --formula gcheliz/tap/gtunnel` first |
+| Formula source | readable at [gcheliz/homebrew-tap](https://github.com/gcheliz/homebrew-tap/blob/main/Formula/gtunnel.rb) |
+| Platforms | macOS arm64 and Intel, Linux amd64 and arm64. macOS arm64 is exercised end to end; Linux installs and runs `gtunnel --version` in a container; macOS Intel is untested |
+| Old glibc | below 2.39 (Ubuntu 22.04), Homebrew first installs its own `glibc`, `gcc` and `binutils`, about 550 MB, as for any formula |
+| Upgrades | `brew upgrade gtunnel`; `gtunnel update` points a Homebrew install there |
 
 Specify the release version and substitute your machine's file: `gtunnel-macos-arm64`,
 `gtunnel-macos-intel`, `gtunnel-linux-amd64` or `gtunnel-linux-arm64`.
@@ -117,10 +109,10 @@ gtunnel 0.2.37
 
 #### Already installed another way
 
-A machine can hold two copies: one from `cargo install` in `~/.cargo/bin` and one from Homebrew in
-`/opt/homebrew/bin`. They share one config directory, one tunnel list and the same service labels.
-The copy first on `PATH` is the one a bare `gtunnel` runs, and each installed service names the
-binary that wrote it.
+A machine can hold a `cargo install` copy in `~/.cargo/bin` and a Homebrew one in
+`/opt/homebrew/bin`. They share the config directory, the tunnel list and the service labels.
+A bare `gtunnel` runs the copy first on `PATH`; each installed service names the binary that
+wrote it.
 
 | Check | Command |
 |---|---|
@@ -128,10 +120,9 @@ binary that wrote it.
 | Which version each one is | `gtunnel --version`, and `/opt/homebrew/bin/gtunnel --version` |
 
 Keep one. To move to Homebrew, remove the other copy, then run any command that lists or starts
-tunnels with the Homebrew binary. An installed service whose binary no longer exists is rewritten to
-name the running one on the first such command, and gtunnel prints
-`gtunnel: reinstalled N services to match this version`. `gtunnel restart <name>` does the same for
-a single tunnel: it stops it, rewrites the service and starts it.
+tunnels. A service whose binary no longer exists is rewritten to name the running one, and
+gtunnel prints `gtunnel: reinstalled N services to match this version`. `gtunnel restart <name>`
+does the same for one tunnel.
 
 ```
 $ rm ~/.cargo/bin/gtunnel
@@ -139,13 +130,13 @@ $ hash -r
 $ gtunnel list
 ```
 
-A cargo or download copy upgrades with `gtunnel update`, a Homebrew copy with
-`brew upgrade gtunnel`. Each command upgrades only the copy it belongs to.
+Each upgrade command touches only its own copy: `gtunnel update` for cargo or a download,
+`brew upgrade gtunnel` for Homebrew.
 
 #### Proving where the binary came from
 
-The `.sha256` tells you the download arrived intact. It does not tell you who built it:
-anyone able to replace the tarball could replace the checksum beside it. Every release
+The `.sha256` proves the download arrived intact, not who built it: anyone able to replace
+the tarball could replace the checksum. Every release
 asset also carries a build attestation, signed by GitHub with a short-lived certificate
 tied to this repository's Release workflow and recorded in a public transparency log.
 
@@ -153,10 +144,8 @@ tied to this repository's Release workflow and recorded in a public transparency
 gh attestation verify "gtunnel-macos-arm64-${VERSION}.tar.gz" -o gcheliz
 ```
 
-It says nothing and exits 0 when the file checks out, and fails loudly when it does not —
-an unattested file gets `HTTP 404: Not Found` and exit 1, whatever its checksum says.
-
-To see what the attestation actually claims, ask for the certificate:
+It exits 0 when the file checks out; an unattested file gets `HTTP 404: Not Found` and exit 1,
+whatever its checksum says. To see what the attestation claims, ask for the certificate:
 
 ```
 $ gh attestation verify "gtunnel-macos-arm64-${VERSION}.tar.gz" -o gcheliz --format json \
@@ -166,16 +155,13 @@ https://github.com/gcheliz/gtunnel/.github/workflows/release.yml@refs/tags/v0.1.
 github-hosted
 ```
 
-The workflow, the tag and the commit that produced the binary, on a GitHub-hosted runner.
-This sample was captured from v0.1.1, so the tag and commit are those of that release; yours name
-the file you downloaded. Attestations begin with v0.1.1; v0.1.0 predates them.
+The workflow, the tag and the commit that produced the binary, on a GitHub-hosted runner
+(captured from v0.1.1; yours names your release). Attestations begin with v0.1.1.
 
 #### Building from source
 
-The two cargo routes compile gtunnel on your machine, so they need Rust 1.89 or newer and
-a C compiler: the TLS stack builds C code. Homebrew and a published binary need neither. A release
-build takes about three minutes from clean on an Apple silicon laptop, because the release
-profile uses fat LTO.
+The cargo routes need Rust 1.89 or newer and a C compiler, because the TLS stack builds C
+code. A clean release build takes about three minutes on an Apple silicon laptop (fat LTO).
 
 | Machine | Rust | C compiler |
 |---|---|---|
@@ -183,20 +169,11 @@ profile uses fat LTO.
 | Debian, Ubuntu | the same rustup line | `sudo apt install build-essential` |
 | Fedora, RHEL | the same rustup line | `sudo dnf install gcc` |
 
-Homebrew is the alternative on macOS and Linux, and it needs no rustup:
+Distribution packages of Rust often lag behind 1.89, so use rustup rather than `apt` or
+`dnf`. On macOS and Linux, `brew install rust` also works and needs no rustup; skip the
+`. "$HOME/.cargo/env"` line below.
 
-```
-$ brew install rust
-```
-
-It installs a current stable Rust, well above the 1.89 minimum, and `brew upgrade rust`
-moves it later. `cargo` lands on the `PATH` that Homebrew already manages, so skip the
-`. "$HOME/.cargo/env"` line below. `cargo install` still writes `gtunnel` to `~/.cargo/bin`,
-which Homebrew does not add to `PATH`; if the shell cannot find it, see
-[troubleshooting.md](troubleshooting.md#gtunnel-command-not-found-right-after-installing).
-
-rustup adds `~/.cargo/bin` to your shell's profile, which a shell that is already open has
-not read. Load it, then check both tools:
+Load the profile rustup wrote into the open shell, then check both tools:
 
 ```
 $ . "$HOME/.cargo/env"
@@ -206,11 +183,8 @@ $ cc --version | head -1
 Apple clang version 21.0.0 (clang-2100.3.34.2)
 ```
 
-Any `cargo` of 1.89 or later passes, and Linux prints its own compiler, such as
-`cc (Debian 12.2.0-14+deb12u1) 12.2.0`. Distribution packages of Rust often lag behind
-1.89, which is why the Debian, Ubuntu and Fedora rows use rustup rather than `apt` or
-`dnf`; `rustup update` moves to a newer toolchain later. No other build tool is needed. Without a C compiler the build stops in its
-first seconds:
+Any `cargo` of 1.89 or later passes. Without a C compiler the build stops in its first
+seconds:
 
 ```
 error: linker `cc` not found
@@ -218,8 +192,8 @@ error: linker `cc` not found
   = note: No such file or directory (os error 2)
 ```
 
-Install the compiler from the table and run the same `cargo install` again. If `gtunnel`
-is still not found once it is installed, see
+Install the compiler from the table and run `cargo install` again. `cargo install` writes
+`gtunnel` to `~/.cargo/bin`; if the shell cannot find it, see
 [troubleshooting.md](troubleshooting.md#gtunnel-command-not-found-right-after-installing).
 
 ### 5. Create the account
@@ -235,13 +209,13 @@ Error: gtunnel is not initialized. Run `gtunnel init`.
 gtunnel init
 ```
 
-Running `gtunnel` with no arguments on a machine that has never been set up, from a terminal, starts the same prompts and then opens the TUI. A script or a pipe gets the error above instead.
+On a machine never set up, `gtunnel` with no arguments from a terminal runs the same prompts,
+then opens the TUI. A script or a pipe gets the error above.
 
-[init](commands.md#init) shows the prompts. Each one says what the value sets, and where a
-value is picked from something that exists, the command that lists it. `Enter = <value>`
-takes the default. The default zone is optional: Enter skips it, and
-the commands that reach an instance then need `--zone`. `gtunnel zones` lists the ones in the
-project.
+[init](commands.md#init) shows the prompts. Each says what the value sets and, for a value
+picked from a list, the command that lists it. `Enter = <value>` takes the default. The default
+zone is optional: without it, commands that reach an instance need `--zone`; `gtunnel zones`
+lists the project's zones.
 
 ### 6. Check the ground before the first tunnel
 
@@ -249,10 +223,9 @@ project.
 gtunnel doctor
 ```
 
-[doctor](commands.md#doctor) reports what it can see and prints the exact command for anything it
-cannot fix itself: missing credentials, a gcloud Python without numpy, a missing firewall
-rule. Clear its findings before adding a tunnel, so a failure later is about the tunnel and
-not about the setup.
+[doctor](commands.md#doctor) prints the exact command for anything it cannot fix: missing
+credentials, a gcloud Python without numpy, a missing firewall rule. Clear its findings first,
+so a later failure is about the tunnel, not the setup.
 
 ### 7. Add a tunnel
 
@@ -262,7 +235,7 @@ psql -h localhost -p 15432
 ```
 
 `--local-port` pins the port; without it the port is derived from the name, in 15000-15999.
-`-s` installs the user service and starts it, so the tunnel survives closing the terminal.
+`-s` installs and starts the user service, so the tunnel outlives the terminal.
 [add](commands.md#add) covers the three target shapes: an instance port, a host behind `--via`, and an
 IAP destination group.
 
@@ -297,10 +270,9 @@ behind it can be anything the instance reaches, such as a private GKE control pl
 kind also needs `roles/iap.tunnelResourceAccessor`
 ([IAM](troubleshooting.md#iam), [firewall](troubleshooting.md#iap-firewall)).
 
-The instance is always yours. In the TUI the add flow picks it from the project's
-instances; `gtunnel add` and `gtunnel run` take it as an argument. For `jump`, `instance`
-is the machine ssh runs on and `host` is the destination it reaches. `bastion`
-and `10.0.0.10` in the examples are placeholders.
+The instance is always yours: the TUI picks it from the project's instances, `add` and `run`
+take it as an argument. For `jump`, `instance` is where ssh runs and `host` is the destination.
+`bastion` and `10.0.0.10` are placeholders.
 
 ### Lifetime and visibility
 
@@ -313,9 +285,9 @@ These two choices combine with either mode.
 
 ## Running in CI
 
-A CI step runs gtunnel with no terminal and no person to log in. It needs a Google identity
-that is already there, and it needs no service manager: [`gtunnel run`](commands.md#run) is a
-foreground process that tears its tunnel down when it exits.
+A CI step has no terminal and no person to log in, so it needs a Google identity already in
+place. It needs no service manager: [`gtunnel run`](commands.md#run) is a foreground process
+that tears its tunnel down when it exits.
 
 | Where the step runs | Identity to use | Key to keep |
 |---|---|---|
@@ -334,9 +306,9 @@ The role and the firewall rule are the Access ones: [What GCP needs, CI](gcp.md#
 
 ### Declare the account from flags
 
-On a runner there is no gcloud configuration to read a project from. Pass the project and the
-zone, and gtunnel builds the account with no gcloud call. `GTUNNEL_CONFIG_DIR` keeps the
-runner's files in a directory of its own.
+A runner has no gcloud configuration to read a project from. Pass the project and the zone,
+and gtunnel builds the account with no gcloud call. `GTUNNEL_CONFIG_DIR` keeps the runner's
+files apart.
 
 ```
 $ export GTUNNEL_CONFIG_DIR=/workspace/gtunnel
@@ -344,16 +316,15 @@ $ gtunnel account add ci --configuration ci --project example-dev-1a2b --zone eu
 Account 'ci' saved to /workspace/gtunnel
 ```
 
-The name after `--configuration` need not exist: gcloud accepts a configuration it has not
-seen (checked with gcloud 590, `gcloud --configuration=ci config list` exits 0). It creates
-nothing, though, and warns on each call that reads it, so every tunnel's log carries:
+The `--configuration` name need not exist: gcloud 590 accepts an unknown one
+(`gcloud --configuration=ci config list` exits 0), but warns on each call, so every tunnel's
+log carries:
 
 ```
 WARNING: Could not open the configuration file: [<gcloud config dir>/configurations/config_ci].
 ```
 
-The warning is harmless. To silence it, create the configuration once, without making it the
-active one: `gcloud config configurations create ci --no-activate`.
+The warning is harmless. To silence it: `gcloud config configurations create ci --no-activate`.
 
 ### Name a credential file
 
@@ -397,9 +368,8 @@ steps:
         psql -h localhost -p 15432 -c 'select 1'
 ```
 
-The step needs the `gtunnel` binary on its `PATH`; [Getting set up](#getting-set-up) installs
-it. A tunnel through a GCP instance, or one connection per query, behaves differently under load: read
-[Limits](architecture.md#limits) before pointing a connection pool at one.
+The step needs `gtunnel` on its `PATH` ([Getting set up](#getting-set-up)). Read
+[Limits](architecture.md#limits) before pointing a connection pool at a tunnel.
 
 ## Command map
 
@@ -437,18 +407,15 @@ token that cannot be minted, including an expired refresh token, counts as logge
 |---|---|
 | `gtunnel` (the TUI), `add -s`, `expose`, `run`, `start`, `stop`, `restart`, `move`, `zones`, `domains`, `relay` | `init`, `account`, `add` (without `-s`), `delete`, `rename`, `autostart`, `logs`, `list`, `zones default`, `domains default`, `domains add`, `doctor`, `watch`, `reset`, `demo`, `update`, `mcp` |
 
-`doctor` is skipped because it reports broken credentials as a finding and a login prompt
-would hide it; `init` has no account yet; `mcp` speaks JSON-RPC on stdin and stdout, so a
-prompt there would corrupt the protocol. Background services run `gcloud` directly and never
-go through this check. Only the selected account is checked: switching to another account in
-the TUI does not check again, so an account that is logged out surfaces as the error in that
-tunnel's log.
+`doctor` skips it because it reports broken credentials as a finding; `init` has no account
+yet; a prompt would corrupt `mcp`'s JSON-RPC on stdin and stdout. Background services run
+`gcloud` directly and never check. Only the selected account is checked: after switching
+accounts in the TUI, a logged-out account surfaces as the error in that tunnel's log.
 
-On a terminal, a failed probe prompts for confirmation (`[y/N]`, defaulting to `No`)
-before running `gcloud auth login --configuration=<configuration>` with the terminal handed
-to it, then probes again. Only the second probe counts: a login that exits 0 and still cannot
-mint a token fails like any other. The sample below is illustrative, since the login output
-belongs to gcloud.
+On a terminal, a failed probe asks `[y/N]` (default `No`), runs
+`gcloud auth login --configuration=<configuration>` on the terminal, then probes again. Only
+the second probe counts: a login that exits 0 and still cannot mint a token fails. Illustrative
+sample; the login output is gcloud's:
 
 ```
 $ gtunnel list
@@ -461,9 +428,10 @@ You are now logged in as [you@example.com].
 NAME  STATUS  ...
 ```
 
-When the confirmation is declined, the login is cancelled or fails, or there is no
-terminal (stdin or stdout is redirected, as under cron or CI), gtunnel exits 4 (`auth`, see [Errors and exit codes](commands.md#errors-and-exit-codes)) without
-starting anything or opening a browser.
+When the answer is no, the login fails, or there is no terminal (stdin or stdout redirected,
+as under cron or CI), gtunnel exits 4 (`auth`, see
+[Errors and exit codes](commands.md#errors-and-exit-codes)) without starting anything or
+opening a browser.
 
 ```
 $ gtunnel list < /dev/null
@@ -482,10 +450,9 @@ gtunnel v9.9.9 is available (current: v0.2.37). Run `gtunnel update`.
 
 ## The TUI
 
-`gtunnel` with no subcommand opens the TUI. `gtunnel demo` opens it filled with synthetic
-data and never touches GCP or a config file. It needs no login, and its forms open the same
-pickers as the real TUI, filled with placeholder configurations, projects, zones and
-instances, so a form can be shown without an account behind it.
+`gtunnel` with no subcommand opens the TUI. `gtunnel demo` opens it with synthetic data: no
+GCP, no config file, no login, and its forms open the real pickers filled with placeholder
+configurations, projects, zones and instances.
 
 `?` opens the full keymap, in the same four groups:
 
@@ -516,84 +483,56 @@ counted from one TUI session's metrics rounds, so it is empty for the first seco
 return `health` as `healthy`, `unhealthy`, `auth_expired`, `stopped` or `unknown`, and do not report
 crash loops, which need restarts over time.
 
-The keymap page also carries a **SESSION PATHS** summary section showing the active loaded
-paths for `Config` (`~/.gtunnel/config.toml`), `Tunnels` (`~/.gtunnel/tunnels.toml`), and
-`Logs` (`~/.gtunnel/logs/`).
+The keymap page also has a **SESSION PATHS** section with the loaded `Config`
+(`~/.gtunnel/config.toml`), `Tunnels` (`~/.gtunnel/tunnels.toml`) and `Logs` (`~/.gtunnel/logs/`).
 
-`:` is the shift of `;`, so the key that cycles accounts and the key that opens all of them
-are one key twice. The page lists every account, and adds, edits, selects and removes them;
-its removal obeys the same refusal the CLI does, so an account holding tunnels stays.
+`:` (the shift of `;`) opens the accounts page: it lists, adds, edits, selects and removes
+accounts, and refuses to remove one that holds tunnels, as the CLI does.
 
-Editing an account asks for its project first. The text field opens pre-filled with the
-current project while the list is fetched; when the list arrives it becomes a picker that
-filters by id or name as you type, with the current project selected so Enter keeps it. A
-filter that matches nothing is taken as the project you typed. If the list is empty, denied
-or fails, the text field stays and the line `Could not list projects: <cause>` says why.
-Starting to type before the list arrives keeps the field.
+| Form step | Behaviour |
+|---|---|
+| Add: configuration | a picker of the machine's gcloud configurations, `<name>  <project>  (active)`, the active one selected. One with no project is refused with `gcloud config set project <id> --configuration=<name>`. A typed name the list lacks is taken; with no configuration, or when gcloud cannot list them, the text field stays |
+| Edit: project | a text field pre-filled with the current project, which becomes a picker filtering by id or name when the list arrives, the current project selected. A filter that matches nothing is taken as typed. Typing before the list arrives keeps the field; an empty, denied or failed list keeps it with `Could not list projects: <cause>` |
+| Edit: zone | the same, with the zones of the project chosen in step 1. While the project is unchanged the current zone stays selected even if unlisted. A typed zone the list lacks is refused, `'<zone>' is not a zone of <project>`, because the list is the project's whole set. A failure says `Could not list zones: <cause>` |
 
-The zone step works the same way, with the zones of the project chosen in step 1, which may
-not be the saved one. While the project is unchanged, the current zone is selected even when
-the project does not list it, so Enter keeps it. Unlike projects, a typed zone the list lacks
-is refused, `'<zone>' is not a zone of <project>`, because the zone list is the project's whole
-set. A failure says `Could not list zones: <cause>` and keeps the text field.
+While a list loads, the field says so with a spinner (`loading configurations...`), and the
+instance picker says `nothing matches` only once the list has answered. The accounts page
+shows the operation running (`add sandbox`) until its result replaces it.
 
-Adding an account starts from a picker of the machine's gcloud configurations, one row each
-as `<name>  <project>  (active)`, with the active one selected. A configuration with no
-project is refused with the command that sets one,
-`gcloud config set project <id> --configuration=<name>`. A typed name the list lacks is taken,
-and the text field stays when there is no configuration or gcloud cannot list them.
+Every form field has a line under its label saying what the value is for, and the title counts
+the steps: `New account 1/2`, `Edit account 2/2`, `New access tunnel 3/5`, `New public URL 2/3`.
+The tunnel edit dialog labels its value `Ports (remote:local):` for Access and `Local target:`
+for Expose.
 
-A name longer than the picker is wide is cut with `…` and keeps the zone or project beside it;
-the line under the list then shows the highlighted row in full, and goes first when the
-terminal is short.
-
-While a list is on its way, the field or picker says so with a spinner, e.g.
-`loading configurations...`, and the instance picker says `nothing matches` only once the
-list has answered. The accounts page shows the operation it is running, e.g. `add sandbox`,
-until the result replaces it.
-
-Every form field has a line under its label saying what the value is for, and the dialog
-title counts the steps: `New account 1/2`, `Edit account 2/2`, `New access tunnel 3/5`,
-`New public URL 2/3`. On a short terminal the description goes first, so the field always
-fits. The tunnel edit dialog labels its value: `Ports (remote:local):` for an Access tunnel,
-`Local target:` for an Expose one.
-
-`e` opens a chooser rather than a prompt, because there are now three things to edit:
+`e` opens a chooser:
 
 | Key | What it edits |
 |---|---|
-| `1` | Target and ports — the prompt `e` used to open directly |
+| `1` | Target and ports |
 | `2` | Rename, within the same account |
 | `3` | Move to another account |
 
-`2` and `3` are the TUI's way to the `rename` and `move` commands, and they refuse what those
-refuse: an unmanaged row, and an ephemeral run that has not been imported with `m`. A move
-onto a name the destination already holds does not cancel — it asks for a new name with the
-reason on screen, which is the `--rename` flag arriving when it is needed rather than being
-remembered in advance.
+`2` and `3` are the TUI's `rename` and `move`, and refuse what those refuse: an unmanaged row,
+and an ephemeral run not yet imported with `m`. A move onto a name the destination already
+holds asks for a new name, with the reason on screen, as `--rename` does.
 
 Case matters in three pairs: `s`/`S` start and stop, `a`/`A` add and auto-start, `r`/`R`
-refresh and restart. The footer shows only what the selected tunnel can do, so it never has
-both halves of a pair on screen; the keymap page states the difference. When the selected
-tunnel has failed, `R restart` leads the footer in the warning colour. An account with no
-tunnels shows `no tunnels in this account` under the list header, and the footer offers
-`a add`; until the first load has answered, and after `;` until the new account's has, the
-row says `loading` instead. `m import` appears only on a selected ephemeral run, a
-`gtunnel run` started in a terminal: it turns that run into a managed tunnel with its own
-service, so it outlives the terminal. A first load that fails puts its error on the status line and
-replaces `loading` with `could not load tunnels`, until a load succeeds. The
-keymap page is two columns from 92 cells inside its frame and one below that. On a
-terminal too short for it, the page scrolls: `j` `k` and the arrows move a row, `PgUp` and
-`PgDn` a screen, `g` and `G` jump to the top and the end, and a row such as
-`3-14 of 31 rows` says where the window is. Both columns scroll together; the count line
-and the `Esc back  q back` line stay in place; closing the page resets it to the top. A page
-that fits shows no counter.
+refresh and restart. The footer shows only what the selected tunnel can do, so both halves of
+a pair are never on screen together; the keymap page states the difference.
+
+| List state | Shows |
+|---|---|
+| Selected tunnel failed | `R restart` leads the footer in the warning colour |
+| Selected ephemeral run (a `gtunnel run` in a terminal) | `m import`, which makes it a managed tunnel with its own service, so it outlives the terminal |
+| Account with no tunnels | `no tunnels in this account`, and the footer offers `a add` |
+| First load, or after `;`, not answered yet | `loading` |
+| First load failed | the error on the status line and `could not load tunnels`, until a load succeeds |
 
 The header's right edge is the account field: the account name over its GCP project id, on
-the same two rows as the logo. `;` switches both at once. When the terminal narrows, the
-subtitle beside the logo goes first, then the project id is cut with a `…` (never below four
-cells, and dropped whole if there is no room for that), and the account name is the last to
-go. An account with no project shows the name alone.
+the same two rows as the logo. `;` switches both at once.
+
+What each pane sheds as the terminal narrows or shortens, with the thresholds, is in
+[design.md, Narrowing](design.md#narrowing).
 
 When a newer release is cached, the header's closing rule carries it at its right end:
 
@@ -608,39 +547,24 @@ When a newer release is cached, the header's closing rule carries it at its righ
 | Where it comes from | the background `update --check` (see [update](commands.md#update)); the TUI starts one when the cache is missing or older than `update_check_interval` (6 hours by default), and re-reads the cache every minute |
 | When the check fails | the same place says `update check failed` in the muted colour, only while no update is showing, until a check succeeds. Silence then means "not known", not "up to date" |
 | Waits on the network | never; it shows what an earlier check already learned, so the first run after a release shows nothing until a check finishes |
-| When it narrows | the command goes first, leaving `↑ v<latest>`, then the whole notice (the failed-check hint goes whole); a step shows only when at least 8 dashes stay before it, and a string is never cut |
 | `gtunnel demo` | shows no notice and starts no check |
 
-Details repeats the project under the `target` row it qualifies. The header carries it
-once as a property of the account, at the far edge of the screen from the host it belongs
-to; the pane open while a `gcloud` command of your own is being typed is the one that has
-to answer which project that host is in. An account with no project prints no row, the
-same silence the header keeps.
+Details repeats the project under the `target` row, next to the host it belongs to. An
+account with no project prints no row.
 
 Unmanaged `gcloud start-iap-tunnel` processes started outside gtunnel appear in the list
 tagged `[not managed by gtunnel]`. Every action on them is refused except `m`, which takes
 them over.
 
-The list is a table with a `NAME  MODE  URL` header. If a legacy tunnel carries an account
-suffix (such as `k8s-dev` under `dev`), the list hides the redundant suffix so columns stay
-clean. The name column is as wide as the longest name; it shrinks, to no fewer than 8 cells
-and with a `…`, only when the pane could not otherwise hold a 12-cell URL. The Details pane
-shows the stored name. The naming rule is [Naming a tunnel](commands.md#naming-a-tunnel).
+The list is a table with a `NAME  MODE  URL` header. A legacy name with an account suffix
+(`k8s-dev` under `dev`) shows without it. The naming rule is
+[Naming a tunnel](commands.md#naming-a-tunnel).
 
-The layout follows the terminal. From 121 columns the list is the left 46% and Details, Logs
-and Metrics are stacked on the right; below 121 the list takes the full width above them,
-which keeps the URL readable. The list scrolls only when the selected tunnel would leave the
-window, so moving inside it moves the highlight and not the rows, and a
-Details value too long for its row (a URL, a target, how the tunnel was started) wraps under
-its label instead of being cut. When the terminal is short, Logs keeps at least 4 rows and
-Metrics shrinks, then disappears, before Logs does.
-
-Metrics redraws every 5 seconds, and its `active` is the most client connections the local
-port carried since the last redraw, not the number open at the instant it drew. The count is
-sampled twice a second: a `kubectl` call holds its socket for a few hundred milliseconds, so
-a figure read once every 5 seconds landed between requests and reported 0 under real
-traffic. The count is for the screen only: the tunnel's log records each connection itself,
-with its source port (see [Connections in the log](commands.md#connections-in-the-log)).
+Metrics redraws every 5 seconds. Its `active` is the most client connections the local port
+carried since the last redraw, sampled twice a second, because a `kubectl` call holds its
+socket for only a few hundred milliseconds. The count is for the screen only: the tunnel's log
+records each connection with its source port
+([Connections in the log](commands.md#connections-in-the-log)).
 
 ### The config page
 
@@ -651,10 +575,9 @@ bottom row (`1-16 of 29 lines`) says where the window is. A file that does not e
 so: `tunnels.toml` is absent until the first `add`. `Esc` or `q` closes the page. The demo has
 no config files, so `C` there says so and opens nothing.
 
-`e` edits the file on screen in `$GTUNNEL_EDITOR`, then `$VISUAL`, then `$EDITOR`, then the `editor` key of `config.toml`, then `vi`. The value is split on
-whitespace, so `code -w` works, and a quoted path with a space stays one program. gtunnel
-leaves the screen while the editor runs and takes it back when the editor exits, whatever
-way it exits.
+`e` edits the file on screen; which editor it picks, and how the value is split, is in
+[Environment](configuration.md#environment). gtunnel takes the screen back however the
+editor exits.
 
 The editor never opens the real file. It opens a private copy next to it
 (`tunnels.edit-<pid>.toml`, owner-only), and the real file is replaced in one rename, only
@@ -665,31 +588,22 @@ after the text has passed the rules for that file:
 | `config.toml` | parses, has at least one account, `selected_account` names one of them, and no key is one gtunnel would ignore |
 | `tunnels.toml` | parses, every name is valid as for `gtunnel add`, no name repeats within an account, no two tunnels share a local port (in any account), no tunnel uses a local port a live `gtunnel run` holds (`Local port 17777 is already used by the run 'scratch'`), and every tunnel's account is in `config.toml`, and no key is one gtunnel would ignore |
 
-A file that passes is committed (`config.toml` ends at mode 0600 whatever the editor did),
-the copy is removed, and the list is reloaded without restarting the TUI: accounts, projects,
-the relay and the tunnels. The account on screen is kept if it still exists; if it was
-removed, the first remaining account takes over. The page says what happened, in green:
-`reloaded: 1 changed, 1 added, 0 removed`, or `no changes to tunnels.toml` when the text came
-back as it went in. A removed or renamed tunnel adds a warning, because a launchd job is named
-for the tunnel and editing the file does not unload it.
+| Outcome | What happens |
+|---|---|
+| Passes | committed (`config.toml` ends at mode 0600 whatever the editor did), the copy removed, and accounts, projects, the relay and the tunnels reloaded without restarting the TUI. The account on screen stays if it still exists, else the first remaining one takes over. The page reports in green: `reloaded: 1 changed, 1 added, 0 removed`, or `no changes to tunnels.toml` for unchanged text |
+| Removes or renames a tunnel | a warning too: a launchd job is named for the tunnel, and editing the file does not unload it |
+| Fails a rule | not saved. The page shows the text and the reason in red with its line (`not saved: line 16: key with no value, expected `=``); the keys become `e edit again` (reopens the same copy) and `Esc discard` (removes it). `Tab` does nothing meanwhile |
+| Has a key gtunnel does not read | refused the same way, naming one key and counting the rest (`not saved: unknown key accounts[0].expose.domains[0].log_level and 1 more`). The path shows which table the key landed in, such as a `log_level` typed below the last `[[accounts]]`. A file that already has such a key still loads, and `gtunnel doctor` reports it |
+| File changed since `e` opened it | refused with `not saved: tunnels.toml changed since you opened it` (or `config.toml`): another gtunnel, the CLI or the MCP server wrote it. The edit stays; a second save replaces that change, and a further write in between is refused again. Unchanged text is not a save, so it cannot overwrite the other change |
+| Editor exits non-zero (`:cq` in vim) | the edit is cancelled and the file left as it was |
 
-A file that fails is not saved. The page shows what the editor left, the reason in red with its
-line (`not saved: line 16: key with no value, expected `=``), and the keys become
-`e edit again` and `Esc discard`: `e` reopens the same copy, so the work is not lost, and `Esc`
-removes it. `Tab` does nothing while a refused edit waits. An editor that exits non-zero, as
-`:cq` does in vim, cancels the edit and leaves the file as it was.
+The save takes the same lock the commands do, so it never lands in the middle of one. A copy
+left by a gtunnel that is no longer running is removed when the page opens; another running
+gtunnel's copy is kept. Running tunnels keep their old settings until `R` restarts them, because
+a launchd job is rewritten only on a restart; the page and the status line both say so.
 
-A key gtunnel does not read is refused the same way, naming one key and counting the rest (`not saved: unknown key accounts[0].expose.domains[0].log_level and 1 more`). The path says which table the key landed in, which is how a `log_level` typed below the last `[[accounts]]` shows itself. Only the save is refused: a file that already has such a key still loads, and `gtunnel doctor` reports it.
-
-A file that changed since `e` opened it is refused too, with `not saved: tunnels.toml changed since you opened it` (or `config.toml`): another gtunnel, the CLI or the MCP server wrote it while the editor was open. The edit stays on the page and in its copy, and a second save replaces that change, so the choice is yours; a further write in between is refused again. The save takes the same lock the commands do, so it never lands in the middle of one. Leaving the text as it was is not a save, so it cannot overwrite the other change either: it reports `no changes to tunnels.toml`.
-
-A copy left by a gtunnel that is no longer running, after a crash or a closed terminal, is removed when the page opens; the copy of another running gtunnel is kept.
-
-Running tunnels keep their old settings until `R` restarts them: a launchd job is rewritten
-only on a restart, so the page and the status line both say so.
-
-A transcript from a throwaway config, with `EDITOR` set to a script that appends one valid
-tunnel to the file it is given (`GTUNNEL_CONFIG_DIR=/tmp/cfgdemo`, 80x24):
+A throwaway config (`GTUNNEL_CONFIG_DIR=/tmp/cfgdemo`, 80x24), after an `EDITOR` script that
+appended one valid tunnel:
 
 ```
 ┌ /tmp/cfgdemo/tunnels.toml ───────────────────────────────────────────────┐
@@ -716,32 +630,6 @@ tunnel to the file it is given (`GTUNNEL_CONFIG_DIR=/tmp/cfgdemo`, 80x24):
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-The same page after an editor that wrote text which is not TOML:
-
-```
-┌ /tmp/cfgdemo/tunnels.toml ───────────────────────────────────────────────┐
-│ [[tunnels]]                                                              │
-│ name = "db"                                                              │
-│ account_name = "dev"                                                     │
-│ auto_start = false                                                       │
-│                                                                          │
-│ [tunnels.spec]                                                           │
-│ mode = "access"                                                          │
-│ remote_port = 5432                                                       │
-│ local_port = 15432                                                       │
-│                                                                          │
-│ [tunnels.spec.target]                                                    │
-│ kind = "instance"                                                        │
-│ instance = "bastion"                                                     │
-│ zone = "europe-west1-b"                                                  │
-│                                                                          │
-│ this is = = not toml                                                     │
-│                                                                          │
-│ not saved: line 16: key with no value, expected `=`                      │
-│ 16 lines                                       e edit again  Esc discard │
-└──────────────────────────────────────────────────────────────────────────┘
-```
-
 ## Model Context Protocol (MCP) and AI Agent Integration
 
 Your agent opens, checks and closes tunnels with the binary you already have: 14 tools over
@@ -750,18 +638,18 @@ in-repo Skill tells the agent how to use them.
 
 ### The in-repo Skill
 
-Located at `.agents/skills/gtunnel/SKILL.md` using the open Agent Skills standard. It automatically
-guides AI agents (Claude Code, Gemini CLI, etc.) on:
+`.agents/skills/gtunnel/SKILL.md` follows the open Agent Skills standard. It tells an agent
+(Claude Code, Gemini CLI and others) to:
 
-- Enforcing the tunnel naming rule in [Naming a tunnel](commands.md#naming-a-tunnel).
-- Routing client-side protocols through one bastion tunnel (e.g. MongoDB Compass over SSH) rather than one tunnel per backend host.
-- Scoping commands to the correct GCP account.
-- Performing mandatory pre-completion verification: checking daemon status, inspecting logs for IAP error codes (such as `4033`), and probing local listening ports.
+- follow [Naming a tunnel](commands.md#naming-a-tunnel)
+- route a client that picks its own destination (MongoDB Compass over SSH) through one bastion tunnel, not one per backend host
+- scope every command to the right account
+- verify before it reports done: the service status, the log for IAP codes such as `4033`, and the local port
 
 ### The native MCP Server
 
-`gtunnel mcp` runs a newline-delimited JSON-RPC 2.0 stdio server in pure Rust. It exposes 14 tools
-and 2 live resources without requiring an external runtime.
+`gtunnel mcp` is a newline-delimited JSON-RPC 2.0 stdio server in the same binary: 14 tools and
+2 live resources, no external runtime.
 
 <p align="center">
   <img src="demo-mcp.gif" alt="Real MCP calls to gtunnel mcp: the tools, gtunnel_run_tunnel opening db on bastion:5432 for 30 minutes, gtunnel list showing the run and its stop time, gtunnel_stop_tunnel closing it" width="720">
@@ -845,10 +733,8 @@ Nothing but JSON-RPC frames is ever written to stdout.
 | `gtunnel://tunnels` | JSON array of all persistent tunnels |
 | `gtunnel://accounts` | The `gtunnel_list_accounts` object: `selected_account` and `accounts`, plus `impersonate_service_account` and `expose` on an account that sets them |
 
-`resources/read` of `gtunnel://accounts` returns this in `contents[0].text`, the object
-`gtunnel_list_accounts` returns as its content. The resource used to be the bare array of
-accounts, without the selection; a client that cached that shape reads `accounts` from the
-object instead:
+`resources/read` of `gtunnel://accounts` returns the `gtunnel_list_accounts` object in
+`contents[0].text`; a client that expects a bare array reads `accounts` from it:
 
 ```json
 {
@@ -896,8 +782,7 @@ Gemini CLI refuses to write project settings in a workspace it does not trust; t
 
 #### Workspace Configuration (`.mcp.json`)
 
-To enable the `gtunnel` MCP server in your workspace, create a `.mcp.json` file in the project
-root:
+For a workspace, create `.mcp.json` in the project root:
 
 ```json
 {
@@ -910,14 +795,13 @@ root:
 }
 ```
 
-This configuration schema is supported by both **Claude Code** and **Gemini CLI**:
+| Client | Where the block goes |
+|---|---|
+| Claude Code | `.mcp.json` at the workspace root, discovered on start |
+| Gemini CLI | `.gemini/settings.json` (workspace) or `~/.gemini/settings.json` (global) |
+| Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows) |
 
-- **Claude Code**: Automatically discovers `.mcp.json` at the root of the workspace directory. When you run Claude Code in this repository, the `gtunnel_*` tools are registered immediately.
-- **Gemini CLI**: Place the same `"mcpServers"` block in `.gemini/settings.json` (workspace level) or `~/.gemini/settings.json` (global level).
-- **Claude Desktop**: Add the `gtunnel` block under `"mcpServers"` in `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows).
-
-Optional environment variables (such as custom configuration directories or log levels) can be
-passed using the `"env"` object:
+Environment variables, such as a config directory or a log level, go in `"env"`:
 
 ```json
 {
@@ -935,7 +819,9 @@ passed using the `"env"` object:
 
 ### Machine-readable JSON output
 
-CLI commands support `--json` for automated workflows and scripting:
+`list`, `account list` and `doctor` take `--json`. The `list` fields are in
+[list](commands.md#start-stop-restart-autostart-logs-list-delete) and the failure object in
+[Errors and exit codes](commands.md#errors-and-exit-codes):
 
 ```
 $ gtunnel account list --json

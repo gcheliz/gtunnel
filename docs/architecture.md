@@ -24,26 +24,21 @@ gcloud compute start-iap-tunnel <instance> <remote-port> \
   [--project ...] [--impersonate-service-account ...]
 ```
 
-`--verbosity=info` is what makes a working tunnel say so: gcloud's per-connection lines are
-`log.info` and its default level is `warning`. It is shown here at the default level; both
-it and ssh's `LogLevel` below follow the configured one, which
-[troubleshooting.md](troubleshooting.md#one-level-two-scales) maps. The service also sets
-`PYTHONUNBUFFERED=1`,
-because gcloud is Python and Python block-buffers a stdout that is not a terminal, so without
-it a line waits for 4 KiB or for the process to exit.
+`--verbosity=info` makes a working tunnel say so, because gcloud's per-connection lines are
+`log.info` and its default is `warning`. It and ssh's `LogLevel` below follow the configured
+level ([One level, two scales](troubleshooting.md#one-level-two-scales)). The service also sets
+`PYTHONUNBUFFERED=1`: Python block-buffers a stdout that is not a terminal, so a line would
+wait for 4 KiB or the process exit.
 
 With `--dest-group` the target is an IAP destination group instead of an instance, which
 reaches a host that is not a compute instance.
 
 ## Jump tunnels
 
-`--via <instance>` reaches a host that only that instance can reach: a private GKE control
-plane, a managed database on a private address, anything inside the VPC with no IAP
-endpoint of its own. It is the lower path in the diagram above: IAP stops at the bastion,
-and the hop from there to `db.internal` is an `ssh -L` forward made from the far side.
-
-This is a different gcloud command, not a different flag. IAP carries an SSH connection and
-SSH makes the forward, so the service runs:
+`--via <instance>` reaches a host only that instance can reach: a private GKE control plane, a
+managed database on a private address, anything in the VPC with no IAP endpoint. In the
+diagram's lower path IAP stops at the bastion, and the hop to `db.internal` is an `ssh -L`
+forward from the far side. It is a different gcloud command, not a flag:
 
 ```
 gcloud compute ssh <instance> --zone=<zone> --tunnel-through-iap --quiet \
@@ -56,10 +51,9 @@ gcloud compute ssh <instance> --zone=<zone> --tunnel-through-iap --quiet \
 `LogLevel`; one setting drives both, mapped in
 [One level, two scales](troubleshooting.md#one-level-two-scales).
 
-Two consequences follow from the command being `ssh` rather than `start-iap-tunnel`:
-there is no local listener inside gcloud, so nothing prints `Listening on port`; and the
-keepalive options are what notice a dead bastion, since SSH will otherwise hold a forward
-open against a host that is gone.
+Because the command is `ssh`, not `start-iap-tunnel`, gcloud has no local listener, so nothing
+prints `Listening on port`; and the keepalive options are what notice a dead bastion, which
+SSH would otherwise hold a forward open against.
 
 ## Expose mode
 
@@ -68,13 +62,10 @@ terminates TLS and sends each hostname to the relay port that belongs to that tu
 
 ![Expose mode: a visitor reaching a global HTTPS load balancer, which forwards to a relay instance holding a reverse SSH tunnel back to the laptop, with IAP sign-in in front for a gated tunnel](images/architecture/gtunnel-expose-mode.png)
 
-The load balancer is drawn as one card. Behind it a request crosses five resources, which
-[What belongs to whom](#what-belongs-to-whom) below lists in full: the forwarding rule
-`gt-<acct>-fr`, the HTTPS proxy `gt-<acct>-https` with cert map `gt-<acct>-certs`, the URL
-map `gt-<acct>-urlmap` carrying one host rule per tunnel, the per-tunnel backend service
-`gt-<acct>-<tunnel>`, and the instance group `gt-<acct>-ig` whose named port `gt-<tunnel>`
-selects the relay port. The Cloud DNS A record `<tunnel>.<domain>` resolves to the global
-address `gt-<acct>-ip`.
+The load balancer is drawn as one card. A request crosses forwarding rule, HTTPS proxy and
+cert map, URL map (one host rule per tunnel), the tunnel's backend service, and the instance
+group, whose named port selects the relay port; the DNS A record resolves to the global
+address. Names are in [What belongs to whom](#what-belongs-to-whom).
 
 A gated tunnel, `expose --private`, also turns on IAP for its backend service, so a visitor
 signs in with Google before a request reaches the relay. `list` and the TUI show its mode
@@ -87,10 +78,10 @@ gcloud compute ssh <relay-instance> --zone=<zone> --tunnel-through-iap --quiet -
   -N -o ExitOnForwardFailure=yes -R 0.0.0.0:<relay-port>:localhost:<local-port>
 ```
 
-`ExitOnForwardFailure=yes` matters: without it SSH stays up after the remote bind fails and
-the tunnel looks healthy while serving nothing. The relay instance's startup script sets
-`GatewayPorts clientspecified` so the `0.0.0.0` bind is accepted, which is what lets the load
-balancer's health check reach the port.
+Without `ExitOnForwardFailure=yes`, SSH stays up after the remote bind fails and the tunnel
+looks healthy while serving nothing. The relay's startup script sets
+`GatewayPorts clientspecified` so the `0.0.0.0` bind is accepted and the load balancer's
+health check can reach the port.
 
 ## What belongs to whom
 

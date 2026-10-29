@@ -69,15 +69,27 @@ What a pane sheds as the terminal narrows is decided and tested, never emergent.
 | Dialogs | sized to their text, then to the terminal less a margin, centred, with a floor so there is always a row to draw in. Never a percentage of the screen, which is the wrong unit for text | `src/tui/ui.rs` (`dialog_rect`, `dialog_width`) |
 | Pickers | the first column (an instance, project or configuration name) takes the room the other columns leave, up to its widest value, and is cut with an ellipsis through `fit`; the zone or project beside it keeps its width, so a long name never pushes it off the row. `PICKER_NAME_FLOOR` is the least a name keeps before the other columns are cut instead. Under the list one muted detail line gives the highlighted row in full, only while some row is cut (otherwise it would repeat the row), padded to the tallest a row would wrap so the list does not move with the selection. It is dropped before any list row, as the description is, while `PICKER_ROWS_KEPT` rows remain | `src/tui/ui.rs` (`picker_columns`, `render_picker`) |
 
+What the reader sees at each threshold:
+
+| Surface | On screen |
+|---|---|
+| Header | the subtitle beside the logo goes first; the project id is cut with `…`, never below 4 cells (`PROJECT_FLOOR`), and dropped whole below that; the account name goes last. An account with no project shows the name alone |
+| Update notice | `↑ v<latest> · <command>` loses the command, then the version; a step shows only while 8 dashes (`RULE_LEAD`) stay before it, and a string is never cut |
+| Layout | from 121 columns the list is the left 46% and Details, Logs and Metrics stack on the right; below 121 the list takes the full width above them |
+| Right column | Logs keeps at least 4 rows (`LOGS_MIN`); Metrics shrinks, then disappears, before Logs does. A Details value too long for its row (a URL, a target, how the tunnel was started) wraps under its label instead of being cut |
+| List | the name column is as wide as the longest name and shrinks, with `…` and to no fewer than 8 cells (`NAME_FLOOR`), only when the pane could not otherwise hold a 12-cell URL (`URL_MIN`). A trailing `-<account>` suffix is hidden (`display_name` in `src/tui/app.rs`); Details shows the stored name. The list scrolls only when the selection would leave the window |
+| Form dialogs | on a short terminal the line under a field's label goes first, so the field always fits |
+| Help page | two columns from 92 cells inside its frame (`HELP_TWO_COLUMNS`), one below. Too short a terminal scrolls it: `j` `k` and the arrows move a row, `PgUp` `PgDn` a screen, `g` `G` the top and the end, and `3-14 of 31 rows` says where the window is. Both columns scroll together, the count and `Esc back  q back` lines stay put, closing resets to the top, and a page that fits shows no counter |
+
 ## Artwork
 
 The mark is fixed: 11 cells (`MARK_WIDTH`), one row (`MARK_ROWS`), never rescaled. Braille draws separated dots, so scaling the raster scales the gaps and the cloud turns into a dot matrix; the word beneath it cannot grow at all because a terminal cannot scale type. One size is the mark, not a limitation of it.
 
 There is one mark, and print does not get a second one. The eleven cells of `MARK_BRAILLE` are the drawing; `docs/logo.svg` is those same dots re-plotted, one circle per lit braille dot on the 22 by 4 lattice a row of braille cells describes, in the same five hues. `docs/logo.png` is rendered from that SVG, and the README embeds it. The non-braille `MARK_FALLBACK` is the same silhouette again in quadrant blocks, for a font with no braille coverage.
 
-The gaps between the dots are load-bearing, so print keeps them. The silhouette's widest row is the one below the line, and the line itself spans all 22 columns: separated, that reads as a line running behind a cloud, which is the mark. Closed up — dots drawn as squares as wide as the pitch — the line merges into the body and the whole thing reads as one bottom-heavy blob. The banner was drawn that way once and had to be redrawn.
+The gaps between the dots are load-bearing, so print keeps them. The silhouette's widest row is the one below the line, and the line itself spans all 22 columns: separated, that reads as a line running behind a cloud, which is the mark. Closed up — dots drawn as squares as wide as the pitch — the line merges into the body and the whole thing reads as one bottom-heavy blob.
 
-The fallback has the matching trap. Quadrant blocks give two rows for the braille's four, so each cell reduces to a full block, a half block, or `─` where the cell carries only the line. An upper-half block is never right: no cell in the shape has empty lower rows, so one punches a hole under the cloud. The fallback carried `▀` at its centre and drew a notch until it was caught.
+The fallback has the matching trap. Quadrant blocks give two rows for the braille's four, so each cell reduces to a full block, a half block, or `─` where the cell carries only the line. An upper-half block is never right: no cell in the shape has empty lower rows, so one punches a hole under the cloud.
 
 | | |
 |---|---|

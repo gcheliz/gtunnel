@@ -158,7 +158,7 @@ The cost is a cross-compilation step in the release workflow and a larger binary
 
 **Status:** Accepted, 0.1.0
 
-These binaries are what `gtunnel update` installs, so the gate protects users, not just the
+These binaries are what `gtunnel update` installs, so the gate protects users as well as the
 branch.
 
 | Check | Why it is separate |
@@ -407,7 +407,7 @@ service manager's job, with fixed settings, and gtunnel does not speak `sd_notif
 | Question | Answer |
 |---|---|
 | A failure that restarting cannot fix | Expired credentials exit 0 on macOS and 78 on Linux, the one status each manager leaves alone, and write `run/<label>.auth` (#193) |
-| A transient failure, such as a dropped network or VPN | Retried indefinitely; 5 s never reaches systemd's default start limit of 5 starts in 10 s |
+| A transient failure, such as a dropped network or VPN | Retried until it recovers, within the restart budget of the amendment below; 5 s never reaches systemd's default start limit of 5 starts in 10 s |
 | When the tunnel is ready | `run/<label>.ready`, written once gcloud logs that it is listening; `start` waits for it and `list` reads it on both platforms |
 
 `Type=notify` was not adopted. It would show readiness only to someone reading raw
@@ -416,7 +416,7 @@ never logs its listener is killed at `TimeoutStartSec` instead of staying up. It
 reopening when a client reads systemd readiness rather than the ready file.
 
 The cost: a failure that is permanent but not about credentials, such as a wrong instance
-name, is retried every 5 or 10 s until the user stops the tunnel.
+name, is retried every 5 or 10 s until the restart budget stops it (amendment below).
 
 ### Amendment: the supervisor stops a job that spends its restart budget
 
@@ -437,6 +437,4 @@ settings under `[restart]`, their defaults and ranges are in
 | Is a user stop counted | No. SIGTERM is never counted and never writes the marker |
 
 The cost: a tunnel that needs longer than `min_uptime` to come up and keeps failing is
-judged fast-failing, so `min_uptime` must stay above gcloud's normal startup. The "retried
-indefinitely" and "retried every 5 or 10 s" statements above hold for transient failures
-that recover; a job that keeps failing now stops after `max_restarts`.
+judged fast-failing, so `min_uptime` must stay above gcloud's normal startup.
