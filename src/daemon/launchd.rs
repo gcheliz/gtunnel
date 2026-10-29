@@ -186,8 +186,7 @@ pub async fn install_watchdog(program: &std::path::Path) -> Result<()> {
             std::fs::create_dir_all(dir)
                 .with_context(|| format!("Failed to create {}", dir.display()))?;
         }
-        std::fs::write(&path, &text)
-            .with_context(|| format!("Failed to write {}", path.display()))?;
+        crate::fsutil::write_atomic(&path, &text)?;
     }
     // Reload rather than bootstrap over a running one, so reinstalling picks
     // up a new binary path
@@ -393,8 +392,7 @@ fn write_plist(path: &std::path::Path, spec: &ServiceSpec) -> Result<()> {
         std::fs::create_dir_all(dir)
             .with_context(|| format!("Failed to create {}", dir.display()))?;
     }
-    std::fs::write(path, render_plist(spec))
-        .with_context(|| format!("Failed to write {}", path.display()))
+    crate::fsutil::write_atomic(path, &render_plist(spec))
 }
 
 // Writing the definition is not the same as asking the tunnel to run: a loaded

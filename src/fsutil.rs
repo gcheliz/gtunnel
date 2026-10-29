@@ -7,6 +7,7 @@ use anyhow::{bail, Context, Result};
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::Write;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// How long a writer waits for the lock another gtunnel holds: `gcp.lock_deadline`,
@@ -43,26 +44,54 @@ fn open_private(path: &Path) -> std::io::Result<File> {
 /// partway leaves the previous file whole instead of an empty one that reads
 /// as "nothing configured".
 ///
-/// The temp name carries the pid: `gtunnel watch` in a terminal and the
-/// agent's `watch --once` can write the same file at once, and one fixed name
-/// would let the second writer truncate the first one's temp before either
-/// rename.
+/// The temp name carries the pid and a process-wide counter: `gtunnel watch`
+/// in a terminal and the agent's `watch --once` can write the same file at
+/// once, and so can two threads of one process. A pid alone is unique per
+/// process, not per writer, so the second writer would truncate the first
+/// one's temp before either rename.
 pub fn write_atomic(path: &Path, text: &str) -> Result<()> {
-    let temp = path.with_extension(format!("{}.new", std::process::id()));
-    let written = open_private(&temp).and_then(|mut file| {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let temp = path.with_extension(format!("{}.{n}.new", std::process::id()));
+    write_via(path, text, &temp)
+}
+
+fn write_via(path: &Path, text: &str, temp: &Path) -> Result<()> {
+    let written = open_private(temp).and_then(|mut file| {
         file.set_len(0)?;
         file.write_all(text.as_bytes())?;
         file.sync_all()
     });
     if let Err(e) = written {
-        let _ = std::fs::remove_file(&temp);
+        let _ = std::fs::remove_file(temp);
         return Err(e).with_context(|| format!("Failed to write {}", temp.display()));
     }
-    if let Err(e) = std::fs::rename(&temp, path) {
-        let _ = std::fs::remove_file(&temp);
+    if let Err(e) = std::fs::rename(temp, path) {
+        let _ = std::fs::remove_file(temp);
         return Err(e).with_context(|| format!("Failed to replace {}", path.display()));
     }
+    sync_parent(path);
     Ok(())
+}
+
+// The rename is durable only once the directory entry is, so a power cut right
+// after it can otherwise bring back the old file. The new file is already
+// whole and in place, so a failure here (a filesystem that cannot fsync a
+// directory) is not worth failing the write for
+fn sync_parent(path: &Path) {
+    #[cfg(unix)]
+    if let Some(dir) = path.parent() {
+        let dir = if dir.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            dir
+        };
+        if let Ok(handle) = File::open(dir) {
+            let _ = handle.sync_all();
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
 }
 
 /// Holds an advisory lock on a file until dropped. The lock is on a file of
@@ -114,10 +143,32 @@ mod tests {
         let path = dir.path().join("tunnels.toml");
         std::fs::write(&path, "before").unwrap();
         // A directory where the temp file should go makes the write fail
-        let blocker = path.with_extension(format!("{}.new", std::process::id()));
+        let blocker = path.with_extension("blocked.new");
         std::fs::create_dir(&blocker).unwrap();
-        assert!(write_atomic(&path, "after").is_err());
+        assert!(write_via(&path, "after", &blocker).is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "before");
+    }
+
+    #[test]
+    fn two_threads_writing_one_path_both_succeed_and_leave_one_whole_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("update-check.json");
+        let values = ["a".repeat(64 * 1024), "b".repeat(64 * 1024)];
+        for _ in 0..50 {
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = values
+                    .iter()
+                    .map(|v| scope.spawn(|| write_atomic(&path, v)))
+                    .collect();
+                for h in handles {
+                    h.join().unwrap().unwrap();
+                }
+            });
+            let got = std::fs::read_to_string(&path).unwrap();
+            assert!(values.contains(&got), "a torn write: {} bytes", got.len());
+        }
+        let leftovers = std::fs::read_dir(dir.path()).unwrap().count();
+        assert_eq!(leftovers, 1, "a temp file was left behind");
     }
 
     #[cfg(unix)]

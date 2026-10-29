@@ -837,7 +837,8 @@ The check runs in the background, never blocks a command, and runs at most once 
 [`update_check_interval`](configuration.md#settings-the-environment-can-override) (6 hours by
 default). A failed check is recorded and holds the next off for the same interval; the TUI says
 `update check failed` until one succeeds. A downloaded binary and one in `~/.cargo/bin` replace
-themselves after verifying the published SHA-256; a Homebrew install is pointed at
+themselves after verifying the published SHA-256, by renaming a new file into place, never by
+rewriting the running one; a Homebrew install is pointed at
 `brew upgrade gtunnel`.
 
 ## mcp
