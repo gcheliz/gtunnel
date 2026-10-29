@@ -2296,6 +2296,23 @@ mod tests {
     }
 
     #[test]
+    fn doctor_names_the_list_probe_wait_the_environment_overrides() {
+        let findings = setting_override_findings(&Config::default(), &|name| {
+            (name == "GTUNNEL_LIST_PROBE_TIMEOUT").then(|| "2s".to_string())
+        });
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        let text = findings[0].describe();
+        for part in [
+            "list_probe_timeout",
+            "2s",
+            "'500ms'",
+            "Unset GTUNNEL_LIST_PROBE_TIMEOUT",
+        ] {
+            assert!(text.contains(part), "{part}: {text}");
+        }
+    }
+
+    #[test]
     fn doctor_names_a_watch_key_the_environment_overrides() {
         let findings = setting_override_findings(&Config::default(), &|name| {
             (name == "GTUNNEL_WATCH_INTERVAL").then(|| "10s".to_string())

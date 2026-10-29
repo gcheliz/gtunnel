@@ -44,6 +44,7 @@ in the configuration directory (see [Environment](#environment) below).
 | `start_deadline` | string | no | How long a start waits for an Access tunnel to report it is listening, as a duration; `"20s"` when absent. See [Settings the environment can override](#settings-the-environment-can-override) |
 | `discovery` | boolean | no | Whether `list`, the TUI and `mcp` look for tunnel processes started outside gtunnel; `true` when absent |
 | `service_call_timeout` | string | no | How long one `launchctl` or `systemctl` call may take before it is reported as `timed out after`, as a duration; `"10s"` when absent |
+| `list_probe_timeout` | string | no | How long `list` and the MCP list and status tools wait for one probe of a running tunnel's local port, as a duration; `"500ms"` when absent. Not `[watch] probe_timeout`, the watchdog's wait. See [Settings the environment can override](#settings-the-environment-can-override) |
 | `editor` | string | no | The editor `e` opens, below `$VISUAL` and `$EDITOR`; `""` (none chosen) when absent |
 | `notifications` | table | no | Which lifecycle changes raise a desktop notification: `enabled` (the master switch), then `up`, `degraded`, `recovered`, `failed`, all booleans. See [Notifications](commands.md#notifications) |
 | `restart` | table | no | When a tunnel that keeps failing is stopped: `max_restarts`, `window`, `min_uptime`, `base_backoff`, `max_backoff`. `init` writes all five at their defaults. See [The restart budget](#the-restart-budget) |
@@ -242,7 +243,7 @@ that level on the tunnel's start at login.
 
 ## Settings the environment can override
 
-Eighteen keys of `config.toml` have a variable each. Where they disagree the variable wins, always:
+Nineteen keys of `config.toml` have a variable each. Where they disagree the variable wins, always:
 there is no key that opts out, so a value edited in the file that has no effect has one cause,
 and `gtunnel doctor` names it.
 
@@ -250,6 +251,7 @@ and `gtunnel doctor` names it.
 |---|---|---|---|---|
 | `start_deadline` | `GTUNNEL_START_DEADLINE` | `GTUNNEL_START_DEADLINE_MS` | `"20s"` | a duration above zero |
 | `service_call_timeout` | `GTUNNEL_SERVICE_CALL_TIMEOUT` | `GTUNNEL_SERVICE_BOUND_MS` | `"10s"` | a duration above zero |
+| `list_probe_timeout` | `GTUNNEL_LIST_PROBE_TIMEOUT` | none | `"500ms"` | a duration above zero |
 | `discovery` | `GTUNNEL_DISCOVERY` | `GTUNNEL_NO_DISCOVERY` | `true` | `true` or `false` |
 | `notifications.enabled` | `GTUNNEL_NOTIFICATIONS` | `GTUNNEL_NO_NOTIFY` | `true` | `true` or `false` |
 | `editor` | `GTUNNEL_EDITOR` | none | none | a command line |
@@ -281,6 +283,14 @@ issues them for an hour, so a value past `1h` makes requests fail with 401 until
 `lock_deadline` and `fingerprint_attempts` sit under `[gcp]` for want of a section of their own:
 the first is how long a command waits for the lock another gtunnel holds on a file it is writing,
 the second how many times a change to a URL map or named port is redone after a concurrent edit.
+`list_probe_timeout` is the wait for one probe of a running tunnel's local port, in `list` and
+the MCP list and status tools; the TUI's own probes keep a fixed 2 seconds. `list` probes every tunnel at once, so it waits one probe's worth however many tunnels
+run; a longer value helps a slow far end and makes `list` slower when one tunnel is silent. It is
+not `watch.probe_timeout` (3s), which is how long the watchdog waits before it counts a probe as
+failed. The tunnels' file-descriptor limit (4096) has no key: it is checked at compile time
+(above 256, at most the kernel's 61440), it is written into the launchd plist and the systemd
+unit, and a change needs a reinstall of every service, so a value in `config.toml` would not
+reach a running tunnel.
 Durations are `humantime` text (`500ms`, `20s`, `1m30s`). Booleans take `true`, `false`, `yes`,
 `no`, `on`, `off`, `1` or `0`. The older variables keep working: `GTUNNEL_START_DEADLINE_MS` and
 `GTUNNEL_SERVICE_BOUND_MS` are whole milliseconds, and `GTUNNEL_NO_DISCOVERY` and
@@ -308,6 +318,7 @@ loads with the defaults:
 start_deadline = "20s"
 discovery = true
 service_call_timeout = "10s"
+list_probe_timeout = "500ms"
 editor = ""
 
 [notifications]
@@ -423,6 +434,7 @@ skipped, so a second run does nothing. A definition counts as out of date only w
 | `GTUNNEL_CONFIG_DIR` | keep every file in another directory | a throwaway configuration |
 | `GTUNNEL_LOG_LEVEL` | set `quiet`, `info` or `debug` without a flag | every command |
 | `GTUNNEL_START_DEADLINE` | give a slow tunnel longer to listen, e.g. `45s` (older: `GTUNNEL_START_DEADLINE_MS`) | a start that fails before the tunnel is up |
+| `GTUNNEL_LIST_PROBE_TIMEOUT` | set how long `list` waits for one probe, e.g. `1s` | a healthy tunnel shown as `unknown` over a slow link |
 | `GTUNNEL_RESTART_MAX_RESTARTS` | set how many fast failures a tunnel survives; `0` turns the budget off | a tunnel that loops, or one that must never be parked |
 | `GTUNNEL_RESTART_WINDOW` | set how long a failure counts, e.g. `10m` | the restart budget |
 | `GTUNNEL_RESTART_MIN_UPTIME` | set how long a run must last to clear the count, e.g. `60s` | the restart budget |
@@ -476,6 +488,7 @@ skipped, so a second run does nothing. A definition counts as out of date only w
 | `GTUNNEL_RESTART_MIN_UPTIME` | the supervisor, `start`, `restart` | How long a run must last to clear the count (`60s`). Beats `min_uptime` |
 | `GTUNNEL_RESTART_BASE_BACKOFF` | the supervisor, `start`, `restart` | The wait after the first failure (`10s`), doubled on each next one. Beats `base_backoff` |
 | `GTUNNEL_RESTART_MAX_BACKOFF` | the supervisor, `start`, `restart` | The cap on that wait (`5m`). Beats `max_backoff`; not shorter than the base backoff |
+| `GTUNNEL_LIST_PROBE_TIMEOUT` | `list`, `mcp` | How long one probe of a running tunnel's local port may take, as a duration (`500ms`). Beats `list_probe_timeout`. Default 500ms; an empty value counts as unset, and anything that is not a duration above zero is an error naming the variable. Not `GTUNNEL_WATCH_PROBE_TIMEOUT`, which is the watchdog's wait |
 | `GTUNNEL_SERVICE_CALL_TIMEOUT` | every command | A test and diagnostics knob: how long to wait for one `launchctl` or `systemctl` call before it is reported as `timed out after`, as a duration (`10s`). Beats `service_call_timeout`. Default 10s; an empty value counts as unset. Leave it alone unless you are testing the timeout path or diagnosing a slow service manager |
 | `GTUNNEL_SERVICE_BOUND_MS` | every command | The older spelling, in whole milliseconds above zero. `GTUNNEL_SERVICE_CALL_TIMEOUT` wins when both are set |
 | `GTUNNEL_EDITOR` | the TUI's config page | Which editor `e` opens, ahead of `VISUAL` and `EDITOR`. Beats `editor` in `config.toml`, which sits below both |
