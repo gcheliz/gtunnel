@@ -527,10 +527,7 @@ Delete the relay for account 'dev' and everything it owns? [y/N] [n]: Cancelled
 `relay up` opens exactly two ingress rules, both on the network tag `gt-relay`; a tunnel
 opens nothing.
 
-| Rule | Allows | From |
-|---|---|---|
-| `gt-<account>-iap-ssh` | tcp `22` | IAP, `35.235.240.0/20` |
-| `gt-<account>-lb-hc` | tcp `30000-30999`, the relay ports | the load balancer and its health checkers, `130.211.0.0/22` and `35.191.0.0/16` |
+The rules and their sources are in [What GCP needs](gcp.md#firewall-rules-relay-up-creates).
 
 A public tunnel forwards with `ssh -R 0.0.0.0:<relay-port>:<local target>`, so the port
 listens on every interface of the relay instance: the load balancer reaches it from another host.

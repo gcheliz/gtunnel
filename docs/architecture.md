@@ -124,6 +124,10 @@ reaching another tunnel.
 
 ![What relay up creates: on your laptop, gtunnel relay up creates the per-account resources once (HTTPS front end with global address, forwarding rule and HTTPS proxy; URL map with default backend and health check; relay instance and its instance group; firewall rules gt-ACCT-iap-ssh and gt-ACCT-lb-hc; certificate map gt-ACCT-certs), gtunnel domains add creates the per-domain certificate, DNS authorization and apex and wildcard certificate-map entries, and gtunnel expose or run --public creates the per-tunnel backend service and named port, URL-map host rule and Cloud DNS A record with TTL 60, all in GCP example-prod-3c4d; the certificate-map entries are added to the certificate map and the host rule to the URL map](images/architecture/gtunnel-relay-resources.png)
 
+![Several services, one relay: web, api and docs on your laptop are each a supervised ssh -R session over IAP to one relay instance in the VPC; a global HTTPS load balancer with a host rule and Cloud DNS A record per service fronts the relay for visitors; the 30 second machine watchdog probes the supervisors and the TUI polls the load balancer every 5 seconds, both dashed](images/architecture/gtunnel-multi-service-relay.png)
+
+Every published service is its own supervised session to the same relay, on its own relay port.
+
 Only the per-tunnel backend service carries `description: gtunnel:<account>`. `doctor --fix`
 treats a host rule on the relay's URL map as orphaned when no tunnel claims its hostname, and a
 named port on the relay's instance group when it starts `gt-` and no tunnel claims it. A Cloud

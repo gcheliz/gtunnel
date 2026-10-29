@@ -60,7 +60,7 @@ Google's protocols. It opens every connection with **your own Google identity** 
 
 ## Install
 
-Needs macOS or Linux and a logged-in `gcloud` ([prerequisites and IAM](docs/usage.md#getting-set-up)).
+Needs macOS or Linux and a logged-in `gcloud` ([what GCP needs](docs/gcp.md), [getting set up](docs/usage.md#getting-set-up)).
 Pick the file for your machine from the
 [latest release](https://github.com/gcheliz/gtunnel/releases/latest):
 
@@ -98,6 +98,7 @@ gtunnel expose web 3000 -s                   # https://web.example.com -> localh
 
 | I want to | Read |
 |---|---|
+| Check the roles, APIs and firewall rules a mode needs | [docs/gcp.md](docs/gcp.md) |
 | Go from a clean machine to a first tunnel | [Getting set up](docs/usage.md#getting-set-up) |
 | Understand Access, Expose and the target kinds | [Concepts](docs/usage.md#concepts) |
 | Find a command, its flags and its output | [docs/commands.md](docs/commands.md) |
