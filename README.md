@@ -65,7 +65,7 @@ Pick the file for your machine from the
 [latest release](https://github.com/gcheliz/gtunnel/releases/latest):
 
 ```
-VERSION="v0.2.35"
+VERSION="v0.2.36"
 F="gtunnel-macos-arm64-${VERSION}.tar.gz"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F.sha256"

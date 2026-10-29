@@ -3,6 +3,18 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.36](https://github.com/gcheliz/gtunnel/compare/v0.2.35...v0.2.36) - 2026-10-29
+
+### Added
+
+- *(update)* make the check interval a setting and say when a check fails ([#268](https://github.com/gcheliz/gtunnel/pull/268))
+
+### Documentation
+
+- *(gcp)* add the GCP requirements page and two load diagrams ([#266](https://github.com/gcheliz/gtunnel/pull/266))
+- *(site)* drop the lone 14 tools figure from the MCP section ([#265](https://github.com/gcheliz/gtunnel/pull/265))
+- *(site)* show the Claude Code and Gemini CLI MCP install commands ([#262](https://github.com/gcheliz/gtunnel/pull/262))
+
 ## [0.2.35](https://github.com/gcheliz/gtunnel/compare/v0.2.34...v0.2.35) - 2026-10-29
 
 ### Added
