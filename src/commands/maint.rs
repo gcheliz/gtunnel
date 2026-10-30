@@ -1,13 +1,20 @@
 // The whole module is CLI output, so printing is its job
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
-use anyhow::Result;
+use std::time::Duration;
+
+use anyhow::{bail, Context, Result};
 
 use crate::commands::confirm;
 use crate::config::{config_dir, load_config};
 use crate::daemon;
 use crate::ephemeral::list_ephemeral;
 use crate::state::TunnelState;
+
+// A run tears down its route and removes its record after gcloud exits; a
+// record without an owner cannot say when that is done, so it gets the settle
+const RUN_STOP_WAIT: Duration = Duration::from_secs(10);
+const RUN_SETTLE: Duration = Duration::from_secs(1);
 
 // Removes everything gtunnel put on this machine, and nothing it put in GCP
 pub async fn cmd_reset(assume_yes: bool) -> Result<()> {
@@ -36,6 +43,13 @@ pub async fn cmd_reset(assume_yes: bool) -> Result<()> {
         }
     };
 
+    // An ephemeral run holds its ports until it exits, and its record is about
+    // to be deleted with the rest of the directory. Read before anything is
+    // changed: runs that cannot be listed cannot be stopped, and deleting
+    // their records would leave nothing to find them by.
+    let runs =
+        list_ephemeral().context("Could not list the running tunnels, so nothing was removed")?;
+
     println!(
         "This removes {} local tunnel(s), {accounts} account(s) and {}",
         state.tunnels.len(),
@@ -54,12 +68,27 @@ pub async fn cmd_reset(assume_yes: bool) -> Result<()> {
         }
     }
 
-    // An ephemeral run holds its ports until it exits, and its record is about
-    // to be deleted with the rest of the directory
-    for (record, alive) in list_ephemeral().unwrap_or_default() {
-        if alive {
-            println!("  stopping run {} (pid {})", record.name, record.pid);
-            record.terminate();
+    let live: Vec<_> = runs
+        .into_iter()
+        .filter_map(|(record, alive)| alive.then_some(record))
+        .collect();
+    for record in &live {
+        println!("  stopping run {} (pid {})", record.name, record.pid);
+        record.terminate();
+    }
+    // A dying run removes its own record, so it writes into the directory as
+    // it goes: deleting under it left the directory behind or failed with
+    // "Directory not empty". Wait for each to finish first.
+    for record in &live {
+        if !record.wait_for_handover(RUN_STOP_WAIT, RUN_SETTLE).await {
+            bail!(
+                "Run {} (pid {}) did not stop within {}s, so {} was kept. Stop it, then run \
+                 reset again",
+                record.name,
+                record.pid,
+                RUN_STOP_WAIT.as_secs(),
+                dir.display()
+            );
         }
     }
 

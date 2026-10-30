@@ -808,6 +808,8 @@ Nothing here is gtunnel's to remove
 
 Removes every local trace: services, config, state, logs. It never deletes anything in GCP.
 
+A `gtunnel run` still alive is stopped first, and the config is removed only after the run has exited, so no run is left holding a port with no record to find it by. If the runs cannot be listed, `reset` stops before it changes anything; if one does not stop within 10s, the config is kept and `reset` says which run to stop.
+
 ```
 $ gtunnel reset
 This removes 1 local tunnel(s), 1 account(s) and /Users/you/.gtunnel

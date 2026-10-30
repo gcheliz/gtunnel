@@ -511,7 +511,8 @@ The tunnel edit dialog labels its value `Ports (remote:local):` for Access and `
 for Expose. A new local port meets the rules `add` applies: not 0, not another tunnel's, not
 a live run's and not bound on the machine; an empty local target is refused.
 
-`e` opens a chooser:
+`e` opens a chooser, except on a row with an op still running, where it is refused on the
+status line (`db: start already in progress`) before anything is typed:
 
 | Key | What it edits |
 |---|---|
