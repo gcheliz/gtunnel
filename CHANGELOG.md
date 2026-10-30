@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.3.14](https://github.com/gcheliz/gtunnel/compare/v0.3.13...v0.3.14) - 2026-10-30
+
+### Fixed
+
+- *(discovery)* stop hiding tunnels whose command line contains grep ([#423](https://github.com/gcheliz/gtunnel/pull/423))
+
 ## [0.3.13](https://github.com/gcheliz/gtunnel/compare/v0.3.12...v0.3.13) - 2026-10-30
 
 ### Fixed
