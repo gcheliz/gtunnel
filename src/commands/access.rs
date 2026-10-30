@@ -1083,7 +1083,11 @@ pub async fn cmd_list(account: Option<&str>, json: bool) -> Result<()> {
     // Entries of a kind a newer gtunnel wrote: named, so a missing row is never
     // a mystery, and never edited
     let unsupported = crate::state::unsupported_tunnels().unwrap_or_default();
-    let notes = unsupported_notes(&unsupported, &acct.name);
+    let mut notes = unsupported_notes(&unsupported, &acct.name);
+    notes.extend(unreadable_run_notes(
+        &crate::ephemeral::unreadable_records().unwrap_or_default(),
+        &acct.name,
+    ));
 
     if tunnels.is_empty() && runs.is_empty() && notes.is_empty() {
         println!("No tunnels for account '{}'", acct.name);
@@ -1116,6 +1120,25 @@ pub async fn cmd_list(account: Option<&str>, json: bool) -> Result<()> {
         println!("{note}");
     }
     Ok(())
+}
+
+/// One line per run record this version cannot parse, for the account it names
+/// or for every account when it names none. The run is not in the table above
+/// because nothing in the file can be trusted to fill a column.
+fn unreadable_run_notes(
+    items: &[crate::ephemeral::UnreadableRecord],
+    account: &str,
+) -> Vec<String> {
+    items
+        .iter()
+        .filter(|r| r.account.as_deref().is_none_or(|a| a == account))
+        .map(|r| {
+            format!(
+                "  run record {} cannot be read by this version; its ports stay reserved",
+                r.file
+            )
+        })
+        .collect()
 }
 
 /// One line per saved tunnel this version cannot read. It sits under the table
@@ -1204,6 +1227,28 @@ mod new_tunnel_tests {
         assert!(!t.auto_start);
         assert_eq!(t.name, "db");
         assert_eq!(t.account_name, "dev");
+    }
+
+    #[test]
+    fn an_unreadable_run_record_is_named_under_the_list() {
+        let record = |file: &str, account: Option<&str>| crate::ephemeral::UnreadableRecord {
+            file: file.to_string(),
+            reason: "unknown variant".to_string(),
+            account: account.map(str::to_string),
+            local_port: None,
+            relay_port: None,
+        };
+        let notes = unreadable_run_notes(
+            &[
+                record("dev-mesh.json", Some("dev")),
+                record("prod-x.json", Some("prod")),
+                record("odd.json", None),
+            ],
+            "dev",
+        );
+        assert_eq!(notes.len(), 2);
+        assert!(notes[0].contains("dev-mesh.json"));
+        assert!(notes[1].contains("odd.json"));
     }
 
     #[test]

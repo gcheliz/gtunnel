@@ -261,9 +261,47 @@ pub fn pid_is_alive(pid: u32) -> bool {
     unsafe { libc::kill(pid, 0) == 0 }
 }
 
-pub fn list_ephemeral() -> Result<Vec<(EphemeralRecord, bool)>> {
+/// A file in the run directory that no record could be read from: written by
+/// a gtunnel whose records this one cannot parse, or damaged. It is not a run
+/// this version can list, stop or reap, but the process behind it may be
+/// alive and holding its ports, so the ports it names are still counted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnreadableRecord {
+    pub file: String,
+    pub reason: String,
+    pub account: Option<String>,
+    pub local_port: Option<u16>,
+    pub relay_port: Option<u16>,
+}
+
+// The ports are fished out of the JSON by name, without the struct: the shape
+// that failed to parse is the one thing that cannot be relied on, but a port
+// number under `spec` is what every version has called it
+fn unreadable(file: String, reason: String, text: &str) -> UnreadableRecord {
+    let value: Option<serde_json::Value> = serde_json::from_str(text).ok();
+    let port = |key: &str| {
+        value
+            .as_ref()
+            .and_then(|v| v.get("spec")?.get(key)?.as_u64())
+            .and_then(|p| u16::try_from(p).ok())
+    };
+    UnreadableRecord {
+        file,
+        reason,
+        account: value
+            .as_ref()
+            .and_then(|v| v.get("account_name")?.as_str().map(str::to_string)),
+        local_port: port("local_port"),
+        relay_port: port("relay_port"),
+    }
+}
+
+type Scan = (Vec<(EphemeralRecord, bool)>, Vec<UnreadableRecord>);
+
+fn scan_runs() -> Result<Scan> {
     let dir = run_dir()?;
     let mut out = Vec::new();
+    let mut skipped = Vec::new();
     for entry in
         std::fs::read_dir(&dir).with_context(|| format!("Failed to read {}", dir.display()))?
     {
@@ -271,18 +309,38 @@ pub fn list_ephemeral() -> Result<Vec<(EphemeralRecord, bool)>> {
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            continue;
+        let file = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(e) => {
+                skipped.push(unreadable(file, e.to_string(), ""));
+                continue;
+            }
         };
-        // A record written by another version is skipped, not fatal
-        let Ok(record) = serde_json::from_str::<EphemeralRecord>(&text) else {
-            continue;
-        };
-        let alive = record.is_alive();
-        out.push((record, alive));
+        match serde_json::from_str::<EphemeralRecord>(&text) {
+            Ok(record) => {
+                let alive = record.is_alive();
+                out.push((record, alive));
+            }
+            Err(e) => skipped.push(unreadable(file, e.to_string(), &text)),
+        }
     }
     out.sort_by(|a, b| a.0.name.cmp(&b.0.name));
-    Ok(out)
+    skipped.sort_by(|a, b| a.file.cmp(&b.file));
+    Ok((out, skipped))
+}
+
+pub fn list_ephemeral() -> Result<Vec<(EphemeralRecord, bool)>> {
+    Ok(scan_runs()?.0)
+}
+
+/// What `list` and `doctor` say about the files `list_ephemeral` cannot read,
+/// so a run that vanished from the list is never a silent one.
+pub fn unreadable_records() -> Result<Vec<UnreadableRecord>> {
+    Ok(scan_runs()?.1)
 }
 
 /// The longest a run may be told to live. A TTL is a safety net for a tunnel
@@ -404,7 +462,8 @@ pub fn used_relay_ports(
 /// compete for them.
 fn run_relay_ports(account: &str) -> Result<std::collections::HashSet<u16>> {
     let mut used = std::collections::HashSet::new();
-    for (record, _alive) in list_ephemeral()? {
+    let (records, skipped) = scan_runs()?;
+    for (record, _alive) in records {
         if record.account_name != account {
             continue;
         }
@@ -412,6 +471,13 @@ fn run_relay_ports(account: &str) -> Result<std::collections::HashSet<u16>> {
             used.insert(*relay_port);
         }
     }
+    // A record that names no account may be this one's, so it counts
+    used.extend(
+        skipped
+            .iter()
+            .filter(|r| r.account.as_deref().is_none_or(|a| a == account))
+            .filter_map(|r| r.relay_port),
+    );
     Ok(used)
 }
 
@@ -420,11 +486,13 @@ fn run_relay_ports(account: &str) -> Result<std::collections::HashSet<u16>> {
 /// released only when the record goes.
 fn run_local_ports() -> Result<std::collections::HashSet<u16>> {
     let mut used = std::collections::HashSet::new();
-    for (record, _alive) in list_ephemeral()? {
+    let (records, skipped) = scan_runs()?;
+    for (record, _alive) in records {
         if let TunnelSpec::Access { local_port, .. } = &record.spec {
             used.insert(*local_port);
         }
     }
+    used.extend(skipped.iter().filter_map(|r| r.local_port));
     Ok(used)
 }
 
@@ -2384,5 +2452,58 @@ mod tests {
             list_ephemeral().unwrap().is_empty(),
             "gone once the route is"
         );
+    }
+
+    fn write_run_file(name: &str, text: &str) {
+        std::fs::write(run_dir().unwrap().join(name), text).expect("write fixture");
+    }
+
+    // A record a newer gtunnel wrote in a shape this one cannot parse: skipping
+    // it silently left the run unlisted, unreaped, and its port free to hand out
+    #[test]
+    fn an_unparseable_run_record_is_reported_and_its_port_is_not_allocated() {
+        let _temp = TempConfigDir::new();
+        write_run_file(
+            "dev-mesh.json",
+            r#"{"name":"mesh","account_name":"dev","pid":1,"started_at":1,
+                "spec":{"mode":"mesh_relay","local_port":15999,"relay_port":16000}}"#,
+        );
+
+        assert!(list_ephemeral().unwrap().is_empty(), "it is not a record");
+        let found = unreadable_records().unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].file, "dev-mesh.json");
+        assert_eq!(found[0].local_port, Some(15999));
+        assert_eq!(found[0].relay_port, Some(16000));
+
+        assert!(run_local_ports().unwrap().contains(&15999));
+        assert!(run_relay_ports("dev").unwrap().contains(&16000));
+        assert!(
+            !run_relay_ports("prod").unwrap().contains(&16000),
+            "a relay port belongs to the record's own account"
+        );
+
+        let mut used = std::collections::HashSet::new();
+        used.extend(run_local_ports().unwrap());
+        let port = allocate_port("mesh", 15999, 1, &used, |_| true);
+        assert!(port.is_err(), "the only port in the range is taken");
+    }
+
+    #[test]
+    fn a_run_file_that_is_not_json_is_reported_with_no_port_to_hold() {
+        let _temp = TempConfigDir::new();
+        write_run_file("dev-broken.json", "{ not json");
+        let found = unreadable_records().unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].local_port, None);
+        assert!(!found[0].reason.is_empty());
+        assert!(run_local_ports().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_readable_run_record_is_not_reported_as_unreadable() {
+        let _temp = TempConfigDir::new();
+        record("gt-fine").save().unwrap();
+        assert!(unreadable_records().unwrap().is_empty());
     }
 }
