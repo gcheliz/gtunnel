@@ -78,11 +78,37 @@ impl Endpoints {
     }
 }
 
+// Fifty pages of the server's default size is far past any project gtunnel
+// is pointed at, and a bound is what turns a runaway token into an error
+const MAX_PAGES: usize = 50;
+
+// A page token is opaque and may carry `+`, `/` or `=`, so it cannot be
+// pasted into a query string as it is
+pub(crate) fn encode_query_value(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for b in raw.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
 #[derive(Debug)]
 pub enum GcpError {
     NotFound,
     PreconditionFailed,
-    Api { status: u16, message: String },
+    /// `reason` is the API's own machine word (`SERVICE_DISABLED`,
+    /// `RATE_LIMIT_EXCEEDED`): the status alone cannot tell a disabled API from
+    /// a missing role, and the two want different advice
+    Api {
+        status: u16,
+        message: String,
+        reason: Option<String>,
+    },
 }
 
 impl std::fmt::Display for GcpError {
@@ -92,7 +118,26 @@ impl std::fmt::Display for GcpError {
             GcpError::PreconditionFailed => {
                 write!(f, "precondition failed (412): fingerprint mismatch")
             }
-            GcpError::Api { status, message } => write!(f, "GCP API error {status}: {message}"),
+            GcpError::Api {
+                status,
+                message,
+                reason,
+            } => {
+                write!(f, "GCP API error {status}: {message}")?;
+                // Google's message names the API and the project but not the
+                // command, and "permission denied" is where people look for a
+                // role that is not missing
+                if crate::failure::Failure::from_gcp(*status, reason.as_deref())
+                    == crate::failure::Failure::ServiceDisabled
+                {
+                    write!(
+                        f,
+                        ". Enable the API the message names: gcloud services enable <api> \
+                         --project=<project>"
+                    )?;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -233,6 +278,7 @@ impl GcpClient {
             code => GcpError::Api {
                 status: code,
                 message,
+                reason: extract_error_reason(&text),
             },
         };
         Err(anyhow::Error::new(err).context(format!("{method} {url}")))
@@ -241,6 +287,72 @@ impl GcpClient {
     pub async fn get<T: DeserializeOwned>(&self, url: &str) -> Result<T> {
         let text = self.send(reqwest::Method::GET, url, None).await?;
         parse_json(&text, url)
+    }
+
+    /// Every item of a list call, across pages. A list answers one page at the
+    /// size the server picks, so a caller that reads the first page alone sees
+    /// an entry on page two as absent and acts on that.
+    pub async fn get_all<T: DeserializeOwned>(&self, url: &str, items_key: &str) -> Result<Vec<T>> {
+        let mut out = Vec::new();
+        for page in self.pages(url).await? {
+            if let Some(items) = page.get(items_key) {
+                let items: Vec<T> = serde_json::from_value(items.clone()).with_context(|| {
+                    format!("Unexpected '{items_key}' in the response from {url}")
+                })?;
+                out.extend(items);
+            }
+        }
+        Ok(out)
+    }
+
+    /// The same walk for an `aggregatedList`, whose `items` is an object keyed
+    /// by scope (`zones/europe-west1-b`) and not an array. A scope that
+    /// repeats on a later page is returned again: the caller sees every bucket.
+    pub async fn get_all_scoped<T: DeserializeOwned>(
+        &self,
+        url: &str,
+        items_key: &str,
+    ) -> Result<Vec<(String, T)>> {
+        let mut out = Vec::new();
+        for page in self.pages(url).await? {
+            if let Some(serde_json::Value::Object(scopes)) = page.get(items_key) {
+                for (scope, bucket) in scopes {
+                    let bucket: T = serde_json::from_value(bucket.clone()).with_context(|| {
+                        format!("Unexpected '{items_key}' in the response from {url}")
+                    })?;
+                    out.push((scope.clone(), bucket));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    // A list that never stops handing out tokens is a server fault, and
+    // returning what was read so far would hide it behind a plausible list
+    async fn pages(&self, url: &str) -> Result<Vec<serde_json::Value>> {
+        let sep = if url.contains('?') { '&' } else { '?' };
+        let mut pages = Vec::new();
+        let mut token: Option<String> = None;
+        for _ in 0..MAX_PAGES {
+            let page_url = match &token {
+                Some(t) => format!("{url}{sep}pageToken={}", encode_query_value(t)),
+                None => url.to_string(),
+            };
+            let page: serde_json::Value = self.get(&page_url).await?;
+            let next = page
+                .get("nextPageToken")
+                .and_then(|t| t.as_str())
+                .filter(|t| !t.is_empty())
+                .map(str::to_string);
+            pages.push(page);
+            match next {
+                Some(t) => token = Some(t),
+                None => return Ok(pages),
+            }
+        }
+        Err(anyhow!(
+            "The list at {url} did not end after {MAX_PAGES} pages; stopped so a partial list is not mistaken for the whole"
+        ))
     }
 
     pub async fn post<B: Serialize, T: DeserializeOwned>(&self, url: &str, body: &B) -> Result<T> {
@@ -346,6 +458,21 @@ fn extract_error_message(text: &str) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+// The most specific machine word the body carries: Google's newer APIs put it
+// in `details[].reason`, Compute and the older ones in `errors[].reason`, and
+// `error.status` (`PERMISSION_DENIED`) is the coarse fallback
+fn extract_error_reason(text: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    let error = value.get("error")?;
+    ["details", "errors"]
+        .iter()
+        .filter_map(|key| error.get(key)?.as_array())
+        .flatten()
+        .find_map(|item| item.get("reason")?.as_str())
+        .or_else(|| error.get("status")?.as_str())
+        .map(str::to_string)
+}
+
 fn operation_error(err: &serde_json::Value) -> anyhow::Error {
     let detail = err
         .get("errors")
@@ -373,6 +500,29 @@ mod tests {
     use serde::Deserialize;
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[test]
+    fn the_most_specific_reason_in_an_error_body_is_kept() {
+        let disabled = r#"{"error":{"code":403,"message":"API disabled","status":"PERMISSION_DENIED",
+            "details":[{"@type":"x","reason":"SERVICE_DISABLED"}]}}"#;
+        assert_eq!(
+            extract_error_reason(disabled).as_deref(),
+            Some("SERVICE_DISABLED")
+        );
+        let compute =
+            r#"{"error":{"code":403,"message":"m","errors":[{"reason":"rateLimitExceeded"}]}}"#;
+        assert_eq!(
+            extract_error_reason(compute).as_deref(),
+            Some("rateLimitExceeded")
+        );
+        let coarse = r#"{"error":{"code":403,"message":"m","status":"PERMISSION_DENIED"}}"#;
+        assert_eq!(
+            extract_error_reason(coarse).as_deref(),
+            Some("PERMISSION_DENIED")
+        );
+        assert_eq!(extract_error_reason("not json"), None);
+        assert_eq!(extract_error_reason(r#"{"error":{"message":"m"}}"#), None);
+    }
 
     #[cfg(debug_assertions)]
     #[test]
@@ -623,5 +773,114 @@ mod tests {
         );
         assert_eq!(e.iap, "https://iap.googleapis.com/v1");
         assert_eq!(e.monitoring, "https://monitoring.googleapis.com/v3");
+    }
+
+    // Pages are told apart by token, so a mock keyed on `pageToken` proves the
+    // helper sent the token the server handed out and not its own count
+    #[tokio::test]
+    async fn get_all_follows_the_page_token_to_the_last_page() {
+        use wiremock::matchers::query_param;
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/things"))
+            .and(query_param("pageToken", "a+b/c="))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [{"name": "two"}]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/things"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [{"name": "one"}],
+                "nextPageToken": "a+b/c="
+            })))
+            .mount(&server)
+            .await;
+
+        let got: Vec<Thing> = client(&server)
+            .get_all(&format!("{}/things", server.uri()), "items")
+            .await
+            .expect("get_all");
+        let names: Vec<&str> = got.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, vec!["one", "two"]);
+    }
+
+    #[tokio::test]
+    async fn get_all_keeps_a_filter_already_on_the_url() {
+        use wiremock::matchers::query_param;
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/things"))
+            .and(query_param("filter", "x"))
+            .and(query_param("pageToken", "p2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/things"))
+            .and(query_param("filter", "x"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "nextPageToken": "p2"
+            })))
+            .mount(&server)
+            .await;
+
+        let got: Vec<Thing> = client(&server)
+            .get_all(&format!("{}/things?filter=x", server.uri()), "items")
+            .await
+            .expect("get_all");
+        assert!(got.is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_all_stops_at_the_page_cap_with_an_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/things"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [{"name": "again"}],
+                "nextPageToken": "more"
+            })))
+            .mount(&server)
+            .await;
+
+        let err = client(&server)
+            .get_all::<Thing>(&format!("{}/things", server.uri()), "items")
+            .await
+            .expect_err("a list that never ends is an error");
+        assert!(format!("{err:#}").contains("50 pages"), "{err:#}");
+        let seen = server.received_requests().await.expect("recorded").len();
+        assert_eq!(seen, MAX_PAGES);
+    }
+
+    #[tokio::test]
+    async fn get_all_scoped_merges_the_buckets_of_every_page() {
+        use wiremock::matchers::query_param;
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/agg"))
+            .and(query_param("pageToken", "p2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": {"zones/b": {"name": "bee"}}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/agg"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": {"zones/a": {"name": "ay"}},
+                "nextPageToken": "p2"
+            })))
+            .mount(&server)
+            .await;
+
+        let got: Vec<(String, Thing)> = client(&server)
+            .get_all_scoped(&format!("{}/agg", server.uri()), "items")
+            .await
+            .expect("scoped");
+        let scopes: Vec<&str> = got.iter().map(|(s, _)| s.as_str()).collect();
+        assert_eq!(scopes, vec!["zones/a", "zones/b"]);
     }
 }

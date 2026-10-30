@@ -114,12 +114,6 @@ impl RawInstance {
 }
 
 #[derive(Deserialize)]
-struct AggregatedInstances {
-    #[serde(default)]
-    items: std::collections::BTreeMap<String, AggregatedScope>,
-}
-
-#[derive(Deserialize)]
 struct AggregatedScope {
     #[serde(default)]
     instances: Vec<RawInstance>,
@@ -130,9 +124,9 @@ pub async fn list_instances(client: &GcpClient, project: &str) -> Result<Vec<Ins
         "{}/projects/{project}/aggregated/instances",
         client.endpoints.compute
     );
-    let raw: AggregatedInstances = client.get(&url).await?;
+    let scopes: Vec<(String, AggregatedScope)> = client.get_all_scoped(&url, "items").await?;
     let mut out = Vec::new();
-    for (scope, bucket) in raw.items {
+    for (scope, bucket) in scopes {
         let zone_hint = scope.strip_prefix("zones/").unwrap_or(&scope).to_string();
         for instance in bucket.instances {
             out.push(instance.into_instance(&zone_hint));
@@ -177,9 +171,9 @@ pub async fn find_instances(
         client.endpoints.compute,
         query_encode(&filter)
     );
-    let raw: AggregatedInstances = client.get(&url).await?;
+    let scopes: Vec<(String, AggregatedScope)> = client.get_all_scoped(&url, "items").await?;
     let mut out = Vec::new();
-    for (scope, bucket) in raw.items {
+    for (scope, bucket) in scopes {
         let zone_hint = scope.strip_prefix("zones/").unwrap_or(&scope).to_string();
         out.extend(
             bucket
@@ -208,20 +202,14 @@ fn query_encode(s: &str) -> String {
 }
 
 #[derive(Deserialize)]
-struct NamedList {
-    #[serde(default)]
-    items: Vec<NamedItem>,
-}
-
-#[derive(Deserialize)]
 struct NamedItem {
     name: String,
 }
 
 pub async fn list_zones(client: &GcpClient, project: &str) -> Result<Vec<String>> {
     let url = format!("{}/projects/{project}/zones", client.endpoints.compute);
-    let raw: NamedList = client.get(&url).await?;
-    Ok(raw.items.into_iter().map(|z| z.name).collect())
+    let zones: Vec<NamedItem> = client.get_all(&url, "items").await?;
+    Ok(zones.into_iter().map(|z| z.name).collect())
 }
 
 // Kept as one constant so creation and reconciliation compare against the same
@@ -371,19 +359,12 @@ fn ingress() -> String {
     "INGRESS".to_string()
 }
 
-#[derive(Deserialize)]
-struct FirewallList {
-    #[serde(default)]
-    items: Vec<Firewall>,
-}
-
 pub async fn list_firewalls(client: &GcpClient, project: &str) -> Result<Vec<Firewall>> {
     let url = format!(
         "{}/projects/{project}/global/firewalls",
         client.endpoints.compute
     );
-    let raw: FirewallList = client.get(&url).await?;
-    Ok(raw.items)
+    client.get_all(&url, "items").await
 }
 
 pub async fn get_firewall(
@@ -814,12 +795,6 @@ impl From<RawBackendService> for BackendService {
     }
 }
 
-#[derive(Deserialize)]
-struct BackendServiceList {
-    #[serde(default)]
-    items: Vec<RawBackendService>,
-}
-
 pub async fn list_backend_services(
     client: &GcpClient,
     project: &str,
@@ -828,8 +803,8 @@ pub async fn list_backend_services(
         "{}/projects/{project}/global/backendServices",
         client.endpoints.compute
     );
-    let raw: BackendServiceList = client.get(&url).await?;
-    Ok(raw.items.into_iter().map(Into::into).collect())
+    let raw: Vec<RawBackendService> = client.get_all(&url, "items").await?;
+    Ok(raw.into_iter().map(Into::into).collect())
 }
 
 pub async fn get_backend_service(
@@ -1958,5 +1933,122 @@ mod tests {
         assert_eq!(got.metadata_fingerprint.as_deref(), Some("fp-9"));
         assert_eq!(got.startup_script(), Some("#!/bin/bash\n"));
         assert_eq!(got.metadata.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_firewall_on_the_second_page_is_listed() {
+        use wiremock::matchers::query_param;
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/projects/p/global/firewalls"))
+            .and(query_param("pageToken", "page-2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [{"name": "late"}]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/projects/p/global/firewalls"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [{"name": "early"}],
+                "nextPageToken": "page-2"
+            })))
+            .mount(&server)
+            .await;
+
+        let got = list_firewalls(&client(&server), "p").await.expect("list");
+        let names: Vec<&str> = got.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, vec!["early", "late"]);
+    }
+
+    #[tokio::test]
+    async fn an_instance_on_the_second_page_of_the_aggregated_list_is_listed() {
+        use wiremock::matchers::query_param;
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/projects/p/aggregated/instances"))
+            .and(query_param("pageToken", "page-2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+              "items": {"zones/europe-west1-b": {"instances": [{"name": "late"}]}}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/projects/p/aggregated/instances"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+              "items": {"zones/us-central1-a": {"instances": [{"name": "early"}]}},
+              "nextPageToken": "page-2"
+            })))
+            .mount(&server)
+            .await;
+
+        let got = list_instances(&client(&server), "p").await.expect("list");
+        let names: Vec<&str> = got.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, vec!["early", "late"]);
+    }
+
+    #[tokio::test]
+    async fn find_instances_keeps_its_filter_on_every_page() {
+        use wiremock::matchers::query_param;
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/projects/p/aggregated/instances"))
+            .and(query_param("filter", "name=\"bastion\""))
+            .and(query_param("pageToken", "page-2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+              "items": {"zones/europe-west1-b": {"instances": [{"name": "bastion"}]}}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/projects/p/aggregated/instances"))
+            .and(query_param("filter", "name=\"bastion\""))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+              "items": {"zones/us-central1-a": {"instances": [{"name": "bastion"}]}},
+              "nextPageToken": "page-2"
+            })))
+            .mount(&server)
+            .await;
+
+        let got = find_instances(&client(&server), "p", "bastion")
+            .await
+            .expect("find");
+        assert_eq!(got.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn zones_and_backend_services_follow_their_pages_too() {
+        use wiremock::matchers::query_param;
+        let server = MockServer::start().await;
+        for (route, key) in [
+            ("/projects/p/zones", "a"),
+            ("/projects/p/global/backendServices", "gt-a"),
+        ] {
+            Mock::given(method("GET"))
+                .and(path(route))
+                .and(query_param("pageToken", "page-2"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "items": [{"name": format!("{key}-late")}]
+                })))
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path(route))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "items": [{"name": format!("{key}-early")}],
+                    "nextPageToken": "page-2"
+                })))
+                .mount(&server)
+                .await;
+        }
+
+        let zones = list_zones(&client(&server), "p").await.expect("zones");
+        assert_eq!(zones, vec!["a-early", "a-late"]);
+        let backends = list_backend_services(&client(&server), "p")
+            .await
+            .expect("backends");
+        let names: Vec<&str> = backends.iter().map(|b| b.name.as_str()).collect();
+        assert_eq!(names, vec!["gt-a-early", "gt-a-late"]);
     }
 }

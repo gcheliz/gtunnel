@@ -167,10 +167,9 @@ async fn ensure_domain(
     let auth = certmanager::ensure_dns_authorization(client, project, &auth_name, domain).await?;
     step(true, &format!("dns authorization {auth_name}"));
 
-    let records = dns::list_record_sets(client, project, managed_zone).await?;
-    let present = records
-        .iter()
-        .any(|r| r.name == auth.cname_name && r.rtype == "CNAME");
+    let present = dns::find_record_set(client, project, managed_zone, &auth.cname_name, "CNAME")
+        .await?
+        .is_some();
     if !present {
         dns::create_record_set(
             client,

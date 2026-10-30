@@ -49,10 +49,11 @@ pub async fn load_entries(account: &str) -> Result<(Vec<TunnelEntry>, HashSet<u1
         let mut entry = TunnelEntry::new(tunnel.clone(), status, TunnelKind::Managed);
         // Only a running tunnel is probed, and this one stopped itself so
         // the log would go quiet: without this the reason reads as `stopped`
-        if status != TunnelStatus::Running
-            && crate::commands::access::stopped_for_credentials(tunnel)
-        {
-            entry.health = HealthStatus::AuthExpired;
+        let stopped_for = (status != TunnelStatus::Running)
+            .then(|| crate::commands::access::stopped_failure(tunnel))
+            .flatten();
+        if let Some(failure) = stopped_for {
+            entry.health = HealthStatus::of_stopped(failure);
         } else if status != TunnelStatus::Running
             && crate::commands::access::stopped_for_budget(tunnel).is_some()
         {

@@ -776,9 +776,10 @@ fn observe_lifecycle(obs: &Observer, account: &str, entries: &[TunnelEntry]) {
         }
         let healthy = match entry.health {
             HealthStatus::Healthy => Some(true),
-            HealthStatus::Unhealthy | HealthStatus::AuthExpired | HealthStatus::CrashLooping => {
-                Some(false)
-            }
+            HealthStatus::Unhealthy
+            | HealthStatus::AuthExpired
+            | HealthStatus::CredentialsRefused
+            | HealthStatus::CrashLooping => Some(false),
             HealthStatus::Unknown | HealthStatus::Checking => None,
         };
         let failures = u32::from(entry.health.is_failing());

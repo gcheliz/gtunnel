@@ -478,7 +478,7 @@ fn local_port(tunnel: &PersistentTunnel) -> Option<u16> {
 pub async fn cmd_watch_install() -> Result<()> {
     // The agent runs this very binary, so the path has to be the one running
     // now rather than whatever is on PATH at install time
-    let program = std::env::current_exe()?;
+    let program = crate::update::exe_path()?;
     daemon::install_watchdog(&program).await?;
     println!(
         "Watchdog installed: {} every {}s",

@@ -218,10 +218,15 @@ pub async fn supervise(
     if let Some((dir, port)) = &probes {
         crate::probe::unwatch_probes(dir, *port);
     }
-    let expired = lock(&conn).credentials_expired(std::time::Instant::now());
-    if stops_for_credentials(status.success(), expired, asked_to_stop) {
+    let stopping = lock(&conn).stopping_failure(std::time::Instant::now());
+    let expired = stopping.is_some();
+    if let Some(failure) = stopping
+        && stops_for_credentials(status.success(), expired, asked_to_stop)
+    {
+        // The slug says which failure it was, so `list` can tell a login the
+        // user renews from a key or an impersonation they have to fix
         if let Some(file) = &auth_marker {
-            let _ = crate::fsutil::write_atomic(file, "1\n");
+            let _ = crate::fsutil::write_atomic(file, &format!("{}\n", failure.slug()));
         }
         return Ok(crate::daemon::auth_expired_exit(cfg!(target_os = "macos")));
     }
@@ -584,6 +589,64 @@ mod tests {
         };
         assert_eq!(code, want);
         assert!(marker.exists(), "the marker tells list why it is down");
+    }
+
+    // The issue's case: a denied impersonation used to burn the restart budget
+    // and park as a crash loop with "check the log". It is a stop on the first
+    // failure, with a marker that says which failure it was
+    #[tokio::test]
+    async fn a_denied_impersonation_stops_after_one_failure_with_its_own_marker() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let marker = dir.path().join("com.gtunnel.dev.db.auth");
+        let crash = dir.path().join("com.gtunnel.dev.db.crash");
+        let code = supervise(
+            fake_gcloud("echo 'ERROR: Failed to impersonate [sa@example.invalid].' >&2; exit 1"),
+            None,
+            None,
+            None,
+            Some(marker.clone()),
+            Some(Spend {
+                marker: crash.clone(),
+                budget: crate::restart_budget::Budget::default(),
+            }),
+        )
+        .await
+        .expect("run");
+        let want = if cfg!(target_os = "macos") {
+            0
+        } else {
+            crate::daemon::AUTH_EXPIRED_EXIT
+        };
+        assert_eq!(code, want, "an exit the service manager does not restart");
+        assert_eq!(
+            std::fs::read_to_string(&marker).expect("marker"),
+            "impersonation-denied\n"
+        );
+        assert!(!crash.exists(), "no budget was spent");
+        assert!(
+            !crate::daemon::restart_history_beside(&crash).exists(),
+            "nothing was counted against the restart budget"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_expired_login_leaves_its_slug_in_the_marker() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let marker = dir.path().join("t.auth");
+        supervise(
+            fake_gcloud("echo 'ERROR: Reauthentication required.' >&2; exit 1"),
+            None,
+            None,
+            None,
+            Some(marker.clone()),
+            None,
+        )
+        .await
+        .expect("run");
+        assert_eq!(
+            std::fs::read_to_string(&marker).expect("marker"),
+            "login-expired\n"
+        );
     }
 
     #[tokio::test]
