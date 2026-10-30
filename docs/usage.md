@@ -92,7 +92,7 @@ Specify the release version and substitute your machine's file: `gtunnel-macos-a
 `gtunnel-macos-intel`, `gtunnel-linux-amd64` or `gtunnel-linux-arm64`.
 
 ```text
-VERSION="v0.2.68"
+VERSION="v0.3.2"
 F="gtunnel-macos-arm64-${VERSION}.tar.gz"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F.sha256"
@@ -104,7 +104,7 @@ so they run on any glibc.
 
 ```console
 $ gtunnel --version
-gtunnel 0.2.68
+gtunnel 0.3.2
 
 ```
 
@@ -124,6 +124,9 @@ Keep one. To move to Homebrew, remove the other copy, then run any command that 
 tunnels. A service whose binary no longer exists is rewritten to name the running one, and
 gtunnel prints `gtunnel: reinstalled N services to match this version`. `gtunnel restart <name>`
 does the same for one tunnel.
+
+The binary a service names is the stable path to it, not the versioned Homebrew Cellar directory
+that `brew upgrade` deletes, and a `gtunnel_run` started by the MCP server uses the same path.
 
 ```console,ignore
 $ rm ~/.cargo/bin/gtunnel
@@ -455,7 +458,7 @@ check itself. On a Homebrew install:
 
 ```console,ignore
 $ gtunnel list
-gtunnel v9.9.9 is available (current: v0.2.68). Run `brew upgrade gtunnel`.
+gtunnel v9.9.9 is available (current: v0.3.2). Run `brew upgrade gtunnel`.
 ```
 
 ## The TUI

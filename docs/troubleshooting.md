@@ -83,6 +83,14 @@ from a checkout behind `main` does this, and nothing is broken.
 `git pull && cargo install --path .` from a clone, or
 `cargo install --git https://github.com/gcheliz/gtunnel --force` from the repository.
 
+### A service or `gtunnel_run` fails after an update, with `(deleted)` in the program path
+
+On Linux a process that outlives an update still runs the replaced file, and the kernel names
+it `/path/gtunnel (deleted)`. gtunnel drops that suffix and, when a Homebrew `opt` or `bin`
+path or a `PATH` entry reaches the same file, writes that stable path instead of the versioned
+Cellar one. A unit written by an older version still carries the bad path:
+`gtunnel restart <name>` rewrites it, and a restart of the TUI or MCP server clears the rest.
+
 ### `gtunnel: command not found` right after installing
 
 The directory holding the binary is not on `PATH`. Cargo installs to `~/.cargo/bin`, which
@@ -449,6 +457,7 @@ never blocks the account: the prompt falls back to a typed project id.
 | The login expired | `gcloud auth login`, see [above](#gtunnel-needs-a-logged-in-google-account) |
 | No network | The line names the connection error; the typed field still works once the project id is known |
 | The list is empty | The account sees no active project; type the id of one it can use |
+| `did not end after 50 pages` | The server kept handing out page tokens; gtunnel stops rather than show a partial list. Type the project id |
 
 ## IAP firewall
 
@@ -487,6 +496,19 @@ Once created, register it with gtunnel:
 ```
 gtunnel domains add my-zone
 ```
+
+## A list that does not end
+
+```
+The list at https://compute.googleapis.com/... did not end after 50 pages; stopped so a partial list is not mistaken for the whole
+```
+
+gtunnel follows every page of a GCP list call (instances, zones, firewall rules, backend
+services, DNS records, projects) and stops at 50. A server that never stops handing out page
+tokens is reported as an error, not read as a short list, so a rule or instance that sits on a
+later page is never reported missing. In `doctor` the line reads `could not read firewall rules`
+and the IAP firewall check is skipped. Run the command again; if it repeats, the API is
+faulty, and the same call through `gcloud` shows what it returns.
 
 ## NumPy
 

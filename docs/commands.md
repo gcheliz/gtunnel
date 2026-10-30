@@ -535,7 +535,7 @@ relay, unless `--force`.
 | Resource | What `up` compares, and does on a difference |
 |---|---|
 | Health check | Interval, timeout, thresholds and port specification: one `PATCH` |
-| Backend services | `timeoutSec`, `connectionDraining` and `iap`: one `PATCH` with the fields that differ. `expose`, `start` and `restart` do the same for a tunnel's backend |
+| Backend services | `timeoutSec` (`expose.backend_timeout`, default `1h`), `connectionDraining` (30s) and `iap`: one `PATCH` with the fields that differ. `expose`, `start` and `restart` do the same for a tunnel's backend |
 | Relay instance | The `startup-script` metadata: `setMetadata` with the new script, then the script is re-run over IAP ssh (`sudo google_metadata_script_runner startup`), so sshd changes without recreating the VM. A stopped instance gets the metadata and runs it at its next boot |
 
 A relay that already matches receives no write. If re-running the script fails, `up` stops with
@@ -957,6 +957,18 @@ Restored the previous version at /usr/local/bin/gtunnel
 
 The backup is spent by a rollback, so a second one is refused; the next `update` writes a new
 one. A Homebrew install keeps no backup here and is pointed at `brew upgrade gtunnel`.
+
+The install is read from where the file really is, so a symlink does not hide it:
+
+| Install | `update` does |
+|---|---|
+| `/usr/local/bin/gtunnel` linked into `/usr/local/Cellar/gtunnel/<version>/` (Intel Homebrew), or the Linuxbrew equivalent | Points at `brew upgrade gtunnel`; touches nothing |
+| A symlink you made, such as `~/bin/gtunnel` | Replaces the file it points to and keeps the symlink; `gtunnel.old` sits beside that file |
+
+Services, the watchdog and `gtunnel_run` name the binary by a stable path: a trailing
+` (deleted)` that Linux appends after an update is dropped, and when `/opt/homebrew/bin`,
+`/usr/local/bin`, a Homebrew `opt/gtunnel/bin` or a `PATH` entry reaches the same file, that path
+is used instead of the versioned Cellar one that `brew upgrade` removes.
 
 ## mcp
 

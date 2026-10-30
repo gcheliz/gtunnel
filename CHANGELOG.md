@@ -3,6 +3,24 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.3.2](https://github.com/gcheliz/gtunnel/compare/v0.3.1...v0.3.2) - 2026-10-30
+
+### Fixed
+
+- *(gcp)* follow every page of a list call ([#400](https://github.com/gcheliz/gtunnel/pull/400))
+
+## [0.3.1](https://github.com/gcheliz/gtunnel/compare/v0.3.0...v0.3.1) - 2026-10-30
+
+### Fixed
+
+- *(update)* resolve the real binary path for Intel Homebrew, symlinks and Linux ([#398](https://github.com/gcheliz/gtunnel/pull/398))
+
+## [0.3.0](https://github.com/gcheliz/gtunnel/compare/v0.2.68...v0.3.0) - 2026-10-30
+
+### Fixed
+
+- *(errors)* [**breaking**] classify token and API failures instead of calling them all expired logins ([#397](https://github.com/gcheliz/gtunnel/pull/397))
+
 ## [0.2.68](https://github.com/gcheliz/gtunnel/compare/v0.2.67...v0.2.68) - 2026-10-30
 
 ### Fixed
