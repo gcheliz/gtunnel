@@ -336,3 +336,118 @@ fn run_refuses_local_port_zero() {
     );
     assert!(h.pids().is_empty(), "no gcloud for a refused port");
 }
+
+impl Harness {
+    /// Like `spawn`, but stdout is a pipe whose reader is already gone, which
+    /// is what `gtunnel run ... | head -1` leaves behind once head has exited.
+    fn spawn_with_closed_stdout(&self, args: &[&str]) -> usize {
+        let n = self.children.borrow().len();
+        let err = fs::File::create(self.root().join(format!("err-{n}"))).unwrap();
+        let (reader, writer) = std::io::pipe().expect("pipe");
+        drop(reader);
+        let child = self
+            .command(args, &[])
+            .stdout(Stdio::from(writer))
+            .stderr(err)
+            .spawn()
+            .expect("spawn gtunnel");
+        self.children.borrow_mut().push(child);
+        n
+    }
+
+    fn kill_hard(&self, n: usize) {
+        // SAFETY: SIGKILL to a gtunnel this harness spawned and still holds.
+        unsafe { libc::kill(self.pid(n), libc::SIGKILL) };
+        assert!(
+            self.wait_exit(n, BOUND).is_some(),
+            "the run survived SIGKILL"
+        );
+    }
+
+    fn record_path(&self) -> PathBuf {
+        fs::read_dir(self.root().join("config/run"))
+            .unwrap()
+            .filter_map(|e| Some(e.ok()?.path()))
+            .find(|p| p.extension().is_some_and(|e| e == "json"))
+            .expect("a run record")
+    }
+
+    fn wait_for_stub(&self) {
+        assert!(self.wait_for_records(1), "the run never published a record");
+        assert!(
+            poll(BOUND, || !self.pids().is_empty()),
+            "the stub never started"
+        );
+    }
+}
+
+#[test]
+fn a_run_whose_output_reader_has_gone_keeps_the_tunnel_until_its_ttl() {
+    let h = Harness::new();
+    let n = h.spawn_with_closed_stdout(&["run", "--ttl", "4s", "db", "my-vm:5432"]);
+    h.wait_for_stub();
+    // The stub's first line has been (or is being) written to a closed pipe: a
+    // run that panicked on it would be gone by now, taking its TTL with it
+    assert!(
+        h.wait_exit(n, Duration::from_millis(1500)).is_none(),
+        "the run ended when its stdout closed: {}",
+        fs::read_to_string(h.root().join(format!("err-{n}"))).unwrap_or_default()
+    );
+    let status = h.wait_exit(n, BOUND).expect("the TTL ended the run");
+    assert_eq!(status.code(), Some(0));
+    h.assert_nothing_left();
+}
+
+#[test]
+fn a_run_whose_output_reader_has_gone_still_stops_on_sigterm() {
+    let h = Harness::new();
+    let n = h.spawn_with_closed_stdout(&["run", "db", "my-vm:5432"]);
+    h.wait_for_stub();
+    assert!(h.wait_exit(n, Duration::from_millis(1000)).is_none());
+    h.terminate(n);
+    assert!(h.wait_exit(n, BOUND).is_some(), "the run ignored SIGTERM");
+    h.assert_nothing_left();
+}
+
+#[test]
+fn a_run_killed_outright_is_stopped_and_forgotten_by_the_next_list() {
+    let h = Harness::new();
+    let n = h.spawn(&["run", "db", "my-vm:5432"], &[]);
+    h.wait_for_stub();
+    let record = h.records().remove(0);
+    assert_eq!(record["owner_pid"], h.pid(n), "the record names its owner");
+
+    h.kill_hard(n);
+    // Nothing ran at exit, so gcloud is still up and the record is still there.
+    // Linux ends gcloud with its owner (PR_SET_PDEATHSIG) and leaves its child
+    #[cfg(not(target_os = "linux"))]
+    assert!(alive(h.pids()[0].0), "gcloud outlives its owner");
+
+    let (code, err) = h.run(&["list"]);
+    assert_eq!(code, Some(0), "stderr: {err}");
+    assert!(err.contains("Stopped run db"), "stderr: {err}");
+    h.assert_nothing_left();
+}
+
+#[test]
+fn a_run_past_its_ttl_with_no_owner_on_record_is_stopped_by_the_next_list() {
+    let h = Harness::new();
+    let n = h.spawn(&["run", "db", "my-vm:5432"], &[]);
+    h.wait_for_stub();
+    h.kill_hard(n);
+    // As a record from before the owner fields would look, a day old
+    let path = h.record_path();
+    let mut record: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    let fields = record.as_object_mut().unwrap();
+    fields.remove("owner_pid");
+    fields.remove("owner_start");
+    fields.insert("ttl_secs".into(), 60.into());
+    fields.insert("started_at".into(), 1_700_000_000u64.into());
+    fs::write(&path, record.to_string()).unwrap();
+
+    let (code, err) = h.run(&["list", "--json"]);
+    assert_eq!(code, Some(0), "stderr: {err}");
+    assert!(err.contains("past its TTL"), "stderr: {err}");
+    h.assert_nothing_left();
+}

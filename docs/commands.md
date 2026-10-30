@@ -246,6 +246,8 @@ gtunnel run bastion:5432 --ttl 30m       # stops itself after 30 minutes
 | `--local-port` | The checks `add` makes, plus every live run of every account: refused when a tunnel or run already owns the port, when something on the machine listens on it, and for `0` |
 | `--ttl` | Counted on the wall clock, so time asleep counts: a laptop that wakes past the stop time ends the run within a second |
 | Stopping | Ctrl+C, SIGTERM, SIGHUP, the TTL and gcloud exiting all end the same way: SIGTERM to gcloud and its children, up to 2 seconds, then SIGKILL |
+| Output | A run keeps its tunnel when its output goes away (`gtunnel run ... \| head -1`, a closed terminal): it stops printing and runs on until a signal or the TTL |
+| Its process dies | A `kill -9` leaves gcloud forwarding, so the record names the run's own process as well as gcloud's. The next `gtunnel list` or watchdog pass stops a run whose process is gone or whose TTL has passed, removes its route and its record, and says so on stderr |
 
 <p align="center">
   <img src="demo-run.gif" alt="gtunnel run --ttl 30m db bastion:5432 prints the local port and its stop time, gtunnel list shows the run with its stop time, Ctrl+C closes it, and the list is empty again" width="720">

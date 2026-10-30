@@ -809,7 +809,7 @@ fn mcp_list_tunnels_includes_a_live_run_and_marks_it() {
     assert_eq!(run["run"], true);
     assert_eq!(run["mode"], "access");
     assert_eq!(run["status"], "running");
-    assert_eq!(run["expires_at"], 1_700_000_300u64);
+    assert_eq!(run["expires_at"], run_started() + 300);
     let declared = rows.as_array().unwrap().iter().find(|r| r["name"] == "db");
     assert_eq!(declared.map(|r| r["run"].clone()), Some(false.into()));
 }
@@ -873,6 +873,18 @@ const ACCESS_SPEC: &str = r#"{"mode":"access","target":{"kind":"instance","insta
 
 const EXPOSE_SPEC: &str = r#"{"mode":"expose","local_target":"localhost:8080","domain":"example.com","hostname":"app.example.com","relay_port":9000,"private":false}"#;
 
+/// When every fixture run started: now, once. `list` stops a run whose TTL has
+/// passed, so a fixture that means "live" cannot be dated in 2023.
+fn run_started() -> u64 {
+    static STARTED: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *STARTED.get_or_init(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    })
+}
+
 /// A run record as `gtunnel run` writes it, for a pid the test owns. No start
 /// token, so liveness is judged by the pid alone, as for a record written
 /// before the token existed.
@@ -882,7 +894,8 @@ fn write_run_record(h: &Harness, account: &str, name: &str, pid: u32, spec_json:
     fs::write(
         dir.join(format!("{account}-{name}.json")),
         format!(
-            r#"{{"name":"{name}","account_name":"{account}","pid":{pid},"started_at":1700000000,"ttl_secs":300,"spec":{spec_json}}}"#
+            r#"{{"name":"{name}","account_name":"{account}","pid":{pid},"started_at":{},"ttl_secs":300,"spec":{spec_json}}}"#,
+            run_started()
         ),
     )
     .unwrap();
@@ -1059,7 +1072,7 @@ fn status_and_logs_of_a_run_without_a_log_or_in_another_account() {
     let s = json_text(&call(&h, "gtunnel_get_status", r#"{"name":"term"}"#));
     assert_eq!(s["run"], true, "{s}");
     assert_eq!(s["local_port"], 15999, "{s}");
-    assert_eq!(s["expires_at"], 1_700_000_300u64, "{s}");
+    assert_eq!(s["expires_at"], run_started() + 300, "{s}");
     assert!(s["probe_latency_ms"].is_null(), "{s}");
     assert_eq!(s["health"], "unhealthy", "{s}");
     assert!(s.get("restarts").is_none(), "{s}");

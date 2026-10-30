@@ -1007,6 +1007,12 @@ async fn fill_health(
 #[allow(clippy::print_stdout, clippy::print_stderr)]
 pub async fn cmd_list(account: Option<&str>, json: bool) -> Result<()> {
     let (_, acct) = resolve(account)?;
+    // A run whose process died still has a live gcloud and a record, so it would
+    // be listed as a tunnel nobody is watching. The lines go to stderr, which
+    // keeps `--json` parseable
+    for line in crate::ephemeral::reap_orphans(std::slice::from_ref(&acct)).await {
+        eprintln!("{line}");
+    }
     if json {
         let rows = list_rows_json(&acct, true).await?;
         println!("{}", serde_json::to_string_pretty(&rows)?);
@@ -1148,6 +1154,8 @@ mod tests {
             started_at: 1_700_000_000,
             ttl_secs: None,
             pid_start: None,
+            owner_pid: None,
+            owner_start: None,
         }
     }
 

@@ -668,6 +668,8 @@ fn a_tunnel_moved_onto_a_live_runs_port_is_refused_and_the_file_is_unchanged() {
         started_at: 1_700_000_000,
         ttl_secs: None,
         pid_start: None,
+        owner_pid: None,
+        owner_start: None,
     }
     .save()
     .unwrap();
