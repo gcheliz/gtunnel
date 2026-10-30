@@ -425,3 +425,16 @@ fn the_mouse_is_captured_while_the_tui_runs_and_released_on_quit() {
         "capture released before the alternate screen is left"
     );
 }
+
+// A plain status was stored and drawn nowhere, so `s` on a running tunnel
+// looked like a dead key. The pane block upper-cases its title.
+#[test]
+fn starting_a_running_tunnel_says_so_in_the_logs_title() {
+    let mut s = Screen::demo();
+    s.wait_for("TUNNELS (7)");
+    s.wait_until("db to be the selected row", |screen| {
+        selected_name(screen) == "db"
+    });
+    s.press("s");
+    s.wait_for("DB IS ALREADY RUNNING");
+}

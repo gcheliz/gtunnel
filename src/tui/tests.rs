@@ -3325,8 +3325,7 @@ fn n_flips_notifications_on_disk_and_in_the_app_and_a_second_n_flips_back() {
     app.watchdog_installed = Some(true);
     app.handle_key(key(KeyCode::Char('N')));
     assert_eq!(app.status.as_deref(), Some("notifications on"));
-    // A plain status is not drawn: the flash is what the Logs title shows
-    assert_eq!(app.flash_message(), Some("notifications on"));
+    assert_eq!(app.notice_message(), Some("notifications on"));
     assert!(app.notifications_on);
     assert_eq!(
         read_config(),

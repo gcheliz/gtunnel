@@ -475,6 +475,11 @@ so the shell gets a working terminal back.
 | This tunnel's URL and log | `c` copy the URL, `l` copy the log to clipboard, `o` open it, `L` clear the log, `r` refresh the list, metrics and health, `PgUp` `PgDn` scroll the log back and forward a page, `End` or `G` follow the newest line again |
 | The program | `;` cycle accounts (the relay and its domains change with the account), `:` the accounts page, `?` the keymap, `C` the config page, `q` quit (it waits for a running operation to finish, and a second `q` quits at once), `Esc` close a page or cancel a prompt, `PgUp` `PgDn` and `g` `G` scroll the keymap page, `Ctrl+Z` suspend, `Ctrl+C` quit from anywhere, with the same wait |
 
+A key's answer appears in the title of the Logs pane. A confirmation or a refusal
+(`db is already running`, `opened http://localhost:15432`) stays for three seconds, a failure
+until the next result replaces it, and the notifications offer (`gtunnel watch install`) until
+something else claims the title.
+
 ### Small terminals and the mouse
 
 From 121 columns the list sits left of Details, Logs and Metrics. Narrower, the panes stack: the

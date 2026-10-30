@@ -1745,11 +1745,14 @@ fn render_logs(f: &mut Frame, app: &App, area: Rect) {
             None => app.spinner.frame().to_string(),
         });
     let flash = app.flash_message();
-    let activity = if let Some(flash) = flash {
-        Some(flash.to_string())
-    } else {
-        activity_text(running.as_deref(), app.status.as_deref(), app.status_error)
-    };
+    // Most recent word first: a copy's flash, then a plain status in its first
+    // seconds, then what is under way or has failed, and last an offer that
+    // outlasts its seconds, which nothing else yet claims the title from
+    let activity = flash
+        .or_else(|| app.notice_message())
+        .map(str::to_string)
+        .or_else(|| activity_text(running.as_deref(), app.status.as_deref(), app.status_error))
+        .or_else(|| app.standing_offer().map(str::to_string));
     let entry = app.selected_entry();
     let title = logs_title(entry.as_ref().map(|e| e.name()), activity.as_deref());
 

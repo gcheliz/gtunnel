@@ -517,8 +517,12 @@ async fn event_loop(
             Msg::Samples(samples) => app.record_samples(samples),
             Msg::Watchdog(installed) => {
                 app.watchdog_installed = Some(installed);
+                if installed {
+                    // The offer asked for this; it no longer applies
+                    app.withdraw_offer();
+                }
                 if watchdog_offer_due(installed, app.status.is_none(), app.notifications_on) {
-                    app.set_status(WATCHDOG_OFFER);
+                    app.set_offer(WATCHDOG_OFFER);
                 }
             }
             Msg::Logs(name, lines) => {
