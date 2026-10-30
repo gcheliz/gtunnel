@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.3.4](https://github.com/gcheliz/gtunnel/compare/v0.3.3...v0.3.4) - 2026-10-30
+
+### Fixed
+
+- *(relay)* tear down an orphaned backend service on relay down ([#403](https://github.com/gcheliz/gtunnel/pull/403))
+
 ## [0.3.3](https://github.com/gcheliz/gtunnel/compare/v0.3.2...v0.3.3) - 2026-10-30
 
 ### Fixed
