@@ -92,7 +92,7 @@ Specify the release version and substitute your machine's file: `gtunnel-macos-a
 `gtunnel-macos-intel`, `gtunnel-linux-amd64` or `gtunnel-linux-arm64`.
 
 ```text
-VERSION="v0.3.1"
+VERSION="v0.3.2"
 F="gtunnel-macos-arm64-${VERSION}.tar.gz"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F.sha256"
@@ -104,7 +104,7 @@ so they run on any glibc.
 
 ```console
 $ gtunnel --version
-gtunnel 0.3.1
+gtunnel 0.3.2
 
 ```
 
@@ -458,7 +458,7 @@ check itself. On a Homebrew install:
 
 ```console,ignore
 $ gtunnel list
-gtunnel v9.9.9 is available (current: v0.3.1). Run `brew upgrade gtunnel`.
+gtunnel v9.9.9 is available (current: v0.3.2). Run `brew upgrade gtunnel`.
 ```
 
 ## The TUI
