@@ -147,6 +147,8 @@ pub async fn add_route(
     ex: &ExposeConfig,
     t: &PersistentTunnel,
 ) -> Result<()> {
+    // Held to the end of the build, never across the tunnel's runtime
+    let _relay = super::lock::route_guard(&acct.name)?;
     let target = route_target(acct, t)?;
     let project = &acct.project;
     let names = &target.names;
@@ -474,6 +476,26 @@ mod tests {
 
         assert_eq!(count(&server, "GET", "/urlMaps/").await, 2);
         assert_eq!(count(&server, "PUT", "/urlMaps/").await, 2);
+    }
+
+    // A route built into a relay that `relay down` is deleting would be
+    // orphaned the moment the group goes
+    #[tokio::test]
+    async fn add_route_refuses_while_the_relay_is_being_torn_down() {
+        let dir = tempfile::tempdir().unwrap();
+        super::super::lock::TEST_DIR.with(|d| *d.borrow_mut() = Some(dir.path().to_path_buf()));
+        let _teardown = super::super::lock::teardown_guard("dev").unwrap();
+        let server = MockServer::start().await;
+        base_mocks(&server).await;
+
+        let err = add_route(&client(&server), &account(), &expose(), &tunnel())
+            .await
+            .expect_err("should refuse");
+        assert_eq!(
+            err.to_string(),
+            "the relay for 'dev' is being torn down; try again after relay down finishes"
+        );
+        assert!(server.received_requests().await.unwrap().is_empty());
     }
 
     #[tokio::test]

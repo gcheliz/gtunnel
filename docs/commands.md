@@ -532,6 +532,18 @@ gtunnel relay down [--force] [-y]
 resource: `✓` created, `~` updated, `·` already as wanted. `down` refuses while tunnels use the
 relay, unless `--force`.
 
+`down` also removes a backend service tagged `gtunnel:<account>` that points at the relay's
+instance group but that no tunnel lists, which a `run --public` killed before its cleanup leaves
+behind. A backend service gtunnel did not create that points at the group stops `down` before
+the first delete, naming the service: delete it or point it elsewhere, then run `down` again.
+
+`down` holds a per-account lock, `<config dir>/relay-<account>.lock`, from its first check to its
+last delete. `expose`, `run --public`, `start`, `restart` and `relay up` hold the same lock while
+they build, so one started during a teardown stops with `the relay for '<account>' is being torn
+down; try again after relay down finishes` and sends nothing to GCP. `down` waits up to
+`gcp.lock_deadline` for a build that is already running. The lock is released when the process
+exits, so a crash leaves nothing to clean up.
+
 | Resource | What `up` compares, and does on a difference |
 |---|---|
 | Health check | Interval, timeout, thresholds and port specification: one `PATCH` |

@@ -136,7 +136,12 @@ rule, HTTPS proxy, global address, URL map, default backend, health check, each 
 certificate-map entries, certificate and DNS authorization, the certificate map, the instance
 group, the relay instance, then both firewall rules. It **refuses** while any expose tunnel or live
 `gtunnel run --public` still holds a route — `--force` deletes those tunnels' routes and
-services first. It never touches the Cloud DNS managed zone, which is yours.
+services first. Before it deletes anything it looks for backend services that still point at the
+relay's instance group: one that gtunnel tagged (an orphan left by a `run --public` killed before
+its cleanup) is deleted after the URL map, and one that gtunnel did not create stops the teardown
+by name, with the relay untouched. A per-account lock held for the whole teardown makes `expose`,
+`run --public` and `relay up` refuse meanwhile instead of building a route into a group that is
+about to be deleted. It never touches the Cloud DNS managed zone, which is yours.
 
 ## Process model
 

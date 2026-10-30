@@ -228,6 +228,7 @@ pub async fn relay_up(
     acct: &Account,
     opts: &RelayUpOptions,
 ) -> Result<ExposeConfig> {
+    let _relay = super::lock::route_guard(&acct.name)?;
     let names = Names::new(&acct.name);
     let project = &acct.project;
     let zone = &opts.zone;
@@ -535,6 +536,9 @@ pub async fn relay_down(
         .expose
         .clone()
         .context("This account has no relay. Run `gtunnel relay up` first")?;
+    // Held to the last delete: a route built meanwhile would point at a group
+    // that is about to go
+    let _relay = super::lock::teardown_guard(&acct.name)?;
 
     let live: Vec<String> = state
         .tunnels_for_account(&acct.name)
@@ -579,6 +583,31 @@ pub async fn relay_down(
         step(true, &format!("removed tunnel {name}"));
     }
 
+    // The group cannot be deleted while any backend service points at it, and
+    // that is only found out at the end, with the front end already gone. Ask
+    // now, while stopping still leaves a relay that works.
+    let holders: Vec<compute::GroupHolder> = compute::backend_services_on_group(
+        client,
+        project,
+        &expose.relay_zone,
+        &names.instance_group,
+    )
+    .await?
+    .into_iter()
+    .filter(|h| h.name != names.default_backend)
+    .collect();
+    let owner = names.owner();
+    let (orphans, foreign): (Vec<_>, Vec<_>) = holders
+        .into_iter()
+        .partition(|h| h.description.as_deref() == Some(owner.as_str()));
+    if let Some(first) = foreign.first() {
+        bail!(
+            "Backend service {} points at the relay's instance group and gtunnel did not create it. \
+             Delete it or point it elsewhere, then run `relay down` again",
+            first.name
+        );
+    }
+
     drop_resource(
         client,
         &names.forwarding_rule,
@@ -603,6 +632,15 @@ pub async fn relay_down(
         compute::delete_url_map(client, project, &names.url_map).await,
     )
     .await?;
+    // Gone with the url map above, which held the host rules that named them
+    for orphan in &orphans {
+        drop_resource(
+            client,
+            &orphan.name,
+            compute::delete_backend_service(client, project, &orphan.name).await,
+        )
+        .await?;
+    }
     drop_resource(
         client,
         &names.default_backend,
@@ -1012,5 +1050,191 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("api"), "{message}");
         assert_eq!(requests(&server, "DELETE", "/").await, 0);
+    }
+
+    const GROUP_PATH: &str = "/projects/p/zones/europe-west1-b/instanceGroups/gt-dev-ig";
+
+    fn backend_on_group(
+        name: &str,
+        description: Option<&str>,
+        server: &MockServer,
+    ) -> serde_json::Value {
+        let mut b = serde_json::json!({
+            "name": name,
+            "backends": [{"group": format!("{}{GROUP_PATH}", server.uri())}],
+        });
+        if let Some(d) = description {
+            b["description"] = d.into();
+        }
+        b
+    }
+
+    async fn list_backends(server: &MockServer, items: Vec<serde_json::Value>) {
+        Mock::given(method("GET"))
+            .and(path_regex(r".*/global/backendServices$"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "items": items })),
+            )
+            .mount(server)
+            .await;
+    }
+
+    // GCP refuses to delete a group a backend service still points at, so the
+    // fake does too: the group delete fails until the backend delete was seen
+    async fn group_guarded_deletes(server: &MockServer, backend: &'static str) {
+        let gone = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        Mock::given(method("DELETE"))
+            .respond_with(move |req: &wiremock::Request| {
+                use std::sync::atomic::Ordering;
+                let p = req.url.path();
+                if p.ends_with(backend) {
+                    gone.store(true, Ordering::SeqCst);
+                }
+                if p.contains("/instanceGroups/") && !gone.load(Ordering::SeqCst) {
+                    return ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                        "error": {"code": 400, "message": format!(
+                            "The instance_group resource is already being used by 'projects/p/global/backendServices/{backend}'")}
+                    }));
+                }
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"name": "op-1", "status": "DONE"}))
+            })
+            .mount(server)
+            .await;
+    }
+
+    fn dev_config() -> Config {
+        Config {
+            selected_account: "dev".to_string(),
+            accounts: vec![account()],
+            ..Default::default()
+        }
+    }
+
+    fn deleted(reqs: &[wiremock::Request]) -> Vec<String> {
+        reqs.iter()
+            .filter(|r| r.method.as_str() == "DELETE")
+            .map(|r| r.url.path().to_string())
+            .collect()
+    }
+
+    // A `run --public` killed before its cleanup leaves a backend service the
+    // local state never listed; the group cannot go while it points there
+    #[tokio::test]
+    async fn relay_down_deletes_an_orphaned_backend_before_the_group() {
+        // Mocks match in mount order, so the specific ones go first
+        let server = MockServer::start().await;
+        group_guarded_deletes(&server, "gt-dev-orphan").await;
+        list_backends(
+            &server,
+            vec![backend_on_group(
+                "gt-dev-orphan",
+                Some("gtunnel:dev"),
+                &server,
+            )],
+        )
+        .await;
+        relay_mocks(&server).await;
+
+        let mut state = TunnelState::default();
+        relay_down(
+            &client(&server),
+            &dev_config(),
+            &account(),
+            &mut state,
+            false,
+        )
+        .await
+        .expect("relay down");
+
+        let paths = deleted(&server.received_requests().await.unwrap_or_default());
+        let at = |needle: &str| paths.iter().position(|p| p.contains(needle));
+        let orphan = at("/backendServices/gt-dev-orphan").expect("orphan deleted");
+        let group = at("/instanceGroups/gt-dev-ig").expect("group deleted");
+        assert!(orphan < group, "{paths:?}");
+        assert!(at("/instances/gt-dev-relay").is_some(), "{paths:?}");
+    }
+
+    // A route that is mid-build holds the lock; the teardown waits it out
+    // instead of deleting the group under it
+    #[tokio::test]
+    async fn relay_down_waits_for_a_route_that_is_being_built() {
+        let dir = tempfile::tempdir().unwrap();
+        super::super::lock::TEST_DIR.with(|d| *d.borrow_mut() = Some(dir.path().to_path_buf()));
+        let route = super::super::lock::route_guard("dev").unwrap();
+        let server = relay_server().await;
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            drop(route);
+        });
+        let started = std::time::Instant::now();
+
+        let mut state = TunnelState::default();
+        relay_down(
+            &client(&server),
+            &dev_config(),
+            &account(),
+            &mut state,
+            false,
+        )
+        .await
+        .expect("relay down");
+
+        release.join().unwrap();
+        assert!(started.elapsed() >= std::time::Duration::from_millis(250));
+        assert!(requests(&server, "DELETE", "/instances/").await > 0);
+    }
+
+    // And a `relay up` started during the teardown is refused, not raced
+    #[tokio::test]
+    async fn relay_up_refuses_while_the_relay_is_being_torn_down() {
+        let dir = tempfile::tempdir().unwrap();
+        super::super::lock::TEST_DIR.with(|d| *d.borrow_mut() = Some(dir.path().to_path_buf()));
+        let _teardown = super::super::lock::teardown_guard("dev").unwrap();
+        let server = relay_server().await;
+
+        let err = relay_up(&client(&server), &account(), &options())
+            .await
+            .expect_err("should refuse");
+        assert!(err.to_string().contains("being torn down"), "{err}");
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    // Not gtunnel's to delete, so the teardown stops and names it, and stops
+    // before the first delete: the relay is still a working relay
+    #[tokio::test]
+    async fn relay_down_stops_before_any_delete_on_a_backend_it_did_not_create() {
+        let server = MockServer::start().await;
+        group_guarded_deletes(&server, "gt-dev-handmade").await;
+        list_backends(
+            &server,
+            vec![
+                backend_on_group("gt-dev-handmade", None, &server),
+                // Another group's backend is no reason to stop
+                serde_json::json!({
+                    "name": "unrelated",
+                    "backends": [{"group": format!("{}/projects/p/zones/europe-west1-b/instanceGroups/other", server.uri())}],
+                }),
+            ],
+        )
+        .await;
+        relay_mocks(&server).await;
+
+        let mut state = TunnelState::default();
+        let err = relay_down(
+            &client(&server),
+            &dev_config(),
+            &account(),
+            &mut state,
+            false,
+        )
+        .await
+        .expect_err("should stop");
+
+        let message = err.to_string();
+        assert!(message.contains("gt-dev-handmade"), "{message}");
+        assert!(!message.contains("unrelated"), "{message}");
+        let paths = deleted(&server.received_requests().await.unwrap_or_default());
+        assert!(paths.is_empty(), "{paths:?}");
     }
 }
