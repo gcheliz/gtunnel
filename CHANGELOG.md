@@ -3,6 +3,16 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.57](https://github.com/gcheliz/gtunnel/compare/v0.2.56...v0.2.57) - 2026-10-30
+
+### Added
+
+- *(tui)* a small-screen layout that keeps the chart, with scrollable list and logs ([#351](https://github.com/gcheliz/gtunnel/pull/351))
+
+### Fixed
+
+- *(move)* a destination without the instance exits 3, not 1 ([#350](https://github.com/gcheliz/gtunnel/pull/350))
+
 ## [0.2.56](https://github.com/gcheliz/gtunnel/compare/v0.2.55...v0.2.56) - 2026-10-30
 
 ### Fixed
