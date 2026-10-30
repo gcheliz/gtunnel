@@ -102,6 +102,21 @@ pub async fn supervise(
     }
     let conn = conn.share();
 
+    // Registered once, before the child exists, and kept to the end. tokio
+    // leaves its handler installed for the process once a stream has been
+    // made, so a stream that lives only inside one `select!` makes every
+    // signal outside it vanish: during the pipe join and the restart backoff
+    // a stop would be caught and read by nobody. Registering late has the
+    // opposite fault, the default action killing us between spawn and the
+    // handler and orphaning gcloud.
+    let mut stops = Stops::new()?;
+
+    // A supervisor that was SIGKILLed never swept its group
+    let group_file = ready_file.as_ref().map(|f| group_file_beside(f));
+    if let Some(file) = &group_file {
+        sweep_stale_group(file).await;
+    }
+
     let began = std::time::Instant::now();
     let mut child = cmd
         .args(args)
@@ -109,6 +124,11 @@ pub async fn supervise(
         .stderr(std::process::Stdio::piped())
         .spawn()
         .with_context(|| format!("Failed to spawn {prog}"))?;
+
+    #[cfg(unix)]
+    if let (Some(file), Some(pid)) = (&group_file, child.id()) {
+        record_group(file, pid);
+    }
 
     let stdout = child.stdout.take().context("child stdout missing")?;
     let stderr = child.stderr.take().context("child stderr missing")?;
@@ -146,31 +166,52 @@ pub async fn supervise(
     #[cfg(unix)]
     let status = {
         let pgid = child.id().map(|id| id as i32);
-        let mut sigterm =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-        tokio::select! {
+        let status = tokio::select! {
             res = child.wait() => res.context("failed to wait on child")?,
-            _ = sigterm.recv() => {
+            _ = stops.next() => {
                 asked_to_stop = true;
                 crate::proc::stop_group(&mut child, pgid, crate::proc::STOP_GRACE).await?
             }
-            _ = tokio::signal::ctrl_c() => {
-                asked_to_stop = true;
-                crate::proc::stop_group(&mut child, pgid, crate::proc::STOP_GRACE).await?
+        };
+        // gcloud is a launcher: when it dies on its own, ssh or the IAP proxy
+        // may still hold the port and the pipes. launchd only cleans up the
+        // job's own group, and gcloud was moved out of it, so the sweep is
+        // ours, as it is in `run`.
+        if !asked_to_stop {
+            tokio::select! {
+                res = crate::proc::stop_group(&mut child, pgid, crate::proc::STOP_GRACE) => {
+                    res?;
+                }
+                _ = stops.next() => {
+                    asked_to_stop = true;
+                    if let Some(pgid) = pgid {
+                        crate::proc::signal_group(pgid, libc::SIGKILL);
+                    }
+                }
             }
         }
+        status
     };
 
     #[cfg(not(unix))]
     let status = child.wait().await.context("failed to wait on child")?;
 
-    let _ = tokio::join!(out_task, err_task);
+    // Bounded: a member that outlived the sweep, or sits in another group,
+    // still holds the pipes open, and a join with no end is a supervisor that
+    // never restarts the tunnel
+    tokio::select! {
+        _ = tokio::time::timeout(PIPE_DRAIN, async { tokio::join!(out_task, err_task) }) => {}
+        _ = stops.next() => asked_to_stop = true,
+    }
     tick_task.abort();
     let mut err = std::io::stderr();
     for l in lock(&conn).finish() {
         let _ = err.write_all(l.as_bytes());
     }
     if let Some(file) = &ready_file {
+        let _ = std::fs::remove_file(file);
+    }
+    if let Some(file) = &group_file {
         let _ = std::fs::remove_file(file);
     }
     if let Some((dir, port)) = &probes {
@@ -207,10 +248,113 @@ pub async fn supervise(
         if let Verdict::Restart { after } = verdict {
             // The service manager restarts at its own pace; this is the part
             // that grows, so a loop slows down before it is stopped
-            tokio::time::sleep(after).await;
+            tokio::select! {
+                _ = tokio::time::sleep(after) => {}
+                // A stop here is the one that matters most: the tunnel is
+                // already down and `stop` or `delete` is waiting on us
+                _ = stops.next() => {}
+            }
         }
     }
     Ok(code)
+}
+
+/// How long the pipes get to drain once the group has been swept. Everything
+/// that could hold them open is dead by then, so this is only the bound on a
+/// member that escaped its group.
+const PIPE_DRAIN: Duration = Duration::from_secs(2);
+
+/// Every way this process is asked to stop, as one stream that outlives the
+/// child. See the note at its creation for why it must not be made per wait.
+struct Stops {
+    #[cfg(unix)]
+    term: tokio::signal::unix::Signal,
+    #[cfg(unix)]
+    int: tokio::signal::unix::Signal,
+}
+
+impl Stops {
+    #[cfg(unix)]
+    fn new() -> Result<Self> {
+        use tokio::signal::unix::{signal, SignalKind};
+        Ok(Self {
+            term: signal(SignalKind::terminate())?,
+            int: signal(SignalKind::interrupt())?,
+        })
+    }
+
+    #[cfg(not(unix))]
+    fn new() -> Result<Self> {
+        Ok(Self {})
+    }
+
+    #[cfg(unix)]
+    async fn next(&mut self) {
+        tokio::select! {
+            _ = self.term.recv() => {}
+            _ = self.int.recv() => {}
+        }
+    }
+
+    #[cfg(not(unix))]
+    async fn next(&mut self) {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+/// Where the child's group is written down: beside the ready file, so the
+/// next supervisor of the same job finds it by what the installer chose.
+fn group_file_beside(ready: &std::path::Path) -> PathBuf {
+    ready.with_extension("pgid")
+}
+
+/// Write the group id and the leader's start token. The id alone is not
+/// enough to signal later: after a reboot the number may belong to anything.
+#[cfg(unix)]
+fn record_group(file: &std::path::Path, pgid: u32) {
+    let token = crate::proc::start_token(pgid).unwrap_or_default();
+    if let Some(parent) = file.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = crate::fsutil::write_atomic(file, &format!("{pgid} {token}\n"));
+}
+
+/// Kill the group a previous supervisor left behind, and forget it.
+///
+/// A leader that is still alive must carry the recorded token, or the number
+/// was reused. A leader that is gone cannot be checked, but its group id
+/// cannot be handed to another process while any member remains, so a group
+/// that still answers is the old one.
+async fn sweep_stale_group(file: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        let Ok(text) = std::fs::read_to_string(file) else {
+            return;
+        };
+        let _ = std::fs::remove_file(file);
+        let mut parts = text.split_whitespace();
+        let Some(pgid) = parts.next().and_then(|p| p.parse::<i32>().ok()) else {
+            return;
+        };
+        let recorded = parts.next();
+        let leader = crate::proc::start_token(pgid as u32);
+        let ours = match (&leader, recorded) {
+            (Some(now), Some(then)) => now == then,
+            (Some(_), None) => false,
+            (None, _) => true,
+        };
+        if !ours || !crate::proc::group_alive(pgid) {
+            return;
+        }
+        crate::proc::signal_group(pgid, libc::SIGTERM);
+        let deadline = std::time::Instant::now() + crate::proc::STOP_GRACE;
+        while crate::proc::group_alive(pgid) && std::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        crate::proc::signal_group(pgid, libc::SIGKILL);
+    }
+    #[cfg(not(unix))]
+    let _ = file;
 }
 
 /// Whether this exit counts against the budget. Credentials have their own
