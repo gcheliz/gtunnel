@@ -9,6 +9,7 @@ use super::{
 use crate::config::Account;
 use crate::daemon;
 use crate::expose::routes;
+use crate::failure::Failure;
 use crate::gcp::{compute, GcpClient};
 use crate::lifecycle::{self, Cause, State};
 use crate::state::{
@@ -591,7 +592,9 @@ async fn start_inner(account: Option<&str>, name: &str) -> Result<Started> {
         }
     };
     if readiness != Readiness::Ready {
-        let hint = match (last_hint(&tunnel)?, readiness) {
+        let found = last_hint(&tunnel, acct.credential_file.is_some())?;
+        let logged = found.as_ref().and_then(|(_, failure)| *failure);
+        let hint = match (found.map(|(hint, _)| hint), readiness) {
             (Some(hint), _) => Some(hint),
             (None, Readiness::TimedOut) => Some(format!(
                 "not listening after {}s",
@@ -602,11 +605,10 @@ async fn start_inner(account: Option<&str>, name: &str) -> Result<Started> {
         // The marker is the supervisor's own word that it stopped for
         // credentials; the log diagnosis is the same finding read from the
         // text when no marker was written
-        let kind = if stopped_for_credentials(&tunnel) || hint.as_deref().is_some_and(is_auth_hint)
-        {
+        let kind = if stopped_for_credentials(&tunnel) {
             ErrorKind::Auth
         } else {
-            ErrorKind::Internal
+            logged.map_or(ErrorKind::Internal, Failure::kind)
         };
         return Err(StartFailed {
             name: name.to_string(),
@@ -636,13 +638,14 @@ pub async fn cmd_start(account: Option<&str>, name: &str) -> Result<()> {
     Ok(())
 }
 
-// The log table's two expired-credentials entries share this text
-fn is_auth_hint(hint: &str) -> bool {
-    hint.starts_with("gcloud credentials expired")
-}
-
-// The newest log line gtunnel recognises, turned into an explanation
-fn last_hint(t: &PersistentTunnel) -> Result<Option<String>> {
+// The newest log line gtunnel recognises, turned into an explanation, with the
+// stop-class failure it names when it names one. The failure is read from the
+// line and not from the hint's wording, so rewording a hint cannot change the
+// exit code of a failed start.
+fn last_hint(
+    t: &PersistentTunnel,
+    credential_file: bool,
+) -> Result<Option<(String, Option<Failure>)>> {
     let path = t.log_path()?;
     let Ok(text) = std::fs::read_to_string(&path) else {
         return Ok(None);
@@ -650,7 +653,16 @@ fn last_hint(t: &PersistentTunnel) -> Result<Option<String>> {
     Ok(text
         .lines()
         .rev()
-        .find_map(|line| diagnose_log_line(line).map(|hint| hint.to_string())))
+        .find_map(|line| hint_of(line, credential_file)))
+}
+
+fn hint_of(line: &str, credential_file: bool) -> Option<(String, Option<Failure>)> {
+    diagnose_log_line(line, credential_file).map(|hint| {
+        (
+            hint,
+            Failure::from_line(line).filter(|failure| failure.is_stopping()),
+        )
+    })
 }
 
 pub async fn stop_tunnel(account: Option<&str>, name: &str) -> Result<()> {
@@ -1552,16 +1564,32 @@ mod tests {
     }
 
     #[test]
-    fn both_expired_credentials_log_lines_read_as_an_auth_hint() {
+    fn both_expired_credentials_log_lines_read_as_a_login_failure() {
         for line in [
             "Reauthentication required, please rerun gcloud auth login",
             "ERROR: please run gcloud auth login",
         ] {
-            let hint = diagnose_log_line(line).expect("a hint");
-            assert!(is_auth_hint(hint), "{line}");
+            let (_, failure) = hint_of(line, false).expect("a hint");
+            assert_eq!(failure, Some(Failure::LoginExpired), "{line}");
         }
-        let other = diagnose_log_line("bind: Address already in use").expect("a hint");
-        assert!(!is_auth_hint(other));
+        let (_, other) = hint_of("bind: Address already in use", false).expect("a hint");
+        assert_eq!(other, None);
+    }
+
+    // The kind of a failed start follows the failure the log names: a missing
+    // configuration is a usage error, a denied impersonation an auth one
+    #[test]
+    fn a_log_line_names_the_kind_a_failed_start_exits_with() {
+        let kind = |line| {
+            let (_, failure) = hint_of(line, false).expect("a hint");
+            failure.map_or(ErrorKind::Internal, Failure::kind)
+        };
+        assert_eq!(kind("ERROR: Failed to impersonate [x]."), ErrorKind::Auth);
+        assert_eq!(
+            kind("ERROR: The configuration [work] does not exist."),
+            ErrorKind::Usage
+        );
+        assert_eq!(kind("bind: Address already in use"), ErrorKind::Internal);
     }
 
     #[test]

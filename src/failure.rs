@@ -28,8 +28,10 @@ pub enum Failure {
 }
 
 /// Every needle a log or stderr line is read against, and the only one. A row
-/// matches when all its needles are in the line (lower-cased: gcloud and
-/// Google libraries disagree on case), and the first row wins, so the narrow
+/// matches when all its needles are in the line, spelled as the tool spells
+/// them: matching without case would read IAP's own `[4004: 'reauthentication
+/// required']`, which gcloud resumes by itself, as an expired login. The first
+/// row wins, so the narrow
 /// causes sit above the broad ones they would otherwise read as: an
 /// `invalid_grant` that says `Invalid JWT` is a bad key, not a stale login.
 ///
@@ -37,32 +39,32 @@ pub enum Failure {
 /// identity that logged in fine is not a credential problem, and logging in
 /// again changes nothing.
 const LINES: &[(Failure, &[&str])] = &[
-    (Failure::KeyInvalid, &["invalid jwt"]),
-    (Failure::KeyInvalid, &["could not deserialize key data"]),
-    (Failure::ImpersonationDenied, &["failed to impersonate"]),
+    (Failure::KeyInvalid, &["Invalid JWT"]),
+    (Failure::KeyInvalid, &["Could not deserialize key data"]),
+    (Failure::ImpersonationDenied, &["Failed to impersonate"]),
     (
         Failure::ImpersonationDenied,
-        &["iam.serviceaccounts.getaccesstoken"],
+        &["iam.serviceAccounts.getAccessToken"],
     ),
     (
         Failure::ConfigurationMissing,
         &["configuration [", "does not exist"],
     ),
-    (Failure::LoginExpired, &["reauthentication required"]),
-    (Failure::LoginExpired, &["reauthentication failed"]),
+    (Failure::LoginExpired, &["Reauthentication required"]),
+    (Failure::LoginExpired, &["Reauthentication failed"]),
     (Failure::LoginExpired, &["gcloud auth login"]),
     (Failure::LoginExpired, &["invalid_grant"]),
-    (Failure::ServiceDisabled, &["service_disabled"]),
+    (Failure::ServiceDisabled, &["SERVICE_DISABLED"]),
     (Failure::ServiceDisabled, &["has not been used in project"]),
-    (Failure::ServiceDisabled, &["accessnotconfigured"]),
-    (Failure::QuotaOrRateLimited, &["rate_limit_exceeded"]),
-    (Failure::QuotaOrRateLimited, &["resource_exhausted"]),
-    (Failure::QuotaOrRateLimited, &["quota exceeded"]),
-    (Failure::Network, &["could not resolve host"]),
-    (Failure::Network, &["network is unreachable"]),
-    (Failure::Network, &["temporary failure in name resolution"]),
-    (Failure::Network, &["name or service not known"]),
-    (Failure::Network, &["no route to host"]),
+    (Failure::ServiceDisabled, &["accessNotConfigured"]),
+    (Failure::QuotaOrRateLimited, &["RATE_LIMIT_EXCEEDED"]),
+    (Failure::QuotaOrRateLimited, &["RESOURCE_EXHAUSTED"]),
+    (Failure::QuotaOrRateLimited, &["Quota exceeded"]),
+    (Failure::Network, &["Could not resolve host"]),
+    (Failure::Network, &["Network is unreachable"]),
+    (Failure::Network, &["Temporary failure in name resolution"]),
+    (Failure::Network, &["Name or service not known"]),
+    (Failure::Network, &["No route to host"]),
     (Failure::Timeout, &["timed out"]),
 ];
 
@@ -81,7 +83,6 @@ impl Failure {
     /// can act on. `None` is the honest answer for the rest: a line nobody
     /// classified must not be guessed into a login problem.
     pub fn from_line(line: &str) -> Option<Failure> {
-        let line = line.to_lowercase();
         LINES
             .iter()
             .find(|(_, needles)| needles.iter().all(|n| line.contains(n)))
@@ -94,7 +95,7 @@ impl Failure {
     /// `PermissionDenied`, which is what every 403 was before.
     pub fn from_gcp(status: u16, reason: Option<&str>) -> Failure {
         match reason.map(str::to_lowercase).as_deref() {
-            Some("service_disabled" | "accessnotconfigured") => return Failure::ServiceDisabled,
+            Some("service_disabled" | "accessNotConfigured") => return Failure::ServiceDisabled,
             Some(
                 "rate_limit_exceeded"
                 | "resource_exhausted"
@@ -392,6 +393,10 @@ mod tests {
             // Lines that are not a token or API failure stay unclassified: a
             // refused identity is IAP's word, not a login problem
             ("Testing if tunnel connection works.", None),
+            (
+                "INFO: [3] Received WebSocket Close message [4004: 'reauthentication required'].",
+                None,
+            ),
             ("ERROR: [4033: not authorized]", None),
             ("ERROR: [4003: failed to connect to backend]", None),
             ("", None),

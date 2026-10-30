@@ -60,11 +60,12 @@ impl HealthStatus {
     }
 }
 
-/// A line that says gcloud's credentials expired. Not `[4033:`: that is IAP
-/// refusing an identity that logged in fine, and logging in again changes
-/// nothing, so it stays a plain failure.
+/// A line that says gcloud's credentials are no use and a restart will not
+/// mend them: an expired login, a denied impersonation, a bad key, a missing
+/// configuration. Not `[4033:`: that is IAP refusing an identity that logged
+/// in fine, and logging in again changes nothing, so it stays a plain failure.
 pub fn is_credential_failure(line: &str) -> bool {
-    line.contains("Reauthentication required") || line.contains("gcloud auth login")
+    crate::failure::Failure::from_line(line).is_some_and(crate::failure::Failure::is_stopping)
 }
 
 /// How recently the log must have been written for a credential line in it to
@@ -221,12 +222,10 @@ pub fn is_refusal(line: &str) -> bool {
         "Error while connecting",
         "[4003:",
         "[4033:",
-        "Reauthentication required",
-        "gcloud auth login",
         "open failed",
         "connect failed",
     ];
-    NEEDLES.iter().any(|n| line.contains(n))
+    is_credential_failure(line) || NEEDLES.iter().any(|n| line.contains(n))
 }
 
 /// What one probe connection saw before the log is consulted.
@@ -965,7 +964,10 @@ mod tests {
             "Reauthentication required",
             "gcloud auth login",
         ] {
-            assert!(crate::tunnel::diagnose_log_line(line).is_some(), "{line}");
+            assert!(
+                crate::tunnel::diagnose_log_line(line, false).is_some(),
+                "{line}"
+            );
             assert!(is_refusal(line), "{line}");
         }
     }

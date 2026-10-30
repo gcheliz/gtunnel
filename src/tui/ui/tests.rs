@@ -4374,3 +4374,18 @@ fn the_next_plain_status_and_an_installed_watchdog_clear_the_offer() {
     assert!(app.status.is_none());
     assert!(!logs_title_row(&app).contains("the offer"));
 }
+
+// A hint to log in would sign in a person, never the key, so the pane that
+// explains a failing tunnel must not give it to an account that uses one
+#[test]
+fn the_log_pane_does_not_tell_a_credential_file_account_to_log_in() {
+    let mut app = with_logs(app_with_two(), 0);
+    app.logs = vec!["ERROR: Reauthentication required.".to_string()];
+    let ordinary = text_of(&screen(&app, 160, 40)).join("\n");
+    assert!(ordinary.contains("Run: gcloud auth login"), "{ordinary}");
+
+    app.credential_file_accounts.insert(app.account.clone());
+    let keyed = text_of(&screen(&app, 160, 40)).join("\n");
+    assert!(keyed.contains("credential file"), "{keyed}");
+    assert!(!keyed.contains("Run: gcloud auth login"), "{keyed}");
+}

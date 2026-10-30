@@ -1,4 +1,5 @@
 use crate::error::GtunnelError;
+use crate::failure::Failure;
 use anyhow::{bail, Result};
 
 use crate::config::{Account, ExposeConfig};
@@ -217,7 +218,20 @@ pub fn normalize_local_target(target: &str) -> Result<String> {
 
 // Turn a gcloud or ssh log line into something the user can act on. The log is
 // the only place these failures surface, and the raw text names none of the fixes.
-pub fn diagnose_log_line(line: &str) -> Option<&'static str> {
+//
+// The credential rows are not listed here: `Failure::from_line` is the one
+// table that says what a line means, and this asks it. `credential_file` is
+// whether the account signs in with a key, because the hint for an expired
+// login is `gcloud auth login`, which would sign in a person instead of the key.
+pub fn diagnose_log_line(line: &str, credential_file: bool) -> Option<String> {
+    // [4033: before the credential rows: IAP refusing an identity that logged
+    // in fine is not a login problem, and no login line may stand in for it
+    if let Some(failure) = Failure::from_line(line)
+        && failure.is_stopping()
+        && !line.contains("[4033:")
+    {
+        return failure.log_hint(credential_file);
+    }
     const TABLE: &[(&str, &str)] = &[
         (
             "[4003:",
@@ -227,14 +241,6 @@ pub fn diagnose_log_line(line: &str) -> Option<&'static str> {
         (
             "[4033:",
             "Not authorized for IAP tunnelling. Grant roles/iap.tunnelResourceAccessor.",
-        ),
-        (
-            "Reauthentication required",
-            "gcloud credentials expired. Run: gcloud auth login",
-        ),
-        (
-            "gcloud auth login",
-            "gcloud credentials expired. Run: gcloud auth login",
         ),
         (
             "Address already in use",
@@ -267,7 +273,7 @@ pub fn diagnose_log_line(line: &str) -> Option<&'static str> {
     TABLE
         .iter()
         .find(|(needle, _)| line.contains(needle))
-        .map(|(_, hint)| *hint)
+        .map(|(_, hint)| (*hint).to_string())
 }
 
 #[cfg(test)]
@@ -809,7 +815,8 @@ mod tests {
             ("WARNING: [3] Unable to reconnect within [900000] ms", "15 minutes"),
         ];
         for (line, expected) in cases {
-            let hint = diagnose_log_line(line).unwrap_or_else(|| panic!("no hint for: {line}"));
+            let hint =
+                diagnose_log_line(line, false).unwrap_or_else(|| panic!("no hint for: {line}"));
             assert!(
                 hint.contains(expected),
                 "line {line:?}\n  hint {hint:?}\n  expected to contain {expected:?}"
@@ -821,7 +828,7 @@ mod tests {
     // to send the reader somewhere that can name the cause
     #[test]
     fn diagnose_log_line_explains_a_tunnel_out_of_descriptors() {
-        let hint = diagnose_log_line("accept: Too many open files").expect("a hint");
+        let hint = diagnose_log_line("accept: Too many open files", false).expect("a hint");
         assert!(
             hint.contains("descriptor") || hint.contains("connections"),
             "{hint}"
@@ -831,9 +838,40 @@ mod tests {
 
     #[test]
     fn diagnose_log_line_is_quiet_about_ordinary_lines() {
-        assert!(diagnose_log_line("Testing if tunnel connection works.").is_none());
-        assert!(diagnose_log_line("Listening on port [15432].").is_none());
-        assert!(diagnose_log_line("").is_none());
+        assert!(diagnose_log_line("Testing if tunnel connection works.", false).is_none());
+        assert!(diagnose_log_line("Listening on port [15432].", false).is_none());
+        assert!(diagnose_log_line("", false).is_none());
+    }
+
+    // A login would sign in a person, never the key, so a key's account must
+    // not be sent to one by any line that earns a hint
+    #[test]
+    fn a_credential_file_accounts_hint_never_says_to_log_in() {
+        let lines = [
+            "ERROR: There was a problem refreshing your current auth tokens: Reauthentication required.",
+            "Please run: gcloud auth login",
+            "invalid_grant: Token has been expired or revoked.",
+            "ERROR: Failed to impersonate [runner@example-dev-1a2b.iam.gserviceaccount.com].",
+            "invalid_grant: Invalid JWT Signature.",
+            "ERROR: The configuration [work] does not exist.",
+        ];
+        for line in lines {
+            let hint = diagnose_log_line(line, true).unwrap_or_else(|| panic!("no hint: {line}"));
+            assert!(!hint.contains("auth login"), "{line}\n  {hint}");
+        }
+        let ordinary = diagnose_log_line("Please run: gcloud auth login", false).expect("a hint");
+        assert!(ordinary.contains("gcloud auth login"), "{ordinary}");
+    }
+
+    #[test]
+    fn a_denied_impersonation_names_the_role_not_a_login() {
+        let hint = diagnose_log_line("ERROR: Failed to impersonate [sa@example.invalid].", false)
+            .expect("a hint");
+        assert!(
+            hint.contains("roles/iam.serviceAccountTokenCreator"),
+            "{hint}"
+        );
+        assert!(!hint.contains("auth login"), "{hint}");
     }
 
     // A port or URL that merely contains the digits is not an IAP close code
@@ -846,7 +884,7 @@ mod tests {
             "Client closed connection from 127.0.0.1:54004",
             "Reconnecting with URL ['wss://tunnel.cloudproxy.app/v4/reconnect?sid=a4003b']",
         ] {
-            assert!(diagnose_log_line(line).is_none(), "{line}");
+            assert!(diagnose_log_line(line, false).is_none(), "{line}");
         }
     }
 
@@ -855,7 +893,7 @@ mod tests {
     #[test]
     fn a_missing_configuration_warning_is_not_a_refusal_or_a_failure() {
         let line = "WARNING: Could not open the configuration file: [/home/you/.config/gcloud/configurations/config_ci].";
-        assert!(diagnose_log_line(line).is_none());
+        assert!(diagnose_log_line(line, false).is_none());
         assert!(!crate::probe::is_refusal(line));
     }
 
