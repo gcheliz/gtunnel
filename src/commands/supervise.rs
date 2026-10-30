@@ -245,7 +245,12 @@ pub async fn supervise(
         let mut fails = crate::restart_budget::parse_net_failures(
             &std::fs::read_to_string(&file).unwrap_or_default(),
         );
-        let after = crate::restart_budget::network_wait(&spend.budget, &mut fails, began.elapsed());
+        let after = crate::restart_budget::network_wait(
+            &spend.budget,
+            &mut fails,
+            began.elapsed(),
+            crate::backoff::draw(),
+        );
         if let Some(parent) = file.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
@@ -300,6 +305,7 @@ pub async fn supervise(
             &mut history,
             began.elapsed(),
             std::time::SystemTime::now(),
+            crate::backoff::draw(),
         );
         if let Some(parent) = history_file.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -839,7 +845,7 @@ mod tests {
             "an outage spends none of the restart budget"
         );
         assert_eq!(
-            crate::restart_budget::network_wait(&budget, &mut 9, Duration::ZERO),
+            crate::restart_budget::network_wait(&budget, &mut 9, Duration::ZERO, 1.0),
             budget.max_backoff
         );
     }

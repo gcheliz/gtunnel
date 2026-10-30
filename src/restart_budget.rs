@@ -21,7 +21,8 @@ pub struct Budget {
     pub window: Duration,
     /// A run at least this long clears the count.
     pub min_uptime: Duration,
-    /// The wait after the first failure; each next one doubles it.
+    /// The ceiling of the wait after the first failure; each next one doubles
+    /// it, and the wait itself is drawn from zero up to that ceiling.
     pub base_backoff: Duration,
     pub max_backoff: Duration,
     /// The fixed wait after a run that died because the relay still holds the
@@ -92,7 +93,16 @@ pub enum Verdict {
 }
 
 /// Judge one failed run. `ran_for` is how long the child lived.
-pub fn judge(b: &Budget, h: &mut History, ran_for: Duration, now: SystemTime) -> Verdict {
+///
+/// `unit` is the draw in `[0, 1]` that places the wait inside its backoff;
+/// see [`crate::backoff`] for why it is drawn at all.
+pub fn judge(
+    b: &Budget,
+    h: &mut History,
+    ran_for: Duration,
+    now: SystemTime,
+    unit: f64,
+) -> Verdict {
     // A budget of 0 is the old behaviour: restart at once, forever, keeping
     // nothing that could grow
     if b.max_restarts == 0 {
@@ -114,12 +124,8 @@ pub fn judge(b: &Budget, h: &mut History, ran_for: Duration, now: SystemTime) ->
     if n > b.max_restarts as usize {
         return Verdict::Stop;
     }
-    // 2^(n-1), with the shift bounded so a large budget cannot overflow
-    let doublings = u32::try_from(n - 1).unwrap_or(u32::MAX).min(30);
-    let after = b
-        .base_backoff
-        .saturating_mul(1 << doublings)
-        .min(b.max_backoff);
+    let attempt = u32::try_from(n).unwrap_or(u32::MAX);
+    let after = crate::backoff::backoff_at(attempt, b.base_backoff, b.max_backoff, unit);
     Verdict::Restart { after }
 }
 
@@ -177,17 +183,16 @@ pub fn render_since(t: SystemTime) -> String {
 /// A network exit says nothing about the tunnel, so it never reaches [`judge`]
 /// and can never stop the job: an outage that lasts an hour is a loop of
 /// retries, not a verdict. The wait uses the budget's own backoff, 10 s doubling
-/// to 5 min, so an offline laptop is not hammered. `fails` is the count of
+/// to 5 min and drawn from zero up to it, so an offline laptop is not hammered
+/// and a house of them does not retry on the same second. `fails` is the count of
 /// network exits in a row; a run that lived `min_uptime` was working, so it
 /// starts the count over, as it does for the budget.
-pub fn network_wait(b: &Budget, fails: &mut u32, ran_for: Duration) -> Duration {
+pub fn network_wait(b: &Budget, fails: &mut u32, ran_for: Duration, unit: f64) -> Duration {
     if ran_for >= b.min_uptime {
         *fails = 0;
     }
     *fails = fails.saturating_add(1);
-    b.base_backoff
-        .saturating_mul(1 << (*fails - 1).min(30))
-        .min(b.max_backoff)
+    crate::backoff::backoff_at(*fails, b.base_backoff, b.max_backoff, unit)
 }
 
 /// The persisted network count: one integer. Anything else is zero, because a
@@ -206,6 +211,54 @@ mod tests {
 
     fn quick() -> Duration {
         Duration::from_secs(1)
+    }
+
+    // The ceiling is the draw of 1.0, so every wait below is the doubling the
+    // table names; the jitter has its own tests
+    fn judge(b: &Budget, h: &mut History, ran_for: Duration, now: SystemTime) -> Verdict {
+        super::judge(b, h, ran_for, now, 1.0)
+    }
+
+    fn network_wait(b: &Budget, fails: &mut u32, ran_for: Duration) -> Duration {
+        super::network_wait(b, fails, ran_for, 1.0)
+    }
+
+    #[test]
+    fn a_restart_wait_is_drawn_from_zero_to_its_backoff() {
+        let b = Budget::default();
+        let wait = |unit| match super::judge(&b, &mut History::default(), quick(), at(1000), unit) {
+            Verdict::Restart { after } => after,
+            Verdict::Stop => panic!("stopped"),
+        };
+        assert_eq!(wait(0.0), Duration::ZERO);
+        assert_eq!(wait(0.5), b.base_backoff / 2);
+        assert_eq!(wait(1.0), b.base_backoff);
+    }
+
+    #[test]
+    fn a_network_wait_is_drawn_from_zero_to_its_backoff() {
+        let b = Budget::default();
+        let wait = |unit| super::network_wait(&b, &mut 2, quick(), unit);
+        assert_eq!(wait(0.0), Duration::ZERO);
+        assert_eq!(wait(0.5), b.base_backoff * 2);
+        assert_eq!(wait(1.0), b.base_backoff * 4);
+    }
+
+    // The issue's second acceptance item: two copies of the doubling is how
+    // the supervisor and the breaker drifted apart in the first place
+    #[test]
+    fn the_supervisor_and_the_breaker_use_the_shared_backoff_and_double_nothing_themselves() {
+        for (file, source) in [
+            ("restart_budget.rs", include_str!("restart_budget.rs")),
+            ("breaker.rs", include_str!("breaker.rs")),
+        ] {
+            let production = source.split("#[cfg(test)]\nmod ").next().unwrap();
+            assert!(production.contains("backoff::"), "{file} does not call it");
+            assert!(
+                !production.contains("saturating_mul(1"),
+                "{file} writes the doubling again"
+            );
+        }
     }
 
     #[test]

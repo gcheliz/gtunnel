@@ -664,9 +664,12 @@ async fn visit(
     };
     // Kept so a decision the service manager refuses can be undone
     let before = row.breaker.clone();
-    let action = row
-        .breaker
-        .observe(obs, now, stale_after(settings.watch_interval));
+    let action = row.breaker.observe_with(
+        obs,
+        now,
+        stale_after(settings.watch_interval),
+        crate::backoff::draw(),
+    );
     if verbose {
         println!("{}: {obs:?} -> {action:?}", key(tunnel));
     }
