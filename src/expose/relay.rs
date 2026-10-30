@@ -133,15 +133,21 @@ async fn serial_offset(client: &GcpClient, project: &str, zone: &str, vm: &str) 
         .map(|c| c.next)
 }
 
+// The script installs nftables at most, so three minutes is already a script
+// that will not finish; waiting out the whole operation timeout only delays the
+// warning.
+const RELAY_READY_BOUND: std::time::Duration = std::time::Duration::from_secs(180);
+
 #[allow(clippy::print_stdout, clippy::print_stderr)]
 async fn await_relay_ready(client: &GcpClient, project: &str, zone: &str, vm: &str, start: u64) {
-    match wait_relay_ready(client, project, zone, vm, start, client.operation_timeout()).await {
+    let bound = client.operation_timeout().min(RELAY_READY_BOUND);
+    match wait_relay_ready(client, project, zone, vm, start, bound).await {
         Ok(true) => println!("  ✓ relay sshd ready"),
         Ok(false) => eprintln!(
             "  ! the relay's startup script did not report done within {}s; a tunnel started \
              now may bind on loopback only. Read the serial console: gcloud compute \
              instances get-serial-port-output {vm} --zone={zone}",
-            client.operation_timeout().as_secs()
+            bound.as_secs()
         ),
         Err(e) => eprintln!("  ! could not read the relay's serial console ({e:#}); not waiting"),
     }

@@ -553,7 +553,8 @@ exits, so a crash leaves nothing to clean up.
 When `up` creates the instance, or rewrites and re-runs the script on a running one, it then
 waits for the script to print `gtunnel-relay-ready` on the serial console and says
 `✓ relay sshd ready`, so an `expose` straight after it gets a working URL on the first start.
-The wait is bounded by `gcp.operation_timeout`; past it `up` warns and carries on.
+The wait is bounded by 3 minutes, or `gcp.operation_timeout` if that is shorter; past it `up`
+warns, names the serial-console command to read, and carries on.
 
 A relay that already matches receives no write. If re-running the script fails, `up` stops with
 the `gcloud compute ssh` command to run by hand: the metadata is already written, so a second
