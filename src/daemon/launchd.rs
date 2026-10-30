@@ -33,6 +33,24 @@ pub fn agent_path(label: &str) -> Result<PathBuf> {
     Ok(agents_dir()?.join(format!("{label}.plist")))
 }
 
+fn xml_unescape(s: &str) -> String {
+    // `&amp;` last, or `&amp;lt;` would come back as `<`
+    s.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+}
+
+/// The string a plist's `<key>name</key>` is followed by
+pub fn plist_env_value(text: &str, name: &str) -> Option<String> {
+    let key = format!("<key>{}</key>", xml_escape(name));
+    let mut lines = text.lines().map(str::trim);
+    lines.find(|l| *l == key)?;
+    let value = lines.next()?;
+    Some(xml_unescape(
+        value.strip_prefix("<string>")?.strip_suffix("</string>")?,
+    ))
+}
+
 fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")

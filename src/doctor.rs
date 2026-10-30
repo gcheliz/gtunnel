@@ -172,6 +172,14 @@ pub enum Finding {
         file: String,
         effective: String,
     },
+    // A variable the shell sets whose value is not the one in the tunnel's
+    // service definition, so the supervised gcloud sees another gcloud, proxy
+    // or CA than this shell does. Names only, never values: a proxy URL can
+    // carry a password and a finding is printed, logged and sent as JSON.
+    ServiceEnvDrift {
+        tunnel: String,
+        variable: String,
+    },
 }
 
 impl Finding {
@@ -356,6 +364,11 @@ impl Finding {
                 "{key} is {effective} here because {variable} is set in the environment; \
                  config.toml says '{file}' and is ignored for it. Unset {variable} to use the file"
             ),
+            Finding::ServiceEnvDrift { tunnel, variable } => format!(
+                "{variable} in this shell differs from the one in the service of tunnel '{tunnel}', \
+                 so its gcloud may not see what this shell does. Run `gtunnel restart {tunnel}` \
+                 to write the shell's value"
+            ),
             Finding::WatchdogMissing => format!(
                 "No watchdog is installed, so a tunnel that wedges stays wedged until someone \
                  notices. Run `gtunnel watch install` to check every {}s",
@@ -435,6 +448,28 @@ pub fn setting_override_findings(cfg: &Config, env: crate::settings::EnvFn) -> V
             variable: o.variable.to_string(),
             file: o.file,
             effective: o.effective,
+        })
+        .collect()
+}
+
+/// The forwarded variables the shell sets whose value differs from the one in
+/// `installed`, a tunnel's service definition. A variable the shell lacks is
+/// not reported: a shell without the proxy proves nothing about the job's.
+pub fn service_env_findings(
+    tunnel: &str,
+    installed: &str,
+    get: &dyn Fn(&str) -> Option<String>,
+) -> Vec<Finding> {
+    crate::daemon::FORWARDED_ENV_VARS
+        .into_iter()
+        .filter_map(|name| {
+            let shell = get(name).filter(|v| !v.trim().is_empty())?;
+            (crate::daemon::forwarded_in(installed, name).as_deref() != Some(shell.as_str())).then(
+                || Finding::ServiceEnvDrift {
+                    tunnel: tunnel.to_string(),
+                    variable: name.to_string(),
+                },
+            )
         })
         .collect()
 }
@@ -1029,6 +1064,14 @@ async fn account_findings(_cfg: &Config, state: &TunnelState, acct: &Account) ->
             continue;
         };
         let log = crate::daemon::read_tail(&log_path, crate::daemon::TAIL_WINDOW);
+        // Report only, and ahead of the token: an unreachable gcloud is the
+        // very thing a mismatched proxy or CA causes
+        let label = crate::daemon::platform_label(&acct.name, &tunnel.name);
+        if let Some(installed) = crate::daemon::installed_service_text(&label) {
+            findings.extend(service_env_findings(&tunnel.name, &installed, &|name| {
+                std::env::var(name).ok()
+            }));
+        }
         // The lsof listing is only asked for once the log has earned it
         if !out_of_descriptors(&log) {
             continue;
@@ -2610,6 +2653,48 @@ mod tests {
         [tunnels.spec]\nmode = \"access\"\nremote_port = 5432\nremote_prot = 5432\n\
         local_port = 5432\n[tunnels.spec.target]\nkind = \"instance\"\n\
         instance = \"bastion\"\nzone = \"europe-west1-b\"\n";
+
+    #[test]
+    fn doctor_reports_a_shell_variable_that_differs_from_a_definition() {
+        let installed = "<key>HTTPS_PROXY</key>\n<string>http://old.example:3128</string>\n\
+                         <key>CLOUDSDK_CONFIG</key>\n<string>/home/you/gcloud</string>\n\
+                         <key>NO_PROXY</key>\n<string>localhost</string>\n";
+        let get = |name: &str| match name {
+            "HTTPS_PROXY" => Some("http://proxy.example:3128".to_string()),
+            "CLOUDSDK_CONFIG" => Some("/home/you/gcloud".to_string()),
+            // Set in the shell and absent from the definition
+            "SSL_CERT_FILE" => Some("/etc/ca.pem".to_string()),
+            // Absent from the shell: a shell that lacks it proves nothing
+            "NO_PROXY" => None,
+            _ => None,
+        };
+        let findings = service_env_findings("db", installed, &get);
+        assert_eq!(
+            findings,
+            vec![
+                Finding::ServiceEnvDrift {
+                    tunnel: "db".to_string(),
+                    variable: "HTTPS_PROXY".to_string(),
+                },
+                Finding::ServiceEnvDrift {
+                    tunnel: "db".to_string(),
+                    variable: "SSL_CERT_FILE".to_string(),
+                },
+            ]
+        );
+        let text = findings[0].describe();
+        assert!(
+            text.contains("HTTPS_PROXY") && text.contains("gtunnel restart db"),
+            "{text}"
+        );
+        // A proxy URL can carry a password and a finding is printed and logged
+        assert!(
+            !text.contains("proxy.example") && !text.contains("old.example"),
+            "{text}"
+        );
+        assert!(!findings[0].fixable());
+        assert!(service_env_findings("db", installed, &|_| None).is_empty());
+    }
 
     #[test]
     fn doctor_reports_an_unknown_key_in_config_toml() {

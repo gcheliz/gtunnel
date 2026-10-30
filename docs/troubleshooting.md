@@ -313,6 +313,17 @@ $ lsof -nP -iTCP:5432 -sTCP:LISTEN
 
 Pass a different port with `--local-port <port>`, or stop the conflicting service.
 
+## Every tunnel fails as `auth expired` though gcloud works in the shell
+
+`start` passed the login check, so your shell's gcloud is fine, and then each tunnel's own
+gcloud fails with `auth expired` or a TLS error. A service does not inherit your shell, so it
+may be using another gcloud home, no proxy or another CA.
+
+| Cause | Fix |
+|---|---|
+| `CLOUDSDK_CONFIG`, a proxy or a CA bundle is set in the shell but not in the service | Run `gtunnel doctor`: it names each such variable. `gtunnel restart <name>` writes the shell's values into the service. The list is under [Variables a service takes from your shell](configuration.md#variables-a-service-takes-from-your-shell) |
+| The variable is set in a profile only some shells read | Set it where the shell you run gtunnel from reads it, then `restart` |
+
 ## gtunnel needs a logged-in Google account
 
 ```

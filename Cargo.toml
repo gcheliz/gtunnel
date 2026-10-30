@@ -1,6 +1,6 @@
 [package]
 name = "gtunnel"
-version = "0.2.65"
+version = "0.2.67"
 edition = "2024"
 # std File::lock sets this floor; ratatui 0.30 needs 1.88.
 rust-version = "1.89"
@@ -26,6 +26,8 @@ toml = "1"
 serde_ignored = "0.1"
 dirs = "7"
 anyhow = "1"
+# The release digest is checked in process, not by a shasum found on PATH.
+sha2 = "0.10"
 rand = "0.10"
 ratatui = "0.30"
 crossterm = { version = "0.29", features = ["use-dev-tty"] }

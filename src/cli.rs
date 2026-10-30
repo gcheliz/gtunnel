@@ -368,6 +368,13 @@ source and --to the destination."
         // Only check, don't install
         #[arg(long, help = "Only check, don't install")]
         check: bool,
+        // Restore the binary the last update replaced
+        #[arg(
+            long,
+            conflicts_with = "check",
+            help = "Restore the version the last update replaced"
+        )]
+        rollback: bool,
     },
 
     // Run Model Context Protocol (MCP) stdio server

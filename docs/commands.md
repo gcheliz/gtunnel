@@ -853,6 +853,11 @@ account ci:
 installs a missing watchdog ([Leftovers](troubleshooting.md#leftovers)). A finding it cannot
 fix, such as a missing firewall rule, comes with the exact command.
 
+A gcloud, proxy or CA variable your shell sets whose value differs from the one in a tunnel's
+service is reported per account, by name only, and never fixed for you; `gtunnel restart
+<name>` writes the shell's value. The list is under
+[Variables a service takes from your shell](configuration.md#variables-a-service-takes-from-your-shell).
+
 A reserved account name (`run` or `run-*`, see `account add`) is reported the same way and is
 never fixed for you: renaming an account means adding one and moving its tunnels.
 
@@ -929,6 +934,24 @@ default). A failed check is recorded and holds the next off for the same interva
 themselves after verifying the published SHA-256, by renaming a new file into place, never by
 rewriting the running one; a Homebrew install is pointed at
 `brew upgrade gtunnel`.
+
+Before the swap the new binary runs `--version` (10 s limit) and must report the release it was
+downloaded for, so a build that cannot start on this machine is refused and the installed one is
+left as it was. A download over 64 MiB is refused. The replaced binary is kept as `gtunnel.old`
+beside the installed one.
+
+| Flag | Effect |
+|---|---|
+| `--check` | Report whether a newer release exists; install nothing |
+| `--rollback` | Rename `gtunnel.old` over the installed binary. Needs no network. Refused when there is no backup, and cannot be combined with `--check` |
+
+```console,ignore
+$ gtunnel update --rollback
+Restored the previous version at /usr/local/bin/gtunnel
+```
+
+The backup is spent by a rollback, so a second one is refused; the next `update` writes a new
+one. A Homebrew install keeps no backup here and is pointed at `brew upgrade gtunnel`.
 
 ## mcp
 

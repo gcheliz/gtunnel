@@ -160,7 +160,12 @@ fn detect_install_method_from_path(exe: &Path) -> InstallMethod {
 }
 
 #[allow(clippy::print_stdout, clippy::print_stderr)]
-pub async fn cmd_update(check_only: bool) -> Result<()> {
+pub async fn cmd_update(check_only: bool, rollback: bool) -> Result<()> {
+    if rollback {
+        // No network: the way back must work when the new version is why
+        // nothing else does
+        return cmd_rollback();
+    }
     let current = env!("CARGO_PKG_VERSION");
     eprintln!("Checking for updates...");
     let latest = match fetch_latest_version().await {
@@ -313,30 +318,15 @@ pub fn parse_sha256_file(text: &str) -> Option<String> {
     text.split_whitespace().next().map(|s| s.to_string())
 }
 
-// Hashes the download in memory: a file written first and hashed afterwards
-// can be swapped in between
-fn sha256_bytes(bytes: &[u8]) -> Result<String> {
-    use std::io::Write;
-    for (program, args) in [("shasum", vec!["-a", "256"]), ("sha256sum", vec![])] {
-        let spawned = std::process::Command::new(program)
-            .args(&args)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .spawn();
-        let Ok(mut child) = spawned else { continue };
-        child
-            .stdin
-            .take()
-            .context("Could not write to the checksum program")?
-            .write_all(bytes)?;
-        let out = child.wait_with_output()?;
-        if out.status.success() {
-            return parse_sha256_file(&String::from_utf8_lossy(&out.stdout))
-                .context("Could not read the checksum output");
-        }
-    }
-    anyhow::bail!("Neither shasum nor sha256sum is on PATH")
+// Hashed in process and in memory: a file written first and hashed afterwards
+// can be swapped in between, and a `shasum` found on PATH is one more program
+// the digest of a self-replacing binary would depend on
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 // Fails if the path already exists, so a pre-created directory is never used
@@ -369,8 +359,31 @@ fn staging_dir(parent: &Path) -> Result<TempDirGuard> {
     )
 }
 
+// Far above a real release (about 10 MB) and far below what could exhaust
+// memory: the body is held whole so it can be hashed before a byte is written
+const MAX_DOWNLOAD: u64 = 64 * 1024 * 1024;
+
+fn check_declared_len(declared: Option<u64>, limit: u64) -> Result<()> {
+    match declared {
+        Some(len) if len > limit => {
+            anyhow::bail!("The download is {len} bytes, over the {limit} byte limit")
+        }
+        _ => Ok(()),
+    }
+}
+
+// The declared length can be absent or false, so the bytes are counted as they
+// arrive and the chunk that crosses the limit is never kept
+fn append_capped(buf: &mut Vec<u8>, chunk: &[u8], limit: u64) -> Result<()> {
+    if buf.len() as u64 + chunk.len() as u64 > limit {
+        anyhow::bail!("The download is over the {limit} byte limit");
+    }
+    buf.extend_from_slice(chunk);
+    Ok(())
+}
+
 async fn get(url: &str) -> Result<Vec<u8>> {
-    let response = crate::http::client_builder()
+    let mut response = crate::http::client_builder()
         .build()
         .context("Failed to build the HTTP client")?
         .get(url)
@@ -380,7 +393,17 @@ async fn get(url: &str) -> Result<Vec<u8>> {
         .with_context(|| format!("Failed to download {url}"))?
         .error_for_status()
         .with_context(|| format!("Failed to download {url}"))?;
-    Ok(response.bytes().await?.to_vec())
+    check_declared_len(response.content_length(), MAX_DOWNLOAD)
+        .with_context(|| format!("Refused {url}"))?;
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .with_context(|| format!("Failed to download {url}"))?
+    {
+        append_capped(&mut body, &chunk, MAX_DOWNLOAD).with_context(|| format!("Refused {url}"))?;
+    }
+    Ok(body)
 }
 
 #[allow(clippy::print_stdout, clippy::print_stderr)]
@@ -398,7 +421,7 @@ async fn perform_update(exe_path: &Path, version: &str) -> Result<()> {
         &get(&format!("{base}/{asset}.sha256")).await?,
     ))
     .context("The release has no usable .sha256 file")?;
-    let actual = sha256_bytes(&bytes)?;
+    let actual = sha256_hex(&bytes);
     if !actual.eq_ignore_ascii_case(&published) {
         anyhow::bail!("Checksum mismatch for {asset}: expected {published}, got {actual}");
     }
@@ -431,9 +454,127 @@ async fn perform_update(exe_path: &Path, version: &str) -> Result<()> {
     if !new_bin.exists() {
         anyhow::bail!("{asset} does not contain a gtunnel binary");
     }
-    replace_binary(&new_bin, exe_path)?;
+    install_staged(&new_bin, exe_path, version, SMOKE_TIMEOUT)?;
     eprintln!("Updated gtunnel to v{version}");
+    eprintln!(
+        "The previous version is kept as {}; `gtunnel update --rollback` restores it.",
+        backup_path(exe_path).display()
+    );
     Ok(())
+}
+
+// Beside the installed binary, so the restore is a rename on one volume
+fn backup_path(exe_path: &Path) -> PathBuf {
+    let mut name = exe_path.file_name().unwrap_or_default().to_os_string();
+    name.push(".old");
+    exe_path.with_file_name(name)
+}
+
+const SMOKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+// A checksum proves the file is the one published, not that it runs here: a
+// wrong architecture or a missing library passes it and then takes down every
+// tunnel at the next restart. Running it is the only proof, and the answer has
+// to name the version asked for, so a stale asset cannot pass as the new one
+fn smoke_test(bin: &Path, version: &str, timeout: std::time::Duration) -> Result<()> {
+    use std::io::Read;
+    let mut child = std::process::Command::new(bin)
+        .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .context("The downloaded binary could not be started")?;
+    let deadline = std::time::Instant::now() + timeout;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            anyhow::bail!(
+                "The downloaded binary did not answer --version within {}s",
+                timeout.as_secs_f32()
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let mut out = String::new();
+    if let Some(mut stdout) = child.stdout.take() {
+        let _ = stdout.read_to_string(&mut out);
+    }
+    if !status.success() {
+        anyhow::bail!("The downloaded binary failed `--version` ({status})");
+    }
+    if !out.contains(version) {
+        anyhow::bail!(
+            "The downloaded binary reports `{}` for --version, expected v{version}",
+            out.trim()
+        );
+    }
+    Ok(())
+}
+
+// Smoke test, then keep the old binary, then swap. A refusal at any step
+// leaves the installed binary exactly as it was
+fn install_staged(
+    new_bin: &Path,
+    exe_path: &Path,
+    version: &str,
+    timeout: std::time::Duration,
+) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(new_bin, std::fs::Permissions::from_mode(0o755))?;
+    }
+    smoke_test(new_bin, version, timeout)?;
+    keep_previous(exe_path)?;
+    replace_binary(new_bin, exe_path)
+}
+
+// A copy renamed into place, not a rename of the installed file: the running
+// binary stays where it is until the new one replaces it, so a failure here
+// never leaves the install path empty
+fn keep_previous(exe_path: &Path) -> Result<()> {
+    let backup = backup_path(exe_path);
+    let staged = exe_path.with_file_name(format!(".gtunnel-update-{}.old", std::process::id()));
+    let _ = std::fs::remove_file(&staged);
+    let kept = std::fs::copy(exe_path, &staged).and_then(|_| std::fs::rename(&staged, &backup));
+    if let Err(e) = kept {
+        let _ = std::fs::remove_file(&staged);
+        return Err(e).with_context(|| format!("Could not keep {}", backup.display()));
+    }
+    Ok(())
+}
+
+// Renames the backup over the installed binary, so it is spent: a second
+// rollback is refused rather than swapping the broken version back in
+fn rollback_binary(exe_path: &Path) -> Result<()> {
+    let backup = backup_path(exe_path);
+    if !backup.exists() {
+        anyhow::bail!(
+            "There is no previous version to restore: {} does not exist",
+            backup.display()
+        );
+    }
+    std::fs::rename(&backup, exe_path)
+        .with_context(|| format!("Failed to restore {}", backup.display()))
+}
+
+#[allow(clippy::print_stderr)]
+fn cmd_rollback() -> Result<()> {
+    match detect_install_method() {
+        InstallMethod::Homebrew => {
+            anyhow::bail!("gtunnel was installed with Homebrew, which keeps no previous binary here. Run:\n  brew upgrade gtunnel")
+        }
+        InstallMethod::Binary(exe) => {
+            rollback_binary(&exe)?;
+            eprintln!("Restored the previous version at {}", exe.display());
+            Ok(())
+        }
+    }
 }
 
 fn replace_binary(new_bin: &Path, exe_path: &Path) -> Result<()> {
@@ -617,9 +758,21 @@ mod tests {
     // The digest is checked before any byte reaches the disk, so there is no
     // window between verifying the archive and reading it back
     #[test]
+    fn the_empty_input_and_a_multi_block_input_hash_to_their_known_digests() {
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            sha256_hex(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"),
+            "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+        );
+    }
+
+    #[test]
     fn bytes_are_hashed_without_a_file() {
         assert_eq!(
-            sha256_bytes(b"abc").unwrap(),
+            sha256_hex(b"abc"),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
     }
@@ -798,5 +951,116 @@ mod tests {
         assert!(check_failed(&blank));
         let binary = InstallMethod::Binary(PathBuf::from("/usr/local/bin/gtunnel"));
         assert_eq!(notice_for("0.1.0", &blank.latest_version, &binary), None);
+    }
+
+    // A stub that answers `--version` the way the real binary does, or fails
+    #[cfg(unix)]
+    fn stub(dir: &Path, name: &str, script: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    const SMOKE: std::time::Duration = std::time::Duration::from_secs(10);
+
+    #[cfg(unix)]
+    #[test]
+    fn a_staged_binary_that_fails_its_version_check_is_not_swapped_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = stub(dir.path(), "gtunnel", "echo gtunnel 1.0.0");
+        let new_bin = stub(dir.path(), "staged", "exit 3");
+        let before = std::fs::read(&exe).unwrap();
+
+        let err = install_staged(&new_bin, &exe, "2.0.0", SMOKE).expect_err("a broken binary");
+
+        assert!(format!("{err:#}").contains("--version"), "{err:#}");
+        assert_eq!(std::fs::read(&exe).unwrap(), before);
+        assert!(
+            !backup_path(&exe).exists(),
+            "no backup for a swap that never happened"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_staged_binary_that_reports_another_version_is_not_swapped_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = stub(dir.path(), "gtunnel", "echo gtunnel 1.0.0");
+        let new_bin = stub(dir.path(), "staged", "echo gtunnel 1.5.0");
+        assert!(install_staged(&new_bin, &exe, "2.0.0", SMOKE).is_err());
+        assert!(std::fs::read_to_string(&exe).unwrap().contains("1.0.0"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_staged_binary_that_hangs_on_its_version_check_is_killed_and_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = stub(dir.path(), "gtunnel", "echo gtunnel 1.0.0");
+        let new_bin = stub(dir.path(), "staged", "exec sleep 30");
+        let started = std::time::Instant::now();
+        let err = install_staged(
+            &new_bin,
+            &exe,
+            "2.0.0",
+            std::time::Duration::from_millis(300),
+        )
+        .expect_err("a hung binary");
+        assert!(format!("{err:#}").contains("did not answer"), "{err:#}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+        assert!(std::fs::read_to_string(&exe).unwrap().contains("1.0.0"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_successful_update_leaves_the_previous_binary_as_gtunnel_old() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = stub(dir.path(), "gtunnel", "echo gtunnel 1.0.0");
+        let old_contents = std::fs::read(&exe).unwrap();
+        let new_bin = stub(dir.path(), "staged", "echo gtunnel 2.0.0");
+
+        install_staged(&new_bin, &exe, "2.0.0", SMOKE).unwrap();
+
+        assert_eq!(backup_path(&exe), dir.path().join("gtunnel.old"));
+        assert_eq!(std::fs::read(backup_path(&exe)).unwrap(), old_contents);
+        assert!(std::fs::read_to_string(&exe).unwrap().contains("2.0.0"));
+        let names: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
+        assert_eq!(names.len(), 2, "a staged copy was left behind: {names:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rollback_restores_the_backup_and_is_refused_when_there_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = stub(dir.path(), "gtunnel", "echo gtunnel 2.0.0");
+
+        let err = rollback_binary(&exe).expect_err("no backup yet");
+        assert!(
+            format!("{err:#}").contains("no previous version"),
+            "{err:#}"
+        );
+        assert!(std::fs::read_to_string(&exe).unwrap().contains("2.0.0"));
+
+        stub(dir.path(), "gtunnel.old", "echo gtunnel 1.0.0");
+        rollback_binary(&exe).unwrap();
+        assert!(std::fs::read_to_string(&exe).unwrap().contains("1.0.0"));
+        assert!(!backup_path(&exe).exists());
+        assert!(rollback_binary(&exe).is_err(), "the backup is spent");
+    }
+
+    #[test]
+    fn a_download_over_the_limit_is_refused_before_a_byte_is_kept() {
+        assert!(check_declared_len(Some(MAX_DOWNLOAD), MAX_DOWNLOAD).is_ok());
+        assert!(check_declared_len(Some(MAX_DOWNLOAD + 1), MAX_DOWNLOAD).is_err());
+        assert!(check_declared_len(None, MAX_DOWNLOAD).is_ok());
+
+        // A server that sends no length is caught as the chunks arrive
+        let mut buf = Vec::new();
+        assert!(append_capped(&mut buf, &[0; 6], 10).is_ok());
+        assert!(append_capped(&mut buf, &[0; 4], 10).is_ok());
+        assert!(append_capped(&mut buf, &[0; 1], 10).is_err());
+        assert_eq!(buf.len(), 10);
+        assert_eq!(MAX_DOWNLOAD, 64 * 1024 * 1024);
     }
 }
