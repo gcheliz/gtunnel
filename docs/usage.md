@@ -462,10 +462,10 @@ configurations, projects, zones and instances.
 
 | Group | Keys |
 |---|---|
-| Tunnel | `s` start, `S` stop (a run too), `R` restart, `A` toggle auto-start (`s`, `R` and `A` are refused on a run), `h` health check now |
+| Tunnel | `s` start, `S` stop (a run too, and a tunnel that keeps crashing: launchd would start it again), `R` restart, `A` toggle auto-start (`s`, `R` and `A` are refused on a run), `h` health check now |
 | The list | `a` add, `e` edit, `d` delete (refused on a run), `m` import an ephemeral run as managed, `j` `k` or the arrows move the selection |
 | This tunnel's URL and log | `c` copy the URL, `l` copy the log to clipboard, `o` open it, `L` clear the log, `r` refresh the list, metrics and health |
-| The program | `;` cycle accounts (the relay and its domains change with the account), `:` the accounts page, `?` the keymap, `C` the config page, `q` quit, `Esc` close a page or cancel a prompt, `PgUp` `PgDn` and `g` `G` scroll the keymap page, `Ctrl+Z` suspend, `Ctrl+C` quit from anywhere |
+| The program | `;` cycle accounts (the relay and its domains change with the account), `:` the accounts page, `?` the keymap, `C` the config page, `q` quit (it waits for a running operation to finish, and a second `q` quits at once), `Esc` close a page or cancel a prompt, `PgUp` `PgDn` and `g` `G` scroll the keymap page, `Ctrl+Z` suspend, `Ctrl+C` quit from anywhere, with the same wait |
 
 The Metrics pane shows the tunnel's health as a symbol. A failed probe is named by what
 the log says, so the fix is on screen instead of in the log:

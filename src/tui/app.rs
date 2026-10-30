@@ -35,6 +35,11 @@ pub const DISCOVERY_EVERY: Duration = Duration::from_secs(60);
 // the refresh a start forces reads a tunnel that is not up yet. One more look
 // this long after lets the status settle without waiting out a whole round.
 pub const START_FOLLOWUP: Duration = Duration::from_secs(3);
+/// How long a quit waits for the operations still running. A delete or a move
+/// is two or three `gcloud` and `launchctl` calls; past this a wedged one is
+/// worse than the half-finished state it was protecting, and the person has
+/// already been told that a second quit leaves at once.
+pub const QUIT_WAIT: Duration = Duration::from_secs(30);
 
 /// What the list shows for a tunnel name. The account is already in the header
 /// and in the details pane, so a trailing `-<account>` says it a third time on
@@ -79,15 +84,29 @@ pub struct PendingOp {
 }
 
 impl PendingOp {
-    /// The verb as the row spells it. `stop` doubles its consonant and the
-    /// rest only take `ing`, so the one exception is named here and not
-    /// guessed by suffix.
+    /// The verb as the row spells it. `stop` doubles its consonant, a verb in
+    /// `e` drops it and the auto-start pair keeps its object, so the
+    /// exceptions are named here and not guessed by suffix.
     pub fn gerund(&self) -> String {
         match self.verb {
             "stop" => "stopping".to_string(),
-            verb => format!("{verb}ing"),
+            "enable auto-start" => "enabling auto-start".to_string(),
+            "disable auto-start" => "disabling auto-start".to_string(),
+            verb => match verb.strip_suffix('e') {
+                Some(stem) => format!("{stem}ing"),
+                None => format!("{verb}ing"),
+            },
         }
     }
+}
+
+/// A pending op as `App` keeps it: the marker, and whether the op has
+/// returned. A returned op still marks its row until the first round begun
+/// after it shows what it did.
+#[derive(Debug, Clone, Copy)]
+pub struct PendingState {
+    pub op: PendingOp,
+    pub settled: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -221,6 +240,30 @@ pub enum Op {
     AccountSelect(String),
 }
 
+impl Op {
+    /// What the status line calls the op while a quit waits for it: the verb
+    /// and the thing it acts on, in the words of the spinner.
+    pub fn label(&self) -> String {
+        match self {
+            Op::Start(n) => format!("start {n}"),
+            Op::Stop(n) | Op::StopRun(n) => format!("stop {n}"),
+            Op::Restart(n) => format!("restart {n}"),
+            Op::Delete(n) => format!("delete {n}"),
+            Op::ToggleAutoStart(n) => format!("auto-start {n}"),
+            Op::Import(n) => format!("import {n}"),
+            Op::ClearLog(n) => format!("clear log {n}"),
+            Op::Create(t) => format!("create {}", t.name),
+            Op::Edit(e) => format!("edit {}", e.name),
+            Op::Rename(r) => format!("rename {}", r.name),
+            Op::Move(m) => format!("move {}", m.name),
+            Op::AccountAdd(a) => format!("add account {}", a.name),
+            Op::AccountEdit(a) => format!("edit account {}", a.name),
+            Op::AccountRemove(n) => format!("remove account {n}"),
+            Op::AccountSelect(n) => format!("select account {n}"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum TunnelMode {
     #[default]
@@ -319,6 +362,10 @@ pub struct OpResult {
     pub from_account: bool,
     // The tunnel the op acted on, for the ops that mark a row pending
     pub name: Option<String>,
+    // The account the op ran under, which is the account on screen when the
+    // key was pressed and not necessarily the one on screen when the result
+    // lands: names repeat across accounts, so the name alone says nothing
+    pub account: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -800,6 +847,19 @@ pub struct App {
     // whatever the clock says. Startup and `;` both land here: the list is
     // replaced wholesale and nothing in it has been probed.
     pub health_stale: bool,
+    // Every op that marks a row, by account and name, and whether its result
+    // has landed. Names repeat across accounts and `entries` is rebuilt on a
+    // switch, so the rows cannot be where this is kept: they read from it
+    pub pending_ops: HashMap<(String, String), PendingState>,
+    // The label of each op the loop has spawned and not heard back from, for
+    // every op and not only the ones that mark a row: a create is not on a row
+    pub running_ops: Vec<String>,
+    // A quit was asked for while `running_ops` was not empty
+    pub quitting: bool,
+    pub quit_since: Option<std::time::Instant>,
+    // Set by a switch of account, taken by the loop, which then drops the
+    // rounds begun for the old one
+    pub account_switched: bool,
     // The demo carries its own data and has no runtime to reload it from
     pub demo: bool,
     // The demo's per-row logs and the activity that extends them
@@ -888,6 +948,11 @@ impl App {
             force_refresh: false,
             follow_up_at: None,
             health_stale: false,
+            pending_ops: HashMap::new(),
+            running_ops: Vec::new(),
+            quitting: false,
+            quit_since: None,
+            account_switched: false,
             demo: false,
             demo_logs: Default::default(),
             #[cfg(not(test))]
@@ -1193,7 +1258,12 @@ impl App {
         true
     }
 
-    fn op_for(&mut self, action: &'static str, build: fn(String) -> Op) -> Option<Op> {
+    /// Takes the selected row for an op: refused if it is someone else's
+    /// process or already has an op running, otherwise marked and named. Every
+    /// op that acts on a saved tunnel starts here, the three that carry more
+    /// than a name included, because a rename that raced a start would
+    /// uninstall the service the start was installing.
+    fn claim_row(&mut self, action: &'static str) -> Option<String> {
         let entry = self.selected_entry()?;
         if entry.kind == TunnelKind::External {
             self.refuse_external(action);
@@ -1203,15 +1273,14 @@ impl App {
         if self.refuse_pending() {
             return None;
         }
-        if let Some(entry) = self.entries.get_mut(self.selected) {
-            entry.pending = Some(PendingOp {
-                verb: action,
-                since: std::time::Instant::now(),
-            });
-            entry.pending_settle = false;
-        }
+        let account = self.account.clone();
+        self.mark_pending(&account, &name, action);
         self.spinner.start(&format!("{action} {name}"));
-        Some(build(name))
+        Some(name)
+    }
+
+    fn op_for(&mut self, action: &'static str, build: fn(String) -> Op) -> Option<Op> {
+        self.claim_row(action).map(build)
     }
 
     pub fn next_account(&mut self) {
@@ -1232,6 +1301,8 @@ impl App {
         self.default_zone = self.zones.get(&self.account).cloned().unwrap_or_default();
         self.selected = 0;
         self.entries.clear();
+        // The rounds in flight were begun for the old account
+        self.account_switched = true;
         // The old account's answer says nothing about the new one's
         self.loaded = false;
         self.load_failed = false;
@@ -1365,7 +1436,7 @@ impl App {
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
                 KeyCode::Char('c') => {
-                    self.should_quit = true;
+                    self.request_quit();
                     return None;
                 }
                 KeyCode::Char('z') => {
@@ -1402,7 +1473,7 @@ impl App {
         }
 
         match key.code {
-            KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Char('q') => self.request_quit(),
             KeyCode::Char('?') => self.input_mode = InputMode::Help,
             KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
             KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
@@ -1440,7 +1511,10 @@ impl App {
                         self.refuse_external("stop");
                         return None;
                     }
-                    if entry.status != TunnelStatus::Running {
+                    // An Error row is a crash loop that launchd restarts after
+                    // its throttle gap, so it is about to run again and only
+                    // an unload ends it
+                    if !matches!(entry.status, TunnelStatus::Running | TunnelStatus::Error) {
                         self.set_status(format!("{} is not running", entry.name()));
                         return None;
                     }
@@ -1454,6 +1528,15 @@ impl App {
                 if self.refuse_pending() || self.refuse_ephemeral("restarting") {
                     return None;
                 }
+                // Before the row is touched: a refusal after `Checking` left
+                // the row reading it until the next health round
+                if self
+                    .selected_entry()
+                    .is_some_and(|e| e.kind == TunnelKind::External)
+                {
+                    self.refuse_external("restart");
+                    return None;
+                }
                 if let Some(entry) = self.entries.get_mut(self.selected) {
                     entry.health = HealthStatus::Checking;
                 }
@@ -1464,7 +1547,15 @@ impl App {
                 if self.refuse_ephemeral("setting auto-start on") {
                     return None;
                 }
-                return self.op_for("auto-start", Op::ToggleAutoStart);
+                // The verb names the change, because `auto-starting` read as
+                // a start when the flag was being turned off
+                let turning_off = self.selected_entry().is_some_and(|e| e.tunnel.auto_start);
+                let verb = if turning_off {
+                    "disable auto-start"
+                } else {
+                    "enable auto-start"
+                };
+                return self.op_for(verb, Op::ToggleAutoStart);
             }
             KeyCode::Char('m') => return self.import_op(),
             KeyCode::Char('c') => self.copy_url(),
@@ -2157,7 +2248,7 @@ impl App {
                 }
                 let from = self.account.clone();
                 self.cancel_dialog();
-                self.spinner.start(&format!("move {name}"));
+                let name = self.claim_row("move")?;
                 return Some(Op::Move(MoveTunnel {
                     name,
                     from,
@@ -2381,7 +2472,7 @@ impl App {
                     value: value.trim().to_string(),
                 };
                 self.cancel_dialog();
-                self.spinner.start(&format!("edit {name}"));
+                self.claim_row("edit")?;
                 Some(Op::Edit(edit))
             }
             InputMode::RenameTo => {
@@ -2389,9 +2480,8 @@ impl App {
                 let taken: Vec<String> =
                     self.entries.iter().map(|e| e.name().to_string()).collect();
                 let new_name = self.checked_name(&value, &account, &taken)?;
-                let name = self.selected_entry()?.name().to_string();
                 self.cancel_dialog();
-                self.spinner.start(&format!("rename {name}"));
+                let name = self.claim_row("rename")?;
                 Some(Op::Rename(RenameTunnel {
                     account,
                     name,
@@ -2403,10 +2493,9 @@ impl App {
                 // question, and the destination is half of it
                 let to = self.move_to.clone();
                 let new_name = self.checked_name(&value, &to, &names_in_account(&to))?;
-                let name = self.selected_entry()?.name().to_string();
                 let from = self.account.clone();
                 self.cancel_dialog();
-                self.spinner.start(&format!("move {name}"));
+                let name = self.claim_row("move")?;
                 Some(Op::Move(MoveTunnel {
                     name,
                     from,
@@ -2764,15 +2853,93 @@ impl App {
         {
             self.reopen(draft, step, &result.message);
         }
+        // By account as well as name: the result of prod's `db` must not
+        // settle dev's, and the row it belongs to may not be on screen
         if let Some(name) = &result.name
-            && let Some(entry) = self.entries.iter_mut().find(|e| e.name() == name)
+            && let Some(state) = self
+                .pending_ops
+                .get_mut(&(result.account.clone(), name.clone()))
         {
-            entry.pending_settle = true;
+            state.settled = true;
+            self.sync_pending();
         }
         if result.reload {
             self.force_refresh = true;
             self.follow_up_at = Some(std::time::Instant::now() + START_FOLLOWUP);
         }
+    }
+
+    /// Records that an op is running on `name` in `account`, and puts the
+    /// marker on the row if it is on screen.
+    pub fn mark_pending(&mut self, account: &str, name: &str, verb: &'static str) {
+        self.pending_ops.insert(
+            (account.to_string(), name.to_string()),
+            PendingState {
+                op: PendingOp {
+                    verb,
+                    since: std::time::Instant::now(),
+                },
+                settled: false,
+            },
+        );
+        self.sync_pending();
+    }
+
+    /// Rows read their marker from `pending_ops`, so this is the one place
+    /// that writes the two fields on a row.
+    fn sync_pending(&mut self) {
+        for entry in &mut self.entries {
+            let key = (self.account.clone(), entry.name().to_string());
+            let state = self.pending_ops.get(&key);
+            entry.pending = state.map(|s| s.op);
+            entry.pending_settle = state.is_some_and(|s| s.settled);
+        }
+    }
+
+    /// True once after a switch of account, for the loop to act on.
+    pub fn take_account_switched(&mut self) -> bool {
+        std::mem::take(&mut self.account_switched)
+    }
+
+    pub fn op_started(&mut self, label: String) {
+        self.running_ops.push(label);
+    }
+
+    pub fn op_finished(&mut self, label: &str) {
+        if let Some(at) = self.running_ops.iter().position(|l| l == label) {
+            self.running_ops.remove(at);
+        }
+        if self.quitting && !self.running_ops.is_empty() {
+            self.say_finishing();
+        }
+    }
+
+    fn say_finishing(&mut self) {
+        let what = self.running_ops.join(", ");
+        self.set_status(format!("finishing {what}; q again to quit now"));
+    }
+
+    /// A quit with an op running would abandon it between two of its steps: a
+    /// delete with the route gone and the record kept, a move with the old
+    /// service uninstalled and the new one not installed. So the first quit
+    /// only says it is waiting, and the second is the person insisting.
+    fn request_quit(&mut self) {
+        if self.running_ops.is_empty() || self.quitting {
+            self.should_quit = true;
+            return;
+        }
+        self.quitting = true;
+        self.quit_since = Some(std::time::Instant::now());
+        self.say_finishing();
+    }
+
+    /// The quit that was waiting for the last op may now go through.
+    pub fn quit_ready(&self) -> bool {
+        self.quitting && self.running_ops.is_empty()
+    }
+
+    pub fn quit_overdue(&self) -> bool {
+        self.quit_since.is_some_and(|at| at.elapsed() >= QUIT_WAIT)
     }
 
     /// True once when the look scheduled by the last reload is due.
@@ -2806,6 +2973,12 @@ impl App {
         let key_of =
             |e: &TunnelEntry| (e.kind, e.tunnel.account_name.clone(), e.name().to_string());
         let selected_key = self.selected_entry().map(key_of);
+        // The first round after an op returned shows what it did, so it is the
+        // one that ends the marker. Only this account's: another's ops are
+        // settled by a round of its own.
+        let account = self.account.clone();
+        self.pending_ops
+            .retain(|(acct, _), state| *acct != account || !state.settled);
         let carried = std::mem::take(&mut self.entries);
         self.entries = entries
             .into_iter()
@@ -2827,11 +3000,6 @@ impl App {
                             entry.health = HealthStatus::Unknown;
                         }
                         entry.metrics = old.metrics.clone();
-                        // The first round after the op shows what it did, so
-                        // it is the one that ends the pending state
-                        if !old.pending_settle {
-                            entry.pending = old.pending;
-                        }
                     }
                     // Nothing to carry: this row has never been probed, and
                     // waiting out the period would leave it reading `?`
@@ -2840,6 +3008,7 @@ impl App {
                 entry
             })
             .collect();
+        self.sync_pending();
         self.selected = selected_key
             .and_then(|key| self.entries.iter().position(|e| key_of(e) == key))
             .unwrap_or(0);
@@ -3258,6 +3427,7 @@ mod follow_up_tests {
             from_create: false,
             from_account: false,
             name: None,
+            account: "dev".to_string(),
         });
         assert!(!app.take_follow_up(), "not before START_FOLLOWUP");
         app.follow_up_at = Some(Instant::now() - Duration::from_millis(1));
@@ -3275,6 +3445,7 @@ mod follow_up_tests {
             from_create: false,
             from_account: false,
             name: None,
+            account: "dev".to_string(),
         });
         assert!(app.follow_up_at.is_none());
     }

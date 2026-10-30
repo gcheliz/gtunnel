@@ -300,24 +300,43 @@ pub async fn execute(account: &str, op: Op) -> OpResult {
             from_create: matches!(op, Op::Create(_)),
             from_account: touches_accounts(&op),
             name: pending_row(&op),
+            account: account.to_string(),
         },
         Err(e) => OpResult {
             message: format!("{e:#}"),
             ok: false,
             // A failed create may already have saved its record: `add` saves
             // before it installs and starts, so the list must be re-read or
-            // the name check cannot see the half-made tunnel.
-            reload: matches!(op, Op::Delete(_) | Op::Import(_) | Op::Create(_)),
+            // the name check cannot see the half-made tunnel. A move that
+            // fails after the uninstall is the same, and it left the old row
+            // reading Running.
+            reload: rewrites_records(&op),
             from_create: matches!(op, Op::Create(_)),
             from_account: touches_accounts(&op),
             name: pending_row(&op),
+            account: account.to_string(),
         },
     }
 }
 
+// The ops that write tunnels.toml, so that a failure may have left the record
+// changed and the list has to be read again
+pub(super) fn rewrites_records(op: &Op) -> bool {
+    matches!(
+        op,
+        Op::Delete(_)
+            | Op::Import(_)
+            | Op::Create(_)
+            | Op::ToggleAutoStart(_)
+            | Op::Edit(_)
+            | Op::Rename(_)
+            | Op::Move(_)
+    )
+}
+
 // The ops the key handler marks pending: the row they acted on has to leave
 // that state when the op returns, whether it worked or not
-fn pending_row(op: &Op) -> Option<String> {
+pub(super) fn pending_row(op: &Op) -> Option<String> {
     match op {
         Op::Start(n)
         | Op::Stop(n)
@@ -325,6 +344,11 @@ fn pending_row(op: &Op) -> Option<String> {
         | Op::Restart(n)
         | Op::Delete(n)
         | Op::ToggleAutoStart(n) => Some(n.clone()),
+        // Rename, move and edit mark the row they leave or change, which is
+        // the old name: the new one is not on screen until the reload
+        Op::Edit(e) => Some(e.name.clone()),
+        Op::Rename(r) => Some(r.name.clone()),
+        Op::Move(m) => Some(m.name.clone()),
         _ => None,
     }
 }
