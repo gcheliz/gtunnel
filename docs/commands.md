@@ -520,8 +520,27 @@ gtunnel relay status
 gtunnel relay down [--force] [-y]
 ```
 
-`up` is idempotent and prints one line per resource, created or already there. `down` refuses
-while tunnels use the relay, unless `--force`.
+`up` is idempotent and brings an existing relay up to date in place. It prints one line per
+resource: `✓` created, `~` updated, `·` already as wanted. `down` refuses while tunnels use the
+relay, unless `--force`.
+
+| Resource | What `up` compares, and does on a difference |
+|---|---|
+| Health check | Interval, timeout, thresholds and port specification: one `PATCH` |
+| Backend services | `timeoutSec`, `connectionDraining` and `iap`: one `PATCH` with the fields that differ. `expose`, `start` and `restart` do the same for a tunnel's backend |
+| Relay instance | The `startup-script` metadata: `setMetadata` with the new script, then the script is re-run over IAP ssh (`sudo google_metadata_script_runner startup`), so sshd changes without recreating the VM. A stopped instance gets the metadata and runs it at its next boot |
+
+A relay that already matches receives no write. If re-running the script fails, `up` stops with
+the `gcloud compute ssh` command to run by hand: the metadata is already written, so a second
+`up` finds nothing to change. `doctor` reports a relay whose startup script or health check is
+out of date.
+
+```console,ignore
+$ gtunnel relay up
+  · relay instance gt-dev-relay (exists)
+  ~ health check gt-dev-hc (updated)
+  ~ default backend gt-dev-default (updated)
+```
 
 ```console,ignore
 $ gtunnel relay status
