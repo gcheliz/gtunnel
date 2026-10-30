@@ -189,11 +189,19 @@ pub fn restart_history_beside(marker: &std::path::Path) -> PathBuf {
     marker.with_extension("restarts")
 }
 
+/// How many runs in a row died of the network, beside the history. Kept apart
+/// from it because these exits never spend the budget: an hour offline is a
+/// long count here and an empty history there.
+pub fn net_failures_beside(marker: &std::path::Path) -> PathBuf {
+    marker.with_extension("netfails")
+}
+
 /// Forget a spent budget: the marker that says why the job is down and the
 /// count that produced it. `start` and `delete` both want exactly this.
 pub fn clear_crash_state(marker: &std::path::Path) {
     let _ = std::fs::remove_file(marker);
     let _ = std::fs::remove_file(restart_history_beside(marker));
+    let _ = std::fs::remove_file(net_failures_beside(marker));
 }
 
 /// Whether this tunnel's supervisor stopped on purpose for a spent budget.
