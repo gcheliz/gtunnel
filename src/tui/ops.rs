@@ -700,7 +700,10 @@ mod tests {
     }
 
     fn state_with(tunnels: Vec<PersistentTunnel>) -> TunnelState {
-        TunnelState { tunnels }
+        TunnelState {
+            tunnels,
+            ..Default::default()
+        }
     }
 
     fn edit(name: &str, value: &str) -> EditTunnel {
