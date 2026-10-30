@@ -14,7 +14,9 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
-// The stub's child is written next to its own pid so a test can look for both.
+// The stub's child is written next to its own pid so a test can look for both,
+// after the first line and not before: a run killed between the two would
+// leave that line to a pipe with no reader, and SIGPIPE would end the stub.
 // STUB_STUBBORN gives the child a SIGTERM handler that ignores the signal, as
 // an ssh holding a forward may; STUB_EXIT_AFTER makes the stub itself exit
 // first and leave that child behind, with STUB_EXIT_CODE as its code.
@@ -28,8 +30,8 @@ esac
 if [ -n "$STUB_STUBBORN" ]; then (trap '' TERM; exec sleep 300) &
 elif [ -n "$STUB_CLOSE_STDOUT" ]; then sleep 300 >/dev/null &
 else sleep 300 & fi
-echo "$$ $!" >> "$STUB_DIR/pids"
 echo "Listening on port [15000]."
+echo "$$ $!" >> "$STUB_DIR/pids"
 if [ -n "$STUB_CLOSE_STDOUT" ]; then printf '\377\n'; exec >&-; fi
 if [ -n "$STUB_EXIT_AFTER" ]; then sleep "$STUB_EXIT_AFTER"; exit "${STUB_EXIT_CODE:-1}"; fi
 wait
