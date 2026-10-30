@@ -402,6 +402,11 @@ never blocks the account: the prompt falls back to a typed project id.
 The rule for a tunnel's port, and the relay's two rules, are listed in
 [What GCP needs](gcp.md#access); `doctor` prints the exact command for the port it checks.
 
+When `doctor` cannot list the project's firewall rules (the identity lacks
+`compute.firewalls.list`, or the call failed), it prints one line per account, `could not read
+firewall rules: <reason>; the IAP firewall check was skipped`, and judges no tunnel. Grant the
+permission or run `doctor` again; the rule is not reported missing, because it was never looked for.
+
 An Expose tunnel that returns 502 with no error in the log is usually the relay's
 `gt-<acct>-lb-hc` rule: the load balancer's health check cannot reach the relay port
 (`tcp:30000-30999` from `130.211.0.0/22` and `35.191.0.0/16`), so the backend has no healthy

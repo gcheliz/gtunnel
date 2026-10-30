@@ -3,6 +3,17 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.63](https://github.com/gcheliz/gtunnel/compare/v0.2.62...v0.2.63) - 2026-10-30
+
+### Documentation
+
+- *(readme)* credit ytunnel as the inspiration ([#367](https://github.com/gcheliz/gtunnel/pull/367))
+- *(readme)* credit ytunnel and lay out the license ([#366](https://github.com/gcheliz/gtunnel/pull/366))
+
+### Fixed
+
+- *(doctor)* say the firewall rules could not be read instead of reporting one missing ([#393](https://github.com/gcheliz/gtunnel/pull/393))
+
 ## [0.2.62](https://github.com/gcheliz/gtunnel/compare/v0.2.61...v0.2.62) - 2026-10-30
 
 ### Fixed
