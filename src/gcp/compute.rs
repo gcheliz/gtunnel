@@ -226,11 +226,25 @@ pub async fn list_zones(client: &GcpClient, project: &str) -> Result<Vec<String>
 
 // Kept as one constant so creation and reconciliation compare against the same
 // text: a script that differs by a byte is a relay that is out of date
+//
+// The nftables table is the relay's own defence for a private tunnel. The port
+// has to listen on 0.0.0.0, because the load balancer connects to the VM's
+// internal address, so a VPC rule such as default-allow-internal would admit a
+// peer past the IAP sign-in. The drop lives on the VM, so the VPC firewall
+// stays the operator's (docs/decisions.md section 8). The ranges repeat
+// LB_HEALTH_CHECK_RANGES because the script is one literal; a test pins them.
+// Sshd is configured first: a failed package install must not undo it.
 pub const RELAY_STARTUP_SCRIPT: &str = "#!/bin/bash\n\
     set -e\n\
     grep -q '^GatewayPorts clientspecified' /etc/ssh/sshd_config || \
     echo 'GatewayPorts clientspecified' >> /etc/ssh/sshd_config\n\
-    systemctl restart ssh || systemctl restart sshd\n";
+    systemctl restart ssh || systemctl restart sshd\n\
+    command -v nft >/dev/null || { apt-get update -qq && apt-get install -y -qq nftables; }\n\
+    nft delete table inet gtunnel_relay 2>/dev/null || true\n\
+    nft add table inet gtunnel_relay\n\
+    nft add chain inet gtunnel_relay input '{ type filter hook input priority 0; policy accept; }'\n\
+    nft add rule inet gtunnel_relay input 'ip saddr != { 35.191.0.0/16, 130.211.0.0/22 } tcp dport 30000-30999 drop'\n\
+    nft add rule inet gtunnel_relay input 'meta nfproto ipv6 tcp dport 30000-30999 drop'\n";
 
 // What a reconcile did, so `relay up` can say it instead of printing "exists"
 // for a resource it just rewrote
@@ -1834,6 +1848,69 @@ mod tests {
                 .any(|i| i["key"] == "ssh-keys" && i["value"] == "kept"),
             "metadata gtunnel does not own must survive: {items:?}"
         );
+    }
+
+    // The relay port is bound on 0.0.0.0 because the load balancer reaches the
+    // VM's internal address, so a VPC rule broader than gtunnel's would admit a
+    // peer too: the VM itself has to refuse everything but the load balancer
+    #[test]
+    fn the_startup_script_drops_the_relay_ports_from_every_source_but_the_load_balancer() {
+        let script = RELAY_STARTUP_SCRIPT;
+        assert!(
+            script.contains("nft add table inet gtunnel_relay"),
+            "{script}"
+        );
+        assert!(script.contains("tcp dport 30000-30999 drop"), "{script}");
+        for range in LB_HEALTH_CHECK_RANGES {
+            assert!(script.contains(range), "{range} missing from {script}");
+        }
+        assert!(
+            script.contains("ip saddr != {"),
+            "the accept set must be a negated source match: {script}"
+        );
+        assert!(
+            script.contains("meta nfproto ipv6 tcp dport 30000-30999 drop"),
+            "{script}"
+        );
+    }
+
+    // Sshd comes first: a failed nftables install must not leave the relay
+    // without the GatewayPorts setting the forward needs
+    #[test]
+    fn the_startup_script_configures_sshd_before_it_touches_the_firewall() {
+        let script = RELAY_STARTUP_SCRIPT;
+        let sshd = script.find("systemctl restart ssh").expect("sshd restart");
+        let nft = script.find("nft add table").expect("nft");
+        assert!(sshd < nft, "{script}");
+    }
+
+    #[tokio::test]
+    async fn a_new_relay_instance_is_created_with_the_nftables_guard_in_its_startup_script() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(done_op()))
+            .mount(&server)
+            .await;
+
+        insert_relay_instance(
+            &client(&server),
+            "example-dev-1a2b",
+            "europe-west1-b",
+            "gt-dev-relay",
+            "default",
+            "gt-relay",
+        )
+        .await
+        .expect("insert");
+
+        let posts = sent(&server, "POST").await;
+        let body: serde_json::Value = serde_json::from_slice(&posts[0].body).expect("json");
+        let script = body["metadata"]["items"][0]["value"]
+            .as_str()
+            .expect("script");
+        assert_eq!(body["metadata"]["items"][0]["key"], "startup-script");
+        assert!(script.contains("tcp dport 30000-30999 drop"), "{script}");
+        assert!(script.contains("35.191.0.0/16"), "{script}");
     }
 
     #[tokio::test]
