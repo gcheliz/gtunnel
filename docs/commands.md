@@ -306,6 +306,8 @@ A live `gtunnel run` is listed with the mode it really is, `access` or `public`,
 after the target: `[run, stops at 14:32]` (local time) when it has a TTL, `[run]` when it does
 not. A run whose process is gone is not listed; `doctor` reports its leftover record.
 
+A saved tunnel of a kind a newer gtunnel added is named under the table as `  <name>  unsupported by this version (<kind>)`, and a run record this version cannot parse as `  run record <file> cannot be read by this version; its ports stay reserved`. Neither is a row: nothing in them can be trusted to fill a column. See [A file written by a newer gtunnel](troubleshooting.md#a-file-written-by-a-newer-gtunnel).
+
 A stopped tunnel whose supervisor gave up on expired credentials carries `[auth expired]` in
 the same place, and `gtunnel_get_status` reports its `health` as `auth_expired`. Both clear on
 the next `gtunnel start`.
@@ -814,6 +816,8 @@ $ gtunnel doctor
 gtunnel:
   - Service com.gtunnel.dev.old-tunnel is installed but no tunnel in tunnels.toml owns it, so it may still hold a local port at login
 ```
+
+A run record this version cannot parse is one finding per file, for the account it names. Nothing is removed: the process behind it may be alive and its ports are held until you delete the file.
 
 A key in `config.toml` or `tunnels.toml` that gtunnel does not read is machine-wide too, one
 finding per key with its path. Loading ignores such a key, so nothing else shows it; the
