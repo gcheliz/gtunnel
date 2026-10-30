@@ -123,9 +123,12 @@ fn iap_tunnel(row: &ProcessRow) -> Option<ExternalTunnel> {
     if !line.contains("start-iap-tunnel") {
         return None;
     }
-    // The grep that looks for these processes matches itself.
+    // Only argv0 says whether the row is a grep: a substring test hid real tunnels whose
+    // instance, project or account contains "grep". Discovery reads `ps` directly, so no
+    // grep of ours is in the table anyway; this only skips one a user is running.
     // A command with --listen-on-stdin is an OpenSSH ProxyCommand pipe, not an external port listener.
-    if line.contains("grep") || line.contains("--listen-on-stdin") {
+    let argv0 = line.split_whitespace().next().unwrap_or("");
+    if argv0.rsplit('/').next() == Some("grep") || line.contains("--listen-on-stdin") {
         return None;
     }
     let rest: Vec<&str> = line.split_whitespace().collect();
@@ -274,6 +277,21 @@ mod tests {
         let found = strangers(PS, &HashSet::new());
         assert!(found.iter().all(|t| t.pid != 503), "{found:?}");
         assert_eq!(found.len(), 2);
+    }
+
+    #[test]
+    fn a_target_named_like_grep_is_still_a_tunnel() {
+        let ps = "  604     1 gcloud compute start-iap-tunnel grep-box 22 --local-host-port=localhost:2222\n";
+        let found = strangers(ps, &HashSet::new());
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].target, "grep-box");
+        assert_eq!(found[0].local_port, Some(2222));
+    }
+
+    #[test]
+    fn a_grep_with_a_full_path_is_still_skipped() {
+        let ps = "  605     1 /usr/bin/grep compute start-iap-tunnel bastion 22\n";
+        assert!(strangers(ps, &HashSet::new()).is_empty());
     }
 
     #[test]
