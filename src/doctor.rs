@@ -1559,6 +1559,8 @@ mod tests {
             port_name: Some("gt-x".to_string()),
             iap_enabled: false,
             description: description.map(|d| d.to_string()),
+            timeout_sec: None,
+            draining_timeout_sec: None,
         }
     }
 

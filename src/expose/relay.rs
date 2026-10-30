@@ -2,7 +2,9 @@ use anyhow::{bail, Context, Result};
 
 use crate::config::{Account, Config, DomainConfig, ExposeConfig};
 use crate::daemon;
-use crate::gcp::compute::{Firewall, FirewallAllow, NamedPort, IAP_RANGE, LB_HEALTH_CHECK_RANGES};
+use crate::gcp::compute::{
+    Firewall, FirewallAllow, NamedPort, Reconciled, IAP_RANGE, LB_HEALTH_CHECK_RANGES,
+};
 use crate::gcp::{certmanager, compute, dns, is_not_found, GcpClient};
 use crate::state::TunnelState;
 
@@ -37,6 +39,62 @@ fn step(created: bool, what: &str) {
     } else {
         println!("  · {what} (exists)");
     }
+}
+
+// Like `step`, for a resource that is converged and not only created: a
+// resource `relay up` rewrote has to say so, or "exists" reads as untouched
+#[allow(clippy::print_stdout, clippy::print_stderr)]
+fn step_reconciled(change: Reconciled, what: &str) {
+    match change {
+        Reconciled::Created => println!("  ✓ {what}"),
+        Reconciled::Updated => println!("  ~ {what} (updated)"),
+        Reconciled::Unchanged => println!("  · {what} (exists)"),
+    }
+}
+
+// Metadata alone reaches the VM at its next boot, and a relay can run for
+// months, so the script is also run now
+const STARTUP_RERUN_COMMAND: &str = "sudo google_metadata_script_runner startup";
+// The first ssh to a VM can generate and propagate a key before it connects
+const STARTUP_RERUN_BOUND: std::time::Duration = std::time::Duration::from_secs(120);
+
+pub fn startup_rerun_argv(acct: &Account, zone: &str, vm: &str) -> Result<Vec<String>> {
+    let mut argv = vec![
+        "compute".to_string(),
+        "ssh".to_string(),
+        vm.to_string(),
+        format!("--zone={zone}"),
+        "--tunnel-through-iap".to_string(),
+        "--quiet".to_string(),
+        format!("--command={STARTUP_RERUN_COMMAND}"),
+    ];
+    argv.extend(crate::tunnel::gcloud_common(
+        acct,
+        crate::loglevel::current(),
+    )?);
+    Ok(argv)
+}
+
+// The metadata is already written when this runs, so a second `relay up` would
+// find it matching and never retry: the error carries the command to run by hand
+async fn rerun_startup_script(acct: &Account, zone: &str, vm: &str) -> Result<()> {
+    let argv = startup_rerun_argv(acct, zone, vm)?;
+    let gcloud = crate::gcp::gcloud::require_gcloud()?;
+    let mut cmd = tokio::process::Command::new(&gcloud);
+    cmd.args(&argv).stdin(std::process::Stdio::null());
+    let manual = format!("gcloud {}", argv.join(" "));
+    let out = crate::proc::output_within(cmd, STARTUP_RERUN_BOUND, &manual)
+        .await
+        .with_context(|| {
+            format!("The relay's startup script was updated but could not be re-run. Run: {manual}")
+        })?;
+    if !out.status.success() {
+        bail!(
+            "The relay's startup script was updated but re-running it failed: {}. Run: {manual}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(())
 }
 
 fn iap_ssh_firewall(names: &Names, network: &str) -> Firewall {
@@ -181,22 +239,31 @@ pub async fn relay_up(
     ensure_firewall(client, project, &lb_health_check_firewall(&names, network)).await?;
 
     let existing_vm = compute::get_instance(client, project, zone, &names.relay_vm).await?;
-    if existing_vm.is_none() {
-        let op = compute::insert_relay_instance(
-            client,
-            project,
-            zone,
-            &names.relay_vm,
-            network,
-            RELAY_TAG,
-        )
-        .await?;
-        client.wait_operation(&op).await?;
-    }
-    step(
-        existing_vm.is_none(),
-        &format!("relay instance {}", names.relay_vm),
-    );
+    let vm_change = match &existing_vm {
+        None => {
+            let op = compute::insert_relay_instance(
+                client,
+                project,
+                zone,
+                &names.relay_vm,
+                network,
+                RELAY_TAG,
+            )
+            .await?;
+            client.wait_operation(&op).await?;
+            Reconciled::Created
+        }
+        Some(vm) => {
+            let change = compute::reconcile_relay_instance(client, project, zone, vm).await?;
+            // A stopped VM runs the new script at its next boot anyway, and
+            // ssh to it would only fail
+            if change == Reconciled::Updated && vm.status == "RUNNING" {
+                rerun_startup_script(acct, zone, &names.relay_vm).await?;
+            }
+            change
+        }
+    };
+    step_reconciled(vm_change, &format!("relay instance {}", names.relay_vm));
 
     let group_url =
         compute::get_instance_group(client, project, zone, &names.instance_group).await?;
@@ -253,30 +320,43 @@ pub async fn relay_up(
     }
     step(!has_default, &format!("named port {default_port}"));
 
-    compute::ensure_health_check(client, project, &names.health_check).await?;
-    step(true, &format!("health check {}", names.health_check));
+    let hc_change = compute::reconcile_health_check(client, project, &names.health_check).await?;
+    step_reconciled(hc_change, &format!("health check {}", names.health_check));
 
-    let existing_backend =
-        compute::get_backend_service(client, project, &names.default_backend).await?;
-    if existing_backend.is_none() {
-        let op = compute::insert_backend_service(
-            client,
-            project,
-            &names.default_backend,
-            &default_port,
-            &group_url,
-            &format!(
-                "projects/{project}/global/healthChecks/{}",
-                names.health_check
-            ),
-            false,
-            &names.owner(),
-        )
-        .await?;
-        client.wait_operation(&op).await?;
-    }
-    step(
-        existing_backend.is_none(),
+    let backend_settings = compute::BackendSettings::new(false);
+    let backend_change =
+        match compute::get_backend_service(client, project, &names.default_backend).await? {
+            None => {
+                let op = compute::insert_backend_service(
+                    client,
+                    project,
+                    &names.default_backend,
+                    &default_port,
+                    &group_url,
+                    &format!(
+                        "projects/{project}/global/healthChecks/{}",
+                        names.health_check
+                    ),
+                    &backend_settings,
+                    &names.owner(),
+                )
+                .await?;
+                client.wait_operation(&op).await?;
+                Reconciled::Created
+            }
+            Some(existing) => {
+                compute::reconcile_backend_service(
+                    client,
+                    project,
+                    &names.default_backend,
+                    &backend_settings,
+                    &existing,
+                )
+                .await?
+            }
+        };
+    step_reconciled(
+        backend_change,
         &format!("default backend {}", names.default_backend),
     );
 
@@ -692,26 +772,86 @@ mod tests {
 
     async fn relay_server() -> MockServer {
         let server = MockServer::start().await;
+        relay_mocks(&server).await;
+        server
+    }
+
+    // Mocks match in the order they are mounted, so a test that wants one
+    // resource to look old mounts its own mock before calling this
+    async fn relay_mocks(server: &MockServer) {
         // Firewalls are the one thing missing, so relay up has to create them
         Mock::given(method("GET"))
             .and(path_regex(r".*/global/firewalls/.*"))
             .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
                 "error": {"code": 404, "message": "not found"}
             })))
-            .mount(&server)
+            .mount(server)
+            .await;
+        // The resources gtunnel converges already look the way gtunnel wants
+        // them, so a relay up that sends anything to them is a regression
+        Mock::given(method("GET"))
+            .and(path_regex(r".*/instances/.*"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "name": "gt-dev-relay",
+                "status": "RUNNING",
+                "metadata": {
+                    "fingerprint": "fp-meta",
+                    "items": [{
+                        "key": "startup-script",
+                        "value": compute::RELAY_STARTUP_SCRIPT
+                    }]
+                }
+            })))
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path_regex(r".*/healthChecks/.*"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(health_check_body(5, 1)))
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path_regex(r".*/backendServices/.*"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "name": "gt-dev-default",
+                "iap": {"enabled": false},
+                "timeoutSec": 3600,
+                "connectionDraining": {"drainingTimeoutSec": 30}
+            })))
+            .mount(server)
             .await;
         Mock::given(method("GET"))
             .respond_with(ResponseTemplate::new(200).set_body_json(existing_body()))
-            .mount(&server)
+            .mount(server)
             .await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "name": "op-1",
-                "status": "DONE"
-            })))
-            .mount(&server)
-            .await;
-        server
+        for verb in ["POST", "PATCH"] {
+            Mock::given(method(verb))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "name": "op-1",
+                    "status": "DONE"
+                })))
+                .mount(server)
+                .await;
+        }
+    }
+
+    fn health_check_body(interval: u32, healthy: u32) -> serde_json::Value {
+        serde_json::json!({
+            "name": "gt-dev-hc",
+            "type": "TCP",
+            "tcpHealthCheck": {"portSpecification": "USE_SERVING_PORT"},
+            "checkIntervalSec": interval,
+            "timeoutSec": 5,
+            "healthyThreshold": healthy,
+            "unhealthyThreshold": 3
+        })
+    }
+
+    fn options() -> RelayUpOptions {
+        RelayUpOptions {
+            zone: "europe-west1-b".to_string(),
+            network: "default".to_string(),
+            managed_zone: "example".to_string(),
+        }
     }
 
     async fn requests(server: &MockServer, verb: &str, needle: &str) -> usize {
@@ -743,15 +883,12 @@ mod tests {
         assert_eq!(requests(&server, "POST", "/global/firewalls").await, 2);
     }
 
+    // Idempotence is "no request when everything matches": creating nothing is
+    // not enough, because an update is a request too
     #[tokio::test]
-    async fn relay_up_is_idempotent_for_the_resources_that_exist() {
+    async fn relay_up_sends_no_write_to_a_resource_that_already_matches() {
         let server = relay_server().await;
-        let opts = RelayUpOptions {
-            zone: "europe-west1-b".to_string(),
-            network: "default".to_string(),
-            managed_zone: "example".to_string(),
-        };
-        relay_up(&client(&server), &account(), &opts)
+        relay_up(&client(&server), &account(), &options())
             .await
             .expect("relay up");
 
@@ -761,11 +898,84 @@ mod tests {
             "/backendServices",
             "/healthChecks",
         ] {
-            assert_eq!(
-                requests(&server, "POST", resource).await,
-                0,
-                "{resource} was created although it exists"
-            );
+            for verb in ["POST", "PATCH", "PUT"] {
+                assert_eq!(
+                    requests(&server, verb, resource).await,
+                    0,
+                    "{verb} {resource} was sent although it matches"
+                );
+            }
+        }
+        assert_eq!(requests(&server, "POST", "/setMetadata").await, 0);
+    }
+
+    // Before this, a fix to the health check reached only relays created after
+    // it, and `relay down` refuses while a tunnel holds a route
+    #[tokio::test]
+    async fn relay_up_patches_an_existing_health_check_that_has_old_values() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_regex(r".*/healthChecks/.*"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(health_check_body(10, 2)))
+            .mount(&server)
+            .await;
+        relay_mocks(&server).await;
+
+        relay_up(&client(&server), &account(), &options())
+            .await
+            .expect("relay up");
+
+        assert_eq!(requests(&server, "PATCH", "/healthChecks/").await, 1);
+        assert_eq!(requests(&server, "POST", "/healthChecks").await, 0);
+        let patch = server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .find(|r| r.method.as_str() == "PATCH" && r.url.path().contains("/healthChecks/"))
+            .expect("patch");
+        let body: serde_json::Value = serde_json::from_slice(&patch.body).expect("json");
+        assert_eq!(body["checkIntervalSec"], 5);
+        assert_eq!(body["healthyThreshold"], 1);
+        assert_eq!(body["unhealthyThreshold"], 3);
+    }
+
+    // The default backend is a backend service like any other
+    #[tokio::test]
+    async fn relay_up_patches_a_default_backend_that_lacks_the_timeout() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_regex(r".*/backendServices/.*"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "name": "gt-dev-default",
+                "iap": {"enabled": false}
+            })))
+            .mount(&server)
+            .await;
+        relay_mocks(&server).await;
+
+        relay_up(&client(&server), &account(), &options())
+            .await
+            .expect("relay up");
+
+        assert_eq!(requests(&server, "PATCH", "/backendServices/").await, 1);
+    }
+
+    #[test]
+    fn the_startup_script_is_rerun_over_iap_ssh_as_root() {
+        let mut acct = account();
+        acct.impersonate_service_account = Some("sa@example.com".to_string());
+        let argv = startup_rerun_argv(&acct, "europe-west1-b", "gt-dev-relay").expect("argv");
+        assert_eq!(&argv[..3], ["compute", "ssh", "gt-dev-relay"]);
+        for want in [
+            "--zone=europe-west1-b",
+            "--tunnel-through-iap",
+            "--quiet",
+            "--command=sudo google_metadata_script_runner startup",
+            "--project=p",
+            "--impersonate-service-account=sa@example.com",
+        ] {
+            assert!(argv.iter().any(|a| a == want), "{want} missing in {argv:?}");
         }
     }
 

@@ -23,6 +23,19 @@ pub struct Instance {
     pub tags: Vec<String>,
     pub internal_ip: Option<String>,
     pub labels: std::collections::BTreeMap<String, String>,
+    // `setMetadata` replaces the whole list, so a change to one key has to be
+    // sent with every other key as it was read
+    pub metadata: Vec<(String, String)>,
+    pub metadata_fingerprint: Option<String>,
+}
+
+impl Instance {
+    pub fn startup_script(&self) -> Option<&str> {
+        self.metadata
+            .iter()
+            .find(|(k, _)| k == "startup-script")
+            .map(|(_, v)| v.as_str())
+    }
 }
 
 #[derive(Deserialize)]
@@ -38,6 +51,23 @@ struct RawInstance {
     labels: std::collections::BTreeMap<String, String>,
     #[serde(default, rename = "networkInterfaces")]
     network_interfaces: Vec<RawNic>,
+    #[serde(default)]
+    metadata: RawMetadata,
+}
+
+#[derive(Deserialize, Default)]
+struct RawMetadata {
+    #[serde(default)]
+    fingerprint: Option<String>,
+    #[serde(default)]
+    items: Vec<RawMetadataItem>,
+}
+
+#[derive(Deserialize)]
+struct RawMetadataItem {
+    key: String,
+    #[serde(default)]
+    value: String,
 }
 
 #[derive(Deserialize, Default)]
@@ -72,6 +102,13 @@ impl RawInstance {
             tags: self.tags.items,
             internal_ip: nic.and_then(|n| n.network_ip),
             labels: self.labels,
+            metadata: self
+                .metadata
+                .items
+                .into_iter()
+                .map(|i| (i.key, i.value))
+                .collect(),
+            metadata_fingerprint: self.metadata.fingerprint,
         }
     }
 }
@@ -187,6 +224,23 @@ pub async fn list_zones(client: &GcpClient, project: &str) -> Result<Vec<String>
     Ok(raw.items.into_iter().map(|z| z.name).collect())
 }
 
+// Kept as one constant so creation and reconciliation compare against the same
+// text: a script that differs by a byte is a relay that is out of date
+pub const RELAY_STARTUP_SCRIPT: &str = "#!/bin/bash\n\
+    set -e\n\
+    grep -q '^GatewayPorts clientspecified' /etc/ssh/sshd_config || \
+    echo 'GatewayPorts clientspecified' >> /etc/ssh/sshd_config\n\
+    systemctl restart ssh || systemctl restart sshd\n";
+
+// What a reconcile did, so `relay up` can say it instead of printing "exists"
+// for a resource it just rewrote
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reconciled {
+    Created,
+    Updated,
+    Unchanged,
+}
+
 // The relay instance: no external IP, SSH reachable only through IAP
 pub async fn insert_relay_instance(
     client: &GcpClient,
@@ -200,11 +254,6 @@ pub async fn insert_relay_instance(
         "{}/projects/{project}/zones/{zone}/instances",
         client.endpoints.compute
     );
-    let startup = "#!/bin/bash\n\
-        set -e\n\
-        grep -q '^GatewayPorts clientspecified' /etc/ssh/sshd_config || \
-        echo 'GatewayPorts clientspecified' >> /etc/ssh/sshd_config\n\
-        systemctl restart ssh || systemctl restart sshd\n";
     let body = json!({
         "name": name,
         "machineType": format!("zones/{zone}/machineTypes/e2-micro"),
@@ -218,10 +267,66 @@ pub async fn insert_relay_instance(
         }],
         "networkInterfaces": [{"network": format!("global/networks/{network}")}],
         "tags": {"items": [tag]},
-        "metadata": {"items": [{"key": "startup-script", "value": startup}]},
+        "metadata": {"items": [{"key": "startup-script", "value": RELAY_STARTUP_SCRIPT}]},
         "scheduling": {"automaticRestart": true, "onHostMaintenance": "MIGRATE"}
     });
     client.post(&url, &body).await
+}
+
+async fn set_instance_metadata(
+    client: &GcpClient,
+    project: &str,
+    zone: &str,
+    name: &str,
+    fingerprint: Option<&str>,
+    items: &[(String, String)],
+) -> Result<Operation> {
+    let url = format!(
+        "{}/projects/{project}/zones/{zone}/instances/{name}/setMetadata",
+        client.endpoints.compute
+    );
+    let mut body = json!({
+        "items": items.iter().map(|(k, v)| json!({"key": k, "value": v})).collect::<Vec<_>>()
+    });
+    if let Some(fp) = fingerprint {
+        body["fingerprint"] = json!(fp);
+    }
+    client.post(&url, &body).await
+}
+
+// Only the startup script is compared: it is the one thing gtunnel puts on the
+// VM, and rewriting it is how sshd changes without recreating the instance.
+// The caller re-runs it, because metadata alone takes effect at next boot.
+pub async fn reconcile_relay_instance(
+    client: &GcpClient,
+    project: &str,
+    zone: &str,
+    have: &Instance,
+) -> Result<Reconciled> {
+    if have.startup_script() == Some(RELAY_STARTUP_SCRIPT) {
+        return Ok(Reconciled::Unchanged);
+    }
+    let mut items: Vec<(String, String)> = have
+        .metadata
+        .iter()
+        .filter(|(k, _)| k != "startup-script")
+        .cloned()
+        .collect();
+    items.push((
+        "startup-script".to_string(),
+        RELAY_STARTUP_SCRIPT.to_string(),
+    ));
+    let op = set_instance_metadata(
+        client,
+        project,
+        zone,
+        &have.name,
+        have.metadata_fingerprint.as_deref(),
+        &items,
+    )
+    .await?;
+    client.wait_operation(&op).await?;
+    Ok(Reconciled::Updated)
 }
 
 pub async fn delete_instance(
@@ -528,32 +633,63 @@ pub async fn delete_instance_group(
     client.delete(&url).await
 }
 
+// Every gtunnel-owned field of the health check, as one body: creation sends
+// it whole and a PATCH sends it whole, so the two cannot drift apart.
+// Interval 5 and healthy threshold 1 make a reconnected backend read healthy
+// in about 5 s, not 20 s, which is the window in which a single relay 502s.
+fn health_check_fields() -> serde_json::Value {
+    json!({
+        "type": "TCP",
+        "tcpHealthCheck": {"portSpecification": "USE_SERVING_PORT"},
+        "checkIntervalSec": 5,
+        "timeoutSec": 5,
+        "healthyThreshold": 1,
+        "unhealthyThreshold": 3
+    })
+}
+
 // One health check serves every backend: USE_SERVING_PORT follows each
 // backend's own named port
-pub async fn ensure_health_check(client: &GcpClient, project: &str, name: &str) -> Result<()> {
+pub async fn reconcile_health_check(
+    client: &GcpClient,
+    project: &str,
+    name: &str,
+) -> Result<Reconciled> {
     let base = format!(
         "{}/projects/{project}/global/healthChecks",
         client.endpoints.compute
     );
-    match client
+    let want = health_check_fields();
+    let have = match client
         .get::<serde_json::Value>(&format!("{base}/{name}"))
         .await
     {
-        Ok(_) => return Ok(()),
-        Err(e) if is_not_found(&e) => {}
+        Ok(have) => have,
+        Err(e) if is_not_found(&e) => {
+            let mut body = want;
+            body["name"] = json!(name);
+            let op: Operation = client.post(&base, &body).await?;
+            client.wait_operation(&op).await?;
+            return Ok(Reconciled::Created);
+        }
         Err(e) => return Err(e),
-    }
-    let body = json!({
-        "name": name,
-        "type": "TCP",
-        "tcpHealthCheck": {"portSpecification": "USE_SERVING_PORT"},
-        "checkIntervalSec": 10,
-        "timeoutSec": 5,
-        "healthyThreshold": 2,
-        "unhealthyThreshold": 3
+    };
+    // Compared field by field, not as a whole: GCP adds fields of its own
+    // (ids, links, per-protocol defaults) that are not ours to fight over
+    let differs = want.as_object().is_some_and(|fields| {
+        fields.iter().any(|(key, value)| match key.as_str() {
+            "tcpHealthCheck" => {
+                have["tcpHealthCheck"]["portSpecification"] != value["portSpecification"]
+            }
+            _ => have.get(key) != Some(value),
+        })
     });
-    let op: Operation = client.post(&base, &body).await?;
-    client.wait_operation(&op).await
+    if !differs {
+        return Ok(Reconciled::Unchanged);
+    }
+    let op: Operation = client.patch(&format!("{base}/{name}"), &want).await?;
+    client.wait_operation(&op).await?;
+    Ok(Reconciled::Updated)
 }
 
 pub async fn delete_health_check(
@@ -575,7 +711,33 @@ pub struct BackendService {
     pub iap_enabled: bool,
     // gtunnel writes its owner tag here; anything else is not ours to delete
     pub description: Option<String>,
+    pub timeout_sec: Option<u32>,
+    pub draining_timeout_sec: Option<u32>,
 }
+
+// The backend fields gtunnel owns. `iap` follows the tunnel; the other two are
+// the same for every tunnel, so they live here and not at each call site.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackendSettings {
+    pub timeout_sec: u32,
+    pub draining_sec: u32,
+    pub iap: bool,
+}
+
+impl BackendSettings {
+    pub fn new(iap: bool) -> Self {
+        BackendSettings {
+            timeout_sec: BACKEND_TIMEOUT_SEC,
+            draining_sec: BACKEND_DRAINING_SEC,
+            iap,
+        }
+    }
+}
+
+// Long enough for a websocket or a slow upload; the load balancer's own
+// default of 30 s cuts both
+pub const BACKEND_TIMEOUT_SEC: u32 = 3600;
+pub const BACKEND_DRAINING_SEC: u32 = 30;
 
 #[derive(Deserialize)]
 struct RawBackendService {
@@ -586,6 +748,16 @@ struct RawBackendService {
     iap: Option<RawIap>,
     #[serde(default)]
     description: Option<String>,
+    #[serde(default, rename = "timeoutSec")]
+    timeout_sec: Option<u32>,
+    #[serde(default, rename = "connectionDraining")]
+    connection_draining: Option<RawDraining>,
+}
+
+#[derive(Deserialize)]
+struct RawDraining {
+    #[serde(default, rename = "drainingTimeoutSec")]
+    draining_timeout_sec: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -601,6 +773,8 @@ impl From<RawBackendService> for BackendService {
             port_name: r.port_name,
             iap_enabled: r.iap.map(|i| i.enabled).unwrap_or(false),
             description: r.description,
+            timeout_sec: r.timeout_sec,
+            draining_timeout_sec: r.connection_draining.and_then(|d| d.draining_timeout_sec),
         }
     }
 }
@@ -647,7 +821,7 @@ pub async fn insert_backend_service(
     port_name: &str,
     instance_group: &str,
     health_check: &str,
-    iap: bool,
+    settings: &BackendSettings,
     owner: &str,
 ) -> Result<Operation> {
     let url = format!(
@@ -661,28 +835,51 @@ pub async fn insert_backend_service(
         "protocol": "HTTP",
         "portName": port_name,
         "healthChecks": [health_check],
-        "backends": [{"group": instance_group, "balancingMode": "UTILIZATION"}]
+        "backends": [{"group": instance_group, "balancingMode": "UTILIZATION"}],
+        "timeoutSec": settings.timeout_sec,
+        "connectionDraining": {"drainingTimeoutSec": settings.draining_sec}
     });
-    if iap {
+    if settings.iap {
         body["iap"] = json!({"enabled": true});
     }
     client.post(&url, &body).await
 }
 
-// IAP is set per backend service, so a tunnel that changes between public and
-// private has to flip it on the backend that already exists
-pub async fn set_backend_service_iap(
+// Compares the fields gtunnel owns and patches only the ones that differ, so a
+// backend made by an older version converges without being recreated. IAP is
+// among them because a tunnel can move between public and private.
+pub async fn reconcile_backend_service(
     client: &GcpClient,
     project: &str,
     name: &str,
-    enabled: bool,
-) -> Result<Operation> {
+    want: &BackendSettings,
+    have: &BackendService,
+) -> Result<Reconciled> {
+    let mut patch = serde_json::Map::new();
+    if have.timeout_sec != Some(want.timeout_sec) {
+        patch.insert("timeoutSec".to_string(), json!(want.timeout_sec));
+    }
+    if have.draining_timeout_sec != Some(want.draining_sec) {
+        patch.insert(
+            "connectionDraining".to_string(),
+            json!({"drainingTimeoutSec": want.draining_sec}),
+        );
+    }
+    if have.iap_enabled != want.iap {
+        patch.insert("iap".to_string(), json!({"enabled": want.iap}));
+    }
+    if patch.is_empty() {
+        return Ok(Reconciled::Unchanged);
+    }
     let url = format!(
         "{}/projects/{project}/global/backendServices/{name}",
         client.endpoints.compute
     );
-    let body = json!({"iap": {"enabled": enabled}});
-    client.patch(&url, &body).await
+    let op: Operation = client
+        .patch(&url, &serde_json::Value::Object(patch))
+        .await?;
+    client.wait_operation(&op).await?;
+    Ok(Reconciled::Updated)
 }
 
 pub async fn delete_backend_service(
@@ -1390,5 +1587,296 @@ mod tests {
             .await
             .expect("call");
         assert!(got.is_none());
+    }
+
+    fn done_op() -> serde_json::Value {
+        serde_json::json!({"name": "op-1", "status": "DONE"})
+    }
+
+    async fn sent(server: &MockServer, verb: &str) -> Vec<wiremock::Request> {
+        server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|r| r.method.as_str().eq_ignore_ascii_case(verb))
+            .collect()
+    }
+
+    fn health_check_body(interval: u32, healthy: u32) -> serde_json::Value {
+        serde_json::json!({
+            "name": "gt-dev-hc",
+            "type": "TCP",
+            "tcpHealthCheck": {"portSpecification": "USE_SERVING_PORT"},
+            "checkIntervalSec": interval,
+            "timeoutSec": 5,
+            "healthyThreshold": healthy,
+            "unhealthyThreshold": 3
+        })
+    }
+
+    // A health check made by an older gtunnel kept its 10 s interval for ever
+    // because relay up only checked that the name existed
+    #[tokio::test]
+    async fn a_health_check_with_old_values_gets_one_patch_with_the_new_ones() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(health_check_body(10, 2)))
+            .mount(&server)
+            .await;
+        Mock::given(method("PATCH"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(done_op()))
+            .mount(&server)
+            .await;
+
+        let got = reconcile_health_check(&client(&server), "p", "gt-dev-hc")
+            .await
+            .expect("reconcile");
+
+        assert_eq!(got, Reconciled::Updated);
+        let patches = sent(&server, "PATCH").await;
+        assert_eq!(patches.len(), 1);
+        let body: serde_json::Value = serde_json::from_slice(&patches[0].body).expect("json");
+        assert_eq!(body["checkIntervalSec"], 5);
+        assert_eq!(body["timeoutSec"], 5);
+        assert_eq!(body["healthyThreshold"], 1);
+        assert_eq!(body["unhealthyThreshold"], 3);
+        assert!(sent(&server, "POST").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_health_check_that_matches_sends_nothing() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(health_check_body(5, 1)))
+            .mount(&server)
+            .await;
+
+        let got = reconcile_health_check(&client(&server), "p", "gt-dev-hc")
+            .await
+            .expect("reconcile");
+
+        assert_eq!(got, Reconciled::Unchanged);
+        assert_eq!(
+            server.received_requests().await.unwrap_or_default().len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn a_missing_health_check_is_created_with_the_new_values() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(done_op()))
+            .mount(&server)
+            .await;
+
+        let got = reconcile_health_check(&client(&server), "p", "gt-dev-hc")
+            .await
+            .expect("reconcile");
+
+        assert_eq!(got, Reconciled::Created);
+        let posts = sent(&server, "POST").await;
+        let body: serde_json::Value = serde_json::from_slice(&posts[0].body).expect("json");
+        assert_eq!(body["checkIntervalSec"], 5);
+        assert_eq!(body["healthyThreshold"], 1);
+    }
+
+    fn backend(timeout: Option<u32>, draining: Option<u32>, iap: bool) -> BackendService {
+        BackendService {
+            name: "gt-dev-api".to_string(),
+            port_name: Some("gt-api".to_string()),
+            iap_enabled: iap,
+            description: None,
+            timeout_sec: timeout,
+            draining_timeout_sec: draining,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_backend_service_patch_carries_only_the_fields_that_differ() {
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(done_op()))
+            .mount(&server)
+            .await;
+        let want = BackendSettings::new(false);
+
+        let got = reconcile_backend_service(
+            &client(&server),
+            "p",
+            "gt-dev-api",
+            &want,
+            &backend(Some(want.timeout_sec), None, false),
+        )
+        .await
+        .expect("reconcile");
+
+        assert_eq!(got, Reconciled::Updated);
+        let patches = sent(&server, "PATCH").await;
+        assert_eq!(patches.len(), 1);
+        let body: serde_json::Value = serde_json::from_slice(&patches[0].body).expect("json");
+        assert_eq!(
+            body,
+            serde_json::json!({"connectionDraining": {"drainingTimeoutSec": want.draining_sec}})
+        );
+    }
+
+    #[tokio::test]
+    async fn a_backend_service_that_matches_sends_nothing() {
+        let server = MockServer::start().await;
+        let want = BackendSettings::new(true);
+
+        let got = reconcile_backend_service(
+            &client(&server),
+            "p",
+            "gt-dev-api",
+            &want,
+            &backend(Some(want.timeout_sec), Some(want.draining_sec), true),
+        )
+        .await
+        .expect("reconcile");
+
+        assert_eq!(got, Reconciled::Unchanged);
+        assert!(server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .is_empty());
+    }
+
+    #[test]
+    fn the_backend_defaults_are_the_ones_the_issue_agreed() {
+        let want = BackendSettings::new(false);
+        assert_eq!((want.timeout_sec, want.draining_sec), (3600, 30));
+    }
+
+    fn instance(script: Option<&str>) -> Instance {
+        let mut metadata = vec![("ssh-keys".to_string(), "kept".to_string())];
+        if let Some(script) = script {
+            metadata.push(("startup-script".to_string(), script.to_string()));
+        }
+        Instance {
+            name: "gt-dev-relay".to_string(),
+            zone: "europe-west1-b".to_string(),
+            status: "RUNNING".to_string(),
+            network: None,
+            tags: vec![],
+            internal_ip: None,
+            labels: Default::default(),
+            metadata,
+            metadata_fingerprint: Some("fp-meta".to_string()),
+        }
+    }
+
+    // The startup script is the only way to change sshd without recreating the
+    // VM, so a relay whose script differs must be told the new one
+    #[tokio::test]
+    async fn a_relay_whose_startup_script_differs_gets_set_metadata() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(done_op()))
+            .mount(&server)
+            .await;
+
+        let got = reconcile_relay_instance(
+            &client(&server),
+            "p",
+            "europe-west1-b",
+            &instance(Some("#!/bin/bash\necho old\n")),
+        )
+        .await
+        .expect("reconcile");
+
+        assert_eq!(got, Reconciled::Updated);
+        let posts = sent(&server, "POST").await;
+        assert_eq!(posts.len(), 1);
+        assert!(posts[0]
+            .url
+            .path()
+            .ends_with("/instances/gt-dev-relay/setMetadata"));
+        let body: serde_json::Value = serde_json::from_slice(&posts[0].body).expect("json");
+        assert_eq!(body["fingerprint"], "fp-meta");
+        let items = body["items"].as_array().expect("items");
+        let script = items
+            .iter()
+            .find(|i| i["key"] == "startup-script")
+            .expect("script");
+        assert_eq!(script["value"], RELAY_STARTUP_SCRIPT);
+        assert!(
+            items
+                .iter()
+                .any(|i| i["key"] == "ssh-keys" && i["value"] == "kept"),
+            "metadata gtunnel does not own must survive: {items:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_relay_with_the_current_startup_script_sends_nothing() {
+        let server = MockServer::start().await;
+
+        let got = reconcile_relay_instance(
+            &client(&server),
+            "p",
+            "europe-west1-b",
+            &instance(Some(RELAY_STARTUP_SCRIPT)),
+        )
+        .await
+        .expect("reconcile");
+
+        assert_eq!(got, Reconciled::Unchanged);
+        assert!(server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_relay_with_no_startup_script_at_all_is_updated_too() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(done_op()))
+            .mount(&server)
+            .await;
+
+        let got =
+            reconcile_relay_instance(&client(&server), "p", "europe-west1-b", &instance(None))
+                .await
+                .expect("reconcile");
+
+        assert_eq!(got, Reconciled::Updated);
+    }
+
+    #[tokio::test]
+    async fn get_instance_reads_the_startup_script_and_the_metadata_fingerprint() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "name": "gt-dev-relay",
+                "status": "RUNNING",
+                "metadata": {
+                    "fingerprint": "fp-9",
+                    "items": [
+                        {"key": "startup-script", "value": "#!/bin/bash\n"},
+                        {"key": "other", "value": "x"}
+                    ]
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let got = get_instance(&client(&server), "p", "europe-west1-b", "gt-dev-relay")
+            .await
+            .expect("call")
+            .expect("instance");
+
+        assert_eq!(got.metadata_fingerprint.as_deref(), Some("fp-9"));
+        assert_eq!(got.startup_script(), Some("#!/bin/bash\n"));
+        assert_eq!(got.metadata.len(), 2);
     }
 }
