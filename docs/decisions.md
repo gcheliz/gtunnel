@@ -454,3 +454,42 @@ and a fallback.
 
 The cost: one extra compute call per `add` or `run` without `--zone`, which is why that
 form now checks the gcloud login first.
+
+## 22. A newer file is read, never written
+
+**Status:** Accepted, 2026-10-30
+
+An older gtunnel can still be running after a newer one has written the state: a TUI or MCP
+server left open for days, a downgrade, a second install on `PATH`. Each file was lenient or
+strict by accident. `config.toml` accepted a newer file and the next save dropped every key
+and comment the older struct did not know. `tunnels.toml` failed whole on a tunnel of a kind
+the older binary had never heard of, so every command and every watchdog pass failed with it.
+A run record the older binary could not parse was skipped, so the run was unlisted, never
+reaped, and its port could be handed out again.
+
+One rule covers all three: **a binary reads any file at or below the version it knows, reads
+a newer file as far as it can, and refuses to write over a file that says it is newer.** The
+refusal is `<file> was written by a newer gtunnel (vN); upgrade this one`, where `N` is the
+file's own `config_version` or `schema_version`, not a release number.
+
+| File | Version key | Read | Write |
+|---|---|---|---|
+| `config.toml` | `config_version`, `2` today | Any version; a newer file loads | Refused above `2`. At or below, the struct is merged into the text on disk with `toml_edit`, so an unknown key and a comment survive. A key is deleted only when the struct left it out on purpose (an unset optional account key, a removed account) |
+| `tunnels.toml` | `schema_version`, `1` today; absent reads as `0` | A tunnel whose `mode` or `target.kind` is unknown is set aside, listed as `unsupported by this version`, and the rest load | Refused above `1`. Otherwise the file is rewritten from the struct and each set-aside entry is appended back as the exact text it had |
+| `run/*.json` | none | A record that does not parse is reported by `list` and `doctor` | Never rewritten; the port it names is counted as taken |
+
+The version does not rise for every addition. A new key in `config.toml` or a new kind of
+tunnel needs no bump, because the older binary either ignores the key or sets the entry aside.
+The number rises only for a change an older binary would misread without knowing it.
+
+Alternatives. Refusing to read a newer file stops `gtunnel stop` from working on a laptop
+whose newer install wrote the file an hour ago; reading is harmless and writing is not. An
+unknown tunnel kind could be dropped with a warning, but a save would then delete a tunnel a
+person defined; keeping its text is cheaper than a typed catch-all for a shape nobody has yet.
+
+The costs. An older binary cannot change a newer file at all, so the fix for the message is
+always to upgrade, and `account add` on the older one fails until then. A set-aside tunnel
+cannot be started, stopped, edited or deleted by this version, and the config page refuses to
+save a `tunnels.toml` that holds one, because it would parse the whole text. A record that
+cannot be parsed holds its ports until someone deletes the file, which `doctor` says to do only
+after stopping its process. What a user sees of it: [Newer files](troubleshooting.md#a-file-written-by-a-newer-gtunnel).

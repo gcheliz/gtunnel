@@ -1080,8 +1080,16 @@ pub async fn cmd_list(account: Option<&str>, json: bool) -> Result<()> {
     let tunnels = state.tunnels_for_account(&acct.name);
     let external = external_rows().await;
     let runs = crate::ephemeral::live_runs(&acct.name).unwrap_or_default();
+    // Entries of a kind a newer gtunnel wrote: named, so a missing row is never
+    // a mystery, and never edited
+    let unsupported = crate::state::unsupported_tunnels().unwrap_or_default();
+    let mut notes = unsupported_notes(&unsupported, &acct.name);
+    notes.extend(unreadable_run_notes(
+        &crate::ephemeral::unreadable_records().unwrap_or_default(),
+        &acct.name,
+    ));
 
-    if tunnels.is_empty() && runs.is_empty() {
+    if tunnels.is_empty() && runs.is_empty() && notes.is_empty() {
         println!("No tunnels for account '{}'", acct.name);
         return Ok(());
     }
@@ -1108,7 +1116,39 @@ pub async fn cmd_list(account: Option<&str>, json: bool) -> Result<()> {
     for row in &rows {
         println!("{}", row.render(&layout));
     }
+    for note in notes {
+        println!("{note}");
+    }
     Ok(())
+}
+
+/// One line per run record this version cannot parse, for the account it names
+/// or for every account when it names none. The run is not in the table above
+/// because nothing in the file can be trusted to fill a column.
+fn unreadable_run_notes(
+    items: &[crate::ephemeral::UnreadableRecord],
+    account: &str,
+) -> Vec<String> {
+    items
+        .iter()
+        .filter(|r| r.account.as_deref().is_none_or(|a| a == account))
+        .map(|r| {
+            format!(
+                "  run record {} cannot be read by this version; its ports stay reserved",
+                r.file
+            )
+        })
+        .collect()
+}
+
+/// One line per saved tunnel this version cannot read. It sits under the table
+/// and not in it because it has no status, port or target to put in a column.
+fn unsupported_notes(items: &[crate::state::UnsupportedTunnel], account: &str) -> Vec<String> {
+    items
+        .iter()
+        .filter(|t| t.account_name == account)
+        .map(|t| format!("  {}  unsupported by this version ({})", t.name, t.kind))
+        .collect()
 }
 
 // IAP tunnels started outside gtunnel hold ports and confuse `doctor`, so the
@@ -1187,6 +1227,43 @@ mod new_tunnel_tests {
         assert!(!t.auto_start);
         assert_eq!(t.name, "db");
         assert_eq!(t.account_name, "dev");
+    }
+
+    #[test]
+    fn an_unreadable_run_record_is_named_under_the_list() {
+        let record = |file: &str, account: Option<&str>| crate::ephemeral::UnreadableRecord {
+            file: file.to_string(),
+            reason: "unknown variant".to_string(),
+            account: account.map(str::to_string),
+            local_port: None,
+            relay_port: None,
+        };
+        let notes = unreadable_run_notes(
+            &[
+                record("dev-mesh.json", Some("dev")),
+                record("prod-x.json", Some("prod")),
+                record("odd.json", None),
+            ],
+            "dev",
+        );
+        assert_eq!(notes.len(), 2);
+        assert!(notes[0].contains("dev-mesh.json"));
+        assert!(notes[1].contains("odd.json"));
+    }
+
+    #[test]
+    fn a_tunnel_of_a_newer_kind_is_listed_as_unsupported_for_its_own_account_only() {
+        let item = |name: &str, account: &str| crate::state::UnsupportedTunnel {
+            name: name.to_string(),
+            account_name: account.to_string(),
+            kind: "mesh_relay".to_string(),
+            raw: String::new(),
+        };
+        let notes = unsupported_notes(&[item("mesh", "dev"), item("other", "prod")], "dev");
+        assert_eq!(
+            notes,
+            vec!["  mesh  unsupported by this version (mesh_relay)".to_string()]
+        );
     }
 }
 

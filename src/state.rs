@@ -202,7 +202,8 @@ impl TunnelState {
         }
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("Failed to read {}", path.display()))?;
-        toml::from_str(&text).with_context(|| format!("Failed to parse {}", path.display()))
+        toml::from_str(&known_text(&text))
+            .with_context(|| format!("Failed to parse {}", path.display()))
     }
 
     pub fn save(&self) -> Result<()> {
@@ -211,7 +212,22 @@ impl TunnelState {
             std::fs::create_dir_all(dir)
                 .with_context(|| format!("Failed to create {}", dir.display()))?;
         }
-        let text = toml::to_string_pretty(self).context("Failed to serialize tunnel state")?;
+        let existing = std::fs::read_to_string(&path).unwrap_or_default();
+        if let Some(found) = schema_version_of(&existing) {
+            crate::config::refuse_newer_version(&path, found, TUNNELS_SCHEMA_VERSION)?;
+        }
+        let body = toml::to_string_pretty(self).context("Failed to serialize tunnel state")?;
+        // The version leads because a scalar sits above the tables, and a
+        // reader looks there first. It is not a field: every struct literal of
+        // a state would have to carry it
+        let mut text = format!("schema_version = {TUNNELS_SCHEMA_VERSION}\n{body}");
+        // Entries of a kind this version cannot read were set aside on load
+        // and are re-read from the file here, under the same lock, so they go
+        // back exactly as they came
+        for entry in unsupported_in(&existing) {
+            text.push('\n');
+            text.push_str(&entry.raw);
+        }
         crate::fsutil::write_atomic(&path, &text)
     }
 
@@ -400,6 +416,117 @@ impl TunnelState {
             })
             .collect()
     }
+}
+
+/// The version of the layout `tunnels.toml` is written in. A file without the
+/// key predates it and reads as 0, so it is readable and is stamped by the next
+/// save. Raise it only for a change an older binary would misread: a new kind
+/// of tunnel does not need it, because an unknown kind is kept aside.
+pub const TUNNELS_SCHEMA_VERSION: u32 = 1;
+
+fn schema_version_of(text: &str) -> Option<u32> {
+    toml::from_str::<toml::Table>(text)
+        .ok()?
+        .get("schema_version")?
+        .as_integer()
+        .and_then(|v| u32::try_from(v).ok())
+}
+
+/// A saved tunnel this version cannot represent: its mode or target kind was
+/// added by a newer gtunnel. It is listed and never edited, so `raw` is the
+/// entry's own text, which `save` writes back unchanged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnsupportedTunnel {
+    pub name: String,
+    pub account_name: String,
+    pub kind: String,
+    pub raw: String,
+}
+
+const KNOWN_MODES: [&str; 2] = ["access", "expose"];
+const KNOWN_TARGETS: [&str; 3] = ["instance", "dest_group", "jump"];
+
+// Only a well-formed entry whose discriminator is a string this version does
+// not list counts. Anything else wrong with an entry is a real error and is
+// left for the strict parse to name by line
+fn unknown_kind(entry: &toml_edit::Table) -> Option<String> {
+    let spec = entry.get("spec")?.as_table_like()?;
+    let mode = spec.get("mode")?.as_str()?;
+    if !KNOWN_MODES.contains(&mode) {
+        return Some(mode.to_string());
+    }
+    let kind = spec.get("target")?.as_table_like()?.get("kind")?.as_str()?;
+    (!KNOWN_TARGETS.contains(&kind)).then(|| kind.to_string())
+}
+
+fn split_unsupported(text: &str) -> Option<(toml_edit::DocumentMut, Vec<UnsupportedTunnel>)> {
+    let mut doc = text.parse::<toml_edit::DocumentMut>().ok()?;
+    let array = doc.get_mut("tunnels")?.as_array_of_tables_mut()?;
+    let mut found = Vec::new();
+    let mut index = 0;
+    while index < array.len() {
+        let Some(entry) = array.get(index) else {
+            break;
+        };
+        let Some(kind) = unknown_kind(entry) else {
+            index += 1;
+            continue;
+        };
+        let text_of = |key: &str| {
+            entry
+                .get(key)
+                .and_then(|i| i.as_str())
+                .unwrap_or_default()
+                .to_string()
+        };
+        let mut alone = toml_edit::ArrayOfTables::new();
+        alone.push(entry.clone());
+        let mut holder = toml_edit::DocumentMut::new();
+        holder.insert("tunnels", toml_edit::Item::ArrayOfTables(alone));
+        found.push(UnsupportedTunnel {
+            name: text_of("name"),
+            account_name: text_of("account_name"),
+            kind,
+            raw: format!("{}\n", holder.to_string().trim_matches('\n')),
+        });
+        array.remove(index);
+    }
+    Some((doc, found))
+}
+
+/// The file with the unsupported entries taken out, which is what the structs
+/// parse. Text that is not TOML is returned as it is so the strict parse
+/// reports it.
+fn known_text(text: &str) -> String {
+    match split_unsupported(text) {
+        Some((doc, found)) if !found.is_empty() => doc.to_string(),
+        _ => text.to_string(),
+    }
+}
+
+/// Keys of `tunnels.toml` that this version drops, for `doctor` and for the
+/// config page. `schema_version` is the file's own marker and not a struct
+/// field, and an entry of a newer kind is kept aside rather than parsed, so
+/// neither counts as a key someone mistyped.
+pub fn unknown_tunnel_keys(text: &str) -> Result<Vec<String>> {
+    let keys = config::unknown_keys::<TunnelState>(&known_text(text))?;
+    Ok(keys.into_iter().filter(|k| k != "schema_version").collect())
+}
+
+fn unsupported_in(text: &str) -> Vec<UnsupportedTunnel> {
+    split_unsupported(text).map(|(_, f)| f).unwrap_or_default()
+}
+
+/// The entries `list` shows as `unsupported by this version`. A file that is
+/// not there has none.
+pub fn unsupported_tunnels() -> Result<Vec<UnsupportedTunnel>> {
+    let path = tunnels_path()?;
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("Failed to read {}", path.display()))?;
+    Ok(unsupported_in(&text))
 }
 
 pub fn tunnels_path() -> Result<PathBuf> {
@@ -1172,5 +1299,128 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
+    }
+
+    const KNOWN_AND_UNKNOWN: &str = r#"schema_version = 1
+
+[[tunnels]]
+name = "api"
+account_name = "dev"
+auto_start = false
+
+[tunnels.spec]
+mode = "access"
+remote_port = 5432
+local_port = 15432
+
+[tunnels.spec.target]
+kind = "instance"
+instance = "bastion"
+zone = "europe-west1-b"
+
+# a kind this version has never heard of
+[[tunnels]]
+name = "mesh"
+account_name = "dev"
+auto_start = true
+
+[tunnels.spec]
+mode = "mesh_relay"
+peers = ["a", "b"]
+
+[tunnels.spec.options]
+ttl = 30
+"#;
+
+    fn write_tunnels(text: &str) {
+        std::fs::write(tunnels_path().unwrap(), text).expect("write fixture");
+    }
+
+    #[test]
+    fn a_tunnel_of_an_unknown_kind_loads_the_others_and_survives_a_save_byte_for_byte() {
+        let _cfg = crate::config::testing::TempConfigDir::new();
+        write_tunnels(KNOWN_AND_UNKNOWN);
+
+        let mut state = TunnelState::load().expect("one unknown kind must not fail the file");
+        assert_eq!(state.tunnels.len(), 1);
+        assert_eq!(state.tunnels[0].name, "api");
+
+        let listed = unsupported_tunnels().expect("scan");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].name, "mesh");
+        assert_eq!(listed[0].account_name, "dev");
+        assert_eq!(listed[0].kind, "mesh_relay");
+
+        state.tunnels[0].auto_start = true;
+        state.add(access_instance("db", 15433)).expect("add");
+        state.save().expect("save");
+
+        let after = std::fs::read_to_string(tunnels_path().unwrap()).unwrap();
+        let entry = &KNOWN_AND_UNKNOWN[KNOWN_AND_UNKNOWN
+            .find("[[tunnels]]\nname = \"mesh\"")
+            .unwrap()..];
+        assert!(after.contains(entry), "the unknown entry changed:\n{after}");
+        assert_eq!(TunnelState::load().unwrap().tunnels.len(), 2);
+
+        // A second save must not grow the file with blank lines
+        TunnelState::load().unwrap().save().expect("save again");
+        let again = std::fs::read_to_string(tunnels_path().unwrap()).unwrap();
+        assert_eq!(again, after, "saving is idempotent");
+    }
+
+    #[test]
+    fn a_known_kind_with_a_bad_field_still_fails_the_file() {
+        let _cfg = crate::config::testing::TempConfigDir::new();
+        write_tunnels(
+            "[[tunnels]]\nname = \"x\"\naccount_name = \"dev\"\n[tunnels.spec]\nmode = \"access\"\nremote_port = \"no\"\nlocal_port = 1\n[tunnels.spec.target]\nkind = \"instance\"\ninstance = \"b\"\nzone = \"z\"\n",
+        );
+        assert!(TunnelState::load().is_err());
+    }
+
+    #[test]
+    fn a_saved_file_says_which_schema_it_follows() {
+        let _cfg = crate::config::testing::TempConfigDir::new();
+        TunnelState::default().save().expect("save");
+        let text = std::fs::read_to_string(tunnels_path().unwrap()).unwrap();
+        assert!(
+            text.starts_with(&format!("schema_version = {TUNNELS_SCHEMA_VERSION}\n")),
+            "{text}"
+        );
+        TunnelState::load().expect("and reads back");
+    }
+
+    #[test]
+    fn a_tunnels_file_from_a_newer_gtunnel_is_read_but_never_written() {
+        let _cfg = crate::config::testing::TempConfigDir::new();
+        let newer = TUNNELS_SCHEMA_VERSION + 1;
+        let text = format!(
+            "schema_version = {newer}\n\n{}",
+            &KNOWN_AND_UNKNOWN[KNOWN_AND_UNKNOWN.find("[[tunnels]]").unwrap()..]
+        );
+        write_tunnels(&text);
+
+        let mut state = TunnelState::load().expect("a newer file is still read");
+        state.tunnels[0].auto_start = true;
+        let err = state.save().expect_err("a write must refuse");
+        assert!(
+            format!("{err:#}").contains(&format!(
+                "written by a newer gtunnel (v{newer}); upgrade this one"
+            )),
+            "{err:#}"
+        );
+        assert!(TunnelState::update(|_| Ok(())).is_err());
+        assert_eq!(
+            std::fs::read_to_string(tunnels_path().unwrap()).unwrap(),
+            text
+        );
+    }
+
+    #[test]
+    fn an_older_file_without_a_schema_version_is_read_and_stamped_on_the_next_save() {
+        let _cfg = crate::config::testing::TempConfigDir::new();
+        write_tunnels(&KNOWN_AND_UNKNOWN["schema_version = 1\n\n".len()..]);
+        TunnelState::update(|_| Ok(())).expect("update");
+        let text = std::fs::read_to_string(tunnels_path().unwrap()).unwrap();
+        assert!(text.starts_with("schema_version = 1\n"), "{text}");
     }
 }

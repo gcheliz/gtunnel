@@ -636,6 +636,7 @@ after the text has passed the rules for that file:
 | Removes or renames a tunnel | a warning too: a launchd job is named for the tunnel, and editing the file does not unload it |
 | Fails a rule | not saved. The page shows the text and the reason in red with its line (`not saved: line 16: key with no value, expected `=``); the keys become `e edit again` (reopens the same copy) and `Esc discard` (removes it). `Tab` does nothing meanwhile |
 | Has a key gtunnel does not read | refused the same way, naming one key and counting the rest (`not saved: unknown key accounts[0].expose.domains[0].log_level and 1 more`). The path shows which table the key landed in, such as a `log_level` typed below the last `[[accounts]]`. A file that already has such a key still loads, and `gtunnel doctor` reports it |
+| `tunnels.toml` holds a tunnel of a kind from a newer gtunnel | refused as a parse error, because the page checks the whole text. The file is untouched and the tunnel stays; upgrade gtunnel to edit it here. The `schema_version` line at the top is gtunnel's own marker and is never reported as an unknown key |
 | File changed since `e` opened it | refused with `not saved: tunnels.toml changed since you opened it` (or `config.toml`): another gtunnel, the CLI or the MCP server wrote it. The edit stays; a second save replaces that change, and a further write in between is refused again. Unchanged text is not a save, so it cannot overwrite the other change |
 | Editor exits non-zero (`:cq` in vim) | the edit is cancelled and the file left as it was |
 
