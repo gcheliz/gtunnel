@@ -36,19 +36,22 @@ enum Msg {
     Zones(String, String, Vec<String>),
     ZonesFailed(String, String, String),
     Tick,
-    // The leading number is the generation the round was begun under; a result
-    // whose generation is no longer the poller's current one is dropped
-    Entries(u64, Vec<TunnelEntry>, HashSet<u16>),
+    // The leading string is the account the round was fetched for, and the
+    // number is the generation it was begun under; a result for another
+    // account, or whose generation is no longer the poller's current one, is
+    // dropped. Names repeat across accounts, so a verdict that landed on the
+    // wrong account would be applied to the same-named row without a sign
+    Entries(String, u64, Vec<TunnelEntry>, HashSet<u16>),
     EntriesFailed(u64, String),
-    Metrics(u64, Vec<(String, crate::probe::TunnelMetrics)>),
+    Metrics(String, u64, Vec<(String, crate::probe::TunnelMetrics)>),
     // One reading of every local port's established connections, far more
     // often than a metrics round, so a request shorter than a round is seen
     Samples(std::collections::HashMap<u16, u64>),
-    Health(u64, Vec<(String, HealthStatus)>),
+    Health(String, u64, Vec<(String, HealthStatus)>),
     // Whether the watchdog is installed, asked once per session
     Watchdog(bool),
     Logs(String, Vec<String>),
-    OpDone(OpResult),
+    OpDone(OpTag, OpResult),
 }
 
 // A seam of its own so the failure path is testable: an `if let Ok` here once
@@ -164,9 +167,11 @@ async fn demo_loop(
                         from_create: matches!(op, Op::Create(_)),
                         from_account: false,
                         name: None,
+                        account: app.account.clone(),
                     });
                     // No runtime sits behind the demo, so no round will come
                     // to end the pending state the key put on the row
+                    app.pending_ops.clear();
                     for entry in &mut app.entries {
                         entry.pending = None;
                     }
@@ -343,8 +348,10 @@ async fn event_loop(
 ) -> Result<()> {
     let mut timers = Timers::due();
     let mut logs_for: Option<String> = None;
-    // The tunnel whose running op empties its log, held until the op is done
-    let mut forget_after: Option<String> = None;
+    // Every op the keys have started. Kept, and not dropped as a handle, so
+    // that a quit can wait for them: dropping the runtime cancels a task at
+    // its next await, which is between two steps of a delete or a move
+    let mut running: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
 
     let mut stop = Stop::new()?;
     terminal.draw(|f| ui::render(f, app))?;
@@ -353,14 +360,20 @@ async fn event_loop(
         match msg {
             Msg::Key(key) => {
                 if let Some(op) = app.handle_key(key) {
-                    // Applied when the op finishes rather than here: a
-                    // metrics tick landing mid-op would put the count back
-                    forget_after = empties_the_log(&op).map(String::from);
                     let account = app.account.clone();
+                    // The tag rides with the result, which forgets the count
+                    // when the op is done rather than here: a metrics tick
+                    // landing mid-op would put the count back
+                    let tag = op_tag(&account, &op);
+                    app.op_started(tag.label.clone());
                     let tx = tx.clone();
-                    tokio::spawn(async move {
-                        let _ = tx.send(Msg::OpDone(ops::execute(&account, op).await));
+                    running.spawn(async move {
+                        let result = ops::execute(&account, op).await;
+                        let _ = tx.send(Msg::OpDone(tag, result));
                     });
+                }
+                if app.take_account_switched() {
+                    timers.account_changed();
                 }
                 if app.should_quit {
                     break;
@@ -376,6 +389,15 @@ async fn event_loop(
                 }
             }
             Msg::Tick => {
+                // A task that ended without its result, a panic in an op,
+                // would otherwise be waited on for the whole bound
+                while running.try_join_next().is_some() {}
+                if running.is_empty() {
+                    app.running_ops.clear();
+                }
+                if app.quit_ready() || app.quit_overdue() {
+                    break;
+                }
                 // A list being waited on draws a spinner frame too, so it must advance
                 if app.spinner.is_running() || app.list_loading.is_some() {
                     app.spinner.tick();
@@ -463,15 +485,14 @@ async fn event_loop(
             Msg::ZonesFailed(account, project, reason) => {
                 app.zones_failed(&account, &project, &reason)
             }
-            Msg::OpDone(result) => {
+            Msg::OpDone(tag, result) => {
+                app.op_finished(&tag.label);
                 // Rounds begun for the previous account must not land in the
                 // new one's list
                 if result.from_account {
                     timers.account_changed();
                 }
-                if let Some(name) = forget_after.take() {
-                    app.forget_metrics(&name);
-                }
+                forget_for(app, &tag);
                 // An account op wrote config.toml, so what the header, the
                 // accounts page and the Add dialog hold is a copy of a file
                 // that has moved on. Read before `apply`, which is what puts
@@ -497,11 +518,39 @@ async fn event_loop(
                 if !acted_on_a_row {
                     terminal.clear()?;
                 }
+                if app.quit_ready() {
+                    break;
+                }
             }
         }
         terminal.draw(|f| ui::render(f, app))?;
     }
     Ok(())
+}
+
+/// What an op's result needs to remember about the key press that began it.
+/// Carried by the message and not kept in a slot of the loop, so two ops in
+/// flight cannot overwrite each other's.
+struct OpTag {
+    label: String,
+    // The tunnel whose last measurement the op made meaningless
+    forgets: Option<(String, String)>,
+}
+
+fn op_tag(account: &str, op: &Op) -> OpTag {
+    OpTag {
+        label: op.label(),
+        forgets: empties_the_log(op).map(|n| (account.to_string(), n.to_string())),
+    }
+}
+
+// Only the account on screen has rows to forget
+fn forget_for(app: &mut App, tag: &OpTag) {
+    if let Some((account, name)) = &tag.forgets
+        && *account == app.account
+    {
+        app.forget_metrics(name);
+    }
 }
 
 fn timers_logs_due(timers: &Timers) -> bool {
@@ -513,8 +562,8 @@ fn timers_logs_due(timers: &Timers) -> bool {
 // newer one, is dropped whole.
 fn apply_polled(app: &mut App, timers: &mut Timers, msg: Msg) {
     match msg {
-        Msg::Entries(generation, entries, used_ports) => {
-            if timers.entries.finish(generation) {
+        Msg::Entries(account, generation, entries, used_ports) => {
+            if timers.entries.finish(generation) && account == app.account {
                 app.replace_entries(entries, used_ports);
                 // A tunnel that went from running to dead shows up here, and
                 // no health round will ever say so: it is not probed
@@ -526,8 +575,10 @@ fn apply_polled(app: &mut App, timers: &mut Timers, msg: Msg) {
                 app.load_failed(&error);
             }
         }
-        Msg::Metrics(generation, metrics) => {
-            if !timers.metrics.finish(generation) {
+        Msg::Metrics(account, generation, metrics) => {
+            // The slot is freed either way; whose numbers these are decides
+            // only whether they are applied
+            if !timers.metrics.finish(generation) || account != app.account {
                 return;
             }
             // When the round began: its probes were taken from then on
@@ -569,8 +620,8 @@ fn apply_polled(app: &mut App, timers: &mut Timers, msg: Msg) {
             }
             announce_round(app);
         }
-        Msg::Health(generation, results) => {
-            if !timers.health.finish(generation) {
+        Msg::Health(account, generation, results) => {
+            if !timers.health.finish(generation) || account != app.account {
                 return;
             }
             let began = timers.health.last;
@@ -705,7 +756,9 @@ fn schedule(app: &mut App, timers: &mut Timers, tx: &mpsc::UnboundedSender<Msg>)
             Msg::EntriesFailed(generation, "the discovery round failed".to_string()),
             async move {
                 match ops::load_entries(&account).await {
-                    Ok((entries, used_ports)) => Msg::Entries(generation, entries, used_ports),
+                    Ok((entries, used_ports)) => {
+                        Msg::Entries(account, generation, entries, used_ports)
+                    }
                     Err(e) => Msg::EntriesFailed(generation, format!("{e:#}")),
                 }
             },
@@ -725,32 +778,41 @@ fn schedule(app: &mut App, timers: &mut Timers, tx: &mpsc::UnboundedSender<Msg>)
     if let Some(round) = polls.metrics {
         let tx = tx.clone();
         let generation = round.generation;
-        spawn_round(tx, Msg::Metrics(generation, Vec::new()), async move {
-            let include_lb = round.include_lb;
-            let peaks = std::sync::Arc::new(round.peaks);
-            let targets = round
-                .targets
-                .into_iter()
-                .map(|t| (t.tunnel.name.clone(), t));
-            let out = collect_round(targets, move |target| {
-                let peaks = peaks.clone();
-                async move { ops::collect(&target, include_lb, Some(&peaks)).await }
-            })
-            .await;
-            Msg::Metrics(generation, out)
-        });
+        let account = account.clone();
+        spawn_round(
+            tx,
+            Msg::Metrics(account.clone(), generation, Vec::new()),
+            async move {
+                let include_lb = round.include_lb;
+                let peaks = std::sync::Arc::new(round.peaks);
+                let targets = round
+                    .targets
+                    .into_iter()
+                    .map(|t| (t.tunnel.name.clone(), t));
+                let out = collect_round(targets, move |target| {
+                    let peaks = peaks.clone();
+                    async move { ops::collect(&target, include_lb, Some(&peaks)).await }
+                })
+                .await;
+                Msg::Metrics(account, generation, out)
+            },
+        );
     }
 
     let targets = polls.health;
     if !targets.is_empty() {
         let generation = timers.health.begin();
         let tx = tx.clone();
-        spawn_round(tx, Msg::Health(generation, Vec::new()), async move {
-            let probes = targets
-                .into_iter()
-                .map(|(name, tunnel)| async move { (name, ops::probe_health(&tunnel).await) });
-            Msg::Health(generation, futures_join(probes).await)
-        });
+        spawn_round(
+            tx,
+            Msg::Health(account.clone(), generation, Vec::new()),
+            async move {
+                let probes = targets
+                    .into_iter()
+                    .map(|(name, tunnel)| async move { (name, ops::probe_health(&tunnel).await) });
+                Msg::Health(account, generation, futures_join(probes).await)
+            },
+        );
     }
 }
 

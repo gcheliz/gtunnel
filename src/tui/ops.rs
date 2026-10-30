@@ -14,13 +14,17 @@ use crate::config::load_config;
 use crate::daemon;
 use crate::discovery::ExternalTunnel;
 use crate::ephemeral::list_ephemeral;
+use crate::error::GtunnelError;
 use crate::expose::routes;
 use crate::gcp::GcpClient;
 use crate::probe::{
     classify_probe, collect_metrics, collect_unmanaged, http_probe, probe_tunnel, HealthStatus,
     Trail, TCP_TIMEOUT,
 };
-use crate::state::{AccessTarget, PersistentTunnel, TunnelSpec, TunnelState, TunnelStatus};
+use crate::state::{
+    check_local_port, local_port_is_free, AccessTarget, PersistentTunnel, TunnelSpec, TunnelState,
+    TunnelStatus,
+};
 use std::time::Duration;
 
 // The health dial and the metrics dial are one probe to the TUI, so they wait
@@ -299,24 +303,43 @@ pub async fn execute(account: &str, op: Op) -> OpResult {
             from_create: matches!(op, Op::Create(_)),
             from_account: touches_accounts(&op),
             name: pending_row(&op),
+            account: account.to_string(),
         },
         Err(e) => OpResult {
             message: format!("{e:#}"),
             ok: false,
             // A failed create may already have saved its record: `add` saves
             // before it installs and starts, so the list must be re-read or
-            // the name check cannot see the half-made tunnel.
-            reload: matches!(op, Op::Delete(_) | Op::Import(_) | Op::Create(_)),
+            // the name check cannot see the half-made tunnel. A move that
+            // fails after the uninstall is the same, and it left the old row
+            // reading Running.
+            reload: rewrites_records(&op),
             from_create: matches!(op, Op::Create(_)),
             from_account: touches_accounts(&op),
             name: pending_row(&op),
+            account: account.to_string(),
         },
     }
 }
 
+// The ops that write tunnels.toml, so that a failure may have left the record
+// changed and the list has to be read again
+pub(super) fn rewrites_records(op: &Op) -> bool {
+    matches!(
+        op,
+        Op::Delete(_)
+            | Op::Import(_)
+            | Op::Create(_)
+            | Op::ToggleAutoStart(_)
+            | Op::Edit(_)
+            | Op::Rename(_)
+            | Op::Move(_)
+    )
+}
+
 // The ops the key handler marks pending: the row they acted on has to leave
 // that state when the op returns, whether it worked or not
-fn pending_row(op: &Op) -> Option<String> {
+pub(super) fn pending_row(op: &Op) -> Option<String> {
     match op {
         Op::Start(n)
         | Op::Stop(n)
@@ -324,6 +347,11 @@ fn pending_row(op: &Op) -> Option<String> {
         | Op::Restart(n)
         | Op::Delete(n)
         | Op::ToggleAutoStart(n) => Some(n.clone()),
+        // Rename, move and edit mark the row they leave or change, which is
+        // the old name: the new one is not on screen until the reload
+        Op::Edit(e) => Some(e.name.clone()),
+        Op::Rename(r) => Some(r.name.clone()),
+        Op::Move(m) => Some(m.name.clone()),
         _ => None,
     }
 }
@@ -507,38 +535,84 @@ async fn create(new: &NewTunnel) -> Result<String> {
     Ok(format!("created {}", new.name))
 }
 
+/// The whole edit as one step on the loaded state, so the checks and the write
+/// share the lock `TunnelState::update` holds. `runs` and `is_free` are the
+/// caller's because both read the machine: a live run's port is recorded
+/// outside tunnels.toml, and a bind probe is the only way to see a stranger.
+/// Every check runs before the first write, so a refused edit leaves the state
+/// as it was.
+fn apply_edit(
+    state: &mut TunnelState,
+    edit: &EditTunnel,
+    account: &str,
+    runs: &std::collections::HashMap<u16, String>,
+    is_free: impl Fn(u16) -> bool,
+) -> Result<PersistentTunnel> {
+    let mut used = state.used_local_ports();
+    let tunnel = state
+        .find_for_account_mut(&edit.name, account)
+        .with_context(|| format!("No tunnel named '{}'", edit.name))?;
+
+    match &mut tunnel.spec {
+        TunnelSpec::Access {
+            remote_port,
+            local_port,
+            ..
+        } => {
+            let usage = |text: &str| anyhow::Error::from(GtunnelError::usage(text.to_string()));
+            let (remote, local) = edit
+                .value
+                .split_once(':')
+                .ok_or_else(|| usage("Write the new ports as <remote>:<local>"))?;
+            let remote: u16 = remote
+                .trim()
+                .parse()
+                .map_err(|_| usage("Remote port is not a port"))?;
+            let local: u16 = local
+                .trim()
+                .parse()
+                .map_err(|_| usage("Local port is not a port"))?;
+            // `parse_access_target` refuses 0 for the remote port the same way
+            if remote == 0 {
+                return Err(usage("Remote port must be between 1 and 65535"));
+            }
+            // Keeping the port is not a claim on it: the tunnel may be running
+            // on it right now, and its own row is in `used`
+            if local != *local_port {
+                used.remove(local_port);
+                if let Some(run) = runs.get(&local).filter(|_| !used.contains(&local)) {
+                    return Err(usage(&format!(
+                        "Local port {local} is already used by the run '{run}'"
+                    )));
+                }
+                used.extend(runs.keys().copied());
+                check_local_port(local, &used, is_free)?;
+            }
+            *remote_port = remote;
+            *local_port = local;
+        }
+        TunnelSpec::Expose {
+            local_target,
+            private,
+            ..
+        } => match edit.value.trim() {
+            "" => {
+                return Err(GtunnelError::usage("The local target cannot be empty").into());
+            }
+            "private" => *private = true,
+            "public" => *private = false,
+            other => *local_target = other.to_string(),
+        },
+    }
+
+    Ok(tunnel.clone())
+}
+
 async fn edit_tunnel(edit: &EditTunnel) -> Result<String> {
     let (config, acct) = resolve(Some(&edit.account))?;
     let updated = TunnelState::update(|state| {
-        let tunnel = state
-            .find_for_account_mut(&edit.name, &acct.name)
-            .with_context(|| format!("No tunnel named '{}'", edit.name))?;
-
-        match &mut tunnel.spec {
-            TunnelSpec::Access {
-                remote_port,
-                local_port,
-                ..
-            } => {
-                let (remote, local) = edit
-                    .value
-                    .split_once(':')
-                    .context("Write the new ports as <remote>:<local>")?;
-                *remote_port = remote.trim().parse().context("Remote port is not a port")?;
-                *local_port = local.trim().parse().context("Local port is not a port")?;
-            }
-            TunnelSpec::Expose {
-                local_target,
-                private,
-                ..
-            } => match edit.value.trim() {
-                "private" => *private = true,
-                "public" => *private = false,
-                other => *local_target = other.to_string(),
-            },
-        }
-
-        Ok(tunnel.clone())
+        let runs = crate::ephemeral::live_run_local_ports()?;
+        apply_edit(state, edit, &acct.name, &runs, local_port_is_free)
     })?;
 
     // A public tunnel's access rule lives on the backend, not in tunnels.toml
@@ -663,6 +737,116 @@ mod tests {
                 local_port,
             },
         }
+    }
+
+    fn state_with(tunnels: Vec<PersistentTunnel>) -> TunnelState {
+        TunnelState {
+            tunnels,
+            ..Default::default()
+        }
+    }
+
+    fn edit(name: &str, value: &str) -> EditTunnel {
+        EditTunnel {
+            account: "dev".to_string(),
+            name: name.to_string(),
+            value: value.to_string(),
+        }
+    }
+
+    fn no_runs() -> std::collections::HashMap<u16, String> {
+        std::collections::HashMap::new()
+    }
+
+    // An edit that is refused writes nothing: the caller saves only on Ok, and
+    // the state it held must still equal what was loaded
+    #[test]
+    fn a_port_edit_refuses_what_add_refuses_and_changes_nothing() {
+        let mut state = state_with(vec![access("db", 15000), access("api", 15001)]);
+        let before = state.clone();
+        let mut runs = no_runs();
+        runs.insert(15002, "scratch".to_string());
+
+        let cases = [
+            ("5432:0", "Local port must be between 1 and 65535"),
+            ("0:15009", "Remote port must be between 1 and 65535"),
+            ("5432:15001", "already used by another gtunnel tunnel"),
+            ("5432:15002", "already used by the run 'scratch'"),
+            ("5432:15003", "already in use on this machine"),
+            ("5432", "<remote>:<local>"),
+            ("x:15009", "Remote port is not a port"),
+        ];
+        for (value, expect) in cases {
+            let err = apply_edit(&mut state, &edit("db", value), "dev", &runs, |p| p != 15003)
+                .unwrap_err();
+            assert!(err.to_string().contains(expect), "{value}: {err}");
+            assert_eq!(state, before, "{value} must not write");
+        }
+    }
+
+    #[test]
+    fn a_port_edit_may_keep_the_tunnels_own_port_even_while_it_is_bound() {
+        let mut state = state_with(vec![access("db", 15000)]);
+        let saved = apply_edit(
+            &mut state,
+            &edit("db", "5432:15000"),
+            "dev",
+            &no_runs(),
+            |_| false,
+        )
+        .expect("its own port is not a claim");
+        assert!(matches!(
+            saved.spec,
+            TunnelSpec::Access {
+                remote_port: 5432,
+                local_port: 15000,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_port_edit_saves_a_free_new_port() {
+        let mut state = state_with(vec![access("db", 15000)]);
+        let saved = apply_edit(
+            &mut state,
+            &edit("db", " 5432 : 15009 "),
+            "dev",
+            &no_runs(),
+            |_| true,
+        )
+        .unwrap();
+        assert!(matches!(
+            saved.spec,
+            TunnelSpec::Access {
+                remote_port: 5432,
+                local_port: 15009,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn an_expose_edit_of_only_spaces_is_refused() {
+        let mut state = state_with(vec![PersistentTunnel {
+            name: "site".to_string(),
+            account_name: "dev".to_string(),
+            auto_start: false,
+            spec: TunnelSpec::Expose {
+                local_target: "localhost:3000".to_string(),
+                domain: "site.example.com".to_string(),
+                hostname: "site.example.com".to_string(),
+                relay_port: 8080,
+                private: false,
+            },
+        }]);
+        let before = state.clone();
+        let err = apply_edit(&mut state, &edit("site", "   "), "dev", &no_runs(), |_| {
+            true
+        })
+        .unwrap_err();
+        assert_eq!(crate::error::kind_of(&err), crate::error::ErrorKind::Usage);
+        assert_eq!(state, before);
     }
 
     // An unmanaged tunnel started with --listen-on-stdin has no local port in

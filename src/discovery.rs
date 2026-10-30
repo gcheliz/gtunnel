@@ -10,8 +10,51 @@ pub struct ExternalTunnel {
     pub zone: Option<String>,
 }
 
+// The flags of `gcloud compute start-iap-tunnel` and gcloud's global ones that
+// take a value. A flag outside this list is read as a switch, so an unknown one
+// can never swallow the instance or the port that follows it.
+const VALUE_FLAGS: &[&str] = &[
+    "--zone",
+    "--project",
+    "--configuration",
+    "--local-host-port",
+    "--region",
+    "--network",
+    "--dest-group",
+    "--account",
+    "--billing-project",
+    "--impersonate-service-account",
+    "--access-token-file",
+    "--credential-file-override",
+    "--verbosity",
+    "--format",
+    "--flags-file",
+    "--iap-tunnel-url-override",
+];
+
+// A flag's value in either spelling gcloud accepts, `--flag=value` or `--flag value`
 fn flag_value<'a>(tokens: &[&'a str], flag: &str) -> Option<&'a str> {
-    tokens.iter().find_map(|token| token.strip_prefix(flag))
+    tokens.iter().enumerate().find_map(|(i, token)| {
+        if *token == flag {
+            tokens.get(i + 1).copied()
+        } else {
+            token.strip_prefix(flag)?.strip_prefix('=')
+        }
+    })
+}
+
+// What is left once every flag, and the value a spaced flag owns, is skipped
+fn positionals<'a>(tokens: &[&'a str]) -> Vec<&'a str> {
+    let mut found = Vec::new();
+    let mut iter = tokens.iter();
+    while let Some(token) = iter.next() {
+        if VALUE_FLAGS.contains(token) {
+            iter.next();
+        } else if !token.starts_with('-') {
+            found.push(*token);
+        }
+    }
+    found
 }
 
 // One process as `ps -axo pid=,ppid=,command=` prints it
@@ -87,19 +130,15 @@ fn iap_tunnel(row: &ProcessRow) -> Option<ExternalTunnel> {
     }
     let rest: Vec<&str> = line.split_whitespace().collect();
     let position = rest.iter().position(|t| *t == "start-iap-tunnel")?;
-    let positional: Vec<&str> = rest[position + 1..]
-        .iter()
-        .take_while(|t| !t.starts_with('-'))
-        .copied()
-        .collect();
+    let positional = positionals(&rest[position + 1..]);
     let [target, port] = positional.as_slice() else {
         return None;
     };
     let remote_port = port.parse::<u16>().ok()?;
-    let local_port = flag_value(&rest, "--local-host-port=")
+    let local_port = flag_value(&rest, "--local-host-port")
         .and_then(|value| value.rsplit(':').next())
         .and_then(|port| port.parse::<u16>().ok());
-    let zone = flag_value(&rest, "--zone=").map(|z| z.to_string());
+    let zone = flag_value(&rest, "--zone").map(|z| z.to_string());
 
     Some(ExternalTunnel {
         pid: row.pid,
@@ -255,6 +294,89 @@ mod tests {
             found.is_empty(),
             "listen-on-stdin proxycommand should not be parsed as an external tunnel: {found:?}"
         );
+    }
+
+    fn one(command: &str) -> Vec<ExternalTunnel> {
+        strangers(&format!("  700     1 {command}\n"), &HashSet::new())
+    }
+
+    #[test]
+    fn flags_before_the_positionals_do_not_hide_the_tunnel() {
+        let found = one("gcloud compute start-iap-tunnel --zone=europe-west1-b bastion 22");
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].target, "bastion");
+        assert_eq!(found[0].remote_port, 22);
+        assert_eq!(found[0].zone.as_deref(), Some("europe-west1-b"));
+    }
+
+    #[test]
+    fn a_flag_value_after_a_space_is_read_and_not_taken_for_a_positional() {
+        let found = one(
+            "gcloud compute start-iap-tunnel bastion 22 --local-host-port localhost:2222 --zone europe-west1-b",
+        );
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].local_port, Some(2222));
+        assert_eq!(found[0].zone.as_deref(), Some("europe-west1-b"));
+
+        let leading = one("gcloud compute start-iap-tunnel --project example-dev-1a2b bastion 22");
+        assert_eq!(leading.len(), 1, "{leading:?}");
+        assert_eq!(leading[0].target, "bastion");
+    }
+
+    // Any placement of the flags, in either spelling, around the two positionals
+    // is the same tunnel. The set is small and fixed so a failure names its case.
+    #[test]
+    fn permuting_the_flags_around_the_positionals_yields_the_same_tunnel() {
+        let flags: [&[&str]; 4] = [
+            &["--zone=europe-west1-b"],
+            &["--local-host-port", "localhost:2222"],
+            &["--project", "example-dev-1a2b"],
+            &["--quiet"],
+        ];
+        let expected = one(
+            "gcloud compute start-iap-tunnel bastion 22 --zone=europe-west1-b --local-host-port=localhost:2222",
+        );
+        assert_eq!(expected.len(), 1);
+
+        let n = flags.len();
+        // Every order of the four flags, and every split of them into
+        // before / between / after the positionals
+        let mut orders: Vec<Vec<usize>> = vec![vec![]];
+        for _ in 0..n {
+            let mut longer = Vec::new();
+            for order in &orders {
+                for i in (0..n).filter(|i| !order.contains(i)) {
+                    let mut next = order.clone();
+                    next.push(i);
+                    longer.push(next);
+                }
+            }
+            orders = longer;
+        }
+        assert_eq!(orders.len(), 24);
+        for order in &orders {
+            for (cut_a, cut_b) in [(0, 0), (0, 2), (2, 2), (1, 3), (4, 4), (0, 4)] {
+                let words = |range: std::ops::Range<usize>| -> Vec<&str> {
+                    order[range]
+                        .iter()
+                        .flat_map(|i| flags[*i].iter().copied())
+                        .collect()
+                };
+                let mut argv = vec!["gcloud", "compute", "start-iap-tunnel"];
+                argv.extend(words(0..cut_a));
+                argv.push("bastion");
+                argv.extend(words(cut_a..cut_b));
+                argv.push("22");
+                argv.extend(words(cut_b..n));
+                let found = one(&argv.join(" "));
+                assert_eq!(found.len(), 1, "{argv:?}");
+                assert_eq!(found[0].target, expected[0].target, "{argv:?}");
+                assert_eq!(found[0].remote_port, 22, "{argv:?}");
+                assert_eq!(found[0].local_port, Some(2222), "{argv:?}");
+                // --zone is among the flags in every case
+                assert_eq!(found[0].zone, expected[0].zone, "{argv:?}");
+            }
+        }
     }
 
     #[test]
