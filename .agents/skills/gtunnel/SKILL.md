@@ -33,7 +33,7 @@ If `gtunnel_*` MCP tools are available, prefer them over the CLI:
 - `gtunnel_delete_tunnel`: delete a tunnel and its service.
 - `gtunnel_rename_tunnel`: rename (`name`, `new_name`); service and log follow, a running tunnel restarts. A name in use is refused.
 - `gtunnel_expose_tunnel`: publish a local service at `https://<name>.<domain>` through the account's relay (`name`, `target`, optional `domain`, `public`, `start`). Private by default (Google sign-in), the reverse of the CLI. Pass `public: true` only when the user asked for anyone on the internet to reach it, and confirm first. Only a service on this machine: refuse another host and point at the CLI. Never creates a relay; `gtunnel relay up` is CLI only.
-- `gtunnel_move_tunnel`: move an Access tunnel to another account (`name`, `to`, optional `rename` when the destination uses the name). Confirm first. A failure of kind `auth` means the user must run `gcloud auth login` for that account: MCP cannot prompt.
+- `gtunnel_move_tunnel`: move an Access tunnel to another account (`name`, `to`, optional `rename` when the destination uses the name). Confirm first. A failure of kind `auth` means the user must run `gcloud auth login` for that account: MCP cannot prompt. A warning from a tool (an instance that could not be verified on add, an old log left behind by a rename or move) is a `Warning:` line in the tool text, never on stderr.
 - `gtunnel_list_accounts`: accounts and the selection (`selected_account`, `selected` on each). The `gtunnel://accounts` resource returns the same object.
 - `gtunnel_doctor`: diagnostics on prerequisites, permissions and service configuration.
 

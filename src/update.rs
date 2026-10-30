@@ -160,6 +160,7 @@ fn detect_install_method_from_path(exe: &Path) -> InstallMethod {
     }
 }
 
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub async fn cmd_update(check_only: bool) -> Result<()> {
     let current = env!("CARGO_PKG_VERSION");
     eprintln!("Checking for updates...");
@@ -283,6 +284,7 @@ pub fn spawn_check_if_due() {
 
 // Reads the cache only: a CLI command must never wait on the network to print
 // its own output
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub fn maybe_print_update_hint() {
     if let Some(notice) = available_update() {
         eprintln!("\n{}", hint_line(env!("CARGO_PKG_VERSION"), &notice));
@@ -375,6 +377,7 @@ async fn get(url: &str) -> Result<Vec<u8>> {
     Ok(response.bytes().await?.to_vec())
 }
 
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 async fn perform_update(exe_path: &Path, version: &str) -> Result<()> {
     let slug = platform_slug().context("This platform has no self-update build")?;
     let asset = asset_name(slug, version);

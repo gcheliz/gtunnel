@@ -13,6 +13,7 @@ pub struct Spend {
 }
 
 /// Run a child process, pumping its stdout and stderr through the log filter, then exit with its status.
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub async fn run(
     argv: Vec<String>,
     port: Option<u16>,
