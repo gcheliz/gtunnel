@@ -162,8 +162,8 @@ exit code and the advice. Only an expired login is told to log in.
 | Key invalid | `Invalid JWT` | `auth` (4) | Replace the key file |
 | Permission denied | a 403 with no reason | `auth` (4) | Check the account's IAM roles in the project; `gtunnel doctor` |
 | Service disabled | a 403 with `SERVICE_DISABLED` | `usage` (2) | `gcloud services enable <api> --project=<project>`: the message names the API |
-| Quota or rate limited | a 429, `RATE_LIMIT_EXCEEDED`, `RESOURCE_EXHAUSTED` | `unavailable` (6) | Wait and retry |
-| Network | `Could not resolve host`, `Network is unreachable`, a 502 to 504 | `unavailable` (6) | Check the connection and retry |
+| Quota or rate limited | a 429, `RATE_LIMIT_EXCEEDED`, `RESOURCE_EXHAUSTED` | `unavailable` (6) | Wait and retry. gtunnel has already retried reads and deletes 4 times over a few seconds, so this is a sustained limit |
+| Network | `Could not resolve host`, `Network is unreachable`, a 502 to 504 | `unavailable` (6) | Check the connection and retry. A reset, a 500, 502, 503, 504 or 429 on a read or a delete is retried 4 times first, with a growing, jittered wait that honours `Retry-After`; a create or update is repeated only when the connection was never made |
 | Timeout | `timed out after` | `unavailable` (6) | Retry; do not log in again |
 | Not found | a 404 | `not_found` (3) | Check the name, project and zone |
 
