@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.58](https://github.com/gcheliz/gtunnel/compare/v0.2.57...v0.2.58) - 2026-10-30
+
+### Fixed
+
+- *(reset)* a dying run can no longer survive or recreate the config directory ([#355](https://github.com/gcheliz/gtunnel/pull/355))
+
 ## [0.2.57](https://github.com/gcheliz/gtunnel/compare/v0.2.56...v0.2.57) - 2026-10-30
 
 ### Added
