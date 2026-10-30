@@ -100,8 +100,25 @@ impl std::fmt::Display for GcpError {
                 write!(f, "precondition failed (412): fingerprint mismatch")
             }
             GcpError::Api {
-                status, message, ..
-            } => write!(f, "GCP API error {status}: {message}"),
+                status,
+                message,
+                reason,
+            } => {
+                write!(f, "GCP API error {status}: {message}")?;
+                // Google's message names the API and the project but not the
+                // command, and "permission denied" is where people look for a
+                // role that is not missing
+                if crate::failure::Failure::from_gcp(*status, reason.as_deref())
+                    == crate::failure::Failure::ServiceDisabled
+                {
+                    write!(
+                        f,
+                        ". Enable the API the message names: gcloud services enable <api> \
+                         --project=<project>"
+                    )?;
+                }
+                Ok(())
+            }
         }
     }
 }

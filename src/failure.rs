@@ -151,6 +151,9 @@ impl Failure {
             });
         }
         let typed = cause.downcast_ref::<crate::error::GtunnelError>()?;
+        if let Some(failure) = typed.failure() {
+            return Some(failure);
+        }
         // Only gcloud's own stderr is read for words: any other message is
         // gtunnel's prose, which names `gcloud auth login` as advice
         if typed.kind == ErrorKind::Gcloud {

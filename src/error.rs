@@ -68,6 +68,11 @@ impl ErrorKind {
 pub struct GtunnelError {
     pub kind: ErrorKind,
     message: String,
+    /// What the failure was, when the producer knew. It rides beside the kind
+    /// because a caller that wraps the error in advice (`print_access_token`)
+    /// still has to branch on the cause, and the advice text names a login
+    /// that re-reading the message would mistake for one.
+    failure: Option<crate::failure::Failure>,
 }
 
 impl GtunnelError {
@@ -75,7 +80,21 @@ impl GtunnelError {
         Self {
             kind,
             message: message.into(),
+            failure: None,
         }
+    }
+
+    /// The kind follows from the failure, so the two cannot disagree.
+    pub fn from_failure(failure: crate::failure::Failure, message: impl Into<String>) -> Self {
+        Self {
+            kind: failure.kind(),
+            message: message.into(),
+            failure: Some(failure),
+        }
+    }
+
+    pub fn failure(&self) -> Option<crate::failure::Failure> {
+        self.failure
     }
 
     pub fn usage(message: impl Into<String>) -> Self {
@@ -124,19 +143,16 @@ impl std::error::Error for Exited {}
 /// The outermost classified cause wins: a context added on top of a gcloud
 /// failure by a caller that knows better (a login hint) is reached first.
 ///
-/// Two producers outside this module classify by what they know: a
-/// `GcpError` carries an HTTP status, and a refused or missing credential is
-/// `auth` and a missing resource is `not_found` whoever asked. A start that
-/// failed carries its own kind. Anything else a GCP call returned (a 409, a
-/// 500) is not the caller's to act on and stays `Internal`.
+/// Typed causes classify by what they know, through `Failure`: a `GcpError`
+/// by its status and reason (a refused credential is `auth`, a missing
+/// resource `not_found`, a quota or a hung gcloud `unavailable`), and a start
+/// that failed carries its own kind. Anything else a GCP call returned (a 409,
+/// a 500) is not the caller's to act on and stays `Internal`.
 pub fn kind_of(err: &anyhow::Error) -> ErrorKind {
     err.chain()
         .find_map(|cause| {
             if let Some(e) = cause.downcast_ref::<GtunnelError>() {
                 return Some(e.kind);
-            }
-            if let Some(e) = cause.downcast_ref::<crate::gcp::client::GcpError>() {
-                return gcp_kind(e);
             }
             if let Some(e) = cause.downcast_ref::<crate::commands::ZoneUnresolved>() {
                 return Some(e.kind);
@@ -144,22 +160,17 @@ pub fn kind_of(err: &anyhow::Error) -> ErrorKind {
             if let Some(e) = cause.downcast_ref::<crate::commands::access::StartFailed>() {
                 return Some(e.kind);
             }
-            cause
-                .downcast_ref::<crate::commands::access::Printed>()
-                .map(|p| p.0.kind)
+            if let Some(p) = cause.downcast_ref::<crate::commands::access::Printed>() {
+                return Some(p.0.kind);
+            }
+            // A typed cause nobody wrapped (a GCP answer, a hung gcloud, a
+            // refused connection) says for itself what it was. `Internal` is
+            // the default already, so it is not an answer that stops the walk
+            crate::failure::Failure::of_cause(cause)
+                .map(crate::failure::Failure::kind)
+                .filter(|kind| *kind != ErrorKind::Internal)
         })
         .unwrap_or(ErrorKind::Internal)
-}
-
-fn gcp_kind(err: &crate::gcp::client::GcpError) -> Option<ErrorKind> {
-    use crate::gcp::client::GcpError;
-    match err {
-        GcpError::NotFound => Some(ErrorKind::NotFound),
-        GcpError::Api {
-            status: 401 | 403, ..
-        } => Some(ErrorKind::Auth),
-        _ => None,
-    }
 }
 
 /// The whole chain, as `{e:#}` prints it.
@@ -215,6 +226,68 @@ mod tests {
             assert_eq!(kind_of(&err), kind, "{text}");
             assert_eq!(kind_of(&err).exit_code(), code, "{text}");
         }
+    }
+
+    #[test]
+    fn a_gcp_reason_decides_the_kind_a_status_alone_cannot() {
+        use crate::gcp::client::GcpError;
+        let api = |status, reason: &str| GcpError::Api {
+            status,
+            message: "m".into(),
+            reason: Some(reason.into()),
+        };
+        let cases = [
+            (api(403, "SERVICE_DISABLED"), ErrorKind::Usage, 2),
+            (api(403, "RATE_LIMIT_EXCEEDED"), ErrorKind::Unavailable, 6),
+            (api(429, "RESOURCE_EXHAUSTED"), ErrorKind::Unavailable, 6),
+            (api(403, "PERMISSION_DENIED"), ErrorKind::Auth, 4),
+            (api(503, "UNAVAILABLE"), ErrorKind::Unavailable, 6),
+        ];
+        for (gcp, kind, code) in cases {
+            let text = gcp.to_string();
+            let err = anyhow::Error::new(gcp).context("GET https://example.invalid/x");
+            assert_eq!(kind_of(&err), kind, "{text}");
+            assert_eq!(kind_of(&err).exit_code(), code, "{text}");
+        }
+    }
+
+    #[test]
+    fn a_disabled_api_says_to_enable_it_and_is_not_an_auth_failure() {
+        use crate::gcp::client::GcpError;
+        let err = anyhow::Error::new(GcpError::Api {
+            status: 403,
+            message: "Compute Engine API has not been used in project example-dev-1a2b".into(),
+            reason: Some("SERVICE_DISABLED".into()),
+        })
+        .context("GET https://example.invalid/x");
+        assert_ne!(kind_of(&err), ErrorKind::Auth);
+        let text = message_of(&err);
+        assert!(text.contains("gcloud services enable"), "{text}");
+        assert!(!text.contains("auth login"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn a_timeout_anywhere_in_the_chain_exits_with_the_retry_later_code() {
+        let mut cmd = tokio::process::Command::new("sleep");
+        cmd.arg("5");
+        let err = crate::proc::output_within(cmd, std::time::Duration::from_millis(20), "gcloud")
+            .await
+            .unwrap_err()
+            .context("Failed to run gcloud");
+        assert_eq!(kind_of(&err), ErrorKind::Unavailable);
+        assert_eq!(kind_of(&err).exit_code(), 6);
+    }
+
+    #[test]
+    fn a_failure_carried_by_the_error_decides_its_kind() {
+        let err: anyhow::Error =
+            GtunnelError::from_failure(crate::failure::Failure::ImpersonationDenied, "denied")
+                .into();
+        assert_eq!(kind_of(&err), ErrorKind::Auth);
+        assert_eq!(
+            crate::failure::Failure::of(&err),
+            Some(crate::failure::Failure::ImpersonationDenied)
+        );
     }
 
     #[test]
