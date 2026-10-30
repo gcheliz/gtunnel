@@ -408,6 +408,22 @@ fn reset_stops_a_live_run_before_removing_the_config() {
     }
 }
 
+// The hint after a command starts `update --check` detached when the cache is
+// missing, and reset has just deleted the cache with everything else. That
+// child writes the cache a moment after reset exited, so the directory comes
+// back. The window is short, so the test watches for a while: a child that
+// never started cannot be told from one that is late except by waiting.
+#[test]
+fn reset_leaves_no_config_directory_behind_even_a_moment_later() {
+    let h = Harness::new();
+    let (code, err) = h.run_bounded(&["reset", "--yes"]);
+    assert_eq!(code, Some(0), "{err}");
+    assert!(
+        !poll(Duration::from_secs(3), || h.root().join("config").exists()),
+        "something recreated the config after reset removed it"
+    );
+}
+
 #[test]
 fn reset_removes_nothing_when_the_runs_cannot_be_listed() {
     let h = Harness::new();

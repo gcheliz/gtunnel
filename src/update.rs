@@ -40,9 +40,8 @@ fn read_cache() -> Option<UpdateCache> {
 
 fn write_cache(cache: &UpdateCache) -> Result<()> {
     let path = cache_path().context("Could not determine the cache path")?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+    // Never creates the directory: a check that outlives `reset` writes after
+    // the config is gone, and a cache is not worth bringing it back for
     crate::fsutil::write_atomic(&path, &serde_json::to_string(cache)?)?;
     Ok(())
 }
@@ -622,6 +621,23 @@ mod tests {
         assert_eq!(
             sha256_bytes(b"abc").unwrap(),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    // `reset` deletes the directory and the hint after it starts a check that
+    // writes the cache; creating the parent brought the directory back
+    #[test]
+    fn a_cache_write_does_not_recreate_a_deleted_config_directory() {
+        let temp = crate::config::testing::TempConfigDir::new();
+        std::fs::remove_dir_all(temp.path()).unwrap();
+        let _ = write_cache(&UpdateCache {
+            latest_version: "9.9.9".to_string(),
+            checked_at: 1,
+            failed_at: None,
+        });
+        assert!(
+            !temp.path().exists(),
+            "the cache write recreated the directory"
         );
     }
 

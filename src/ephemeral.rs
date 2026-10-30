@@ -79,31 +79,27 @@ impl EphemeralRecord {
         crate::fsutil::write_atomic(&path, &json)
     }
 
-    /// Whether this run's process is still the one that was recorded. A start
-    /// token that cannot be read reads as dead: a process we cannot identify
-    /// is never signalled.
+    /// Whether this run's process is still the one that was recorded. One we
+    /// cannot identify is not alive here, because the callers signal what this
+    /// says is alive; those that wait for an exit ask `liveness` and keep
+    /// waiting on `Unknown`.
     pub fn is_alive(&self) -> bool {
-        if !pid_is_alive(self.pid) {
-            return false;
-        }
-        match &self.pid_start {
-            Some(token) => crate::proc::start_token(self.pid).as_deref() == Some(token),
-            None => true,
-        }
+        self.liveness() == Liveness::Alive
     }
 
-    /// Whether the `gtunnel run` that owns this record is still there, judged
-    /// like `is_alive`. None for a record that names no owner, which no one can
-    /// call orphaned on this evidence.
+    /// The recorded process as `Liveness`: gone only when the system says so.
+    pub fn liveness(&self) -> Liveness {
+        liveness_of(self.pid, self.pid_start.as_deref())
+    }
+
+    /// Whether the `gtunnel run` that owns this record is still there. None for
+    /// a record that names no owner, which no one can call orphaned on this
+    /// evidence. An owner that could not be looked up reads as there: false
+    /// means the system said it is gone, since the answer decides whether its
+    /// run is reaped and whether `reset` deletes the directory it writes into.
     pub fn owner_alive(&self) -> Option<bool> {
         let pid = self.owner_pid?;
-        if !pid_is_alive(pid) {
-            return Some(false);
-        }
-        Some(match &self.owner_start {
-            Some(token) => crate::proc::start_token(pid).as_deref() == Some(token),
-            None => true,
-        })
+        Some(liveness_of(pid, self.owner_start.as_deref()) != Liveness::Gone)
     }
 
     /// Why this run should be stopped by someone other than its owner, or None
@@ -141,7 +137,7 @@ impl EphemeralRecord {
             return true;
         }
         loop {
-            if self.owner_alive() != Some(true) {
+            if self.owner_alive() == Some(false) {
                 return true;
             }
             if std::time::Instant::now() >= deadline {
@@ -180,7 +176,7 @@ impl EphemeralRecord {
     pub async fn wait_for_exit(&self, budget: std::time::Duration) -> bool {
         let deadline = std::time::Instant::now() + budget;
         loop {
-            if !self.is_alive() {
+            if self.liveness() == Liveness::Gone {
                 return true;
             }
             if std::time::Instant::now() >= deadline {
@@ -190,13 +186,48 @@ impl EphemeralRecord {
         }
     }
 
+    /// Never creates the run directory, unlike `path`: this is the last thing
+    /// a run does, and `reset` may have deleted the directory by then. A
+    /// directory made here outlives the reset that was meant to remove it.
     pub fn remove(&self) -> Result<()> {
-        let path = self.path()?;
-        if path.exists() {
-            std::fs::remove_file(&path)
-                .with_context(|| format!("Failed to remove {}", path.display()))?;
+        let path = config_dir()?.join("run").join(format!(
+            "{}.json",
+            crate::state::label_of(&self.account_name, &self.name)
+        ));
+        match std::fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e).with_context(|| format!("Failed to remove {}", path.display())),
         }
-        Ok(())
+    }
+}
+
+/// What the system says about a recorded process, judged with its start token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Liveness {
+    /// The recorded process, running.
+    Alive,
+    /// Not there, exited and waiting to be reaped, or a different process under
+    /// a recycled pid.
+    Gone,
+    /// The lookup failed, so nothing is known.
+    Unknown,
+}
+
+fn liveness_of(pid: u32, start: Option<&str>) -> Liveness {
+    if !pid_is_alive(pid) {
+        return Liveness::Gone;
+    }
+    judge(crate::proc::presence(pid), start)
+}
+
+fn judge(found: crate::proc::Presence, start: Option<&str>) -> Liveness {
+    use crate::proc::Presence;
+    match (found, start) {
+        (Presence::Gone, _) => Liveness::Gone,
+        (Presence::Unknown, _) => Liveness::Unknown,
+        (Presence::Alive(now), Some(then)) if now != then => Liveness::Gone,
+        (Presence::Alive(_), _) => Liveness::Alive,
     }
 }
 
@@ -1222,6 +1253,52 @@ mod tests {
 
         record.remove().expect("remove");
         assert!(list_ephemeral().expect("list").is_empty());
+    }
+
+    // The run's teardown removes its record last, and `reset` may have deleted
+    // the directory by then; creating it again is what left a config behind
+    #[test]
+    fn a_run_removing_its_record_does_not_recreate_a_deleted_config_directory() {
+        let temp = TempConfigDir::new();
+        let record = EphemeralRecord {
+            name: "gt-abc123".to_string(),
+            account_name: "dev".to_string(),
+            pid: std::process::id(),
+            spec: spec(),
+            started_at: 1_700_000_000,
+            ttl_secs: None,
+            pid_start: None,
+            owner_pid: None,
+            owner_start: None,
+        };
+        record.save().expect("save");
+        std::fs::remove_dir_all(temp.path()).unwrap();
+
+        record
+            .remove()
+            .expect("a record in a missing directory is already gone");
+        assert!(
+            !temp.path().exists(),
+            "remove recreated the config directory"
+        );
+    }
+
+    #[test]
+    fn a_lookup_that_failed_is_unknown_never_gone() {
+        use crate::proc::Presence;
+        assert_eq!(judge(Presence::Unknown, Some("t")), Liveness::Unknown);
+        assert_eq!(judge(Presence::Unknown, None), Liveness::Unknown);
+        assert_eq!(judge(Presence::Gone, Some("t")), Liveness::Gone);
+        assert_eq!(judge(Presence::Gone, None), Liveness::Gone);
+        assert_eq!(
+            judge(Presence::Alive("t".into()), Some("t")),
+            Liveness::Alive
+        );
+        assert_eq!(
+            judge(Presence::Alive("u".into()), Some("t")),
+            Liveness::Gone
+        );
+        assert_eq!(judge(Presence::Alive("u".into()), None), Liveness::Alive);
     }
 
     #[test]
