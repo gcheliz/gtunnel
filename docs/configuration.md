@@ -218,13 +218,17 @@ to each tool's own scale — the table is in
 | `log_level` in `config.toml` | `log_level = "debug"` | nothing |
 | nothing set | `info` | — |
 
-```
+```console
 $ gtunnel --log-level verbose list
+? 2
 error: invalid value 'verbose' for '--log-level <LEVEL>': 'verbose' is not a log level: use quiet, info or debug
 
 For more information, try '--help'.
+
 $ GTUNNEL_LOG_LEVEL=verbose gtunnel list
+? 2
 Error: GTUNNEL_LOG_LEVEL: 'verbose' is not a log level: use quiet, info or debug
+
 ```
 
 Two things the precedence is for. `--log-level` answers "why is this tunnel silent"
@@ -277,9 +281,11 @@ into it: it falls back to the file with the environment, then the file alone, th
 A bad `config.toml` value fails every command with exit 2 naming the key; a bad variable,
 older spellings included, fails with exit 2 naming the variable:
 
-```
+```console
 $ GTUNNEL_START_DEADLINE=soon gtunnel list
+? 2
 Error: GTUNNEL_START_DEADLINE: 'soon' is not a duration like 30s or 1m (expected number at 0)
+
 ```
 
 `editor` ranks below `$VISUAL` and `$EDITOR`: `GTUNNEL_EDITOR`, then `$VISUAL`, then
@@ -335,7 +341,7 @@ fingerprint_attempts = 5
 
 When a variable gives a value other than the file's, `gtunnel doctor` says so and what to unset:
 
-```
+```text
 start_deadline is 1m 30s here because GTUNNEL_START_DEADLINE is set in the environment; config.toml says '45s' and is ignored for it. Unset GTUNNEL_START_DEADLINE to use the file
 ```
 
@@ -370,9 +376,11 @@ order of [Settings the environment can override](#settings-the-environment-can-o
 `init` writes all five at their defaults. The rules run on the merged result, so a variable
 that makes the file's other keys inconsistent is refused like any bad value:
 
-```
+```console
 $ GTUNNEL_RESTART_WINDOW=soon gtunnel list
+? 2
 Error: GTUNNEL_RESTART_WINDOW: 'soon' is not a duration (expected number at 0)
+
 ```
 
 A supervisor reads the budget once, at start. A launchd or systemd job does not see your shell,

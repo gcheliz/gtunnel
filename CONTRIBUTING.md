@@ -131,6 +131,17 @@ fast, but cannot see a key that never arrives. If the change is a layout, write 
 test; if it is a key or the terminal, write the PTY test; a new key that also changes a
 layout needs both. A PTY test waits on the screen with a bound, never a fixed sleep.
 
+### Doc transcripts
+
+`tests/doc_transcripts.rs` runs the blocks fenced `console` in `docs/commands.md`,
+`docs/usage.md` and `docs/configuration.md` against the binary (macOS only, with a stub
+`launchctl` first on `PATH`). A transcript that needs a live tunnel, a prompt or real GCP is
+fenced `console,ignore`; a block that is not a transcript is `text`, never a bare fence. A
+block ends with one blank line, a `? N` line after the command is a non-zero exit code, and
+`[HOME]` is the scratch home. When a message changes, `TRYCMD=overwrite cargo test --test
+doc_transcripts` rewrites the blocks: read the diff first, because what it writes is what the
+binary printed.
+
 ## Documentation is part of the change
 
 A change that alters behaviour updates the docs in the same pull request.
