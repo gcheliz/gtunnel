@@ -1143,6 +1143,7 @@ pub struct FindingJson {
     pub fixable: bool,
 }
 
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub async fn cmd_doctor(
     account: Option<&str>,
     fix: bool,

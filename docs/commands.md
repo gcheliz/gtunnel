@@ -653,6 +653,8 @@ Nothing, the first time: one failed check is a slow moment, two in a row is a pr
 | A failed check inside a wait | does nothing; at a 30s interval the earliest stop is six minutes after the first failed check |
 | Two passing checks in a row | clear the breaker; so does stopping the tunnel yourself |
 | After the stop | the log says what the watchdog saw and who held the connections. Nothing restarts it: the next pass forgets it. `gtunnel start <name>` brings it back, and the ladder starts over |
+| A tunnel you stop or park while a check is running | is left alone: the pass reads its state again before acting on what it saw |
+| Two passes at once | the second skips its round (`-v` says so), so neither overwrites the other's count |
 
 A tunnel stopped on a spent [restart budget](configuration.md#the-restart-budget) is skipped:
 restarting it would undo that decision with a fresh count.
@@ -837,7 +839,8 @@ The check runs in the background, never blocks a command, and runs at most once 
 [`update_check_interval`](configuration.md#settings-the-environment-can-override) (6 hours by
 default). A failed check is recorded and holds the next off for the same interval; the TUI says
 `update check failed` until one succeeds. A downloaded binary and one in `~/.cargo/bin` replace
-themselves after verifying the published SHA-256; a Homebrew install is pointed at
+themselves after verifying the published SHA-256, by renaming a new file into place, never by
+rewriting the running one; a Homebrew install is pointed at
 `brew upgrade gtunnel`.
 
 ## mcp

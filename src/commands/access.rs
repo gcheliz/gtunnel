@@ -101,6 +101,9 @@ pub struct Added {
     pub display_url: String,
     pub display_target: String,
     pub started: Option<Started>,
+    /// Checks that could not run and did not stop the add. Returned rather
+    /// than printed, so the TUI and the MCP server can show them their own way
+    pub warnings: Vec<String>,
 }
 
 // The record and the service, without the start: the CLI prints the added line
@@ -130,14 +133,16 @@ async fn save_tunnel(account: Option<&str>, req: &AddRequest<'_>) -> Result<Adde
         .into());
     }
     early.check_label(&acct.name, name)?;
+    crate::ephemeral::check_name_free_of_runs(&acct.name, name)?;
 
     let (host, remote_port) = parse_access_target(target)?;
+    let mut warnings = Vec::new();
     let access_target = match (dest_group, via) {
         // The instance is what gtunnel checks exists; the host behind it is
         // reachable from there or it is not, which only the tunnel can tell
         (_, Some(instance)) => {
             let zone = require_zone(&acct, zone)?;
-            verify_instance(&acct, &zone, instance).await?;
+            warnings.extend(verify_instance(&acct, &zone, instance).await?);
             AccessTarget::Jump {
                 instance: instance.to_string(),
                 zone,
@@ -154,7 +159,7 @@ async fn save_tunnel(account: Option<&str>, req: &AddRequest<'_>) -> Result<Adde
         },
         (None, None) => {
             let zone = require_zone(&acct, zone)?;
-            verify_instance(&acct, &zone, &host).await?;
+            warnings.extend(verify_instance(&acct, &zone, &host).await?);
             AccessTarget::Instance {
                 instance: host,
                 zone,
@@ -165,6 +170,7 @@ async fn save_tunnel(account: Option<&str>, req: &AddRequest<'_>) -> Result<Adde
     // The port choice reads the saved ports, so it belongs under the same lock
     // as the save; the gcloud checks above are outside it
     let tunnel = TunnelState::update(|state| {
+        crate::ephemeral::check_name_free_of_runs(&acct.name, name)?;
         let local_port = pick_local_port(state, name, local_port)?;
 
         let tunnel = new_access_tunnel(name, &acct.name, access_target, remote_port, local_port);
@@ -179,6 +185,7 @@ async fn save_tunnel(account: Option<&str>, req: &AddRequest<'_>) -> Result<Adde
         display_url: tunnel.display_url(),
         display_target: tunnel.display_target(),
         started: None,
+        warnings,
     })
 }
 
@@ -227,6 +234,7 @@ pub async fn add_tunnel(account: Option<&str>, req: AddRequest<'_>) -> Result<Ad
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub async fn cmd_add(
     account: Option<&str>,
     name: &str,
@@ -251,6 +259,9 @@ pub async fn cmd_add(
         start,
     };
     let added = save_tunnel(account, &req).await?;
+    for w in &added.warnings {
+        eprintln!("Warning: {w}");
+    }
     println!(
         "{} {}  {} -> {}",
         TunnelStatus::Stopped.symbol(),
@@ -265,7 +276,11 @@ pub async fn cmd_add(
 }
 
 // A typo in an instance name otherwise surfaces as a tunnel that never starts
-pub(crate) async fn verify_instance(acct: &Account, zone: &str, instance: &str) -> Result<()> {
+pub(crate) async fn verify_instance(
+    acct: &Account,
+    zone: &str,
+    instance: &str,
+) -> Result<Option<String>> {
     let client = GcpClient::for_account(acct);
     verify_instance_with_client(&client, acct, zone, instance).await
 }
@@ -275,18 +290,18 @@ pub(crate) async fn verify_instance_with_client(
     acct: &Account,
     zone: &str,
     instance: &str,
-) -> Result<()> {
+) -> Result<Option<String>> {
     match compute::get_instance(client, &acct.project, zone, instance).await {
-        Ok(Some(_)) => Ok(()),
+        Ok(Some(_)) => Ok(None),
         Ok(None) => bail!(
             "Instance '{instance}' not found in zone '{zone}' of project '{}'. Run `gtunnel zones` to check available zones",
             acct.project
         ),
-        // A lookup that cannot run is not proof the instance is missing
-        Err(e) => {
-            eprintln!("Warning: could not verify instance '{instance}': {e:#}");
-            Ok(())
-        }
+        // A lookup that cannot run is not proof the instance is missing, so
+        // it is a warning for the caller to show, not a refusal
+        Err(e) => Ok(Some(format!(
+            "could not verify instance '{instance}': {e:#}"
+        ))),
     }
 }
 
@@ -336,6 +351,7 @@ impl std::error::Error for Printed {}
 // The CLI keeps the lines a failed start always printed, glyph included, on
 // stdout where a script reading `gtunnel start` already looks for them; only
 // the exit code changes
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 fn print_failed(e: anyhow::Error) -> anyhow::Error {
     match e.downcast::<StartFailed>() {
         Ok(failed) => {
@@ -548,6 +564,7 @@ async fn start_inner(account: Option<&str>, name: &str) -> Result<Started> {
     })
 }
 
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 fn print_started(started: &Started) {
     println!(
         "{} {}  {}",
@@ -616,6 +633,7 @@ pub async fn stop_by_name(account: Option<&str>, name: &str) -> Result<Stopped> 
     Ok(Stopped::Tunnel)
 }
 
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub async fn cmd_stop(account: Option<&str>, name: &str) -> Result<()> {
     stop_by_name(account, name).await?;
     println!("{} {name} stopped", TunnelStatus::Stopped.symbol());
@@ -640,6 +658,7 @@ fn set_record_auto_start(account: &str, name: &str, on: bool) -> Result<Persiste
     })
 }
 
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub async fn cmd_auto_start(account: Option<&str>, name: &str, wanted: Option<bool>) -> Result<()> {
     let (config, acct) = resolve(account)?;
     let state = TunnelState::load()?;
@@ -720,12 +739,14 @@ pub async fn delete_tunnel(account: Option<&str>, name: &str) -> Result<()> {
     })
 }
 
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub async fn cmd_delete(account: Option<&str>, name: &str) -> Result<()> {
     delete_tunnel(account, name).await?;
     println!("Deleted {name}");
     Ok(())
 }
 
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub async fn cmd_logs(account: Option<&str>, name: &str, follow: bool, lines: usize) -> Result<()> {
     let (_, acct) = resolve(account)?;
     let state = TunnelState::load()?;
@@ -988,6 +1009,7 @@ async fn fill_health(
     }
 }
 
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub async fn cmd_list(account: Option<&str>, json: bool) -> Result<()> {
     let (_, acct) = resolve(account)?;
     if json {
@@ -1061,6 +1083,7 @@ fn external_row(external: &crate::discovery::ExternalTunnel) -> ListRow {
     }
 }
 
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub async fn cmd_zones(account: Option<&str>, default: Option<&str>) -> Result<()> {
     let (_, acct) = resolve(account)?;
     let client = GcpClient::for_account(&acct);

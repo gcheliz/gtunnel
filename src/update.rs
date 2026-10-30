@@ -43,7 +43,7 @@ fn write_cache(cache: &UpdateCache) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, serde_json::to_string(cache)?)?;
+    crate::fsutil::write_atomic(&path, &serde_json::to_string(cache)?)?;
     Ok(())
 }
 
@@ -160,6 +160,7 @@ fn detect_install_method_from_path(exe: &Path) -> InstallMethod {
     }
 }
 
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub async fn cmd_update(check_only: bool) -> Result<()> {
     let current = env!("CARGO_PKG_VERSION");
     eprintln!("Checking for updates...");
@@ -283,6 +284,7 @@ pub fn spawn_check_if_due() {
 
 // Reads the cache only: a CLI command must never wait on the network to print
 // its own output
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub fn maybe_print_update_hint() {
     if let Some(notice) = available_update() {
         eprintln!("\n{}", hint_line(env!("CARGO_PKG_VERSION"), &notice));
@@ -375,6 +377,7 @@ async fn get(url: &str) -> Result<Vec<u8>> {
     Ok(response.bytes().await?.to_vec())
 }
 
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 async fn perform_update(exe_path: &Path, version: &str) -> Result<()> {
     let slug = platform_slug().context("This platform has no self-update build")?;
     let asset = asset_name(slug, version);
@@ -432,16 +435,38 @@ fn replace_binary(new_bin: &Path, exe_path: &Path) -> Result<()> {
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(new_bin, std::fs::Permissions::from_mode(0o755))?;
-        if std::fs::rename(new_bin, exe_path).is_err() {
-            std::fs::copy(new_bin, exe_path)?;
+        if std::fs::rename(new_bin, exe_path).is_ok() {
+            return Ok(());
         }
-        Ok(())
+        copy_beside_then_swap(new_bin, exe_path)
     }
     #[cfg(not(unix))]
     {
         let _ = (new_bin, exe_path);
         anyhow::bail!("Self-update works on macOS and Linux only")
     }
+}
+
+// The download sits on another volume. Copying onto exe_path would truncate
+// the inode the kernel has mapped and signed, and a rewritten signed binary
+// is killed at its next launch on macOS. Stage the copy beside the target,
+// same volume, and swap the directory entry instead
+#[cfg(unix)]
+fn copy_beside_then_swap(new_bin: &Path, exe_path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = exe_path
+        .parent()
+        .context("The executable has no directory")?;
+    let staged = dir.join(format!(".gtunnel-update-{}.new", std::process::id()));
+    let _ = std::fs::remove_file(&staged);
+    let swapped = std::fs::copy(new_bin, &staged)
+        .and_then(|_| std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)))
+        .and_then(|_| std::fs::rename(&staged, exe_path));
+    if let Err(e) = swapped {
+        let _ = std::fs::remove_file(&staged);
+        return Err(e).with_context(|| format!("Failed to replace {}", exe_path.display()));
+    }
+    Ok(())
 }
 
 struct TempDirGuard(PathBuf);
@@ -455,6 +480,42 @@ impl Drop for TempDirGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn replacing_across_volumes_gives_the_target_a_new_inode_and_never_writes_the_old_one() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("gtunnel");
+        let new_bin = dir.path().join("download");
+        std::fs::write(&exe, "old binary").unwrap();
+        std::fs::write(&new_bin, "new binary").unwrap();
+        // A second link keeps the old inode reachable after the swap
+        let old_link = dir.path().join("old-link");
+        std::fs::hard_link(&exe, &old_link).unwrap();
+        let old_inode = std::fs::metadata(&exe).unwrap().ino();
+
+        copy_beside_then_swap(&new_bin, &exe).unwrap();
+
+        let meta = std::fs::metadata(&exe).unwrap();
+        assert_ne!(meta.ino(), old_inode);
+        assert_eq!(std::fs::read_to_string(&exe).unwrap(), "new binary");
+        assert_eq!(meta.permissions().mode() & 0o777, 0o755);
+        assert_eq!(std::fs::read_to_string(&old_link).unwrap(), "old binary");
+        let names = std::fs::read_dir(dir.path()).unwrap().count();
+        assert_eq!(names, 3, "a staged copy was left behind");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_swap_returns_the_error_and_leaves_the_target_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("gtunnel");
+        std::fs::write(&exe, "old binary").unwrap();
+        let missing = dir.path().join("no-such-download");
+        assert!(copy_beside_then_swap(&missing, &exe).is_err());
+        assert_eq!(std::fs::read_to_string(&exe).unwrap(), "old binary");
+    }
 
     #[test]
     fn versions_compare_by_number_not_by_text() {

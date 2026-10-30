@@ -1,3 +1,6 @@
+// The whole module is CLI output, so printing is its job
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+
 //! The command dispatch, in the library crate so the binary stays a shell
 //! around it: `main` owns the process (the runtime, the exit code, what an
 //! error prints) and this owns what each subcommand calls.

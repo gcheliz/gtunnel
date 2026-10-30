@@ -1413,7 +1413,7 @@ impl App {
                 self.set_status("refreshing");
             }
             KeyCode::Char('s') => {
-                if self.refuse_pending() {
+                if self.refuse_pending() || self.refuse_ephemeral("starting") {
                     return None;
                 }
                 if let Some(entry) = self.selected_entry() {
@@ -1461,6 +1461,9 @@ impl App {
             }
             KeyCode::Char('d') => self.ask_delete(),
             KeyCode::Char('A') => {
+                if self.refuse_ephemeral("setting auto-start on") {
+                    return None;
+                }
                 return self.op_for("auto-start", Op::ToggleAutoStart);
             }
             KeyCode::Char('m') => return self.import_op(),
@@ -1997,6 +2000,10 @@ impl App {
             return;
         }
         let name = entry.name().to_string();
+        // The delete op carries a name, and a saved tunnel may hold the run's
+        if self.refuse_ephemeral("deleting") {
+            return;
+        }
         if self.refuse_pending() {
             return;
         }
@@ -2794,12 +2801,16 @@ impl App {
         self.used_ports = used_ports;
         self.loaded = true;
         self.load_failed = false;
-        let selected_name = self.selected_entry().map(|e| e.name().to_string());
+        // A run and a saved tunnel may share a name, so a row is told apart by
+        // its kind and account as well
+        let key_of =
+            |e: &TunnelEntry| (e.kind, e.tunnel.account_name.clone(), e.name().to_string());
+        let selected_key = self.selected_entry().map(key_of);
         let carried = std::mem::take(&mut self.entries);
         self.entries = entries
             .into_iter()
             .map(|mut entry| {
-                match carried.iter().find(|o| o.name() == entry.name()) {
+                match carried.iter().find(|o| key_of(o) == key_of(&entry)) {
                     Some(old) => {
                         entry.history = old.history.clone();
                         entry.restart_watch = old.restart_watch.clone();
@@ -2829,8 +2840,8 @@ impl App {
                 entry
             })
             .collect();
-        self.selected = selected_name
-            .and_then(|name| self.entries.iter().position(|e| e.name() == name))
+        self.selected = selected_key
+            .and_then(|key| self.entries.iter().position(|e| key_of(e) == key))
             .unwrap_or(0);
         if self.selected >= self.entries.len() {
             self.selected = self.entries.len().saturating_sub(1);

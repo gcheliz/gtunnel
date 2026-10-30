@@ -185,7 +185,7 @@ pub fn signal_group(pgid: i32, signal: libc::c_int) {
 }
 
 #[cfg(unix)]
-fn group_alive(pgid: i32) -> bool {
+pub fn group_alive(pgid: i32) -> bool {
     // SAFETY: signal 0 sends nothing; pgid is checked positive by the caller.
     pgid > 0 && unsafe { libc::kill(-pgid, 0) } == 0
 }
