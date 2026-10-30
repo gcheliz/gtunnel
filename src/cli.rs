@@ -461,6 +461,9 @@ impl Commands {
             | Commands::Rename { .. }
             | Commands::Autostart { .. }
             | Commands::Logs { .. }
+            // Only asks the service manager to end a job, so an expired login
+            // must not leave a tunnel that cannot be stopped
+            | Commands::Stop { .. }
             // Reads service status and local processes only, so a stale login
             // must not stand between a person and their own list
             | Commands::List { .. } => false,
@@ -484,7 +487,6 @@ impl Commands {
             Commands::Expose { .. }
             | Commands::Run { .. }
             | Commands::Start { .. }
-            | Commands::Stop { .. }
             | Commands::Restart { .. }
             | Commands::Move { .. }
             | Commands::Relay { .. } => true,
@@ -1027,12 +1029,13 @@ mod tests {
                 "{name} must not need a login"
             );
         }
-        let skip_with_args: [&[&str]; 6] = [
+        let skip_with_args: [&[&str]; 7] = [
             &["gtunnel", "completions", "zsh"],
             &["gtunnel", "delete", "db"],
             &["gtunnel", "rename", "old", "new"],
             &["gtunnel", "autostart", "db"],
             &["gtunnel", "logs", "db"],
+            &["gtunnel", "stop", "db"],
             &["gtunnel", "list"],
         ];
         for args in skip_with_args {
@@ -1088,11 +1091,10 @@ mod tests {
             .command
             .expect("command")
             .needs_gcp_auth());
-        let check: [&[&str]; 7] = [
+        let check: [&[&str]; 6] = [
             &["gtunnel", "expose", "api", "3000"],
             &["gtunnel", "run", "bastion:5432"],
             &["gtunnel", "start", "db"],
-            &["gtunnel", "stop", "db"],
             &["gtunnel", "restart", "db"],
             &["gtunnel", "zones"],
             &["gtunnel", "relay", "status"],
