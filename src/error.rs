@@ -101,6 +101,22 @@ impl fmt::Display for GtunnelError {
 
 impl std::error::Error for GtunnelError {}
 
+/// An end the command has already explained on screen, with the status to
+/// leave by. `gtunnel run` is the one command whose exit code is not a kind:
+/// when gcloud dies it passes gcloud's own code on, so `run && ./migrate` stops
+/// for the reason gcloud gave. `exit_with` exits with it and prints nothing
+/// more, as it does for a failed start.
+#[derive(Debug)]
+pub struct Exited(pub i32);
+
+impl fmt::Display for Exited {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "exited with status {}", self.0)
+    }
+}
+
+impl std::error::Error for Exited {}
+
 /// The outermost classified cause wins: a context added on top of a gcloud
 /// failure by a caller that knows better (a login hint) is reached first.
 ///
