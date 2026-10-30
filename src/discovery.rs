@@ -204,7 +204,11 @@ pub async fn classify(
     snapshot: &Snapshot,
     state: &crate::state::TunnelState,
 ) -> Vec<ExternalTunnel> {
-    let ephemeral = crate::ephemeral::list_ephemeral().unwrap_or_default();
+    // Unknown, not empty: without the run records no process can be told from
+    // a run's own, so every one of them would read as a stranger
+    let Ok(ephemeral) = crate::ephemeral::list_ephemeral() else {
+        return Vec::new();
+    };
     let mut roots = HashSet::new();
     for label in managed_labels(state) {
         if let Some(pid) = crate::daemon::runtime_info(&label).await.pid {
@@ -551,5 +555,20 @@ mod tests {
         };
         let owned = owned_ports(&crate::state::TunnelState::default(), &record);
         assert!(owned.is_empty(), "{owned:?}");
+    }
+
+    // An unreadable run directory says nothing about which tunnels are runs,
+    // so listing every IAP process as a stranger would offer to adopt or kill
+    // the user's own live runs
+    #[test]
+    fn an_unreadable_run_directory_lists_nothing_as_unmanaged() {
+        let dir = crate::config::testing::TempConfigDir::new();
+        // A file where the directory should be: create_dir_all fails on it
+        std::fs::write(dir.path().join("run"), "not a directory").unwrap();
+        let found = tokio::runtime::Runtime::new().unwrap().block_on(classify(
+            &parse_snapshot(PS),
+            &crate::state::TunnelState::default(),
+        ));
+        assert!(found.is_empty(), "{found:?}");
     }
 }

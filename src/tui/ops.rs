@@ -63,7 +63,10 @@ pub async fn load_entries(account: &str) -> Result<(Vec<TunnelEntry>, HashSet<u1
         entries.push(entry);
     }
 
-    for (record, alive) in list_ephemeral().unwrap_or_default() {
+    // An error, not an empty list: a run directory that cannot be read would
+    // otherwise make every live run vanish from the screen with no word said.
+    // The refresh fails into the status line and the rows already shown stay.
+    for (record, alive) in list_ephemeral()? {
         if record.account_name != account {
             continue;
         }
@@ -706,6 +709,19 @@ async fn import(account: &str, name: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The refresh fails into the status line; an empty list would make every
+    // live run vanish without a word
+    #[test]
+    fn an_unreadable_run_directory_fails_the_refresh() {
+        let dir = crate::config::testing::TempConfigDir::new();
+        std::fs::write(dir.path().join("run"), "not a directory").unwrap();
+        let loaded = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(load_entries("dev"));
+        let error = loaded.expect_err("the run directory cannot be read");
+        assert!(format!("{error:#}").contains("run"), "{error:#}");
+    }
 
     // A `cmd_` account command prints its confirmation, and under the
     // alternate screen that line lands on the drawn page and stays there

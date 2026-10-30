@@ -92,7 +92,7 @@ Specify the release version and substitute your machine's file: `gtunnel-macos-a
 `gtunnel-macos-intel`, `gtunnel-linux-amd64` or `gtunnel-linux-arm64`.
 
 ```
-VERSION="v0.2.48"
+VERSION="v0.2.49"
 F="gtunnel-macos-arm64-${VERSION}.tar.gz"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F.sha256"
@@ -104,7 +104,7 @@ so they run on any glibc.
 
 ```
 $ gtunnel --version
-gtunnel 0.2.48
+gtunnel 0.2.49
 ```
 
 #### Already installed another way
@@ -449,7 +449,7 @@ check itself. On a Homebrew install:
 
 ```
 $ gtunnel list
-gtunnel v9.9.9 is available (current: v0.2.48). Run `brew upgrade gtunnel`.
+gtunnel v9.9.9 is available (current: v0.2.49). Run `brew upgrade gtunnel`.
 ```
 
 ## The TUI
@@ -457,6 +457,8 @@ gtunnel v9.9.9 is available (current: v0.2.48). Run `brew upgrade gtunnel`.
 `gtunnel` with no subcommand opens the TUI. `gtunnel demo` opens it with synthetic data: no
 GCP, no config file, no login, and its forms open the real pickers filled with placeholder
 configurations, projects, zones and instances.
+A SIGTERM or SIGHUP, from `kill` or a closed terminal window, closes the TUI the way `q` does,
+so the shell gets a working terminal back.
 
 `?` opens the full keymap, in the same four groups:
 
