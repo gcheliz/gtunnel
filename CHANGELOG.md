@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.3.17](https://github.com/gcheliz/gtunnel/compare/v0.3.16...v0.3.17) - 2026-10-30
+
+### Fixed
+
+- *(update)* wait for the Homebrew tap before telling brew users to upgrade ([#424](https://github.com/gcheliz/gtunnel/pull/424))
+
 ## [0.3.16](https://github.com/gcheliz/gtunnel/compare/v0.3.15...v0.3.16) - 2026-10-30
 
 ### Fixed
