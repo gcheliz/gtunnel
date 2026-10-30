@@ -427,7 +427,7 @@ pub fn unknown_key_findings(dir: &std::path::Path) -> Vec<Finding> {
     );
     scan(
         "tunnels.toml",
-        read("tunnels.toml").and_then(|t| crate::config::unknown_keys::<TunnelState>(&t).ok()),
+        read("tunnels.toml").and_then(|t| crate::state::unknown_tunnel_keys(&t).ok()),
     );
     out
 }
@@ -2739,6 +2739,14 @@ mod tests {
         config.accounts.push(account());
         let text = toml::to_string_pretty(&config).expect("serialize");
         std::fs::write(dir.path().join("config.toml"), text).expect("write");
+        assert!(unknown_key_findings(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn the_schema_marker_and_a_newer_kind_of_tunnel_are_not_unknown_keys() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let text = "schema_version = 1\n\n[[tunnels]]\nname = \"mesh\"\naccount_name = \"dev\"\n\n[tunnels.spec]\nmode = \"mesh_relay\"\npeers = 3\n";
+        std::fs::write(dir.path().join("tunnels.toml"), text).expect("write");
         assert!(unknown_key_findings(dir.path()).is_empty());
     }
 

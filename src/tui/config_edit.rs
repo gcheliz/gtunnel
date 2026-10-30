@@ -127,7 +127,10 @@ pub fn validate_config(text: &str) -> Result<Config> {
 fn refuse_unknown_keys<T: serde::de::DeserializeOwned + serde::Serialize>(
     text: &str,
 ) -> Result<()> {
-    let keys = crate::config::unknown_keys::<T>(text)?;
+    refuse_keys(crate::config::unknown_keys::<T>(text)?)
+}
+
+fn refuse_keys(keys: Vec<String>) -> Result<()> {
     match keys.as_slice() {
         [] => Ok(()),
         [only] => bail!("unknown key {only}"),
@@ -235,7 +238,7 @@ pub fn validate_tunnels(
             );
         }
     }
-    refuse_unknown_keys::<TunnelState>(text)?;
+    refuse_keys(crate::state::unknown_tunnel_keys(text)?)?;
     Ok(state)
 }
 

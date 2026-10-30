@@ -679,7 +679,8 @@ fn a_tunnel_moved_onto_a_live_runs_port_is_refused_and_the_file_is_unchanged() {
     edit(&mut app, moves_a_tunnel_to_the_runs_port);
     assert_eq!(
         app.config_view.error.as_deref(),
-        Some("line 1: Local port 17777 is already used by the run 'scratch'")
+        // Line 1 is the schema_version marker, so the first header is line 2
+        Some("line 2: Local port 17777 is already used by the run 'scratch'")
     );
     assert_eq!(
         std::fs::read(dir.path().join("tunnels.toml")).unwrap(),

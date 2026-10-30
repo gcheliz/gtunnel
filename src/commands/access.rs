@@ -1080,8 +1080,12 @@ pub async fn cmd_list(account: Option<&str>, json: bool) -> Result<()> {
     let tunnels = state.tunnels_for_account(&acct.name);
     let external = external_rows().await;
     let runs = crate::ephemeral::live_runs(&acct.name).unwrap_or_default();
+    // Entries of a kind a newer gtunnel wrote: named, so a missing row is never
+    // a mystery, and never edited
+    let unsupported = crate::state::unsupported_tunnels().unwrap_or_default();
+    let notes = unsupported_notes(&unsupported, &acct.name);
 
-    if tunnels.is_empty() && runs.is_empty() {
+    if tunnels.is_empty() && runs.is_empty() && notes.is_empty() {
         println!("No tunnels for account '{}'", acct.name);
         return Ok(());
     }
@@ -1108,7 +1112,20 @@ pub async fn cmd_list(account: Option<&str>, json: bool) -> Result<()> {
     for row in &rows {
         println!("{}", row.render(&layout));
     }
+    for note in notes {
+        println!("{note}");
+    }
     Ok(())
+}
+
+/// One line per saved tunnel this version cannot read. It sits under the table
+/// and not in it because it has no status, port or target to put in a column.
+fn unsupported_notes(items: &[crate::state::UnsupportedTunnel], account: &str) -> Vec<String> {
+    items
+        .iter()
+        .filter(|t| t.account_name == account)
+        .map(|t| format!("  {}  unsupported by this version ({})", t.name, t.kind))
+        .collect()
 }
 
 // IAP tunnels started outside gtunnel hold ports and confuse `doctor`, so the
@@ -1187,6 +1204,21 @@ mod new_tunnel_tests {
         assert!(!t.auto_start);
         assert_eq!(t.name, "db");
         assert_eq!(t.account_name, "dev");
+    }
+
+    #[test]
+    fn a_tunnel_of_a_newer_kind_is_listed_as_unsupported_for_its_own_account_only() {
+        let item = |name: &str, account: &str| crate::state::UnsupportedTunnel {
+            name: name.to_string(),
+            account_name: account.to_string(),
+            kind: "mesh_relay".to_string(),
+            raw: String::new(),
+        };
+        let notes = unsupported_notes(&[item("mesh", "dev"), item("other", "prod")], "dev");
+        assert_eq!(
+            notes,
+            vec!["  mesh  unsupported by this version (mesh_relay)".to_string()]
+        );
     }
 }
 
