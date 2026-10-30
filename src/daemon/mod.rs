@@ -182,6 +182,12 @@ pub fn remove_auth_marker_in(config_dir: &std::path::Path, label: &str) {
     let _ = std::fs::remove_file(auth_marker_in(config_dir, label));
 }
 
+/// The file a supervisor writes once its tunnel is listening. Named here so
+/// the watchdog reads the one the installer chose.
+pub fn ready_file_in(config_dir: &std::path::Path, label: &str) -> PathBuf {
+    config_dir.join("run").join(format!("{label}.ready"))
+}
+
 /// Where a supervisor records that it stopped because its tunnel spent the
 /// restart budget. Same directory and label as the auth marker, so one sweep
 /// of `run/` finds both; the file holds the last exit reason for `list`.
@@ -201,11 +207,19 @@ pub fn restart_history_beside(marker: &std::path::Path) -> PathBuf {
     marker.with_extension("restarts")
 }
 
+/// How many runs in a row died of the network, beside the history. Kept apart
+/// from it because these exits never spend the budget: an hour offline is a
+/// long count here and an empty history there.
+pub fn net_failures_beside(marker: &std::path::Path) -> PathBuf {
+    marker.with_extension("netfails")
+}
+
 /// Forget a spent budget: the marker that says why the job is down and the
 /// count that produced it. `start` and `delete` both want exactly this.
 pub fn clear_crash_state(marker: &std::path::Path) {
     let _ = std::fs::remove_file(marker);
     let _ = std::fs::remove_file(restart_history_beside(marker));
+    let _ = std::fs::remove_file(net_failures_beside(marker));
 }
 
 /// Whether this tunnel's supervisor stopped on purpose for a spent budget.
@@ -323,9 +337,7 @@ fn service_spec_with(
         args.push(local_port.to_string());
         args.push("--ready-file".to_string());
         args.push(
-            crate::config::config_dir()?
-                .join("run")
-                .join(format!("{label}.ready"))
+            ready_file_in(&crate::config::config_dir()?, &label)
                 .to_string_lossy()
                 .to_string(),
         );
@@ -425,16 +437,84 @@ pub fn platform_label(account: &str, name: &str) -> String {
 #[allow(unused_imports)]
 #[cfg(target_os = "macos")]
 pub use launchd::{
-    install, install_watchdog, restart, runtime_info, set_auto_start, start, status, stop,
-    uninstall, uninstall_watchdog, watchdog_installed, watchdog_log, write_definition,
+    install, install_watchdog, restart, runtime_info, set_auto_start, start, status,
+    status_checked, stop, uninstall, uninstall_watchdog, watchdog_installed, watchdog_log,
+    write_definition,
 };
 
 #[allow(unused_imports)]
 #[cfg(not(target_os = "macos"))]
 pub use systemd::{
-    install, install_watchdog, restart, runtime_info, set_auto_start, start, status, stop,
-    uninstall, uninstall_watchdog, watchdog_installed, watchdog_log, write_definition,
+    install, install_watchdog, restart, runtime_info, set_auto_start, start, status,
+    status_checked, stop, uninstall, uninstall_watchdog, watchdog_installed, watchdog_log,
+    write_definition,
 };
+
+/// Read the answer of a service manager call, telling "the manager said no"
+/// from "the manager never answered".
+///
+/// A failed exit is `launchctl print` or `systemctl show` reporting that the
+/// job is not loaded, and that is a real status. A spawn error or a timeout
+/// is no answer at all, and `None` is how the watchdog avoids reading a slow
+/// or wedged manager as a tunnel that stopped.
+pub(crate) fn checked_status(
+    out: Result<std::process::Output>,
+    parse: impl Fn(&str) -> crate::state::TunnelStatus,
+) -> Option<crate::state::TunnelStatus> {
+    let out = out.ok()?;
+    if out.status.success() {
+        Some(parse(&String::from_utf8_lossy(&out.stdout)))
+    } else {
+        Some(crate::state::TunnelStatus::Stopped)
+    }
+}
+
+#[cfg(test)]
+mod checked_status_tests {
+    use super::checked_status;
+    use crate::state::TunnelStatus;
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::{ExitStatus, Output};
+
+    fn output(code: i32, stdout: &str) -> Output {
+        Output {
+            status: ExitStatus::from_raw(code << 8),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: Vec::new(),
+        }
+    }
+
+    fn parse(_: &str) -> TunnelStatus {
+        TunnelStatus::Running
+    }
+
+    // `launchctl print` timing out says nothing about the job. Reading it as
+    // Stopped reset the breaker and announced a stop that never happened.
+    #[test]
+    fn a_service_manager_call_that_errored_or_timed_out_is_not_a_status() {
+        let timed_out = Err(anyhow::anyhow!("launchctl print timed out after 5s"));
+        assert_eq!(checked_status(timed_out, parse), None);
+        let missing_binary = Err(anyhow::anyhow!("Failed to run launchctl"));
+        assert_eq!(checked_status(missing_binary, parse), None);
+    }
+
+    // The manager answering "not loaded" is an answer: the job is stopped
+    #[test]
+    fn a_service_the_manager_does_not_know_is_stopped() {
+        assert_eq!(
+            checked_status(Ok(output(113, "")), parse),
+            Some(TunnelStatus::Stopped)
+        );
+    }
+
+    #[test]
+    fn a_service_the_manager_describes_is_read_by_the_parser() {
+        assert_eq!(
+            checked_status(Ok(output(0, "state = running")), parse),
+            Some(TunnelStatus::Running)
+        );
+    }
+}
 
 // A tunnel that starts gets a clean log. Truncated in place rather than removed
 // and rewritten, so a process still holding the file open in append mode keeps
