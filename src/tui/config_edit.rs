@@ -679,6 +679,15 @@ mod tests {
         assert!(msg.contains("line 1"), "{msg}");
     }
 
+    // The page validates the whole text and saves it whole, so an entry kept
+    // aside on load would be written away; refusing the edit is what keeps it
+    #[test]
+    fn a_tunnel_of_a_newer_kind_makes_the_page_refuse_the_edit() {
+        let cfg = config("dev", &["dev"]);
+        let text = "schema_version = 1\n\n[[tunnels]]\nname = \"mesh\"\naccount_name = \"dev\"\n\n[tunnels.spec]\nmode = \"mesh_relay\"\n";
+        assert!(validate_tunnels(text, &cfg, &HashMap::new()).is_err());
+    }
+
     #[test]
     fn a_valid_tunnels_file_round_trips() {
         let cfg = config("dev", &["dev", "prod"]);
