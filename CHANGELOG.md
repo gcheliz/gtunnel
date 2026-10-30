@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.3.16](https://github.com/gcheliz/gtunnel/compare/v0.3.15...v0.3.16) - 2026-10-30
+
+### Fixed
+
+- *(tui)* drop restart samples stamped after a clock that stepped back ([#422](https://github.com/gcheliz/gtunnel/pull/422))
+
 ## [0.3.15](https://github.com/gcheliz/gtunnel/compare/v0.3.14...v0.3.15) - 2026-10-30
 
 ### Fixed
