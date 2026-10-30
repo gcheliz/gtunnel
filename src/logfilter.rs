@@ -1002,6 +1002,19 @@ mod tests {
         assert_eq!(c.feed("ERROR: failed to connect", t0).len(), 1);
     }
 
+    // ssh reports a refused jump target at INFO, so quiet has to ask for INFO
+    // and the filter has to let that line through while it drops the rest
+    #[test]
+    fn quiet_keeps_a_refused_channel_and_still_drops_the_debug_lines() {
+        let mut c = Correlator::new(LogLevel::Quiet);
+        let t0 = Instant::now();
+        let refused = "channel 3: open failed: connect failed: Connection refused";
+        let out = c.feed(refused, t0);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert!(out[0].contains(refused), "{out:?}");
+        assert!(c.feed("debug1: channel 3: free: x", t0).is_empty());
+    }
+
     #[test]
     fn an_ipv6_client_is_read_from_both_backends() {
         let ssh = classify("debug1: channel 3: free: direct-tcpip: listening port 8443 for db.internal port 443, connect from ::1 port 5000 to ::1 port 8443, nchannels 2");
