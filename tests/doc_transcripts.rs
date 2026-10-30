@@ -15,7 +15,8 @@
 mod common;
 
 use std::fs;
-use std::path::Path;
+use std::net::TcpListener;
+use std::path::{Path, PathBuf};
 
 use common::Harness;
 use serde_json::json;
@@ -134,6 +135,42 @@ async fn serve_the_dev_bastion(server: &MockServer) {
         .await;
 }
 
+// A local port a transcript binds. `add` refuses one that something on the
+// machine already listens on, so a developer's own ssh tunnel on 8443 would fail
+// a page that is right; the page keeps reading this port and the run swaps in a
+// free one. Remote ports (`10.0.0.10:443`) are not listed: nothing binds them.
+const DOCUMENTED_LOCAL_PORTS: [u16; 1] = [8443];
+
+/// A port nothing listens on, on both loopback families: `add` probes `localhost`,
+/// which resolves to either, so a port free on IPv4 alone is still refused.
+fn free_local_port() -> u16 {
+    loop {
+        let v4 = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = v4.local_addr().unwrap().port();
+        // A host without IPv6 cannot be holding the port there
+        if TcpListener::bind(("::1", port)).is_ok() || !ipv6_loopback_exists() {
+            return port;
+        }
+    }
+}
+
+fn ipv6_loopback_exists() -> bool {
+    TcpListener::bind(("::1", 0)).is_ok()
+}
+
+/// The page with each documented local port replaced by a free one, written into
+/// the scratch root so trycmd reads the substituted copy, and the original stays
+/// byte for byte what a reader sees. Output is substituted too, being the same text.
+fn page_with_free_ports(page: &str, h: &Harness) -> PathBuf {
+    let mut text = fs::read_to_string(page).unwrap();
+    for port in DOCUMENTED_LOCAL_PORTS {
+        text = text.replace(&port.to_string(), &free_local_port().to_string());
+    }
+    let copy = h.root().join(Path::new(page).file_name().unwrap());
+    fs::write(&copy, text).unwrap();
+    copy
+}
+
 // The pages whose fences this file owns. A bare fence in one is an error
 // (trycmd would read it as a transcript), so each block says what it is:
 // `console` runs, `console,ignore` is a transcript that cannot run offline,
@@ -144,12 +181,17 @@ const PAGES: [&str; 3] = ["docs/commands.md", "docs/usage.md", "docs/configurati
 // it has no fixture, so its fences stay as they were
 const UNCHECKED_PAGES: [&str; 1] = ["docs/troubleshooting.md"];
 
-#[tokio::test(flavor = "multi_thread")]
-async fn the_command_reference_transcripts_match_the_binary() {
+async fn check_the_command_reference() {
     let server = MockServer::start().await;
     serve_the_dev_bastion(&server).await;
     let h = scratch(Some(DEV_AND_PROD), Some(DB_TUNNEL));
-    cases(&h, &server).case("docs/commands.md").run();
+    let page = page_with_free_ports("docs/commands.md", &h);
+    cases(&h, &server).case(page).run();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_command_reference_transcripts_match_the_binary() {
+    check_the_command_reference().await;
 }
 
 // Nothing is configured, as on a machine that has just installed the binary
@@ -227,6 +269,26 @@ fn the_checked_blocks_are_not_all_quietly_switched_off() {
         })
         .sum();
     assert!(checked >= 20, "only {checked} checked blocks are left");
+}
+
+#[test]
+fn a_free_port_is_never_one_that_something_listens_on() {
+    let held = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let taken = held.local_addr().unwrap().port();
+    for _ in 0..50 {
+        let port = free_local_port();
+        assert_ne!(port, taken);
+        assert!(TcpListener::bind(("127.0.0.1", port)).is_ok());
+    }
+}
+
+// Holds the documented port itself, as a developer's ssh tunnel does, and runs
+// the page: it must still pass. If something else already holds it, that is the
+// same situation, so a failed bind is not an error.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_command_reference_passes_while_its_documented_port_is_held() {
+    let _held = DOCUMENTED_LOCAL_PORTS.map(|p| TcpListener::bind(("127.0.0.1", p)).ok());
+    check_the_command_reference().await;
 }
 
 #[test]
