@@ -401,11 +401,17 @@ the new binary writes, and rewrites each that differs, such as one without `--cr
 
 | Case | Result |
 |---|---|
-| A running tunnel | restarted to read the new definition, which drops its connections for a moment |
+| A running tunnel | rewritten, then restarted to read the new definition, which drops its connections for a moment |
+| A running tunnel with a client connected | rewritten and left running on the old definition; the line names it, and `gtunnel restart <name>` restarts it when it is idle. Connections are counted on the tunnel's local port, so an expose tunnel is always restarted |
+| A tunnel in error | rewritten and reloaded, because launchd keeps the definition it loaded however often the file changes |
 | A stopped tunnel | stays stopped, its log untouched |
+| The watchdog | its definition is compared and rewritten the same way when it is installed, and reloaded; a missing binary counts as out of date, and the interval does not (it is `watch.interval` of the installing shell). Never restarted separately: installing it is the reload |
+| A restart that fails | the pass writes `run/<label>.restart-pending` before the write and removes it once the job has started again, so the next command finishes the restart even though the file is current. The line names the label and `gtunnel restart <name>` |
 | Reporting | one line on stderr names what was reinstalled; a failure names the service and the reason without changing the exit status |
 | Skipped | a tunnel whose service was never installed, a definition that already matches, any run with `GTUNNEL_CONFIG_DIR` set; so a second run does nothing |
+| Two commands at once | the pass takes `refresh.lock` in the config directory and never waits for it, so a command that finds it held skips the refresh and each tunnel is restarted at most once |
 | Out of date means | the argument list differs in shape, or the binary no longer exists. The values of `--log-level` and `GTUNNEL_*` come from the calling shell and are ignored, so exporting `GTUNNEL_LOG_LEVEL` for one command restarts nothing |
+| Which way a difference points | each definition carries `GTUNNEL_DEFINITION_VERSION=<version>` in its environment, ignored when shapes are compared. A definition stamped newer than the running binary is left alone and reported once, `services were written by gtunnel X; this is Y`, because rewriting it would make the newer one rewrite it back. One with no stamp, or an unreadable one, is stamped: a quiet write with no restart when its shape was already current. An older stamp on a current shape is left as it is, so an upgrade alone rewrites nothing |
 
 ## Environment
 
