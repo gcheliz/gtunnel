@@ -213,9 +213,10 @@ On a machine never set up, `gtunnel` with no arguments from a terminal runs the 
 then opens the TUI. A script or a pipe gets the error above.
 
 [init](commands.md#init) shows the prompts. Each says what the value sets and, for a value
-picked from a list, the command that lists it. `Enter = <value>` takes the default. The default
-zone is optional: without it, commands that reach an instance need `--zone`; `gtunnel zones`
-lists the project's zones.
+picked from a list, the command that lists it. `Enter = <value>` takes the default. A zone the
+configuration holds is saved without asking; one it lacks is asked, and may be left empty.
+Commands that reach an instance look its zone up by name, so the default zone is only a
+fallback and the relay's zone; `gtunnel zones` lists the project's zones.
 
 ### 6. Check the ground before the first tunnel
 
@@ -405,10 +406,10 @@ token that cannot be minted, including an expired refresh token, counts as logge
 
 | Checks the login | Skips the check |
 |---|---|
-| `gtunnel` (the TUI), `add -s`, `expose`, `run`, `start`, `stop`, `restart`, `move`, `zones`, `domains`, `relay` | `init`, `account`, `add` (without `-s`), `delete`, `rename`, `autostart`, `logs`, `list`, `zones default`, `domains default`, `domains add`, `doctor`, `watch`, `reset`, `demo`, `update`, `mcp` |
+| `gtunnel` (the TUI), `add -s`, `add` without `--zone`, `expose`, `run`, `start`, `stop`, `restart`, `move`, `zones`, `domains`, `relay` | `account`, `add --zone` or `--dest-group` (without `-s`), `delete`, `rename`, `autostart`, `logs`, `list`, `zones default`, `domains default`, `domains add`, `doctor`, `watch`, `reset`, `demo`, `update`, `mcp` |
 
 `doctor` skips it because it reports broken credentials as a finding; `init` has no account
-yet; a prompt would corrupt `mcp`'s JSON-RPC on stdin and stdout. Background services run
+yet, so it runs the same check itself before it lists projects and zones; a prompt would corrupt `mcp`'s JSON-RPC on stdin and stdout. Background services run
 `gcloud` directly and never check. Only the selected account is checked: after switching
 accounts in the TUI, a logged-out account surfaces as the error in that tunnel's log. An
 operation the TUI or `mcp` starts, such as a move to a logged-out account, never prompts: it

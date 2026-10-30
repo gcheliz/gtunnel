@@ -887,7 +887,17 @@ pub async fn cmd_run(
     } else {
         let (host, remote_port) = crate::commands::access::parse_access_target(&target)?;
         crate::state::validate_instance_name(&host)?;
-        let zone = crate::commands::require_zone(&acct, zone)?;
+        let found = crate::commands::resolve_instance_zone_or_ask(
+            &GcpClient::for_account(&acct),
+            &acct,
+            zone,
+            &host,
+        )
+        .await?;
+        if let Some(w) = &found.warning {
+            eprintln!("Warning: {w}");
+        }
+        let zone = found.zone;
         (
             RunShape::Access {
                 target: AccessTarget::Instance {

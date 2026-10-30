@@ -438,3 +438,19 @@ settings under `[restart]`, their defaults and ranges are in
 
 The cost: a tunnel that needs longer than `min_uptime` to come up and keeps failing is
 judged fast-failing, so `min_uptime` must stay above gcloud's normal startup.
+
+## 21. An instance's zone is looked up, not asked for
+
+`add` and `run` name an instance, and the project already knows where it is: one
+`aggregated/instances` list filtered by name answers it. So the zone is read from the
+project when `--zone` is absent, and the account's default zone shrinks to the relay's zone
+and a fallback.
+
+| Question | Answer |
+|---|---|
+| Why not keep asking at `account add` | A default zone is wrong for every instance outside it, and the failure read as "instance not found" |
+| Two instances with the name | Names are unique per zone, so several zones is a usage error (exit 2) listing them |
+| The lookup cannot run | Someone at a terminal or in the TUI is asked, the default zone prefilled; a script gets the default with a warning, or an error asking for `--zone`. The MCP server never asks |
+
+The cost: one extra compute call per `add` or `run` without `--zone`, which is why that
+form now checks the gcloud login first.

@@ -18,6 +18,10 @@ tunnel described in the next section.
 
 ![Access and jump tunnels: a client on localhost reaching a GCP instance through IAP, and a second client reaching a host behind a bastion](images/architecture/gtunnel-access-jump.png)
 
+The `<zone>` is saved with the tunnel. `add` reads it from the project (one compute
+`aggregated/instances` list filtered by the instance name) unless `--zone` is given, so the
+record always holds the instance's own zone.
+
 The service runs:
 
 ```

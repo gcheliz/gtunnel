@@ -61,11 +61,11 @@ pub enum Commands {
         )]
         via: Option<String>,
 
-        // Compute zone of the instance (overrides the account default)
+        // Compute zone of the instance (looked up when omitted)
         #[arg(
             short,
             long,
-            help = "Zone of the instance, e.g. europe-west1-b (default: the account's zone)"
+            help = "Zone of the instance, e.g. europe-west1-b (default: looked up from the instance)"
         )]
         zone: Option<String>,
 
@@ -140,7 +140,7 @@ pub enum Commands {
         #[arg(
             short,
             long,
-            help = "Zone of the instance, e.g. europe-west1-b (Access mode)"
+            help = "Zone of the instance, e.g. europe-west1-b (default: looked up from the instance; Access mode)"
         )]
         zone: Option<String>,
 
@@ -464,7 +464,15 @@ impl Commands {
             // Reads service status and local processes only, so a stale login
             // must not stand between a person and their own list
             | Commands::List { .. } => false,
-            Commands::Add { start, .. } => *start,
+            // Only the zone lookup needs a session: given `--zone`, or a
+            // destination group with no instance, a failed instance check is a
+            // warning and an add without `-s` stays usable logged out
+            Commands::Add {
+                start,
+                zone,
+                dest_group,
+                ..
+            } => *start || (zone.is_none() && dest_group.is_none()),
             Commands::Zones { command } => match command {
                 Some(ZonesCommands::Default { .. }) => false,
                 None => true,
@@ -1035,10 +1043,35 @@ mod tests {
                 args
             );
         }
-        assert!(!parse(&["gtunnel", "add", "db", "bastion:5432"])
+        // The zone lookup reaches compute, so a plain add checks the login
+        assert!(parse(&["gtunnel", "add", "db", "bastion:5432"])
             .command
             .expect("command")
             .needs_gcp_auth());
+        assert!(!parse(&[
+            "gtunnel",
+            "add",
+            "db",
+            "bastion:5432",
+            "--zone",
+            "europe-west1-b"
+        ])
+        .command
+        .expect("command")
+        .needs_gcp_auth());
+        assert!(!parse(&[
+            "gtunnel",
+            "add",
+            "db",
+            "10.0.0.10:5432",
+            "--dest-group",
+            "grp",
+            "--region",
+            "europe-west1"
+        ])
+        .command
+        .expect("command")
+        .needs_gcp_auth());
         assert!(parse(&["gtunnel", "add", "db", "bastion:5432", "-s"])
             .command
             .expect("command")
