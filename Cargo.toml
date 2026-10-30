@@ -1,6 +1,6 @@
 [package]
 name = "gtunnel"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 # std File::lock sets this floor; ratatui 0.30 needs 1.88.
 rust-version = "1.89"
