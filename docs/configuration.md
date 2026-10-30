@@ -39,6 +39,7 @@ in the configuration directory (see [Where the files live](#where-the-files-live
 
 | Key | Type | Required | What it is |
 |---|---|---|---|
+| `config_version` | integer | no | `2` in a file written by this version; absent in an older one. A file without it is switched to `notifications.enabled = false` once, on load, and saved with `config_version = 2`; from then on `enabled = true` stays on. `init` writes it |
 | `selected_account` | string | yes | The account used when no `--account` is given |
 | `log_level` | string | no | `quiet`, `info` or `debug`; `info` when absent. See [The log level](#the-log-level) |
 | `start_deadline` | string | no | How long a start waits for an Access tunnel to report it is listening, as a duration; `"20s"` when absent. See [Settings the environment can override](#settings-the-environment-can-override) |
@@ -47,7 +48,7 @@ in the configuration directory (see [Where the files live](#where-the-files-live
 | `update_check_interval` | string | no | How old the cached release answer may get before the next start runs `update --check` in the background, as a duration; `"6h"` when absent. See [update](commands.md#update) |
 | `list_probe_timeout` | string | no | How long `list` and the MCP list and status tools wait for one probe of a running tunnel's local port, as a duration; `"500ms"` when absent. Not `[watch] probe_timeout`, the watchdog's wait. See [Settings the environment can override](#settings-the-environment-can-override) |
 | `editor` | string | no | The editor `e` opens, below `$VISUAL` and `$EDITOR`; `""` (none chosen) when absent |
-| `notifications` | table | no | Which lifecycle changes raise a desktop notification: `enabled` (the master switch), then `up`, `degraded`, `recovered`, `failed`, all booleans. See [Notifications](commands.md#notifications) |
+| `notifications` | table | no | Which lifecycle changes raise a desktop notification: `enabled` (the master switch), then `up`, `degraded`, `recovered`, `failed`, all booleans. `enabled` is `false` when absent and written as `false` by `init`; `N` in the TUI flips it. See [Notifications](commands.md#notifications) |
 | `restart` | table | no | When a tunnel that keeps failing is stopped: `max_restarts`, `window`, `min_uptime`, `base_backoff`, `max_backoff`. `init` writes all five at their defaults. See [The restart budget](#the-restart-budget) |
 | `watch` | table | no | How the watchdog probes and when it calls a tunnel degraded: `probe_timeout`, `degraded_after`, `interval`. `init` writes all three at their defaults. See [Settings the environment can override](#settings-the-environment-can-override) |
 | `accounts` | array of tables | yes | One entry per account; may be empty |
@@ -306,7 +307,7 @@ update_check_interval = "6h"
 editor = ""
 
 [notifications]
-enabled = true
+enabled = false
 up = false
 degraded = true
 recovered = true
@@ -414,7 +415,7 @@ precedence are under [Settings the environment can override](#settings-the-envir
 | `GTUNNEL_UPDATE_CHECK_INTERVAL` | | `update_check_interval` | `6h` | How old the cached `update --check` answer may get before the next TUI or command start checks again, e.g. `1h` for a notice that arrives a day late, or longer to check less often. Read by the TUI and every command that prints the update hint. See [update](commands.md#update) |
 | `GTUNNEL_SERVICE_CALL_TIMEOUT` | `GTUNNEL_SERVICE_BOUND_MS` | `service_call_timeout` | `10s` | How long one `launchctl` or `systemctl` call may take before it is reported as `timed out after`. Read by every command. A test and diagnostics knob: leave it alone unless you are testing the timeout path or diagnosing a slow service manager |
 | `GTUNNEL_DISCOVERY` | `GTUNNEL_NO_DISCOVERY` | `discovery` | `true` | Whether `list`, the TUI and `mcp` look for tunnel processes started outside gtunnel; `false` makes `list` show no `pid N` rows. For tests and diagnostics |
-| `GTUNNEL_NOTIFICATIONS` | `GTUNNEL_NO_NOTIFY` | `notifications.enabled` | `true` | Whether desktop notifications are raised, by every command. For tests and diagnostics. See [Notifications](commands.md#notifications) |
+| `GTUNNEL_NOTIFICATIONS` | `GTUNNEL_NO_NOTIFY` | `notifications.enabled` | `false` | Whether desktop notifications are raised, by every command. For tests and diagnostics. See [Notifications](commands.md#notifications) |
 | `GTUNNEL_EDITOR` | | `editor`, and `VISUAL` and `EDITOR` | none | The editor `e` opens in the TUI's config page |
 | `VISUAL`, then `EDITOR` | | `editor` | none | The editor `e` opens when `GTUNNEL_EDITOR` is unset. `VISUAL` wins because it names the full-screen editor. An empty value counts as unset, since `EDITOR=` is how a shell clears one; neither set falls back to `editor`, then to `vi` |
 | `GTUNNEL_WATCH_PROBE_TIMEOUT` | | `watch.probe_timeout` | `3s` | How long the watchdog waits for one probe of a tunnel's local port before it counts a failure; raise it when a slow tunnel is read as wedged |

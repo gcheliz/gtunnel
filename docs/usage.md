@@ -471,7 +471,7 @@ so the shell gets a working terminal back.
 | Group | Keys |
 |---|---|
 | Tunnel | `s` start, `S` stop (a run too, and a tunnel that keeps crashing: launchd would start it again), `R` restart, `A` toggle auto-start (`s`, `R` and `A` are refused on a run), `h` health check now |
-| The list | `a` add, `e` edit, `d` delete (refused on a run), `m` import an ephemeral run as managed, `j` `k` or the arrows move the selection |
+| The list | `a` add, `e` edit, `d` delete (refused on a run), `m` import an ephemeral run as managed, `N` turn desktop notifications on or off (see [Notifications](commands.md#notifications)), `j` `k` or the arrows move the selection |
 | This tunnel's URL and log | `c` copy the URL, `l` copy the log to clipboard, `o` open it, `L` clear the log, `r` refresh the list, metrics and health, `PgUp` `PgDn` scroll the log back and forward a page, `End` or `G` follow the newest line again |
 | The program | `;` cycle accounts (the relay and its domains change with the account), `:` the accounts page, `?` the keymap, `C` the config page, `q` quit (it waits for a running operation to finish, and a second `q` quits at once), `Esc` close a page or cancel a prompt, `PgUp` `PgDn` and `g` `G` scroll the keymap page, `Ctrl+Z` suspend, `Ctrl+C` quit from anywhere, with the same wait |
 

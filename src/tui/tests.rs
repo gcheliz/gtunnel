@@ -3295,3 +3295,79 @@ fn the_wheel_is_ignored_while_a_page_or_dialog_is_open() {
     app.handle_mouse(wheel(ScrollUp, logs.x + 3, logs.y + 3));
     assert_eq!(app.log_scroll.back(), 0);
 }
+
+#[test]
+fn the_watchdog_is_offered_only_while_notifications_are_on() {
+    // Off: an install would deliver nothing, so the offer would be a false errand
+    assert!(!watchdog_offer_due(false, true, false));
+    assert!(watchdog_offer_due(false, true, true));
+    assert!(!watchdog_offer_due(true, true, true), "already installed");
+    assert!(
+        !watchdog_offer_due(false, false, true),
+        "never over a status"
+    );
+}
+
+fn write_config(text: &str) {
+    std::fs::write(crate::config::config_path().expect("path"), text).expect("write");
+}
+
+fn read_config() -> String {
+    std::fs::read_to_string(crate::config::config_path().expect("path")).expect("read")
+}
+
+#[test]
+fn n_flips_notifications_on_disk_and_in_the_app_and_a_second_n_flips_back() {
+    let _dir = crate::config::testing::TempConfigDir::new();
+    let text = "config_version = 2\nselected_account = \"dev\"\n# kept\n\n[notifications]\nenabled = false\nup = true\n";
+    write_config(text);
+    let mut app = keymap_fixture();
+    app.watchdog_installed = Some(true);
+    app.handle_key(key(KeyCode::Char('N')));
+    assert_eq!(app.status.as_deref(), Some("notifications on"));
+    // A plain status is not drawn: the flash is what the Logs title shows
+    assert_eq!(app.flash_message(), Some("notifications on"));
+    assert!(app.notifications_on);
+    assert_eq!(
+        read_config(),
+        text.replace("enabled = false", "enabled = true")
+    );
+    app.handle_key(key(KeyCode::Char('N')));
+    assert_eq!(app.status.as_deref(), Some("notifications off"));
+    assert!(!app.notifications_on);
+    assert_eq!(
+        read_config(),
+        text,
+        "byte-identical apart from the one line"
+    );
+}
+
+#[test]
+fn turning_notifications_on_without_a_watchdog_follows_with_the_offer() {
+    let _dir = crate::config::testing::TempConfigDir::new();
+    write_config("config_version = 2\nselected_account = \"dev\"\n");
+    let mut app = keymap_fixture();
+    app.watchdog_installed = Some(false);
+    app.handle_key(key(KeyCode::Char('N')));
+    assert_eq!(
+        app.status.as_deref(),
+        Some(format!("notifications on; {WATCHDOG_OFFER}").as_str())
+    );
+}
+
+#[test]
+fn a_notifications_toggle_that_cannot_save_leaves_the_value_and_says_why() {
+    let _dir = crate::config::testing::TempConfigDir::new();
+    // A file that does not parse is refused before anything is written
+    write_config("selected_account = [\n");
+    let mut app = keymap_fixture();
+    app.handle_key(key(KeyCode::Char('N')));
+    assert!(!app.notifications_on);
+    assert!(app.status_error);
+    let status = app.status.clone().unwrap_or_default();
+    assert!(
+        status.starts_with("notifications not changed: "),
+        "{status}"
+    );
+    assert_eq!(read_config(), "selected_account = [\n");
+}

@@ -546,6 +546,15 @@ pub const KEYMAP: &[KeyDoc] = &[
         "import an ephemeral run as managed",
         Group::List,
     ),
+    // In the list's group, not the program's: the program group is what the
+    // 80x24 end of the page must still show whole, and this key is about the
+    // tunnels in the list, all of them
+    doc(
+        "N",
+        None,
+        "turn desktop notifications on or off",
+        Group::List,
+    ),
     // On the help page the same four keys scroll it, since it has no selection
     doc(
         "up/k",

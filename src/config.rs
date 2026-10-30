@@ -68,8 +68,93 @@ impl Account {
     }
 }
 
+/// The version a file written today carries. 2 is the first: it marks the
+/// release that switched notifications off by default.
+pub const CONFIG_VERSION: u32 = 2;
+
+fn unmarked_config_version() -> u32 {
+    0
+}
+
+/// What loading did to an older file, kept for the command that is allowed to
+/// say so. `load_config` is called from the watchdog and the MCP server as
+/// well, so it cannot print; it records, and the dispatcher decides.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MigrationOutcome {
+    None,
+    Migrated,
+    /// Read as migrated in memory, but the file could not be rewritten.
+    NotSaved,
+}
+
+static MIGRATION: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// The migration this process performed, once: a second call reports `None`.
+pub fn take_migration() -> MigrationOutcome {
+    match MIGRATION.swap(0, std::sync::atomic::Ordering::SeqCst) {
+        1 => MigrationOutcome::Migrated,
+        2 => MigrationOutcome::NotSaved,
+        _ => MigrationOutcome::None,
+    }
+}
+
+/// Whether to tell the person. `unattended` is the watchdog, the supervisor
+/// and the MCP server, whose stderr nobody reads or whose protocol must stay
+/// clean; a stderr that is not a terminal is a log or a pipe.
+pub fn migration_note_wanted(
+    outcome: MigrationOutcome,
+    unattended: bool,
+    stderr_is_terminal: bool,
+) -> bool {
+    outcome != MigrationOutcome::None && !unattended && stderr_is_terminal
+}
+
+pub const MIGRATION_NOTE: &str =
+    "notifications are now off by default; turn them on with N in the TUI or enabled = true in config.toml";
+
+pub const MIGRATION_NOT_SAVED: &str = "could not rewrite config.toml to switch notifications off; \
+     they are off for this run, and the next one will try again";
+
+// Every config written before the marker says `enabled = true` because `init`
+// wrote it, so the file cannot tell a default from a choice; the marker is
+// what makes the flip happen once.
+fn migrate_to_current(config: &mut Config) -> bool {
+    if config.config_version >= CONFIG_VERSION {
+        return false;
+    }
+    config.notifications.enabled = false;
+    config.config_version = CONFIG_VERSION;
+    true
+}
+
+// Never blocks and never fails the load. Without the lock it skips the write:
+// the holder is another writer whose own load migrates, or this very process
+// inside `locked_config_update`, which saves the migrated value itself. The
+// file is re-read under the lock so a writer that finished first is not
+// overwritten with this process's older copy.
+fn save_migration(config: &Config) -> bool {
+    let Ok(dir) = config_dir() else { return false };
+    let Ok(_lock) =
+        crate::fsutil::lock_exclusive(&dir.join("config.lock"), std::time::Duration::ZERO)
+    else {
+        return false;
+    };
+    let current = std::fs::read_to_string(dir.join("config.toml")).ok();
+    let still_old = current
+        .and_then(|t| toml::from_str::<Config>(&t).ok())
+        .is_some_and(|c| c.config_version < CONFIG_VERSION);
+    still_old && save_config(config).is_ok()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Config {
+    // Marks a file written by a gtunnel that knows notifications are off
+    // until chosen. Absent reads as 0, so an older file is told apart from a
+    // new one; the struct default is the current version, so `init` writes it.
+    // First, because a scalar sits above the tables and a reader looks here
+    // before anything else.
+    #[serde(default = "unmarked_config_version")]
+    pub config_version: u32,
     #[serde(default)]
     pub selected_account: String,
     // How much every tunnel and every gcloud call says. Global rather than
@@ -125,6 +210,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            config_version: CONFIG_VERSION,
             selected_account: String::new(),
             log_level: LogLevel::default(),
             start_deadline: settings::default_start_deadline(),
@@ -331,7 +417,7 @@ impl RestartConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NotifyConfig {
-    /// The master switch: off, no edge reaches the desktop whatever the four
+    /// The master switch, off until a person turns it on: off, no edge reaches the desktop whatever the four
     /// below say.
     pub enabled: bool,
     pub up: bool,
@@ -343,7 +429,7 @@ pub struct NotifyConfig {
 impl Default for NotifyConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             up: false,
             degraded: true,
             recovered: true,
@@ -504,8 +590,14 @@ pub fn load_config() -> Result<Config> {
     }
     let text = std::fs::read_to_string(&path)
         .with_context(|| format!("Failed to read {}", path.display()))?;
-    let config: Config =
+    let mut config: Config =
         toml::from_str(&text).with_context(|| format!("Failed to parse {}", path.display()))?;
+    if migrate_to_current(&mut config) {
+        // A file that a concurrent loader already migrated reads as "not
+        // saved" here, which is harmless: the in-memory value is the same
+        let outcome = if save_migration(&config) { 1 } else { 2 };
+        MIGRATION.store(outcome, std::sync::atomic::Ordering::SeqCst);
+    }
     // A bad [restart] key is refused here, with the file named, so it cannot
     // sit unnoticed until a tunnel is failing and the supervisor reads it
     // The file alone: a variable is the shell's, and blaming this path for it
@@ -541,6 +633,79 @@ pub fn save_config(config: &Config) -> Result<()> {
     let path = config_path()?;
     let text = toml::to_string_pretty(config).context("Failed to serialize config")?;
     crate::fsutil::write_atomic(&path, &text)
+}
+
+/// Flips `notifications.enabled` in `config.toml` and returns the new value.
+///
+/// Edits the one line instead of serialising the struct back: a hand-edited
+/// file keeps its comments, its key order and anything this version does not
+/// know, and the toggle is a keypress that must not rewrite a file a person
+/// has curated. The result is parsed before it is written, so a spelling this
+/// does not understand (`notifications.enabled = true` as a dotted key) is
+/// refused rather than silently ignored.
+pub fn toggle_notifications() -> Result<bool> {
+    let _lock = lock_config()?;
+    let path = config_path()?;
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("Failed to read {}", path.display()))?;
+    let config: Config =
+        toml::from_str(&text).with_context(|| format!("Failed to parse {}", path.display()))?;
+    // An unmarked file is read as off, as `load_config` reads it
+    let now = config.config_version >= CONFIG_VERSION && config.notifications.enabled;
+    let edited = with_notifications_enabled(&text, !now, config.config_version);
+    let check: Config = toml::from_str::<Config>(&edited)
+        .ok()
+        .filter(|c| c.notifications.enabled == !now)
+        .ok_or_else(|| anyhow!("could not edit notifications.enabled in {}", path.display()))?;
+    debug_assert!(check.config_version >= CONFIG_VERSION);
+    crate::fsutil::write_atomic(&path, &edited)?;
+    Ok(!now)
+}
+
+fn with_notifications_enabled(text: &str, on: bool, version: u32) -> String {
+    let value = format!("enabled = {on}");
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    match lines.iter().position(|l| l.trim() == "[notifications]") {
+        Some(header) => {
+            let end = lines[header + 1..]
+                .iter()
+                .position(|l| l.trim_start().starts_with('['))
+                .map_or(lines.len(), |n| header + 1 + n);
+            let found = (header + 1..end).find(|&i| {
+                let t = lines[i].trim_start();
+                t.strip_prefix("enabled")
+                    .is_some_and(|rest| rest.trim_start().starts_with('='))
+            });
+            match found {
+                Some(i) => {
+                    let indent: String =
+                        lines[i].chars().take_while(|c| c.is_whitespace()).collect();
+                    lines[i] = format!("{indent}{value}");
+                }
+                None => lines.insert(header + 1, value),
+            }
+        }
+        None => {
+            lines.push(String::new());
+            lines.push("[notifications]".to_string());
+            lines.push(value);
+        }
+    }
+    if version < CONFIG_VERSION {
+        let marker = format!("config_version = {CONFIG_VERSION}");
+        // Only a top-level line counts: a table's own key of that name is not it
+        let top = lines
+            .iter()
+            .take_while(|l| !l.trim_start().starts_with('['))
+            .position(|l| l.trim_start().starts_with("config_version"));
+        match top {
+            Some(i) => lines[i] = marker,
+            None => lines.insert(0, marker),
+        }
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    out
 }
 
 // Same contract as `TunnelState::update`, on its own lock so editing an account
@@ -919,7 +1084,137 @@ mod tests {
         });
     }
 
-    const DEFAULT_SETTINGS: &str = "start_deadline = \"20s\"\ndiscovery = true\nservice_call_timeout = \"10s\"\nlist_probe_timeout = \"500ms\"\nupdate_check_interval = \"6h\"\neditor = \"\"\n\n[notifications]\nenabled = true\n";
+    const DEFAULT_SETTINGS: &str = "start_deadline = \"20s\"\ndiscovery = true\nservice_call_timeout = \"10s\"\nlist_probe_timeout = \"500ms\"\nupdate_check_interval = \"6h\"\neditor = \"\"\n\n[notifications]\nenabled = false\n";
+
+    const UNMARKED_ON: &str =
+        "selected_account = \"dev\"\n\n[notifications]\nenabled = true\nup = true\n";
+
+    #[test]
+    fn an_absent_notifications_section_and_a_fresh_init_both_read_as_off() {
+        let config: Config = toml::from_str("selected_account = \"dev\"\n").expect("parse");
+        assert!(!config.notifications.enabled);
+        with_temp_dir(|| {
+            update_or_init_config(|c| c.add_account(account("dev"))).expect("init");
+            let text = config_text();
+            assert!(text.starts_with("config_version = 2\n"), "{text}");
+            assert!(!load_config().expect("loads").notifications.enabled);
+        });
+    }
+
+    #[test]
+    fn an_unmarked_file_with_notifications_on_loads_off_and_is_saved_once() {
+        with_temp_dir(|| {
+            let path = config_path().expect("path");
+            std::fs::write(&path, UNMARKED_ON).expect("write");
+            let loaded = load_config().expect("loads");
+            assert!(!loaded.notifications.enabled);
+            assert!(loaded.notifications.up, "only the master switch moves");
+            let saved = config_text();
+            assert!(saved.contains("config_version = 2"), "{saved}");
+            assert!(saved.contains("enabled = false"), "{saved}");
+            let before = std::fs::metadata(&path)
+                .and_then(|m| m.modified())
+                .expect("mtime");
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            load_config().expect("second load");
+            assert_eq!(config_text(), saved);
+            let after = std::fs::metadata(&path)
+                .and_then(|m| m.modified())
+                .expect("mtime");
+            assert_eq!(before, after, "the second load rewrote the file");
+        });
+    }
+
+    #[test]
+    fn a_version_2_file_with_notifications_on_stays_on_and_is_not_rewritten() {
+        with_temp_dir(|| {
+            let path = config_path().expect("path");
+            let text = format!("config_version = 2\n{UNMARKED_ON}");
+            std::fs::write(&path, &text).expect("write");
+            let before = std::fs::metadata(&path)
+                .and_then(|m| m.modified())
+                .expect("mtime");
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            assert!(load_config().expect("loads").notifications.enabled);
+            assert_eq!(config_text(), text);
+            let after = std::fs::metadata(&path)
+                .and_then(|m| m.modified())
+                .expect("mtime");
+            assert_eq!(before, after);
+        });
+    }
+
+    #[test]
+    fn a_migration_that_cannot_save_still_loads_with_notifications_off() {
+        with_temp_dir(|| {
+            let path = config_path().expect("path");
+            std::fs::write(&path, UNMARKED_ON).expect("write");
+            // A directory where the sibling temp file goes makes the write fail
+            // for every pid and counter, so the file itself stays readable
+            let dir = path.parent().expect("dir");
+            let mut perms = std::fs::metadata(dir).expect("meta").permissions();
+            let was = perms.clone();
+            std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o500);
+            std::fs::set_permissions(dir, perms).expect("chmod");
+            let loaded = load_config();
+            std::fs::set_permissions(dir, was).expect("restore");
+            let loaded = loaded.expect("a failed save must not fail the load");
+            assert!(!loaded.notifications.enabled);
+            assert_eq!(config_text(), UNMARKED_ON, "the file is untouched");
+        });
+    }
+
+    #[test]
+    fn toggling_notifications_changes_one_line_and_nothing_else() {
+        with_temp_dir(|| {
+            let text = "config_version = 2\n# my notes\nselected_account = \"dev\"\nzzz_unknown = 1\n\n[notifications]\n# master\nenabled = false\nup = true\n\n[[accounts]]\nname = \"dev\"\ngcloud_configuration = \"work\"\nproject = \"example-dev-1a2b\"\ndefault_zone = \"europe-west1-b\"\n";
+            std::fs::write(config_path().expect("path"), text).expect("write");
+            assert!(toggle_notifications().expect("on"));
+            assert_eq!(
+                config_text(),
+                text.replace("enabled = false", "enabled = true")
+            );
+            assert!(!toggle_notifications().expect("off"));
+            assert_eq!(config_text(), text);
+        });
+    }
+
+    #[test]
+    fn toggling_a_file_without_the_section_or_the_marker_adds_both() {
+        with_temp_dir(|| {
+            std::fs::write(config_path().expect("path"), "selected_account = \"dev\"\n")
+                .expect("write");
+            assert!(toggle_notifications().expect("on"));
+            let loaded = load_config().expect("loads");
+            assert!(loaded.notifications.enabled, "the marker keeps it on");
+            assert_eq!(loaded.config_version, CONFIG_VERSION);
+        });
+    }
+
+    #[test]
+    fn the_migration_note_is_for_an_interactive_command_only() {
+        assert!(migration_note_wanted(
+            MigrationOutcome::Migrated,
+            false,
+            true
+        ));
+        assert!(!migration_note_wanted(
+            MigrationOutcome::Migrated,
+            false,
+            false
+        ));
+        assert!(!migration_note_wanted(
+            MigrationOutcome::Migrated,
+            true,
+            true
+        ));
+        assert!(!migration_note_wanted(MigrationOutcome::None, false, true));
+        assert!(migration_note_wanted(
+            MigrationOutcome::NotSaved,
+            false,
+            true
+        ));
+    }
 
     #[test]
     fn init_on_a_fresh_dir_writes_every_settings_key_at_its_default() {
@@ -1283,7 +1578,7 @@ mod tests {
 
     #[test]
     fn an_account_without_credential_file_round_trips_unchanged() {
-        let text = "selected_account = \"dev\"\nlog_level = \"info\"\nstart_deadline = \"20s\"\ndiscovery = true\nservice_call_timeout = \"10s\"\nlist_probe_timeout = \"500ms\"\nupdate_check_interval = \"6h\"\neditor = \"\"\n\n[notifications]\nenabled = true\nup = false\ndegraded = true\nrecovered = true\nfailed = true\n\n[restart]\nmax_restarts = 5\nwindow = \"10m\"\nmin_uptime = \"60s\"\nbase_backoff = \"10s\"\nmax_backoff = \"5m\"\n\n[watch]\nprobe_timeout = \"3s\"\ndegraded_after = 2\ninterval = \"30s\"\n\n[logs]\nmax_size = \"8MiB\"\nkeep_size = \"2MiB\"\nlines_per_minute = 60\nauth_exit_window = \"30s\"\n\n[gcp]\ntoken_ttl = \"45m\"\noperation_timeout = \"10m\"\nhttp_timeout = \"30s\"\npoll_interval = \"2s\"\nlock_deadline = \"5s\"\nfingerprint_attempts = 5\n\n[[accounts]]\nname = \"dev\"\ngcloud_configuration = \"work\"\nproject = \"example-dev-1a2b\"\ndefault_zone = \"europe-west1-b\"\n";
+        let text = "config_version = 2\nselected_account = \"dev\"\nlog_level = \"info\"\nstart_deadline = \"20s\"\ndiscovery = true\nservice_call_timeout = \"10s\"\nlist_probe_timeout = \"500ms\"\nupdate_check_interval = \"6h\"\neditor = \"\"\n\n[notifications]\nenabled = false\nup = false\ndegraded = true\nrecovered = true\nfailed = true\n\n[restart]\nmax_restarts = 5\nwindow = \"10m\"\nmin_uptime = \"60s\"\nbase_backoff = \"10s\"\nmax_backoff = \"5m\"\n\n[watch]\nprobe_timeout = \"3s\"\ndegraded_after = 2\ninterval = \"30s\"\n\n[logs]\nmax_size = \"8MiB\"\nkeep_size = \"2MiB\"\nlines_per_minute = 60\nauth_exit_window = \"30s\"\n\n[gcp]\ntoken_ttl = \"45m\"\noperation_timeout = \"10m\"\nhttp_timeout = \"30s\"\npoll_interval = \"2s\"\nlock_deadline = \"5s\"\nfingerprint_attempts = 5\n\n[[accounts]]\nname = \"dev\"\ngcloud_configuration = \"work\"\nproject = \"example-dev-1a2b\"\ndefault_zone = \"europe-west1-b\"\n";
         let cfg: Config = toml::from_str(text).expect("parse");
         assert_eq!(cfg.accounts[0].credential_file, None);
         let again = toml::to_string_pretty(&cfg).expect("serialize");
@@ -1300,7 +1595,7 @@ mod tests {
     fn default_notifications_are_written_back_to_config_toml() {
         let text = toml::to_string_pretty(&Config::default()).expect("serialize");
         assert!(
-            text.contains("[notifications]\nenabled = true\nup = false\n"),
+            text.contains("[notifications]\nenabled = false\nup = false\n"),
             "{text}"
         );
     }

@@ -232,7 +232,7 @@ Keys, defaults and the traps of editing `config.toml` and `tunnels.toml` are in
 
 | Path | Contents |
 |---|---|
-| `<config>/config.toml` | Accounts, default account, relay and domains per account |
+| `<config>/config.toml` | Accounts, default account, relay and domains per account. `config_version = 2` marks a file written since notifications went off by default: loading an older one switches them off and saves it once, without waiting on `config.lock`. Only an interactive command says so on stderr; the watchdog, the supervisor and `mcp` never do |
 | `<config>/tunnels.toml` | Persistent tunnels |
 | `<config>/tunnels.lock`, `<config>/config.lock` | Empty files whose only job is to be locked. A command or the TUI's config page that changes `tunnels.toml` or `config.toml` holds the matching lock from its read to its write, so two gtunnels cannot drop each other's change. Safe to delete when no gtunnel is running |
 | `<config>/tunnels.edit-<pid>.toml`, `<config>/config.edit-<pid>.toml` | The config page's private copy of the file being edited. Removed on save or `Esc`, and on the next page open once its gtunnel is gone |
