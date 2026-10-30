@@ -883,21 +883,21 @@ pub const BESIDE_FROM: u16 = 80;
 /// Logs' share of the width when Metrics sits beside it, in percent.
 const LOGS_PERCENT: u16 = 60;
 
-/// How a stacked work area is cut: the list, the one-line summary of the
-/// selected tunnel, and what is left for Logs and Metrics.
+/// How a stacked work area is cut: the list, and what is left for Logs and
+/// Metrics.
 ///
 /// The list is sized to its entries so a short list does not hold rows empty,
 /// but never above `LIST_MAX_PERCENT` of the height or below `LIST_MIN_ROWS`;
-/// past the cap it scrolls. The summary is one row and only exists with a
-/// selection and a row to spare.
-pub fn stacked_heights(total: u16, entries: usize, selected: bool) -> (u16, u16, u16) {
+/// past the cap it scrolls. The selected tunnel's summary has no row of its
+/// own: it is drawn on the list's bottom border, so the row it used to take
+/// goes to the panes that have something to scroll.
+pub fn stacked_heights(total: u16, entries: usize) -> (u16, u16) {
     let wanted = u16::try_from(entries.max(1))
         .unwrap_or(u16::MAX)
         .saturating_add(LIST_CHROME);
     let cap = total * LIST_MAX_PERCENT / 100;
     let list = wanted.min(cap).max(LIST_MIN_ROWS).min(total);
-    let summary = u16::from(selected && total > list);
-    (list, summary, total - list - summary)
+    (list, total - list)
 }
 
 /// Where Logs and Metrics go in the rows under the summary, and whether
@@ -941,28 +941,18 @@ pub fn bottom_split(area: Rect) -> Bottom {
 
 fn render_stacked(f: &mut Frame, app: &App, area: Rect) {
     let entry = app.selected_entry();
-    let (list, summary, rest) = stacked_heights(area.height, app.entries.len(), entry.is_some());
+    let (list, rest) = stacked_heights(area.height, app.entries.len());
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(list),
-            Constraint::Length(summary),
-            Constraint::Length(rest),
-        ])
+        .constraints([Constraint::Length(list), Constraint::Length(rest)])
         .split(area);
-    render_tunnels(f, app, rows[0]);
-    let Some(entry) = entry else {
+    render_tunnels(f, app, rows[0], entry);
+    if entry.is_none() {
         // Nothing selected, so nothing to summarise or measure
-        render_logs(f, app, rows[2]);
+        render_logs(f, app, rows[1]);
         return;
-    };
-    if summary > 0 {
-        f.render_widget(
-            Paragraph::new(summary_line(entry, rows[1].width as usize)),
-            rows[1],
-        );
     }
-    let bottom = bottom_split(rows[2]);
+    let bottom = bottom_split(rows[1]);
     if bottom.logs.height >= LOGS_STACKED_MIN {
         render_logs(f, app, bottom.logs);
     }
@@ -1042,7 +1032,7 @@ pub fn render(f: &mut Frame, app: &App) {
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(46), Constraint::Percentage(54)])
             .split(main[1]);
-        render_tunnels(f, app, cols[0]);
+        render_tunnels(f, app, cols[0], None);
         render_right(f, app, cols[1]);
     }
 
@@ -1136,9 +1126,27 @@ fn fit(text: &str, width: usize) -> String {
 /// A row with an op running. One cell, like the status symbols it replaces.
 const PENDING_GLYPH: char = '\u{25d0}';
 
-fn render_tunnels(f: &mut Frame, app: &App, area: Rect) {
+/// `summary` is the stacked layout's one-line account of the selected tunnel,
+/// which has no room for a Details pane. It is drawn on the bottom border so the
+/// pane it describes frames it; side by side Details exists and it is `None`.
+fn render_tunnels(f: &mut Frame, app: &App, area: Rect, summary: Option<&TunnelEntry>) {
     let title = format!("Tunnels ({})", app.entries.len());
     let inner = pane(f, area, &title, None);
+    if let (Some(entry), true) = (summary, area.height >= 2 && area.width > 4) {
+        // Between the corners, which stay: the line carries its own cell of air
+        // on the left and one is added on the right, so it reads as a title and
+        // never touches `\u{2570}` or `\u{256f}`. The scrollbar's arrows sit on the
+        // right border a row above, so nothing here can reach them.
+        let room = Rect {
+            x: area.x + 1,
+            y: area.y + area.height - 1,
+            width: area.width - 2,
+            height: 1,
+        };
+        let mut line = summary_line(entry, room.width as usize - MARGIN);
+        line.push_span(Span::raw(" "));
+        f.render_widget(Paragraph::new(line), room);
+    }
     app.pane_rects.set(PaneRects {
         list: area,
         ..app.pane_rects.get()
