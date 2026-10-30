@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.61](https://github.com/gcheliz/gtunnel/compare/v0.2.60...v0.2.61) - 2026-10-30
+
+### Fixed
+
+- *(tui)* draw the stacked summary in the list's bottom border ([#361](https://github.com/gcheliz/gtunnel/pull/361))
+
 ## [0.2.60](https://github.com/gcheliz/gtunnel/compare/v0.2.59...v0.2.60) - 2026-10-30
 
 ### Fixed
