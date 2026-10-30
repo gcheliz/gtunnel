@@ -108,6 +108,10 @@ impl Harness {
     }
 
     fn run_mcp_pipe(&self, input: &str) -> (String, String, bool) {
+        self.run_mcp_pipe_bytes(input.as_bytes())
+    }
+
+    fn run_mcp_pipe_bytes(&self, input: &[u8]) -> (String, String, bool) {
         let root = self.dir.path();
         let path = format!(
             "{}:/usr/bin:/bin:/usr/sbin:/sbin",
@@ -127,7 +131,7 @@ impl Harness {
             .expect("spawn gtunnel mcp");
 
         if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(input.as_bytes()).unwrap();
+            stdin.write_all(input).unwrap();
             stdin.flush().unwrap();
         }
 
@@ -402,6 +406,37 @@ fn a_stopped_tunnel_reads_stopped_in_list_and_in_get_status() {
     let s = json_text(&call(&h, "gtunnel_get_status", r#"{"name":"db"}"#));
     assert_eq!(s["status"], "stopped", "{s}");
     assert_eq!(s["health"], "stopped", "{s}");
+}
+
+// A protocol error carries no kind and, built from `to_string`, only the
+// outermost context: "Failed to parse <path>" with no line to go and fix
+#[test]
+fn a_broken_tunnels_file_is_a_tool_failure_naming_the_parsers_line_and_column() {
+    let h = Harness::new();
+    fs::write(
+        h.dir.path().join("config/tunnels.toml"),
+        "[[tunnels]]\nname = \n",
+    )
+    .unwrap();
+    for tool in [
+        "gtunnel_list_tunnels",
+        "gtunnel_get_status",
+        "gtunnel_get_logs",
+    ] {
+        let args = if tool == "gtunnel_list_tunnels" {
+            "{}"
+        } else {
+            r#"{"name":"db"}"#
+        };
+        let result = call(&h, tool, args);
+        assert_eq!(result["isError"], true, "{tool}: {result}");
+        let text = result["content"][0]["text"].as_str().expect("text");
+        assert!(
+            text.contains("line 2, column"),
+            "{tool}: the parser's position is missing: {text}"
+        );
+        assert_eq!(kind(&result), "internal", "{tool}: {result}");
+    }
 }
 
 #[test]
@@ -1531,4 +1566,24 @@ fn a_legacy_initialize_session_is_unchanged() {
         assert!(frame["result"].get("resultType").is_none(), "{frame}");
         assert!(frame["result"].get("_meta").is_none(), "{frame}");
     }
+}
+
+// `lines()` read a line that is not UTF-8 as the end of input, so the server
+// answered the first ping and left for good with exit 0
+#[test]
+fn a_line_that_is_not_utf8_gets_a_parse_error_and_the_server_keeps_answering() {
+    let h = Harness::new();
+    let mut input = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n".to_vec();
+    input.extend_from_slice(b"\xff\xfe not json\n");
+    input.extend_from_slice(b"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}\n");
+    let (stdout, stderr, ok) = h.run_mcp_pipe_bytes(&input);
+    let replies = frames(&stdout);
+    assert_eq!(replies.len(), 3, "stdout: {stdout}\nstderr: {stderr}");
+    assert_eq!(replies[0]["id"], 1);
+    assert!(replies[0]["result"].is_object(), "{}", replies[0]);
+    assert_eq!(replies[1]["error"]["code"], -32700, "{}", replies[1]);
+    assert!(replies[1]["id"].is_null(), "{}", replies[1]);
+    assert_eq!(replies[2]["id"], 2);
+    assert!(replies[2]["result"].is_object(), "{}", replies[2]);
+    assert!(ok, "end of input is a clean exit: {stderr}");
 }

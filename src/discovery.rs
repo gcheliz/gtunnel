@@ -286,6 +286,7 @@ mod tests {
     fn a_pid_lookup_covers_every_account_not_just_a_selected_one() {
         let state = crate::state::TunnelState {
             tunnels: vec![tunnel("bastion", "dev"), tunnel("bastion", "prod")],
+            ..Default::default()
         };
         let labels = managed_labels(&state);
         assert!(
@@ -341,6 +342,7 @@ mod tests {
                     ..tunnel(name, account)
                 })
                 .collect(),
+            ..Default::default()
         }
     }
 

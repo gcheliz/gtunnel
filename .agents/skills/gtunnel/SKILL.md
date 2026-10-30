@@ -33,11 +33,11 @@ If `gtunnel_*` MCP tools are available, prefer them over the CLI:
 - `gtunnel_delete_tunnel`: delete a tunnel and its service.
 - `gtunnel_rename_tunnel`: rename (`name`, `new_name`); service and log follow, a running tunnel restarts. A name in use is refused.
 - `gtunnel_expose_tunnel`: publish a local service at `https://<name>.<domain>` through the account's relay (`name`, `target`, optional `domain`, `public`, `start`). Private by default (Google sign-in), the reverse of the CLI. Pass `public: true` only when the user asked for anyone on the internet to reach it, and confirm first. Only a service on this machine: refuse another host and point at the CLI. Never creates a relay; `gtunnel relay up` is CLI only.
-- `gtunnel_move_tunnel`: move an Access tunnel to another account (`name`, `to`, optional `rename` when the destination uses the name). Confirm first. A failure of kind `auth` means the user must run `gcloud auth login` for that account: MCP cannot prompt.
+- `gtunnel_move_tunnel`: move an Access tunnel to another account (`name`, `to`, optional `rename` when the destination uses the name). Confirm first. A failure of kind `auth` means the user must run `gcloud auth login` for that account: MCP cannot prompt. A warning from a tool (an instance that could not be verified on add, an old log left behind by a rename or move) is a `Warning:` line in the tool text, never on stderr.
 - `gtunnel_list_accounts`: accounts and the selection (`selected_account`, `selected` on each). The `gtunnel://accounts` resource returns the same object.
 - `gtunnel_doctor`: diagnostics on prerequisites, permissions and service configuration.
 
-The JSON tools (`gtunnel_list_tunnels`, `gtunnel_get_status`, `gtunnel_run_tunnel`, `gtunnel_expose_tunnel`, `gtunnel_list_accounts`, `gtunnel_doctor`) also return `structuredContent`; the list is `{"tunnels": [...]}` and the doctor `{"findings": [...]}`. A failure is `{"error": {"kind", "message"}}`. Tools annotated `readOnlyHint` change nothing, so call them freely.
+The JSON tools (`gtunnel_list_tunnels`, `gtunnel_get_status`, `gtunnel_run_tunnel`, `gtunnel_expose_tunnel`, `gtunnel_list_accounts`, `gtunnel_doctor`) also return `structuredContent`; the list is `{"tunnels": [...]}` and the doctor `{"findings": [...]}`. A failure is `{"error": {"kind", "message"}}`, and `message` carries the whole cause, such as the line and column of a broken `tunnels.toml`. Tools annotated `readOnlyHint` change nothing, so call them freely.
 
 Routing: for short-lived access (a query, a one-off check) prefer `gtunnel_run_tunnel`: it needs no cleanup. Use `gtunnel_add_tunnel` only for something the user keeps. Choose the TTL for the task at hand, not the maximum.
 

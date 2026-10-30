@@ -203,7 +203,7 @@ async fn run_relocate(
     to: &str,
     old: &str,
     new: &str,
-) -> Result<()> {
+) -> Result<Vec<String>> {
     check_relocate(state, from, to, old, new)?;
     let before = state.find_for_account(old, from).cloned().ok_or_else(|| {
         GtunnelError::not_found(format!("Tunnel '{old}' not found for account '{from}'"))
@@ -270,8 +270,11 @@ async fn run_relocate(
     // Cleanup, not a precondition, so it neither aborts nor waits on the
     // outcome above: the old log is orphaned either way, and a reused name
     // would inherit it
+    // Returned, not printed: the TUI draws over a terminal and the MCP server
+    // owns stdio, so each door says it in its own way
+    let mut warnings = Vec::new();
     if let Err(e) = src.remove_log(&old_log) {
-        eprintln!("Warning: could not remove the old log: {e:#}");
+        warnings.push(format!("could not remove the old log: {e:#}"));
     }
     let verb = if moving { "moved" } else { "renamed" };
     let done = if was_running {
@@ -286,7 +289,7 @@ async fn run_relocate(
         account_flag(moving, to)
     );
     match (route, start) {
-        (Ok(()), Ok(())) => Ok(()),
+        (Ok(()), Ok(())) => Ok(warnings),
         (Err(route), Ok(())) => Err(route.context(format!(
             "'{new}' was {done}, but its route was not rebuilt; {retry}"
         ))),
@@ -374,6 +377,8 @@ pub struct Relocated {
     pub new: String,
     pub from: String,
     pub to: String,
+    /// Things that went wrong after the move was done and did not undo it
+    pub warnings: Vec<String>,
 }
 
 impl Relocated {
@@ -388,33 +393,65 @@ impl Relocated {
         }
         out
     }
+
+    /// `message` followed by one `Warning:` line per warning, for the doors
+    /// that cannot print them to a terminal as they happen
+    pub fn message_with_warnings(&self) -> String {
+        let mut out = self.message();
+        for w in &self.warnings {
+            out.push_str(&format!("\nWarning: {w}"));
+        }
+        out
+    }
 }
 
+// The CLI is the one door that can offer a browser login, so it is the one
+// that asks the terminal whether a prompt is possible
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub async fn cmd_move(
     name: &str,
     from: Option<&str>,
     to: &str,
     rename_to: Option<&str>,
 ) -> Result<()> {
-    println!(
-        "{}",
-        move_tunnel(name, from, to, rename_to).await?.message()
-    );
+    let done = move_tunnel(
+        name,
+        from,
+        to,
+        rename_to,
+        crate::gcp::gcloud::is_interactive(),
+    )
+    .await?;
+    println!("{}", done.message());
+    for w in &done.warnings {
+        eprintln!("Warning: {w}");
+    }
     Ok(())
 }
 
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub async fn cmd_rename(account: Option<&str>, old: &str, new: &str) -> Result<()> {
-    println!("{}", rename_tunnel(account, old, new).await?.message());
+    let done = rename_tunnel(account, old, new).await?;
+    println!("{}", done.message());
+    for w in &done.warnings {
+        eprintln!("Warning: {w}");
+    }
     Ok(())
 }
 
 /// Move `name` from the `from` account (the active one when `None`) to `to`.
 /// Prints nothing, so the MCP server can call it on a stdio transport.
+///
+/// Whether a login prompt is possible is the caller's to say: a terminal
+/// being present proves nothing inside the TUI, where it is in raw mode and
+/// nothing can answer. With `interactive` false an expired destination login
+/// fails with an auth error instead of asking.
 pub async fn move_tunnel(
     name: &str,
     from: Option<&str>,
     to: &str,
     rename_to: Option<&str>,
+    interactive: bool,
 ) -> Result<Relocated> {
     // Two accounts, so two ops: the source stops and cleans up the old
     // service, the destination verifies, installs and starts the new one
@@ -423,7 +460,12 @@ pub async fn move_tunnel(
     check_accounts_differ(&src_acct.name, &dst_acct.name, name)?;
     // main authenticated the source only; the destination is asked a question
     // before the first write, and an unauthenticated one cannot answer it
-    crate::gcp::gcloud::ensure_logged_in(&dst_acct).await?;
+    crate::gcp::gcloud::ensure_logged_in_with(
+        &dst_acct,
+        interactive,
+        crate::gcp::gcloud::confirm_login,
+    )
+    .await?;
     let mut state = TunnelState::load()?;
     find_tunnel(&state, name, &src_acct.name)?;
     let new = target_name(name, rename_to);
@@ -441,7 +483,7 @@ pub async fn move_tunnel(
     // The old name is about to stop on purpose; left in the ledger as Up, the
     // watchdog's next pass would announce a crash that was a move
     crate::lifecycle::forget(&src_acct.name, name);
-    run_relocate(
+    let warnings = run_relocate(
         &src,
         &dst,
         &mut state,
@@ -456,6 +498,7 @@ pub async fn move_tunnel(
         new: new.to_string(),
         from: src_acct.name,
         to: dst_acct.name,
+        warnings,
     })
 }
 
@@ -472,12 +515,13 @@ pub async fn rename_tunnel(account: Option<&str>, old: &str, new: &str) -> Resul
     };
     // Same reason as in `move_tunnel`: the old name stops on purpose
     crate::lifecycle::forget(&acct.name, old);
-    run_relocate(&ops, &ops, &mut state, &acct.name, &acct.name, old, new).await?;
+    let warnings = run_relocate(&ops, &ops, &mut state, &acct.name, &acct.name, old, new).await?;
     Ok(Relocated {
         old: old.to_string(),
         new: new.to_string(),
         from: acct.name.clone(),
         to: acct.name,
+        warnings,
     })
 }
 
@@ -492,7 +536,54 @@ mod tests {
             new: new.into(),
             from: from.into(),
             to: to.into(),
+            warnings: Vec::new(),
         }
+    }
+
+    // The TUI is in raw mode and the MCP server's stdin is the protocol, so a
+    // terminal being present says nothing about whether anyone can answer
+    #[tokio::test]
+    async fn a_move_that_may_not_prompt_fails_with_the_login_command() {
+        let _dir = crate::config::testing::TempConfigDir::new();
+        let _gcloud = crate::gcp::gcloud::tests::FakeGcloudOnPath::new(
+            "echo 'ERROR: not logged in' >&2; exit 1",
+        );
+        let account = |name: &str| Account {
+            name: name.to_string(),
+            gcloud_configuration: format!("{name}-cfg"),
+            project: format!("example-{name}-1a2b"),
+            default_zone: "europe-west1-b".to_string(),
+            impersonate_service_account: None,
+            credential_file: None,
+            expose: None,
+        };
+        let mut config = Config::default();
+        config.add_account(account("dev")).expect("dev");
+        config.add_account(account("prod")).expect("prod");
+        crate::config::save_config(&config).expect("save");
+
+        let err = move_tunnel("db", Some("dev"), "prod", None, false)
+            .await
+            .expect_err("no credentials on the destination");
+        assert_eq!(
+            crate::error::kind_of(&err),
+            crate::error::ErrorKind::Auth,
+            "{err:#}"
+        );
+        assert!(
+            format!("{err:#}").contains("gcloud auth login --configuration=prod-cfg"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn a_warning_reaches_the_status_line_after_the_message() {
+        let mut r = relocated("db", "db", "dev", "prod");
+        r.warnings.push("could not remove the old log: busy".into());
+        assert_eq!(
+            r.message_with_warnings(),
+            "Moved db from dev to prod\nWarning: could not remove the old log: busy"
+        );
     }
 
     #[test]
@@ -740,7 +831,8 @@ mod tests {
         let mut state = state_of(vec![t]);
         let result = futures_block(run_relocate(
             ops, ops, &mut state, "dev", "dev", "old", "new",
-        ));
+        ))
+        .map(|_| ());
         (result, state)
     }
 
@@ -834,7 +926,7 @@ mod tests {
         name: &str,
         new: &str,
     ) -> Result<()> {
-        futures_block(run_relocate(src, dst, state, "dev", "prod", name, new))
+        futures_block(run_relocate(src, dst, state, "dev", "prod", name, new)).map(|_| ())
     }
 
     #[test]
