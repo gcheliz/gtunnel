@@ -846,9 +846,10 @@ pub(crate) fn status_style(status: TunnelStatus, health: HealthStatus) -> Style 
     match status {
         TunnelStatus::Running => match health {
             HealthStatus::Healthy => Style::default().fg(theme::OK),
-            HealthStatus::Unhealthy | HealthStatus::AuthExpired | HealthStatus::CrashLooping => {
-                Style::default().fg(theme::BAD)
-            }
+            HealthStatus::Unhealthy
+            | HealthStatus::AuthExpired
+            | HealthStatus::CredentialsRefused
+            | HealthStatus::CrashLooping => Style::default().fg(theme::BAD),
             HealthStatus::Checking | HealthStatus::Unknown => Style::default().fg(theme::WARN),
         },
         TunnelStatus::Stopped => Style::default().fg(theme::MUTED),
@@ -2205,7 +2206,12 @@ fn inline(label: &str) -> Span<'static> {
 /// word beside it was the same fact twice; `docs/usage.md` carries the legend.
 fn health_span(entry: &TunnelEntry) -> Span<'static> {
     let stopped = entry.status != TunnelStatus::Running || entry.is_stopping();
-    if stopped && entry.health != HealthStatus::AuthExpired {
+    if stopped
+        && !matches!(
+            entry.health,
+            HealthStatus::AuthExpired | HealthStatus::CredentialsRefused
+        )
+    {
         return Span::styled(
             TunnelStatus::Stopped.symbol(),
             Style::default()

@@ -24,6 +24,11 @@ pub enum HealthStatus {
     /// it matters because the fix is one command the user runs, and a generic
     /// failure sends them to the log to find that out.
     AuthExpired,
+    /// The probe failed, or the supervisor stopped the job, and the log names a
+    /// credential failure a login does not mend: a denied impersonation, a bad
+    /// key, a missing gcloud configuration. The fix is not one command, so the
+    /// action is the log, which names it.
+    CredentialsRefused,
     /// The service keeps restarting. Each restart can look healthy for a
     /// moment, so this outranks a passing probe: the loop is the finding.
     CrashLooping,
@@ -37,6 +42,7 @@ impl HealthStatus {
             HealthStatus::Unhealthy => "\u{2717}",
             HealthStatus::Checking => "\u{2026}",
             HealthStatus::AuthExpired => "\u{2297}",
+            HealthStatus::CredentialsRefused => "\u{2298}",
             HealthStatus::CrashLooping => "\u{21bb}",
         }
     }
@@ -45,7 +51,7 @@ impl HealthStatus {
     pub fn action(&self) -> Option<&'static str> {
         match self {
             HealthStatus::AuthExpired => Some("gcloud auth login"),
-            HealthStatus::CrashLooping => Some("check the log"),
+            HealthStatus::CredentialsRefused | HealthStatus::CrashLooping => Some("check the log"),
             _ => None,
         }
     }
@@ -55,8 +61,22 @@ impl HealthStatus {
     pub fn is_failing(&self) -> bool {
         matches!(
             self,
-            HealthStatus::Unhealthy | HealthStatus::AuthExpired | HealthStatus::CrashLooping
+            HealthStatus::Unhealthy
+                | HealthStatus::AuthExpired
+                | HealthStatus::CredentialsRefused
+                | HealthStatus::CrashLooping
         )
+    }
+
+    /// How a stop-class failure reads on a row. Only a lapsed login is
+    /// `AuthExpired`, whose one action is the login command; the others need
+    /// the user to read what was refused.
+    pub fn of_stopped(failure: crate::failure::Failure) -> Self {
+        if failure == crate::failure::Failure::LoginExpired {
+            HealthStatus::AuthExpired
+        } else {
+            HealthStatus::CredentialsRefused
+        }
     }
 }
 
@@ -83,25 +103,26 @@ pub fn log_is_recent(modified: SystemTime, now: SystemTime) -> bool {
 /// failure is classified: a tunnel that answers is healthy whatever the log
 /// remembers.
 ///
-/// `marker` is what a supervisor leaves when it stopped the job for expired
-/// credentials: the log is quiet after that and the window closes, so the
+/// `marker` is what a supervisor leaves when it stopped the job for a failure
+/// a restart cannot fix (its text names which one): the log is quiet after that and the window closes, so the
 /// marker alone keeps the answer until a start clears it.
 pub fn failed_health(log_path: &Path, marker: Option<&Path>) -> HealthStatus {
-    if marker.is_some_and(Path::exists) {
-        return HealthStatus::AuthExpired;
+    if let Some(failure) = marker.and_then(daemon::read_auth_marker) {
+        return HealthStatus::of_stopped(failure);
     }
     let recent = std::fs::metadata(log_path)
         .and_then(|m| m.modified())
         .is_ok_and(|m| log_is_recent(m, SystemTime::now()));
-    if recent
-        && daemon::read_tail(log_path, CREDENTIAL_TAIL_BYTES)
-            .lines()
-            .any(is_credential_failure)
-    {
-        HealthStatus::AuthExpired
-    } else {
-        HealthStatus::Unhealthy
-    }
+    // The newest stop-class line is the reason, as the supervisor reads it
+    let named = recent
+        .then(|| {
+            daemon::read_tail(log_path, CREDENTIAL_TAIL_BYTES)
+                .lines()
+                .filter_map(crate::failure::Failure::from_line)
+                .rfind(|f| f.is_stopping())
+        })
+        .flatten();
+    named.map_or(HealthStatus::Unhealthy, HealthStatus::of_stopped)
 }
 
 /// What a failed probe is read against: the tunnel's log and its credential
@@ -1573,10 +1594,55 @@ LISTEN 0      128    127.0.0.1:15432     0.0.0.0:*
     }
 
     #[test]
-    fn the_new_states_have_one_cell_symbols() {
-        for h in [HealthStatus::AuthExpired, HealthStatus::CrashLooping] {
-            assert_eq!(h.symbol().chars().count(), 1, "{h:?}");
+    fn a_marker_names_which_failure_stopped_the_job() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("t.log");
+        let marker = dir.path().join("t.auth");
+        for (text, want) in [
+            ("1\n", HealthStatus::AuthExpired),
+            ("login-expired\n", HealthStatus::AuthExpired),
+            ("impersonation-denied\n", HealthStatus::CredentialsRefused),
+            ("key-invalid\n", HealthStatus::CredentialsRefused),
+            ("configuration-missing\n", HealthStatus::CredentialsRefused),
+        ] {
+            std::fs::write(&marker, text).unwrap();
+            assert_eq!(failed_health(&log, Some(&marker)), want, "{text:?}");
         }
+    }
+
+    #[test]
+    fn a_fresh_denied_impersonation_in_the_log_is_credentials_refused_not_expired() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("t.log");
+        std::fs::write(&log, "ERROR: Failed to impersonate [sa@example.invalid].\n").unwrap();
+        assert_eq!(failed_health(&log, None), HealthStatus::CredentialsRefused);
+        // The newest stop-class line is the reason
+        std::fs::write(
+            &log,
+            "ERROR: Failed to impersonate [x].\nERROR: Reauthentication required.\n",
+        )
+        .unwrap();
+        assert_eq!(failed_health(&log, None), HealthStatus::AuthExpired);
+    }
+
+    #[test]
+    fn the_new_states_have_one_cell_symbols() {
+        for h in [
+            HealthStatus::AuthExpired,
+            HealthStatus::CredentialsRefused,
+            HealthStatus::CrashLooping,
+        ] {
+            assert_eq!(h.symbol().chars().count(), 1, "{h:?}");
+            assert!(h.is_failing(), "{h:?}");
+        }
+        assert_ne!(
+            HealthStatus::AuthExpired.symbol(),
+            HealthStatus::CredentialsRefused.symbol()
+        );
+        assert_eq!(
+            HealthStatus::CredentialsRefused.action(),
+            Some("check the log")
+        );
         assert_eq!(
             HealthStatus::AuthExpired.action(),
             Some("gcloud auth login")

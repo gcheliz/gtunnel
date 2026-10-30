@@ -3588,6 +3588,7 @@ fn each_health_state_shows_its_symbol_and_never_its_word() {
         (HealthStatus::Unhealthy, "unhealthy"),
         (HealthStatus::Checking, "checking"),
         (HealthStatus::AuthExpired, "auth expired"),
+        (HealthStatus::CredentialsRefused, "credentials refused"),
         (HealthStatus::CrashLooping, "crash loop"),
     ] {
         app.entries[0].status = TunnelStatus::Running;
@@ -3623,6 +3624,7 @@ fn health_symbols_take_the_theme_roles() {
         (HealthStatus::Unknown, theme::WARN),
         (HealthStatus::Unhealthy, theme::BAD),
         (HealthStatus::AuthExpired, theme::BAD),
+        (HealthStatus::CredentialsRefused, theme::BAD),
         (HealthStatus::CrashLooping, theme::BAD),
     ] {
         app.entries[0].health = h;

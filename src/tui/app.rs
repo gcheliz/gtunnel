@@ -3313,7 +3313,10 @@ impl App {
                         // reload itself read from the marker
                         if entry.status == TunnelStatus::Running {
                             entry.health = old.health;
-                        } else if entry.health != HealthStatus::AuthExpired {
+                        } else if !matches!(
+                            entry.health,
+                            HealthStatus::AuthExpired | HealthStatus::CredentialsRefused
+                        ) {
                             entry.health = HealthStatus::Unknown;
                         }
                         entry.metrics = old.metrics.clone();

@@ -118,6 +118,15 @@ pub fn auth_marker_in(config_dir: &std::path::Path, label: &str) -> PathBuf {
     config_dir.join("run").join(format!("{label}.auth"))
 }
 
+/// What a supervisor stopped for, read from its marker. A marker that exists
+/// always means stopped, so one that cannot be read is an expired login, which
+/// is also what the markers written before slugs existed (`1`) said.
+pub fn read_auth_marker(path: &std::path::Path) -> Option<crate::failure::Failure> {
+    path.exists().then(|| {
+        crate::failure::Failure::from_marker(&std::fs::read_to_string(path).unwrap_or_default())
+    })
+}
+
 /// A deleted tunnel leaves nothing that a tunnel of the same name, added
 /// next, could inherit.
 pub fn remove_auth_marker_in(config_dir: &std::path::Path, label: &str) {
