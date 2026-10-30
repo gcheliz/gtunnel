@@ -1066,10 +1066,13 @@ pub async fn cmd_run(
     let stderr = guard.child.stderr.take();
     // The pump ending changes nothing: gcloud may close a stream and keep
     // forwarding, so it waits here for the arms below to decide
+    let credential_file = acct.credential_file.is_some();
     let pump = async {
-        pump_lines(stdout, stderr, |line| match diagnose_log_line(&line) {
-            Some(hint) => console.say(format_args!("{line}\n  {hint}")),
-            None => console.say(format_args!("{line}")),
+        pump_lines(stdout, stderr, |line| {
+            match diagnose_log_line(&line, credential_file) {
+                Some(hint) => console.say(format_args!("{line}\n  {hint}")),
+                None => console.say(format_args!("{line}")),
+            }
         })
         .await;
         std::future::pending::<()>().await;

@@ -9,6 +9,7 @@ use super::{
 use crate::config::Account;
 use crate::daemon;
 use crate::expose::routes;
+use crate::failure::Failure;
 use crate::gcp::{compute, GcpClient};
 use crate::lifecycle::{self, Cause, State};
 use crate::state::{
@@ -591,7 +592,9 @@ async fn start_inner(account: Option<&str>, name: &str) -> Result<Started> {
         }
     };
     if readiness != Readiness::Ready {
-        let hint = match (last_hint(&tunnel)?, readiness) {
+        let found = last_hint(&tunnel, acct.credential_file.is_some())?;
+        let logged = found.as_ref().and_then(|(_, failure)| *failure);
+        let hint = match (found.map(|(hint, _)| hint), readiness) {
             (Some(hint), _) => Some(hint),
             (None, Readiness::TimedOut) => Some(format!(
                 "not listening after {}s",
@@ -602,12 +605,9 @@ async fn start_inner(account: Option<&str>, name: &str) -> Result<Started> {
         // The marker is the supervisor's own word that it stopped for
         // credentials; the log diagnosis is the same finding read from the
         // text when no marker was written
-        let kind = if stopped_for_credentials(&tunnel) || hint.as_deref().is_some_and(is_auth_hint)
-        {
-            ErrorKind::Auth
-        } else {
-            ErrorKind::Internal
-        };
+        let kind = stopped_failure(&tunnel)
+            .or(logged)
+            .map_or(ErrorKind::Internal, Failure::kind);
         return Err(StartFailed {
             name: name.to_string(),
             hint,
@@ -636,13 +636,14 @@ pub async fn cmd_start(account: Option<&str>, name: &str) -> Result<()> {
     Ok(())
 }
 
-// The log table's two expired-credentials entries share this text
-fn is_auth_hint(hint: &str) -> bool {
-    hint.starts_with("gcloud credentials expired")
-}
-
-// The newest log line gtunnel recognises, turned into an explanation
-fn last_hint(t: &PersistentTunnel) -> Result<Option<String>> {
+// The newest log line gtunnel recognises, turned into an explanation, with the
+// stop-class failure it names when it names one. The failure is read from the
+// line and not from the hint's wording, so rewording a hint cannot change the
+// exit code of a failed start.
+fn last_hint(
+    t: &PersistentTunnel,
+    credential_file: bool,
+) -> Result<Option<(String, Option<Failure>)>> {
     let path = t.log_path()?;
     let Ok(text) = std::fs::read_to_string(&path) else {
         return Ok(None);
@@ -650,7 +651,16 @@ fn last_hint(t: &PersistentTunnel) -> Result<Option<String>> {
     Ok(text
         .lines()
         .rev()
-        .find_map(|line| diagnose_log_line(line).map(|hint| hint.to_string())))
+        .find_map(|line| hint_of(line, credential_file)))
+}
+
+fn hint_of(line: &str, credential_file: bool) -> Option<(String, Option<Failure>)> {
+    diagnose_log_line(line, credential_file).map(|hint| {
+        (
+            hint,
+            Failure::from_line(line).filter(|failure| failure.is_stopping()),
+        )
+    })
 }
 
 pub async fn stop_tunnel(account: Option<&str>, name: &str) -> Result<()> {
@@ -877,11 +887,17 @@ impl ListRowJson {
         Self::declared_with(
             tunnel,
             status,
-            status != TunnelStatus::Running && stopped_for_credentials(tunnel),
+            (status != TunnelStatus::Running)
+                .then(|| stopped_failure(tunnel))
+                .flatten(),
         )
     }
 
-    fn declared_with(tunnel: &PersistentTunnel, status: TunnelStatus, marked: bool) -> Self {
+    fn declared_with(
+        tunnel: &PersistentTunnel,
+        status: TunnelStatus,
+        marked: Option<Failure>,
+    ) -> Self {
         Self {
             status: status_word(status).to_string(),
             name: tunnel.name.clone(),
@@ -933,27 +949,39 @@ impl ListRowJson {
     }
 }
 
-/// Whether the tunnel's supervisor stopped it for expired credentials and no
-/// start has cleared that since.
 /// Health of a declared tunnel for every reader that shares `list --json`'s
 /// words. `marked` is only consulted when the tunnel is not running: a running
 /// one is probed, and a start has cleared the marker anyway.
 pub(crate) fn declared_health(
     running: bool,
-    marked: bool,
+    marked: Option<Failure>,
     probe_latency_ms: Option<u128>,
     access: bool,
     log: &std::path::Path,
 ) -> &'static str {
-    if !running && marked {
-        return "auth_expired";
+    if let (false, Some(failure)) = (running, marked) {
+        return credentials_word(crate::probe::HealthStatus::of_stopped(failure));
     }
     health_word(running, probe_latency_ms, access, log)
 }
 
-pub(crate) fn stopped_for_credentials(tunnel: &PersistentTunnel) -> bool {
+/// The two words a credential failure has in `list --json`: a lapsed login the
+/// user renews, and a refusal (impersonation, key, configuration) they read
+/// the log to fix.
+fn credentials_word(status: crate::probe::HealthStatus) -> &'static str {
+    match status {
+        crate::probe::HealthStatus::AuthExpired => "auth_expired",
+        _ => "credentials_refused",
+    }
+}
+
+/// What the tunnel's supervisor stopped it for, when it did and no start has
+/// cleared the marker since.
+pub(crate) fn stopped_failure(tunnel: &PersistentTunnel) -> Option<Failure> {
     let label = daemon::platform_label(&tunnel.account_name, &tunnel.name);
-    daemon::auth_marker_path(&label).is_ok_and(|m| m.exists())
+    daemon::auth_marker_path(&label)
+        .ok()
+        .and_then(|m| daemon::read_auth_marker(&m))
 }
 
 /// Why a stopped tunnel's supervisor gave up on restarting, when it did.
@@ -997,7 +1025,8 @@ pub(crate) fn health_word(
     match (running, probe_latency_ms) {
         (true, Some(_)) => "healthy",
         (true, None) if access => match crate::probe::failed_health(log, None) {
-            crate::probe::HealthStatus::AuthExpired => "auth_expired",
+            status @ (crate::probe::HealthStatus::AuthExpired
+            | crate::probe::HealthStatus::CredentialsRefused) => credentials_word(status),
             _ => "unhealthy",
         },
         (false, _) => "stopped",
@@ -1098,7 +1127,9 @@ pub async fn cmd_list(account: Option<&str>, json: bool) -> Result<()> {
     let mut rows = Vec::new();
     for tunnel in tunnels {
         let status = tunnel_status(tunnel).await;
-        let marked = status != TunnelStatus::Running && stopped_for_credentials(tunnel);
+        let marked = (status != TunnelStatus::Running)
+            .then(|| stopped_failure(tunnel))
+            .flatten();
         let spent = (status != TunnelStatus::Running)
             .then(|| stopped_for_budget(tunnel))
             .flatten();
@@ -1437,10 +1468,10 @@ mod tests {
             },
         };
         for status in [TunnelStatus::Stopped, TunnelStatus::Error] {
-            let row = ListRowJson::declared_with(&tunnel, status, true);
+            let row = ListRowJson::declared_with(&tunnel, status, Some(Failure::LoginExpired));
             assert_eq!(row.health, "auth_expired", "{status:?}");
         }
-        let row = ListRowJson::declared_with(&tunnel, TunnelStatus::Stopped, false);
+        let row = ListRowJson::declared_with(&tunnel, TunnelStatus::Stopped, None);
         assert_eq!(row.health, "stopped");
     }
 
@@ -1448,19 +1479,19 @@ mod tests {
     fn a_stopped_row_reads_stopped_and_a_running_unprobed_row_does_not() {
         let tunnel = access_tunnel();
         for status in [TunnelStatus::Stopped, TunnelStatus::Error] {
-            let row = ListRowJson::declared_with(&tunnel, status, false);
+            let row = ListRowJson::declared_with(&tunnel, status, None);
             assert_eq!(row.health, "stopped", "{status:?}");
         }
         // list_rows_json builds every declared row before its probe lands
-        let row = ListRowJson::declared_with(&tunnel, TunnelStatus::Running, false);
+        let row = ListRowJson::declared_with(&tunnel, TunnelStatus::Running, None);
         assert_eq!(row.health, "unknown");
     }
 
     #[test]
     fn a_running_public_row_stays_unknown_and_a_stopped_one_is_stopped() {
-        let running = ListRowJson::declared_with(&public_tunnel(), TunnelStatus::Running, false);
+        let running = ListRowJson::declared_with(&public_tunnel(), TunnelStatus::Running, None);
         assert_eq!(running.health, "unknown");
-        let stopped = ListRowJson::declared_with(&public_tunnel(), TunnelStatus::Stopped, false);
+        let stopped = ListRowJson::declared_with(&public_tunnel(), TunnelStatus::Stopped, None);
         assert_eq!(stopped.health, "stopped");
     }
 
@@ -1490,11 +1521,38 @@ mod tests {
     fn get_status_health_for_a_stopped_marked_tunnel_is_auth_expired() {
         let none = NO_LOG.as_ref();
         assert_eq!(
-            declared_health(false, true, None, true, none),
+            declared_health(false, Some(Failure::LoginExpired), None, true, none),
             "auth_expired"
         );
-        assert_eq!(declared_health(false, false, None, true, none), "stopped");
-        assert_eq!(declared_health(true, true, Some(3), true, none), "healthy");
+        assert_eq!(declared_health(false, None, None, true, none), "stopped");
+        assert_eq!(
+            declared_health(true, Some(Failure::LoginExpired), Some(3), true, none),
+            "healthy"
+        );
+    }
+
+    #[test]
+    fn get_status_health_for_a_stopped_refused_tunnel_is_credentials_refused() {
+        let none = NO_LOG.as_ref();
+        for failure in [
+            Failure::ImpersonationDenied,
+            Failure::KeyInvalid,
+            Failure::ConfigurationMissing,
+        ] {
+            assert_eq!(
+                declared_health(false, Some(failure), None, true, none),
+                "credentials_refused",
+                "{failure:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_fresh_impersonation_failure_in_the_log_makes_a_silent_tunnel_credentials_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("db.log");
+        std::fs::write(&log, "ERROR: Failed to impersonate [sa@example.invalid].\n").unwrap();
+        assert_eq!(health_word(true, None, true, &log), "credentials_refused");
     }
 
     #[test]
@@ -1629,16 +1687,32 @@ mod tests {
     }
 
     #[test]
-    fn both_expired_credentials_log_lines_read_as_an_auth_hint() {
+    fn both_expired_credentials_log_lines_read_as_a_login_failure() {
         for line in [
             "Reauthentication required, please rerun gcloud auth login",
             "ERROR: please run gcloud auth login",
         ] {
-            let hint = diagnose_log_line(line).expect("a hint");
-            assert!(is_auth_hint(hint), "{line}");
+            let (_, failure) = hint_of(line, false).expect("a hint");
+            assert_eq!(failure, Some(Failure::LoginExpired), "{line}");
         }
-        let other = diagnose_log_line("bind: Address already in use").expect("a hint");
-        assert!(!is_auth_hint(other));
+        let (_, other) = hint_of("bind: Address already in use", false).expect("a hint");
+        assert_eq!(other, None);
+    }
+
+    // The kind of a failed start follows the failure the log names: a missing
+    // configuration is a usage error, a denied impersonation an auth one
+    #[test]
+    fn a_log_line_names_the_kind_a_failed_start_exits_with() {
+        let kind = |line| {
+            let (_, failure) = hint_of(line, false).expect("a hint");
+            failure.map_or(ErrorKind::Internal, Failure::kind)
+        };
+        assert_eq!(kind("ERROR: Failed to impersonate [x]."), ErrorKind::Auth);
+        assert_eq!(
+            kind("ERROR: The configuration [work] does not exist."),
+            ErrorKind::Usage
+        );
+        assert_eq!(kind("bind: Address already in use"), ErrorKind::Internal);
     }
 
     #[test]

@@ -3588,6 +3588,7 @@ fn each_health_state_shows_its_symbol_and_never_its_word() {
         (HealthStatus::Unhealthy, "unhealthy"),
         (HealthStatus::Checking, "checking"),
         (HealthStatus::AuthExpired, "auth expired"),
+        (HealthStatus::CredentialsRefused, "credentials refused"),
         (HealthStatus::CrashLooping, "crash loop"),
     ] {
         app.entries[0].status = TunnelStatus::Running;
@@ -3623,6 +3624,7 @@ fn health_symbols_take_the_theme_roles() {
         (HealthStatus::Unknown, theme::WARN),
         (HealthStatus::Unhealthy, theme::BAD),
         (HealthStatus::AuthExpired, theme::BAD),
+        (HealthStatus::CredentialsRefused, theme::BAD),
         (HealthStatus::CrashLooping, theme::BAD),
     ] {
         app.entries[0].health = h;
@@ -4373,4 +4375,19 @@ fn the_next_plain_status_and_an_installed_watchdog_clear_the_offer() {
     app.withdraw_offer();
     assert!(app.status.is_none());
     assert!(!logs_title_row(&app).contains("the offer"));
+}
+
+// A hint to log in would sign in a person, never the key, so the pane that
+// explains a failing tunnel must not give it to an account that uses one
+#[test]
+fn the_log_pane_does_not_tell_a_credential_file_account_to_log_in() {
+    let mut app = with_logs(app_with_two(), 0);
+    app.logs = vec!["ERROR: Reauthentication required.".to_string()];
+    let ordinary = text_of(&screen(&app, 160, 40)).join("\n");
+    assert!(ordinary.contains("Run: gcloud auth login"), "{ordinary}");
+
+    app.credential_file_accounts.insert(app.account.clone());
+    let keyed = text_of(&screen(&app, 160, 40)).join("\n");
+    assert!(keyed.contains("credential file"), "{keyed}");
+    assert!(!keyed.contains("Run: gcloud auth login"), "{keyed}");
 }

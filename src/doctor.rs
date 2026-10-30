@@ -1030,7 +1030,9 @@ fn remove_stale_record(
 // The same advice `run` gives, and for a credential file the same `; gcloud
 // said:` reason, so doctor is never the vaguer of the two
 fn gcloud_auth_finding(acct: &Account, interactive: bool, err: &anyhow::Error) -> Finding {
-    let mut advice = gcloud::auth_advice(acct, interactive);
+    let mut advice = crate::failure::Failure::of(err)
+        .unwrap_or(crate::failure::Failure::LoginExpired)
+        .advice(acct, interactive);
     if acct.credential_file.is_some()
         && let Some(reason) = gcloud::gcloud_reason(&format!("{err:#}"))
     {

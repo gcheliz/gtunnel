@@ -43,7 +43,7 @@ One colour, one question. A setting is not a verdict. `src/tui/theme.rs` states 
 | `LABEL` | what names the value beside it | field labels, footer words |
 | `OK` | is it running, healthy, done | a running status symbol, the config page's report of a saved edit |
 | `WARN` | is it worth a look while nothing is broken | the health flag, a pending row's glyph and verb, a log hint, a prompt's question, the footer's lead action key, the version in an update notice |
-| `BAD` | is it broken | a failed status symbol, any failing health (unhealthy, auth expired, crash loop: the row's flag is the same warning for all three and the Metrics symbol and `fix` row name which), a status-line error, the config page's refusal of an edit |
+| `BAD` | is it broken | a failed status symbol, any failing health (unhealthy, auth expired, credentials refused, crash loop: the row's flag is the same warning for all three and the Metrics symbol and `fix` row name which), a status-line error, the config page's refusal of an edit |
 | `FLAG` | is a setting on, which is a choice and not a verdict | the auto-start flag |
 | `SELECTED_BG` | which row has the cursor | the selected list row |
 | `FIELD_BG` | what is the account field | the header's account plate |

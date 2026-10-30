@@ -6,7 +6,7 @@ use super::protocol::{
 };
 use crate::commands::access::{
     add_tunnel, declared_health, delete_tunnel, health_word, list_rows_json, probe_local,
-    restart_tunnel, start_tunnel, stop_by_name, stopped_for_credentials, AddRequest, Stopped,
+    restart_tunnel, start_tunnel, stop_by_name, stopped_failure, AddRequest, Stopped,
 };
 use crate::commands::expose::{expose_tunnel, ExposeRequest, Exposed};
 use crate::commands::relocate::{move_tunnel, rename_tunnel};
@@ -189,7 +189,7 @@ pub fn all_tools() -> Vec<ToolDefinition> {
             title: "List tunnels".to_string(),
             annotations: ToolAnnotations::new(true,false,true,false),
             output_schema: Some(list_tunnels_schema()),
-            description: "List all configured tunnels and live short-lived runs (run: true, with expires_at when they have a TTL) for the given or default account, each with its status, local_port (null on a public tunnel) and probed health (healthy, unhealthy, auth_expired, stopped or unknown)".to_string(),
+            description: "List all configured tunnels and live short-lived runs (run: true, with expires_at when they have a TTL) for the given or default account, each with its status, local_port (null on a public tunnel) and probed health (healthy, unhealthy, auth_expired, credentials_refused, stopped or unknown)".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -269,7 +269,7 @@ pub fn all_tools() -> Vec<ToolDefinition> {
             title: "Get tunnel status".to_string(),
             annotations: ToolAnnotations::new(true,false,true,false),
             output_schema: Some(get_status_schema()),
-            description: "Get detailed runtime status, PID, restarts, health (healthy, unhealthy, auth_expired, stopped, unknown) and active TCP probe latency for a tunnel or a live run (a run reports pid, local port and expires_at)".to_string(),
+            description: "Get detailed runtime status, PID, restarts, health (healthy, unhealthy, auth_expired, credentials_refused, stopped, unknown) and active TCP probe latency for a tunnel or a live run (a run reports pid, local port and expires_at)".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -813,7 +813,9 @@ pub async fn execute_tool(
 
             let health = declared_health(
                 status == TunnelStatus::Running,
-                status != TunnelStatus::Running && stopped_for_credentials(&t),
+                (status != TunnelStatus::Running)
+                    .then(|| stopped_failure(&t))
+                    .flatten(),
                 probe_latency_ms,
                 matches!(t.spec, TunnelSpec::Access { .. }),
                 &t.log_path().unwrap_or_default(),

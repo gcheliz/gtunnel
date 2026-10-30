@@ -156,7 +156,7 @@ no flag, and the instance is checked in the same call.
 | One instance | Saves its zone |
 | None | Exit 3, `Instance '<name>' not found in project '<project>'` |
 | Several, in different zones | Exit 2, naming the zones and asking for `--zone` |
-| Cannot run (permission, network) | Without a terminal: the account's default zone with one warning, or with none an error asking for `--zone`: exit 4 when GCP refuses the credentials (401, 403), exit 2 otherwise (network) |
+| Cannot run (permission, network) | Without a terminal: the account's default zone with one warning, or with none an error asking for `--zone`: exit 4 when GCP refuses the credentials (401, 403), exit 6 when GCP cannot be reached or answers 429, exit 2 otherwise |
 
 On a terminal, the last three, and a lookup that cannot run, ask for the zone instead of failing: the prompt lists the
 zones when there are several, starts from the account default (or blank), and accepts a
@@ -309,8 +309,11 @@ not. A run whose process is gone is not listed; `doctor` reports its leftover re
 A saved tunnel of a kind a newer gtunnel added is named under the table as `  <name>  unsupported by this version (<kind>)`, and a run record this version cannot parse as `  run record <file> cannot be read by this version; its ports stay reserved`. Neither is a row: nothing in them can be trusted to fill a column. See [A file written by a newer gtunnel](troubleshooting.md#a-file-written-by-a-newer-gtunnel).
 
 A stopped tunnel whose supervisor gave up on expired credentials carries `[auth expired]` in
-the same place, and `gtunnel_get_status` reports its `health` as `auth_expired`. Both clear on
-the next `gtunnel start`.
+the same place, and `gtunnel_get_status` reports its `health` as `auth_expired`. One it stopped
+for a denied impersonation, an invalid key or a missing gcloud configuration carries
+`[credentials refused]` and `credentials_refused`: the log names which, and
+[troubleshooting](troubleshooting.md#what-a-token-or-api-failure-means) says what to do. Both
+clear on the next `gtunnel start`.
 
 A stopped tunnel whose supervisor spent its [restart budget](configuration.md#the-restart-budget)
 carries `[restart budget spent: exit status: 1]`, the last thing gcloud died of, and the TUI
@@ -370,11 +373,11 @@ $ gtunnel list --json
 | `run` | bool | A `gtunnel run`, which ends by itself |
 | `expires_at` | number | Unix seconds at which a run started with `--ttl` stops; absent otherwise |
 | `local_port` | number or null | The local port to connect to; `null` on a public tunnel |
-| `health` | string | `healthy`, `unhealthy`, `auth_expired`, `stopped` or `unknown` |
+| `health` | string | `healthy`, `unhealthy`, `auth_expired`, `credentials_refused`, `stopped` or `unknown` |
 
 Running rows with a local port are probed all at once, so `list --json` waits at most about
 750 ms: one probe (500 ms, or `list_probe_timeout`) plus 250 ms to read the log on a silent
-close. A tunnel not running is `stopped` (or `auth_expired`); a running public or unmanaged one
+close. A tunnel not running is `stopped` (or `auth_expired`, or `credentials_refused`); a running public or unmanaged one
 cannot be probed and stays `unknown`. `gtunnel_list_tunnels` returns the same rows
 less the unmanaged ones, so its `unmanaged` is always `false`.
 
@@ -982,11 +985,12 @@ line.
 
 | Kind | Exit | Meaning |
 |---|---|---|
-| `internal` | 1 | Anything unclassified: an unreadable config, a failed write, a tunnel that did not come up for a reason other than credentials, a GCP error other than 401, 403 and 404 |
-| `usage` | 2 | A request gtunnel refuses: a bad argument or setting (a target without a port, a bad `GTUNNEL_LOG_LEVEL`), a name already taken (`add`, `expose`, `rename`, `move`, `account add`), an empty `--configuration`, an invalid `--zone`, an `account edit` with nothing to change or an empty project or zone, a local port a run holds, a move that cannot happen, `expose` or `run --public` on an account with no relay, or a local target that is not a port or host:port. Same code clap uses for a malformed command line |
+| `internal` | 1 | Anything unclassified: an unreadable config, a failed write, a tunnel that did not come up for a reason other than credentials, a GCP error that is none of the rows below (a 409, a 500) |
+| `usage` | 2 | A request gtunnel refuses: a bad argument or setting (a target without a port, a bad `GTUNNEL_LOG_LEVEL`), a name already taken (`add`, `expose`, `rename`, `move`, `account add`), an empty `--configuration`, a gcloud configuration that does not exist, an API that is disabled in the project (403 `SERVICE_DISABLED`), an invalid `--zone`, an `account edit` with nothing to change or an empty project or zone, a local port a run holds, a move that cannot happen, `expose` or `run --public` on an account with no relay, or a local target that is not a port or host:port. Same code clap uses for a malformed command line |
 | `not_found` | 3 | The tunnel or the account named does not exist, the instance a `move` names is missing from the destination zone, or a GCP API answers 404 |
-| `auth` | 4 | gcloud has no usable credentials for the account, a GCP API answers 401 or 403, or a start failed because the credentials expired |
+| `auth` | 4 | gcloud has no usable credentials for the account, impersonation was denied, a key was rejected, a GCP API answers 401 or a 403 that is not a quota or a disabled API, or a start failed for one of those reasons |
 | `gcloud` | 5 | A gcloud call ran and failed |
+| `unavailable` | 6 | Retry later, do not re-authenticate: a gcloud or API call timed out, the network could not be reached, or a quota or rate limit (429, `RATE_LIMIT_EXCEEDED`) was hit |
 
 A reader that stops early, such as `gtunnel list | head -1`, a pager quit with `q`, or an MCP
 client that closes its end, ends the command with exit 0 and nothing on stderr: the reader
