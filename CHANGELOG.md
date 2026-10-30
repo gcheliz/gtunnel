@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.47](https://github.com/gcheliz/gtunnel/compare/v0.2.46...v0.2.47) - 2026-10-30
+
+### Fixed
+
+- reserve before building in expose, re-check in doctor --fix and account remove ([#326](https://github.com/gcheliz/gtunnel/pull/326))
+
 ## [0.2.46](https://github.com/gcheliz/gtunnel/compare/v0.2.45...v0.2.46) - 2026-10-30
 
 ### Fixed
