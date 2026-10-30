@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.65](https://github.com/gcheliz/gtunnel/compare/v0.2.64...v0.2.65) - 2026-10-30
+
+### Added
+
+- *(relay)* update existing relay resources in place on relay up ([#394](https://github.com/gcheliz/gtunnel/pull/394))
+
 ## [0.2.64](https://github.com/gcheliz/gtunnel/compare/v0.2.63...v0.2.64) - 2026-10-30
 
 ### Fixed
