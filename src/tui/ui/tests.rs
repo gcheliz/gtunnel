@@ -4140,3 +4140,141 @@ fn the_footer_names_log_paging_where_it_fits_and_sheds_it_before_copy() {
         assert!(!text.contains("PgUp"), "{text:?}");
     }
 }
+
+// A plain status used to be stored and drawn nowhere, so a refusal or a
+// confirmation looked like a key that did nothing. These read the Logs title
+// off the screen, which is the one place a status is drawn.
+fn logs_title_row(app: &App) -> String {
+    let buffer = screen(app, 220, 40);
+    (0..buffer.area.height)
+        .map(|y| row_chars(&buffer, y).into_iter().collect::<String>())
+        .find(|row| row.to_lowercase().contains("logs"))
+        .expect("the Logs pane has a title")
+        // The pane block upper-cases its title, so the text is compared in
+        // lower case
+        .to_lowercase()
+}
+
+#[test]
+fn a_refusal_that_is_not_an_error_reaches_the_logs_title() {
+    let mut app = keymap_fixture();
+    app.handle_key(key(KeyCode::Char('s')));
+    assert!(!app.status_error);
+    let title = logs_title_row(&app);
+    assert!(title.contains("cache is already running"), "{title}");
+}
+
+#[test]
+fn a_confirmation_reaches_the_logs_title() {
+    let mut app = keymap_fixture();
+    app.opener = open_ok;
+    app.handle_key(key(KeyCode::Char('o')));
+    let title = logs_title_row(&app);
+    assert!(title.contains("opened http://localhost:16379"), "{title}");
+}
+
+#[test]
+fn an_error_wins_the_title_over_a_plain_status_that_came_before() {
+    let mut app = keymap_fixture();
+    app.handle_key(key(KeyCode::Char('s')));
+    let selected = app.selected;
+    app.entries[selected].kind = TunnelKind::External;
+    app.handle_key(key(KeyCode::Char('m')));
+    assert!(app.status_error);
+    let title = logs_title_row(&app);
+    assert!(title.contains("not managed by gtunnel"), "{title}");
+    assert!(!title.contains("already running"), "{title}");
+}
+
+// The invariant behind the three above, so a message added later that nothing
+// draws fails here rather than shipping as a key that does nothing. Every key
+// is pressed on a fresh app; whatever plain status it leaves must be in the
+// title, and an error must be in it too.
+#[test]
+fn every_status_a_key_sets_is_in_the_logs_title() {
+    let _dir = crate::config::testing::TempConfigDir::new();
+    std::fs::write(
+        crate::config::config_path().expect("path"),
+        "config_version = 2\nselected_account = \"dev\"\n",
+    )
+    .expect("write");
+    let mut drawn = 0;
+    for c in ' '..='~' {
+        let mut app = keymap_fixture();
+        app.clipboard = copy_ok;
+        app.opener = open_ok;
+        app.logs = vec!["line 1".to_string()];
+        app.watchdog_installed = Some(false);
+        app.handle_key(key(KeyCode::Char(c)));
+        let Some(status) = app.status.clone() else {
+            continue;
+        };
+        if app.input_mode != InputMode::Normal {
+            // A dialog or a page covers the title and has its own line
+            continue;
+        }
+        let title = logs_title_row(&app);
+        assert!(
+            title.contains(&status.to_lowercase()),
+            "key {c:?}: {status:?} not in {title}"
+        );
+        drawn += 1;
+    }
+    assert!(drawn >= 5, "the sweep found only {drawn} statuses to check");
+}
+
+fn aged(app: &mut App, by: std::time::Duration) {
+    if let Some((_, at)) = app.notice.as_mut() {
+        *at -= by;
+    }
+}
+
+#[test]
+fn a_plain_status_leaves_the_title_after_three_seconds() {
+    let mut app = keymap_fixture();
+    app.handle_key(key(KeyCode::Char('s')));
+    aged(&mut app, std::time::Duration::from_secs(4));
+    let title = logs_title_row(&app);
+    assert!(!title.contains("already running"), "{title}");
+}
+
+#[test]
+fn the_watchdog_offer_stays_drawn_past_three_seconds() {
+    let mut app = keymap_fixture();
+    app.set_offer("the offer");
+    aged(&mut app, std::time::Duration::from_secs(60));
+    assert!(logs_title_row(&app).contains("the offer"));
+}
+
+#[test]
+fn a_standing_offer_yields_to_a_running_spinner_and_to_an_error() {
+    let mut app = keymap_fixture();
+    app.set_offer("the offer");
+    aged(&mut app, std::time::Duration::from_secs(60));
+    app.spinner.start("stop db");
+    let title = logs_title_row(&app);
+    assert!(
+        title.contains("stop db") && !title.contains("the offer"),
+        "{title}"
+    );
+    app.spinner.stop();
+    app.set_error("it failed");
+    let title = logs_title_row(&app);
+    assert!(
+        title.contains("it failed") && !title.contains("the offer"),
+        "{title}"
+    );
+}
+
+#[test]
+fn the_next_plain_status_and_an_installed_watchdog_clear_the_offer() {
+    let mut app = keymap_fixture();
+    app.set_offer("the offer");
+    app.set_status("something else");
+    aged(&mut app, std::time::Duration::from_secs(60));
+    assert!(!logs_title_row(&app).contains("the offer"));
+    app.set_offer("the offer");
+    app.withdraw_offer();
+    assert!(app.status.is_none());
+    assert!(!logs_title_row(&app).contains("the offer"));
+}

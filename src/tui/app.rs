@@ -15,6 +15,9 @@ use crate::state::{
 
 // Longer than any terminal is wide: the pane draws the tail it has room for, so
 // a buffer sized to one guess at the width left the rest of the chart blank
+/// How long a plain status is drawn. Long enough to read one line, short
+/// enough that the title does not claim an operation is still under way.
+pub const NOTICE_FOR: Duration = Duration::from_secs(3);
 pub const SPARKLINE_SAMPLES: usize = 240;
 pub const METRICS_EVERY: Duration = Duration::from_secs(5);
 // One target's share of a round. Above a full TCP probe (2 s + 2 s + 0.25 s)
@@ -995,6 +998,12 @@ pub struct App {
     // tunnel has just been renamed or replaced is still the same socket
     peaks: HashMap<u16, u64>,
     pub flash: Option<(String, std::time::Instant)>,
+    // The last plain status and when it was set, so it can be drawn for
+    // `NOTICE_FOR`; `notice_sticky` keeps an offer drawn after that. Apart
+    // from `flash`, which the footer also draws as a confirmation: a refusal
+    // under a check mark would read as a success
+    pub notice: Option<(String, std::time::Instant)>,
+    pub notice_sticky: bool,
     // Read from the update cache, never fetched here: the TUI thread must not
     // wait on the network, and the header rule only shows what is already known
     pub update: Option<crate::update::UpdateNotice>,
@@ -1088,6 +1097,8 @@ impl App {
             clear_screen: false,
             peaks: HashMap::new(),
             flash: None,
+            notice: None,
+            notice_sticky: false,
             update: None,
             update_check_failed: false,
             notifications_on: false,
@@ -1148,8 +1159,7 @@ impl App {
         if self.input_mode == InputMode::AddInstance {
             self.draft_error = Some(format!("{message}. Type the instance name instead"));
         }
-        self.set_status(message);
-        self.status_error = true;
+        self.set_error(message);
     }
 
     // The list is for the account being edited, so a result for any other, or
@@ -1206,8 +1216,7 @@ impl App {
         self.list_loading = None;
         let message = format!("{PROJECT_LIST_FAILURE}{reason}");
         self.draft_error = Some(format!("{message}. Type the project instead"));
-        self.set_status(message);
-        self.status_error = true;
+        self.set_error(message);
     }
 
     // Like the project list: a list for a dialog since closed is dropped, and
@@ -1279,8 +1288,7 @@ impl App {
         self.list_loading = None;
         let message = format!("{ZONE_LIST_FAILURE}{reason}");
         self.draft_error = Some(format!("{message}. Type the zone instead"));
-        self.set_status(message);
-        self.status_error = true;
+        self.set_error(message);
     }
 
     // The text field, pre-filled with the saved zone, until the list arrives
@@ -1304,8 +1312,7 @@ impl App {
         self.list_loading = None;
         let message = format!("{CONFIGURATION_LIST_FAILURE}{reason}");
         self.draft_error = Some(format!("{message}. Type the configuration instead"));
-        self.set_status(message);
-        self.status_error = true;
+        self.set_error(message);
     }
 
     /// Flips the master switch in the file, then in the running app, in that
@@ -1316,24 +1323,72 @@ impl App {
         match page_dir().and_then(|_| crate::config::toggle_notifications()) {
             Ok(on) => {
                 self.notifications_on = on;
-                let mut message = format!("notifications {}", if on { "on" } else { "off" });
+                let message = format!("notifications {}", if on { "on" } else { "off" });
                 if on && self.watchdog_installed == Some(false) {
-                    message = format!("{message}; {}", super::WATCHDOG_OFFER);
+                    // The offer is why the message outlasts three seconds
+                    self.set_offer(format!("{message}; {}", super::WATCHDOG_OFFER));
+                } else {
+                    self.set_status(message);
                 }
-                // As `c` copy does: a plain status is not drawn, the flash is
-                self.flash(&message);
-                self.set_status(message);
             }
-            Err(e) => {
-                self.set_status(format!("notifications not changed: {e:#}"));
-                self.status_error = true;
-            }
+            Err(e) => self.set_error(format!("notifications not changed: {e:#}")),
         }
     }
 
+    /// A result or a refusal that is not a failure. It is drawn in the Logs
+    /// title for three seconds and then dropped, as `activity_text` argues:
+    /// kept longer it would claim an operation was still under way. Without
+    /// the notice the message was stored and drawn nowhere, so a key looked
+    /// as if it had done nothing.
     pub fn set_status(&mut self, message: impl Into<String>) {
-        self.status = Some(message.into());
+        let message = message.into();
+        self.notice = Some((message.clone(), std::time::Instant::now()));
+        self.notice_sticky = false;
+        self.status = Some(message);
         self.status_error = false;
+    }
+
+    /// A failure: drawn until the next result replaces it, with the red
+    /// border. It has no notice, because a three-second copy would be drawn
+    /// as a confirmation and hide behind the one that stays.
+    pub fn set_error(&mut self, message: impl Into<String>) {
+        self.status = Some(message.into());
+        self.status_error = true;
+        self.notice = None;
+        self.notice_sticky = false;
+    }
+
+    /// An offer the person may act on, so it stays drawn past the three
+    /// seconds, while nothing else claims the title: a running spinner or an
+    /// error replaces it, and so does the next status. The watchdog offer is
+    /// the only caller, because it is the only message whose next step is a
+    /// command typed in another terminal.
+    pub fn set_offer(&mut self, message: impl Into<String>) {
+        self.set_status(message);
+        self.notice_sticky = true;
+    }
+
+    /// A plain status in its first three seconds.
+    pub fn notice_message(&self) -> Option<&str> {
+        let (message, at) = self.notice.as_ref()?;
+        (at.elapsed() < NOTICE_FOR).then_some(message.as_str())
+    }
+
+    /// The offer, once its three seconds are over. It is drawn only when no
+    /// spinner or error has the title, which is the order `render_logs` reads
+    /// the three in.
+    pub fn standing_offer(&self) -> Option<&str> {
+        let (message, _) = self.notice.as_ref()?;
+        self.notice_sticky.then_some(message.as_str())
+    }
+
+    /// Drops the standing offer when the thing it asked for has happened.
+    pub fn withdraw_offer(&mut self) {
+        if self.notice_sticky {
+            self.notice = None;
+            self.notice_sticky = false;
+            self.status = None;
+        }
     }
 
     /// A load that errored leaves `loaded` as it was: the list is still not an
@@ -1344,8 +1399,7 @@ impl App {
     /// does not send one.
     pub fn load_failed(&mut self, error: &str) {
         self.load_failed = true;
-        self.set_status(format!("could not load tunnels: {error}"));
-        self.status_error = true;
+        self.set_error(format!("could not load tunnels: {error}"));
     }
 
     /// Empties the pane and goes back to following it. Every caller is a
@@ -1424,14 +1478,12 @@ impl App {
             .selected_entry()
             .map(|e| e.name().to_string())
             .unwrap_or_default();
-        self.set_status(format!(
+        // Marked as an error, not left a plain notice: a refusal stays drawn
+        // until the next result replaces it, where a notice would be gone
+        // after three seconds
+        self.set_error(format!(
             "{name} is not managed by gtunnel: {action} is unavailable"
         ));
-        // A cleared status is dropped the moment it is drawn, because a
-        // finished operation should not leave the pane title claiming it is
-        // still under way. A refusal has nothing behind it to finish, so
-        // leaving it cleared meant the key did nothing and said nothing.
-        self.status_error = true;
     }
 
     /// True, with the reason on the status line, when the selected row already
@@ -1444,8 +1496,7 @@ impl App {
             return false;
         };
         let message = format!("{}: {} already in progress", entry.name(), pending.verb);
-        self.set_status(message);
-        self.status_error = true;
+        self.set_error(message);
         true
     }
 
@@ -1819,8 +1870,7 @@ impl App {
                 self.input_mode = InputMode::Config;
             }
             Err(e) => {
-                self.set_status(format!("could not open the config: {e}"));
-                self.status_error = true;
+                self.set_error(format!("could not open the config: {e}"));
             }
         }
     }
@@ -1977,13 +2027,11 @@ impl App {
         self.config_view.text = Some(text);
         self.config_view.error = Some(error.clone());
         // The page carries the error itself, with its keys
-        self.set_status(format!("not saved: {error}"));
-        self.status_error = true;
+        self.set_error(format!("not saved: {error}"));
     }
 
     fn fail(&mut self, message: String) {
-        self.set_status(message.clone());
-        self.status_error = true;
+        self.set_error(message.clone());
         self.config_view.notice = Some(Notice {
             text: message,
             ok: false,
@@ -2069,8 +2117,7 @@ impl App {
             KeyCode::Tab => {
                 let other = self.config_view.file.other();
                 if let Err(e) = self.load_config_file(other) {
-                    self.set_status(format!("{e}"));
-                    self.status_error = true;
+                    self.set_error(format!("{e}"));
                 }
                 self.help_extent.set(HelpExtent::default());
             }
@@ -2380,10 +2427,9 @@ impl App {
         }
         let name = entry.name().to_string();
         self.cancel_dialog();
-        self.set_status(format!(
+        self.set_error(format!(
             "{name} is a run: import it with m before {action} it"
         ));
-        self.status_error = true;
         true
     }
 
@@ -2407,10 +2453,9 @@ impl App {
         }
         if self.other_accounts().is_empty() {
             self.cancel_dialog();
-            self.set_status(
+            self.set_error(
                 "This is the only account. Add another with `gtunnel account add` to move a tunnel",
             );
-            self.status_error = true;
             return;
         }
         self.move_selected = 0;
@@ -3077,8 +3122,11 @@ impl App {
 
     pub fn apply(&mut self, result: OpResult) {
         self.spinner.stop();
-        self.set_status(result.message.clone());
-        self.status_error = !result.ok;
+        if result.ok {
+            self.set_status(result.message.clone());
+        } else {
+            self.set_error(result.message.clone());
+        }
         // The page covers the status line, and a refusal there is one nobody
         // reads: it is the page that asked, so the page is told
         if result.from_account {
