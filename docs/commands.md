@@ -579,10 +579,11 @@ opens nothing.
 The rules and their sources are in [What GCP needs](gcp.md#firewall-rules-relay-up-creates).
 
 A public tunnel forwards with `ssh -R 0.0.0.0:<relay-port>:<local target>`, so the port listens
-on every interface of the relay. Any other rule on that network admitting `30000-30999` from
-elsewhere, such as an allow-all, lets a client who knows the relay's address reach the service
-directly. **That skips the load balancer and, with `--private`, the IAP sign-in in front of
-it.** Check the network's rules before the first `gtunnel expose`.
+on every interface of the relay. The relay's startup script adds an `nftables` rule that drops
+`30000-30999` from every source but the load balancer, so a VM in the same VPC cannot skip the
+load balancer or the `--private` IAP sign-in even under an allow-all rule. A relay created
+before that script existed gets it from the next `gtunnel relay up`. The rule protects the
+relay VM only; it does not replace reviewing the network's other rules.
 
 ## account
 

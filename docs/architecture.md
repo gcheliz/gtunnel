@@ -96,6 +96,15 @@ looks healthy while serving nothing. The relay's startup script sets
 `GatewayPorts clientspecified` so the `0.0.0.0` bind is accepted and the load balancer's
 health check can reach the port.
 
+The bind is on every interface because the load balancer connects to the relay's internal
+address, so the VPC firewall alone decides who else can. The startup script therefore also
+installs an `nftables` table, `gtunnel_relay`, that drops `30000-30999` from every source but
+the load balancer's ranges (`130.211.0.0/22`, `35.191.0.0/16`). It is what keeps `--private`
+meaningful: a VM in the same VPC cannot reach a tunnel's relay port directly, even under a
+rule such as `default-allow-internal`, so IAP sign-in is not skipped. The table is rewritten
+on every run of the script, which `relay up` applies to an existing relay too. It does not
+cover SSH on port 22, which only IAP reaches.
+
 Every relay resource that has a wanted shape is converged, not only created: `relay up` reads
 the health check, each backend service and the relay's startup script, and writes only what
 differs. `expose`, `start` and `restart` converge the tunnel's backend the same way.

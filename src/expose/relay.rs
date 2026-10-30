@@ -672,6 +672,24 @@ mod tests {
     use wiremock::matchers::{method, path_regex};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    // The VM refuses a peer by itself, so no rule gtunnel adds to the VPC may
+    // name an internal source: that would be the operator's decision (design
+    // decision 8), not gtunnel's
+    #[test]
+    fn no_firewall_rule_gtunnel_creates_admits_a_vpc_source() {
+        let names = Names::new("dev");
+        let iap = iap_ssh_firewall(&names, "default");
+        assert_eq!(iap.source_ranges, vec![IAP_RANGE.to_string()]);
+        assert_eq!(iap.allowed[0].ports, vec!["22".to_string()]);
+        let lb = lb_health_check_firewall(&names, "default");
+        assert_eq!(lb.source_ranges, vec!["130.211.0.0/22", "35.191.0.0/16"]);
+        assert_eq!(lb.allowed[0].ports, vec![RELAY_PORT_RANGE.to_string()]);
+        assert!(!lb
+            .source_ranges
+            .iter()
+            .any(|r| r.starts_with("10.") || r == "0.0.0.0/0"));
+    }
+
     fn run_record(name: &str, account: &str, public: bool) -> crate::ephemeral::EphemeralRecord {
         crate::ephemeral::EphemeralRecord {
             name: name.to_string(),
