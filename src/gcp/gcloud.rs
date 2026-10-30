@@ -228,6 +228,7 @@ async fn run_login(acct: &Account) -> Result<()> {
 
 // Explains why credentials are required and asks for confirmation before
 // launching a browser login, preventing unexpected window popups
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub fn confirm_login(account_name: &str) -> Result<bool> {
     eprintln!("gcloud has no usable credentials for account '{account_name}'.");
     eprintln!("gtunnel requires an authenticated GCP account to establish tunnels.");
@@ -269,7 +270,11 @@ where
         AuthStep::Proceed => return Ok(()),
         AuthStep::Login => {
             if confirm(&acct.name)? {
-                eprintln!("Starting `gcloud auth login`.");
+                // Only reached when `interactive`, which the caller vouches for
+                #[allow(clippy::print_stderr)]
+                {
+                    eprintln!("Starting `gcloud auth login`.");
+                }
                 // A login that exits 0 proves nothing; only a second probe does
                 if run_login(acct).await.is_ok() && print_access_token(acct).await.is_ok() {
                     return Ok(());
@@ -299,7 +304,7 @@ where
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     // A nonexistent configuration ensures print_access_token cannot succeed
@@ -441,14 +446,14 @@ mod tests {
     // so `sh` and friends still resolve.
     static PATH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    struct FakeGcloudOnPath {
+    pub(crate) struct FakeGcloudOnPath {
         original: Option<std::ffi::OsString>,
         _dir: tempfile::TempDir,
         _guard: std::sync::MutexGuard<'static, ()>,
     }
 
     impl FakeGcloudOnPath {
-        fn new(body: &str) -> Self {
+        pub(crate) fn new(body: &str) -> Self {
             use std::os::unix::fs::PermissionsExt;
             let guard = PATH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
             let dir = tempfile::tempdir().expect("tempdir");

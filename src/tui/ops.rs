@@ -14,13 +14,17 @@ use crate::config::load_config;
 use crate::daemon;
 use crate::discovery::ExternalTunnel;
 use crate::ephemeral::list_ephemeral;
+use crate::error::GtunnelError;
 use crate::expose::routes;
 use crate::gcp::GcpClient;
 use crate::probe::{
     classify_probe, collect_metrics, collect_unmanaged, http_probe, probe_tunnel, HealthStatus,
     Trail, TCP_TIMEOUT,
 };
-use crate::state::{AccessTarget, PersistentTunnel, TunnelSpec, TunnelState, TunnelStatus};
+use crate::state::{
+    check_local_port, local_port_is_free, AccessTarget, PersistentTunnel, TunnelSpec, TunnelState,
+    TunnelStatus,
+};
 use std::time::Duration;
 
 // The health dial and the metrics dial are one probe to the TUI, so they wait
@@ -383,27 +387,35 @@ async fn run(account: &str, op: &Op) -> Result<String> {
     }
 }
 
-// Both of these are the CLI's own commands, for the reason `create` calls
-// `cmd_add`: which names are free, what moves with a label and which tunnels
-// may not leave their account at all are answered in one place, and the
-// dialog is a second way to ask rather than a second set of rules.
+// Both of these are the cores of the CLI's own commands, for the reason
+// `create` calls `add_tunnel`: which names are free, what moves with a label and
+// which tunnels may not leave their account at all are answered in one place,
+// and the dialog is a second way to ask rather than a second set of rules. The
+// cores, not the `cmd_` wrappers: a println under the alternate screen lands on
+// the drawn page, so what the CLI would print goes into the status instead.
 async fn rename_tunnel(rename: &RenameTunnel) -> Result<String> {
-    relocate::cmd_rename(Some(&rename.account), &rename.name, &rename.new_name).await?;
-    Ok(format!("renamed {} to {}", rename.name, rename.new_name))
+    let done =
+        relocate::rename_tunnel(Some(&rename.account), &rename.name, &rename.new_name).await?;
+    Ok(status_line(&done.message_with_warnings()))
 }
 
+// `interactive` is false: the terminal is in raw mode and nothing can answer a
+// login prompt, so an expired destination login fails with the command to run
 async fn move_tunnel(moving: &MoveTunnel) -> Result<String> {
-    relocate::cmd_move(
+    let done = relocate::move_tunnel(
         &moving.name,
         Some(&moving.from),
         &moving.to,
         moving.rename_to.as_deref(),
+        false,
     )
     .await?;
-    Ok(match &moving.rename_to {
-        Some(new) => format!("moved {} to {} as {new}", moving.name, moving.to),
-        None => format!("moved {} to {}", moving.name, moving.to),
-    })
+    Ok(status_line(&done.message_with_warnings()))
+}
+
+// The status is one line, and the core's message is one per fact
+fn status_line(message: &str) -> String {
+    message.lines().collect::<Vec<_>>().join(". ")
 }
 
 // The four below are the cores of the CLI's own commands, for the reason
@@ -468,7 +480,7 @@ async fn create(new: &NewTunnel) -> Result<String> {
     match new.mode {
         TunnelMode::Access => {
             let (target, via) = add_arguments(new);
-            crate::commands::access::add_tunnel(
+            let added = crate::commands::access::add_tunnel(
                 Some(&new.account),
                 crate::commands::access::AddRequest {
                     name: &new.name,
@@ -483,54 +495,121 @@ async fn create(new: &NewTunnel) -> Result<String> {
                 },
             )
             .await?;
+            if !added.warnings.is_empty() {
+                return Ok(format!(
+                    "created {}. {}",
+                    new.name,
+                    added.warnings.join(". ")
+                ));
+            }
         }
         TunnelMode::Public => {
-            crate::commands::expose::cmd_expose(
-                Some(&new.account),
-                &new.name,
-                &new.local_target,
-                Some(&new.domain),
-                false,
-                true,
-            )
-            .await?
+            // The cores, not `cmd_expose`: it prints, and so does `cmd_start`
+            let req = crate::commands::expose::ExposeRequest {
+                name: &new.name,
+                target: &new.local_target,
+                domain: Some(&new.domain),
+                private: false,
+            };
+            let exposed = crate::commands::expose::expose_tunnel(Some(&new.account), &req).await?;
+            // The route and record exist by now, so say so if the start fails
+            start_tunnel(Some(&new.account), &new.name)
+                .await
+                .with_context(|| {
+                    format!(
+                        "{} was created at {} but not started",
+                        new.name, exposed.url
+                    )
+                })?;
+            if exposed.certificate_state != "ACTIVE" {
+                return Ok(format!(
+                    "created {}. certificate {}: HTTPS works once it is ACTIVE",
+                    new.name, exposed.certificate_state
+                ));
+            }
         }
     }
     Ok(format!("created {}", new.name))
 }
 
+/// The whole edit as one step on the loaded state, so the checks and the write
+/// share the lock `TunnelState::update` holds. `runs` and `is_free` are the
+/// caller's because both read the machine: a live run's port is recorded
+/// outside tunnels.toml, and a bind probe is the only way to see a stranger.
+/// Every check runs before the first write, so a refused edit leaves the state
+/// as it was.
+fn apply_edit(
+    state: &mut TunnelState,
+    edit: &EditTunnel,
+    account: &str,
+    runs: &std::collections::HashMap<u16, String>,
+    is_free: impl Fn(u16) -> bool,
+) -> Result<PersistentTunnel> {
+    let mut used = state.used_local_ports();
+    let tunnel = state
+        .find_for_account_mut(&edit.name, account)
+        .with_context(|| format!("No tunnel named '{}'", edit.name))?;
+
+    match &mut tunnel.spec {
+        TunnelSpec::Access {
+            remote_port,
+            local_port,
+            ..
+        } => {
+            let usage = |text: &str| anyhow::Error::from(GtunnelError::usage(text.to_string()));
+            let (remote, local) = edit
+                .value
+                .split_once(':')
+                .ok_or_else(|| usage("Write the new ports as <remote>:<local>"))?;
+            let remote: u16 = remote
+                .trim()
+                .parse()
+                .map_err(|_| usage("Remote port is not a port"))?;
+            let local: u16 = local
+                .trim()
+                .parse()
+                .map_err(|_| usage("Local port is not a port"))?;
+            // `parse_access_target` refuses 0 for the remote port the same way
+            if remote == 0 {
+                return Err(usage("Remote port must be between 1 and 65535"));
+            }
+            // Keeping the port is not a claim on it: the tunnel may be running
+            // on it right now, and its own row is in `used`
+            if local != *local_port {
+                used.remove(local_port);
+                if let Some(run) = runs.get(&local).filter(|_| !used.contains(&local)) {
+                    return Err(usage(&format!(
+                        "Local port {local} is already used by the run '{run}'"
+                    )));
+                }
+                used.extend(runs.keys().copied());
+                check_local_port(local, &used, is_free)?;
+            }
+            *remote_port = remote;
+            *local_port = local;
+        }
+        TunnelSpec::Expose {
+            local_target,
+            private,
+            ..
+        } => match edit.value.trim() {
+            "" => {
+                return Err(GtunnelError::usage("The local target cannot be empty").into());
+            }
+            "private" => *private = true,
+            "public" => *private = false,
+            other => *local_target = other.to_string(),
+        },
+    }
+
+    Ok(tunnel.clone())
+}
+
 async fn edit_tunnel(edit: &EditTunnel) -> Result<String> {
     let (config, acct) = resolve(Some(&edit.account))?;
     let updated = TunnelState::update(|state| {
-        let tunnel = state
-            .find_for_account_mut(&edit.name, &acct.name)
-            .with_context(|| format!("No tunnel named '{}'", edit.name))?;
-
-        match &mut tunnel.spec {
-            TunnelSpec::Access {
-                remote_port,
-                local_port,
-                ..
-            } => {
-                let (remote, local) = edit
-                    .value
-                    .split_once(':')
-                    .context("Write the new ports as <remote>:<local>")?;
-                *remote_port = remote.trim().parse().context("Remote port is not a port")?;
-                *local_port = local.trim().parse().context("Local port is not a port")?;
-            }
-            TunnelSpec::Expose {
-                local_target,
-                private,
-                ..
-            } => match edit.value.trim() {
-                "private" => *private = true,
-                "public" => *private = false,
-                other => *local_target = other.to_string(),
-            },
-        }
-
-        Ok(tunnel.clone())
+        let runs = crate::ephemeral::live_run_local_ports()?;
+        apply_edit(state, edit, &acct.name, &runs, local_port_is_free)
     })?;
 
     // A public tunnel's access rule lives on the backend, not in tunnels.toml
@@ -642,6 +721,116 @@ mod tests {
                 local_port,
             },
         }
+    }
+
+    fn state_with(tunnels: Vec<PersistentTunnel>) -> TunnelState {
+        TunnelState {
+            tunnels,
+            ..Default::default()
+        }
+    }
+
+    fn edit(name: &str, value: &str) -> EditTunnel {
+        EditTunnel {
+            account: "dev".to_string(),
+            name: name.to_string(),
+            value: value.to_string(),
+        }
+    }
+
+    fn no_runs() -> std::collections::HashMap<u16, String> {
+        std::collections::HashMap::new()
+    }
+
+    // An edit that is refused writes nothing: the caller saves only on Ok, and
+    // the state it held must still equal what was loaded
+    #[test]
+    fn a_port_edit_refuses_what_add_refuses_and_changes_nothing() {
+        let mut state = state_with(vec![access("db", 15000), access("api", 15001)]);
+        let before = state.clone();
+        let mut runs = no_runs();
+        runs.insert(15002, "scratch".to_string());
+
+        let cases = [
+            ("5432:0", "Local port must be between 1 and 65535"),
+            ("0:15009", "Remote port must be between 1 and 65535"),
+            ("5432:15001", "already used by another gtunnel tunnel"),
+            ("5432:15002", "already used by the run 'scratch'"),
+            ("5432:15003", "already in use on this machine"),
+            ("5432", "<remote>:<local>"),
+            ("x:15009", "Remote port is not a port"),
+        ];
+        for (value, expect) in cases {
+            let err = apply_edit(&mut state, &edit("db", value), "dev", &runs, |p| p != 15003)
+                .unwrap_err();
+            assert!(err.to_string().contains(expect), "{value}: {err}");
+            assert_eq!(state, before, "{value} must not write");
+        }
+    }
+
+    #[test]
+    fn a_port_edit_may_keep_the_tunnels_own_port_even_while_it_is_bound() {
+        let mut state = state_with(vec![access("db", 15000)]);
+        let saved = apply_edit(
+            &mut state,
+            &edit("db", "5432:15000"),
+            "dev",
+            &no_runs(),
+            |_| false,
+        )
+        .expect("its own port is not a claim");
+        assert!(matches!(
+            saved.spec,
+            TunnelSpec::Access {
+                remote_port: 5432,
+                local_port: 15000,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_port_edit_saves_a_free_new_port() {
+        let mut state = state_with(vec![access("db", 15000)]);
+        let saved = apply_edit(
+            &mut state,
+            &edit("db", " 5432 : 15009 "),
+            "dev",
+            &no_runs(),
+            |_| true,
+        )
+        .unwrap();
+        assert!(matches!(
+            saved.spec,
+            TunnelSpec::Access {
+                remote_port: 5432,
+                local_port: 15009,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn an_expose_edit_of_only_spaces_is_refused() {
+        let mut state = state_with(vec![PersistentTunnel {
+            name: "site".to_string(),
+            account_name: "dev".to_string(),
+            auto_start: false,
+            spec: TunnelSpec::Expose {
+                local_target: "localhost:3000".to_string(),
+                domain: "site.example.com".to_string(),
+                hostname: "site.example.com".to_string(),
+                relay_port: 8080,
+                private: false,
+            },
+        }]);
+        let before = state.clone();
+        let err = apply_edit(&mut state, &edit("site", "   "), "dev", &no_runs(), |_| {
+            true
+        })
+        .unwrap_err();
+        assert_eq!(crate::error::kind_of(&err), crate::error::ErrorKind::Usage);
+        assert_eq!(state, before);
     }
 
     // An unmanaged tunnel started with --listen-on-stdin has no local port in

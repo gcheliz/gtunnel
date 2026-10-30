@@ -175,6 +175,7 @@ impl ListLayout {
 }
 
 // Read one line, falling back to the default when the user just presses enter
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub fn prompt(label: &str, default: Option<&str>) -> Result<String> {
     match default {
         Some(d) => print!("{label} [{d}]: "),

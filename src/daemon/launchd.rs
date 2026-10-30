@@ -186,8 +186,7 @@ pub async fn install_watchdog(program: &std::path::Path) -> Result<()> {
             std::fs::create_dir_all(dir)
                 .with_context(|| format!("Failed to create {}", dir.display()))?;
         }
-        std::fs::write(&path, &text)
-            .with_context(|| format!("Failed to write {}", path.display()))?;
+        crate::fsutil::write_atomic(&path, &text)?;
     }
     // Reload rather than bootstrap over a running one, so reinstalling picks
     // up a new binary path
@@ -355,7 +354,8 @@ pub fn parse_launchctl_print(text: &str) -> (TunnelStatus, RuntimeInfo) {
         } else if let Some(rest) = line.strip_prefix("runs = ") {
             runs = rest.trim().parse::<u32>().unwrap_or(0);
         } else if let Some(rest) = line.strip_prefix("last exit code = ") {
-            last_exit = rest.trim().parse::<i32>().ok();
+            // `78: EX_CONFIG` names the code; only the number before the colon is it
+            last_exit = rest.split(':').next().and_then(|n| n.trim().parse().ok());
         }
     }
 
@@ -393,8 +393,7 @@ fn write_plist(path: &std::path::Path, spec: &ServiceSpec) -> Result<()> {
         std::fs::create_dir_all(dir)
             .with_context(|| format!("Failed to create {}", dir.display()))?;
     }
-    std::fs::write(path, render_plist(spec))
-        .with_context(|| format!("Failed to write {}", path.display()))
+    crate::fsutil::write_atomic(path, &render_plist(spec))
 }
 
 // Writing the definition is not the same as asking the tunnel to run: a loaded

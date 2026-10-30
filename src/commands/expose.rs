@@ -8,10 +8,7 @@ use crate::daemon;
 use crate::expose::naming::{hostname_for, Names};
 use crate::expose::{relay, routes};
 use crate::gcp::{certmanager, dns, GcpClient};
-use crate::state::{
-    allocate_port, validate_tunnel_name, PersistentTunnel, TunnelSpec, TunnelState, TunnelStatus,
-    RELAY_PORT_BASE, RELAY_PORT_SPAN,
-};
+use crate::state::{validate_tunnel_name, PersistentTunnel, TunnelSpec, TunnelState, TunnelStatus};
 
 // What the relay costs before anyone agrees to create it
 pub fn relay_cost_line() -> String {
@@ -20,6 +17,7 @@ pub fn relay_cost_line() -> String {
         .to_string()
 }
 
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub async fn cmd_relay_up(
     account: Option<&str>,
     zone: Option<&str>,
@@ -58,6 +56,7 @@ pub async fn cmd_relay_up(
 }
 
 // One managed zone needs no question; several do
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 async fn pick_managed_zone(client: &GcpClient, project: &str) -> Result<String> {
     let zones = dns::list_managed_zones(client, project).await?;
     match zones.len() {
@@ -81,6 +80,7 @@ async fn pick_managed_zone(client: &GcpClient, project: &str) -> Result<String> 
     }
 }
 
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub async fn cmd_relay_down(account: Option<&str>, force: bool, assume_yes: bool) -> Result<()> {
     let (config, acct) = resolve(account)?;
     let client = GcpClient::for_account(&acct);
@@ -106,6 +106,7 @@ pub async fn cmd_relay_down(account: Option<&str>, force: bool, assume_yes: bool
     Ok(())
 }
 
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub async fn cmd_relay_status(account: Option<&str>) -> Result<()> {
     let (_, acct) = resolve(account)?;
     if acct.expose.is_none() {
@@ -140,6 +141,7 @@ pub async fn cmd_relay_status(account: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub async fn cmd_domains(
     account: Option<&str>,
     default: Option<&str>,
@@ -226,6 +228,58 @@ fn new_expose_tunnel(
     }
 }
 
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Claim the name and the relay port, build the route, then make the claim a
+/// saved tunnel. The claim comes first because the route is the slow, external
+/// step: choosing the port after it let two commands pick one port and the loser
+/// leave a built route behind. A failed route, or a failed commit, gives the
+/// claim back so no port stays held. `route` must not touch tunnels.toml.
+async fn reserve_then_route<F, Fut>(
+    name: &str,
+    account: &str,
+    local_target: &str,
+    domain: &str,
+    private: bool,
+    route: F,
+) -> Result<PersistentTunnel>
+where
+    F: FnOnce(PersistentTunnel) -> Fut,
+    Fut: std::future::Future<Output = Result<()>>,
+{
+    let tunnel = TunnelState::update(|state| {
+        crate::ephemeral::check_name_free_of_runs(account, name)?;
+        // The port is bound on the relay instance, not here, so nothing local can
+        // probe it: tunnels.toml, the reservations and the live runs are the
+        // whole record
+        let taken = crate::ephemeral::used_relay_ports(state, account)?;
+        state.reserve_relay_port(name, account, &taken, now_secs(), |relay_port| {
+            new_expose_tunnel(name, account, local_target, domain, relay_port, private)
+        })
+    })?;
+
+    let built = route(tunnel.clone()).await;
+    let saved = match built {
+        Ok(()) => TunnelState::update(|state| state.commit_reservation(name, account)),
+        Err(e) => Err(e),
+    };
+    if let Err(e) = saved {
+        // Best effort: a release that fails leaves a reservation `doctor` clears
+        // once it is stale
+        let _ = TunnelState::update(|state| {
+            state.release_reservation(name, account);
+            Ok(())
+        });
+        return Err(e);
+    }
+    Ok(tunnel)
+}
+
 /// What to publish. `private` is the whole of the access decision, so each
 /// front end states it itself: the CLI defaults to public, MCP to private.
 pub struct ExposeRequest<'a> {
@@ -265,48 +319,19 @@ pub async fn expose_tunnel(account: Option<&str>, req: &ExposeRequest<'_>) -> Re
     // leave a route and a record behind
     crate::tunnel::normalize_local_target(req.target)?;
 
-    // Read to choose a relay port before the route is created; the locked
-    // update below re-checks both the name and the port
-    let state = TunnelState::load()?;
-    if state.find_for_account(name, &acct.name).is_some() {
-        return Err(GtunnelError::usage(format!(
-            "Tunnel '{name}' already exists for account '{}'",
-            acct.name
-        ))
-        .into());
-    }
-    state.check_label(&acct.name, name)?;
-    crate::ephemeral::check_name_free_of_runs(&acct.name, name)?;
-
-    let relay_port = allocate_port(
-        name,
-        RELAY_PORT_BASE,
-        RELAY_PORT_SPAN,
-        // The port is bound on the relay instance, not here, so nothing local can
-        // probe it: tunnels.toml and the live runs are the whole record
-        &crate::ephemeral::used_relay_ports(&state, &acct.name)?,
-        |_| true,
-    )?;
-
-    let tunnel = new_expose_tunnel(
+    let client = GcpClient::for_account(&acct);
+    let tunnel = reserve_then_route(
         name,
         &acct.name,
         req.target,
         &domain.domain,
-        relay_port,
         req.private,
-    );
-
-    let client = GcpClient::for_account(&acct);
-    routes::add_route(&client, &acct, &expose, &tunnel).await?;
-
-    TunnelState::update(|state| {
-        // The route above awaited, so another gtunnel may have taken the port
-        if crate::ephemeral::used_relay_ports(state, &acct.name)?.contains(&relay_port) {
-            bail!("Relay port {relay_port} was taken by another tunnel while the route was created; run `gtunnel doctor` to clear the route, then add the tunnel again");
-        }
-        state.add(tunnel.clone())
-    })?;
+        |tunnel| {
+            let (client, acct, expose) = (&client, &acct, &expose);
+            async move { routes::add_route(client, acct, expose, &tunnel).await }
+        },
+    )
+    .await?;
     let spec = daemon::service_spec(&config, &tunnel)?;
     daemon::install(&spec).await?;
 
@@ -329,6 +354,7 @@ pub async fn expose_tunnel(account: Option<&str>, req: &ExposeRequest<'_>) -> Re
     })
 }
 
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub async fn cmd_expose(
     account: Option<&str>,
     name: &str,
@@ -367,6 +393,43 @@ pub async fn cmd_expose(
 #[cfg(test)]
 mod new_tunnel_tests {
     use super::*;
+    use crate::config::testing::TempConfigDir;
+
+    // Reserved first, so a failed route has a claim to give back: before this a
+    // failed route left no record, but a lost race left a built route
+    #[tokio::test]
+    async fn a_failed_route_leaves_no_record_and_no_reserved_port() {
+        let _temp = TempConfigDir::new();
+        let failed = reserve_then_route("web", "dev", "3000", "example.com", false, |_| async {
+            anyhow::bail!("route refused")
+        })
+        .await;
+        assert!(failed.is_err());
+        let state = TunnelState::load().expect("load");
+        assert!(state.tunnels.is_empty(), "{:?}", state.tunnels);
+        assert!(state.reservations.is_empty(), "{:?}", state.reservations);
+    }
+
+    #[tokio::test]
+    async fn a_built_route_becomes_a_saved_tunnel_with_no_reservation_left() {
+        let _temp = TempConfigDir::new();
+        let seen = std::sync::Mutex::new(None);
+        let tunnel = reserve_then_route("web", "dev", "3000", "example.com", false, |t| {
+            // The claim is on disk while the route is being built
+            let held = TunnelState::load().expect("load");
+            *seen.lock().expect("lock") = Some(held.reservations.len());
+            async move {
+                let _ = t;
+                Ok(())
+            }
+        })
+        .await
+        .expect("exposed");
+        assert_eq!(*seen.lock().expect("lock"), Some(1));
+        let state = TunnelState::load().expect("load");
+        assert_eq!(state.tunnels, vec![tunnel]);
+        assert!(state.reservations.is_empty());
+    }
 
     // `expose` without `-s` printed stopped and started the tunnel anyway
     #[test]

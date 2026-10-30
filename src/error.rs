@@ -103,10 +103,40 @@ impl std::error::Error for GtunnelError {}
 
 /// The outermost classified cause wins: a context added on top of a gcloud
 /// failure by a caller that knows better (a login hint) is reached first.
+///
+/// Two producers outside this module classify by what they know: a
+/// `GcpError` carries an HTTP status, and a refused or missing credential is
+/// `auth` and a missing resource is `not_found` whoever asked. A start that
+/// failed carries its own kind. Anything else a GCP call returned (a 409, a
+/// 500) is not the caller's to act on and stays `Internal`.
 pub fn kind_of(err: &anyhow::Error) -> ErrorKind {
     err.chain()
-        .find_map(|cause| cause.downcast_ref::<GtunnelError>())
-        .map_or(ErrorKind::Internal, |e| e.kind)
+        .find_map(|cause| {
+            if let Some(e) = cause.downcast_ref::<GtunnelError>() {
+                return Some(e.kind);
+            }
+            if let Some(e) = cause.downcast_ref::<crate::gcp::client::GcpError>() {
+                return gcp_kind(e);
+            }
+            if let Some(e) = cause.downcast_ref::<crate::commands::access::StartFailed>() {
+                return Some(e.kind);
+            }
+            cause
+                .downcast_ref::<crate::commands::access::Printed>()
+                .map(|p| p.0.kind)
+        })
+        .unwrap_or(ErrorKind::Internal)
+}
+
+fn gcp_kind(err: &crate::gcp::client::GcpError) -> Option<ErrorKind> {
+    use crate::gcp::client::GcpError;
+    match err {
+        GcpError::NotFound => Some(ErrorKind::NotFound),
+        GcpError::Api {
+            status: 401 | 403, ..
+        } => Some(ErrorKind::Auth),
+        _ => None,
+    }
 }
 
 /// The whole chain, as `{e:#}` prints it.
@@ -137,6 +167,50 @@ mod tests {
         let err: anyhow::Error = GtunnelError::not_found("Tunnel 'x' not found").into();
         let err = err.context("while stopping");
         assert_eq!(kind_of(&err), ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn a_gcp_status_maps_to_its_kind_and_exit_code() {
+        use crate::gcp::client::GcpError;
+        let api = |status| GcpError::Api {
+            status,
+            message: "m".into(),
+        };
+        let cases = [
+            (api(401), ErrorKind::Auth, 4),
+            (api(403), ErrorKind::Auth, 4),
+            (GcpError::NotFound, ErrorKind::NotFound, 3),
+            (api(409), ErrorKind::Internal, 1),
+            (api(500), ErrorKind::Internal, 1),
+            (GcpError::PreconditionFailed, ErrorKind::Internal, 1),
+        ];
+        for (gcp, kind, code) in cases {
+            let text = gcp.to_string();
+            // As `GcpClient::send` returns it: the request is the context
+            let err = anyhow::Error::new(gcp).context("GET https://example.invalid/x");
+            assert_eq!(kind_of(&err), kind, "{text}");
+            assert_eq!(kind_of(&err).exit_code(), code, "{text}");
+        }
+    }
+
+    #[test]
+    fn a_failed_start_with_the_credentials_hint_exits_with_the_auth_code() {
+        use crate::commands::access::{Printed, StartFailed};
+        let failed = StartFailed {
+            name: "db".into(),
+            hint: Some("gcloud credentials expired. Run: gcloud auth login".into()),
+            kind: ErrorKind::Auth,
+        };
+        let err: anyhow::Error = StartFailed {
+            name: "db".into(),
+            hint: failed.hint.clone(),
+            kind: failed.kind,
+        }
+        .into();
+        assert_eq!(kind_of(&err).exit_code(), 4);
+        // What `cmd_start` hands `exit_with`: the printed form keeps the kind
+        let printed: anyhow::Error = Printed(failed).into();
+        assert_eq!(kind_of(&printed).exit_code(), 4);
     }
 
     #[test]
