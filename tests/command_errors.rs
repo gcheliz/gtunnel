@@ -1,13 +1,8 @@
-use std::fs;
-use std::process::{Command, Output, Stdio};
-use tempfile::TempDir;
+mod common;
 
-struct Harness {
-    dir: TempDir,
-    // Set only by a test of the timeout path: a short bound on every real
-    // launchctl would make the other tests flaky
-    service_bound_ms: Option<u64>,
-}
+use common::Harness;
+use std::fs;
+use std::process::Output;
 
 const LOGGED_OUT_STUB: &str = r#"#!/bin/sh
 case "$1 $2" in
@@ -19,15 +14,7 @@ esac
 exit 0
 "#;
 
-const STUB: &str = r#"#!/bin/sh
-case "$1 $2" in
-  "auth print-access-token")
-    echo stub-token
-    exit 0
-    ;;
-esac
-exit 0
-"#;
+const STUB: &str = common::LOGGED_IN_STUB;
 
 // Login must still pass, or `start` stops at the login check before it ever
 // starts a job; only the tunnel itself fails
@@ -43,106 +30,29 @@ echo "ERROR: boom" >&2
 exit 1
 "#;
 
-const CONFIG: &str = r#"selected_account = "demo"
-
-[[accounts]]
-name = "demo"
-gcloud_configuration = "work"
-project = "demo-project"
-default_zone = "europe-west1-b"
-"#;
-
-const TUNNELS: &str = r#"[[tunnels]]
-name = "db"
-account_name = "demo"
-auto_start = false
-
-[tunnels.spec]
-mode = "access"
-remote_port = 5432
-local_port = 15432
-
-[tunnels.spec.target]
-kind = "instance"
-instance = "postgres-1"
-zone = "europe-west1-b"
-"#;
-
+// These tests ran with the caller's PATH after the stubs, and keep doing so
 impl Harness {
-    fn logged_out() -> Self {
-        Self::with_stub(LOGGED_OUT_STUB)
+    fn logged_out() -> Harness {
+        Self::stubbed(LOGGED_OUT_STUB)
     }
 
     fn new() -> Self {
-        Self::with_stub(STUB)
+        Self::stubbed(STUB)
     }
 
     // A gcloud that dies at once, so a started tunnel's job exits inside the
     // settle window and its status reads as an error
     #[cfg(target_os = "macos")]
-    fn failing_gcloud() -> Self {
-        Self::with_stub(FAILING_STUB)
+    fn failing_gcloud() -> Harness {
+        Self::stubbed(FAILING_STUB)
     }
 
-    fn with_stub(stub: &str) -> Self {
-        Self::with_stubs(&[("gcloud", stub)])
+    fn stubbed(stub: &str) -> Harness {
+        Self::stubbed_many(&[("gcloud", stub)])
     }
 
-    // Each stub is an executable of that name in the first directory on PATH,
-    // so it stands in for the real program in the run
-    fn with_stubs(stubs: &[(&str, &str)]) -> Self {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let root = dir.path();
-        fs::create_dir_all(root.join("bin")).unwrap();
-        fs::create_dir_all(root.join("config")).unwrap();
-
-        for (name, body) in stubs {
-            let path = root.join("bin").join(name);
-            fs::write(&path, body).unwrap();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
-            }
-        }
-
-        fs::write(root.join("config/config.toml"), CONFIG).unwrap();
-        fs::write(root.join("config/tunnels.toml"), TUNNELS).unwrap();
-        fs::write(
-            root.join("config/update-check.json"),
-            r#"{"latest_version":"0.0.1","checked_at":99999999999}"#,
-        )
-        .unwrap();
-        Self {
-            dir,
-            service_bound_ms: None,
-        }
-    }
-
-    fn run(&self, args: &[&str]) -> Output {
-        self.run_with_env(args, &[])
-    }
-
-    fn run_with_env(&self, args: &[&str], vars: &[(&str, &str)]) -> Output {
-        let root = self.dir.path();
-        let path = format!(
-            "{}:{}",
-            root.join("bin").display(),
-            std::env::var("PATH").unwrap_or_default()
-        );
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_gtunnel"));
-        if let Some(ms) = self.service_bound_ms {
-            cmd.env("GTUNNEL_SERVICE_BOUND_MS", ms.to_string());
-        }
-        cmd.envs(vars.iter().copied());
-        cmd.args(args)
-            .env("PATH", path)
-            .env("HOME", root)
-            .env("GTUNNEL_CONFIG_DIR", root.join("config"))
-            .env("GTUNNEL_NO_NOTIFY", "1")
-            .stdin(Stdio::null())
-            .output()
-            .expect("run gtunnel")
+    fn stubbed_many(stubs: &[(&str, &str)]) -> Harness {
+        Harness::with_stubs(stubs).with_inherited_path()
     }
 }
 
@@ -234,7 +144,7 @@ exit 0
 
 #[test]
 fn account_add_of_an_existing_account_exits_2() {
-    let h = Harness::with_stub(CONFIGURATIONS_STUB);
+    let h = Harness::stubbed(CONFIGURATIONS_STUB);
     let out = h.run(&["account", "add", "demo", "--configuration", "work"]);
     assert_eq!(out.status.code(), Some(2), "stderr: {}", stderr(&out));
     assert!(stderr(&out).contains("Error: Account 'demo' already exists"));
@@ -396,11 +306,11 @@ fn start_exits_non_zero_when_the_tunnel_failed_to_start() {
 #[cfg(target_os = "macos")]
 #[test]
 fn delete_keeps_the_record_when_stop_times_out() {
-    let mut h = Harness::with_stubs(&[
+    let h = Harness::stubbed_many(&[
         ("gcloud", STUB),
         ("launchctl", "#!/bin/sh\nexec sleep 20\n"),
-    ]);
-    h.service_bound_ms = Some(300);
+    ])
+    .with_env("GTUNNEL_SERVICE_BOUND_MS", "300");
     let add = h.run(&["add", "slowdelete", "10.0.0.10:5432", "--via", "bastion"]);
     assert!(add.status.success(), "stderr: {}", stderr(&add));
 
@@ -494,7 +404,7 @@ fn run_public_with_no_relay_exits_2_with_the_same_message() {
 
 #[test]
 fn expose_of_an_invalid_local_target_exits_2_before_any_gcp_call() {
-    let h = Harness::with_stub(RECORDING_STUB);
+    let h = Harness::stubbed(RECORDING_STUB);
     h.with_relay();
     let before = h.tunnels_toml();
     let out = h.run(&["expose", "web", "localhost:99999"]);
@@ -506,7 +416,7 @@ fn expose_of_an_invalid_local_target_exits_2_before_any_gcp_call() {
 
 #[test]
 fn run_public_of_an_invalid_local_target_exits_2_before_any_gcp_call() {
-    let h = Harness::with_stub(RECORDING_STUB);
+    let h = Harness::stubbed(RECORDING_STUB);
     h.with_relay();
     let before = h.tunnels_toml();
     let out = h.run(&["run", "web", "localhost:99999", "--public"]);

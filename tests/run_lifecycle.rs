@@ -6,18 +6,13 @@
 // Every wait is a bounded poll on the condition; a sleep never stands in for
 // one, so a slow machine costs time and not a flake.
 
-use std::cell::RefCell;
+mod common;
+
+use common::{poll, Harness, BOUND};
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
-use std::time::{Duration, Instant};
-
-use tempfile::TempDir;
-
-struct Harness {
-    dir: TempDir,
-    children: RefCell<Vec<Child>>,
-}
+use std::path::PathBuf;
+use std::process::Stdio;
+use std::time::Duration;
 
 // The stub's child is written next to its own pid so a test can look for both.
 // STUB_STUBBORN gives the child a SIGTERM handler that ignores the signal, as
@@ -49,21 +44,6 @@ project = "example-dev-1a2b"
 default_zone = "europe-west1-b"
 "#;
 
-const BOUND: Duration = Duration::from_secs(15);
-
-fn poll(bound: Duration, mut done: impl FnMut() -> bool) -> bool {
-    let deadline = Instant::now() + bound;
-    loop {
-        if done() {
-            return true;
-        }
-        if Instant::now() >= deadline {
-            return false;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-}
-
 fn alive(pid: i32) -> bool {
     // SAFETY: signal 0 sends nothing; the pid was read from the stub's own
     // file and is positive.
@@ -71,96 +51,18 @@ fn alive(pid: i32) -> bool {
 }
 
 impl Harness {
-    fn new() -> Self {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let root = dir.path();
-        for sub in ["bin", "stub", "config"] {
-            fs::create_dir_all(root.join(sub)).unwrap();
-        }
-        let gcloud = root.join("bin/gcloud");
-        fs::write(&gcloud, STUB).unwrap();
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&gcloud, fs::Permissions::from_mode(0o755)).unwrap();
-        }
-        fs::write(root.join("config/config.toml"), CONFIG).unwrap();
-        // A fresh cache keeps the post-command update hint from spawning a
-        // network check out of the test
-        fs::write(
-            root.join("config/update-check.json"),
-            r#"{"latest_version":"0.0.1","checked_at":99999999999}"#,
-        )
-        .unwrap();
-        Self {
-            dir,
-            children: RefCell::new(Vec::new()),
-        }
-    }
-
-    fn root(&self) -> &Path {
-        self.dir.path()
-    }
-
-    fn command(&self, args: &[&str], envs: &[(&str, &str)]) -> Command {
-        let path = format!(
-            "{}:/usr/bin:/bin:/usr/sbin:/sbin",
-            self.root().join("bin").display()
-        );
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_gtunnel"));
-        cmd.args(args)
-            .env("PATH", path)
-            .env("HOME", self.root())
-            .env("GTUNNEL_CONFIG_DIR", self.root().join("config"))
-            .env("GTUNNEL_NO_NOTIFY", "1")
-            .env("STUB_DIR", self.root().join("stub"))
-            .stdin(Stdio::null());
-        for (k, v) in envs {
-            cmd.env(k, v);
-        }
-        cmd
+    // No tunnels.toml: these runs are ephemeral and save nothing
+    fn new() -> Harness {
+        Harness::build(&[("gcloud", STUB)], CONFIG, None)
     }
 
     /// Run to completion, bounded; for the runs that are refused and so end at
     /// once. A run that wrongly starts is left to `Drop` and reads as no exit
     /// code, so the test fails instead of hanging.
-    fn run(&self, args: &[&str]) -> (Option<i32>, String) {
+    fn run_bounded(&self, args: &[&str]) -> (Option<i32>, String) {
         let n = self.spawn(args, &[]);
         let code = self.wait_exit(n, BOUND).and_then(|s| s.code());
-        let err = fs::read_to_string(self.root().join(format!("err-{n}"))).unwrap_or_default();
-        (code, err)
-    }
-
-    /// Start a run that stays; its output goes to `out-<n>` and `err-<n>` so a
-    /// full pipe can never stall it. Returns its index.
-    fn spawn(&self, args: &[&str], envs: &[(&str, &str)]) -> usize {
-        let n = self.children.borrow().len();
-        let out = fs::File::create(self.root().join(format!("out-{n}"))).unwrap();
-        let err = fs::File::create(self.root().join(format!("err-{n}"))).unwrap();
-        let child = self
-            .command(args, envs)
-            .stdout(out)
-            .stderr(err)
-            .spawn()
-            .expect("spawn gtunnel");
-        self.children.borrow_mut().push(child);
-        n
-    }
-
-    fn stdout(&self, n: usize) -> String {
-        fs::read_to_string(self.root().join(format!("out-{n}"))).unwrap_or_default()
-    }
-
-    fn pid(&self, n: usize) -> i32 {
-        self.children.borrow()[n].id() as i32
-    }
-
-    fn wait_exit(&self, n: usize, bound: Duration) -> Option<ExitStatus> {
-        let mut status = None;
-        poll(bound, || {
-            status = self.children.borrow_mut()[n].try_wait().unwrap();
-            status.is_some()
-        });
-        status
+        (code, self.stderr(n))
     }
 
     fn terminate(&self, n: usize) {
@@ -216,30 +118,6 @@ impl Harness {
             "a record was left: {:?}",
             self.records()
         );
-    }
-}
-
-impl Drop for Harness {
-    fn drop(&mut self) {
-        for child in self.children.borrow_mut().iter_mut() {
-            // SAFETY: SIGTERM to a gtunnel this harness spawned and still holds.
-            unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
-        }
-        for child in self.children.borrow_mut().iter_mut() {
-            poll(Duration::from_secs(10), || {
-                child.try_wait().ok().flatten().is_some()
-            });
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        // The stub's own processes, should a test have failed halfway
-        for (gcloud, child) in self.pids() {
-            // SAFETY: SIGKILL to pids this test's stub recorded.
-            unsafe {
-                libc::kill(gcloud, libc::SIGKILL);
-                libc::kill(child, libc::SIGKILL);
-            }
-        }
     }
 }
 
@@ -313,7 +191,7 @@ fn a_second_run_with_a_live_name_is_refused_and_the_first_record_is_untouched() 
     );
     let before = h.records();
 
-    let (code, err) = h.run(&["run", "db", "my-vm:5432"]);
+    let (code, err) = h.run_bounded(&["run", "db", "my-vm:5432"]);
     assert_eq!(code, Some(2), "stderr: {err}");
     assert!(
         err.contains("A run named 'db' is already live for account 'dev'"),
@@ -333,7 +211,7 @@ fn a_second_run_with_a_live_name_is_refused_and_the_first_record_is_untouched() 
 #[test]
 fn run_refuses_local_port_zero() {
     let h = Harness::new();
-    let (code, err) = h.run(&["run", "--local-port", "0", "db", "my-vm:5432"]);
+    let (code, err) = h.run_bounded(&["run", "--local-port", "0", "db", "my-vm:5432"]);
     assert_eq!(code, Some(2), "stderr: {err}");
     assert!(
         err.contains("Local port must be between 1 and 65535"),
@@ -346,7 +224,7 @@ impl Harness {
     /// Like `spawn`, but stdout is a pipe whose reader is already gone, which
     /// is what `gtunnel run ... | head -1` leaves behind once head has exited.
     fn spawn_with_closed_stdout(&self, args: &[&str]) -> usize {
-        let n = self.children.borrow().len();
+        let n = self.next_index();
         let err = fs::File::create(self.root().join(format!("err-{n}"))).unwrap();
         let (reader, writer) = std::io::pipe().expect("pipe");
         drop(reader);
@@ -356,8 +234,7 @@ impl Harness {
             .stderr(err)
             .spawn()
             .expect("spawn gtunnel");
-        self.children.borrow_mut().push(child);
-        n
+        self.adopt(child)
     }
 
     fn kill_hard(&self, n: usize) {
@@ -428,7 +305,7 @@ fn a_run_killed_outright_is_stopped_and_forgotten_by_the_next_list() {
     #[cfg(not(target_os = "linux"))]
     assert!(alive(h.pids()[0].0), "gcloud outlives its owner");
 
-    let (code, err) = h.run(&["list"]);
+    let (code, err) = h.run_bounded(&["list"]);
     assert_eq!(code, Some(0), "stderr: {err}");
     assert!(err.contains("Stopped run db"), "stderr: {err}");
     h.assert_nothing_left();
@@ -451,7 +328,7 @@ fn a_run_past_its_ttl_with_no_owner_on_record_is_stopped_by_the_next_list() {
     fields.insert("started_at".into(), 1_700_000_000u64.into());
     fs::write(&path, record.to_string()).unwrap();
 
-    let (code, err) = h.run(&["list", "--json"]);
+    let (code, err) = h.run_bounded(&["list", "--json"]);
     assert_eq!(code, Some(0), "stderr: {err}");
     assert!(err.contains("past its TTL"), "stderr: {err}");
     h.assert_nothing_left();
@@ -515,7 +392,7 @@ fn reset_stops_a_live_run_before_removing_the_config() {
         poll(BOUND, || !h.pids().is_empty()),
         "the stub never started"
     );
-    let (code, err) = h.run(&["reset", "--yes"]);
+    let (code, err) = h.run_bounded(&["reset", "--yes"]);
     assert_eq!(code, Some(0), "{err}");
     assert!(
         h.wait_exit(n, BOUND).is_some(),
@@ -536,7 +413,7 @@ fn reset_removes_nothing_when_the_runs_cannot_be_listed() {
     let h = Harness::new();
     // A file where the runs directory belongs: it can be neither created nor read
     fs::write(h.root().join("config/run"), "").unwrap();
-    let (code, err) = h.run(&["reset", "--yes"]);
+    let (code, err) = h.run_bounded(&["reset", "--yes"]);
     assert_ne!(code, Some(0), "{err}");
     assert!(err.contains("Could not list the running tunnels"), "{err}");
     assert!(err.contains("config/run"), "{err}");

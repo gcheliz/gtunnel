@@ -37,8 +37,35 @@ impl Endpoints {
         }
     }
 
+    // The endpoints a command's client talks to. A debug build lets the
+    // environment move every API to one base, so a test can run the real binary
+    // against a fake GCP; a release build cannot, and the variable's name is
+    // not in it at all. Were it honoured there, whoever controls a process's
+    // environment could send the account's access token to a host of their
+    // choosing. CI greps the release binary for the name.
+    pub fn from_env() -> Self {
+        #[cfg(debug_assertions)]
+        {
+            Self::from_lookup(&|name| std::env::var(name).ok())
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            Self::google()
+        }
+    }
+
+    // The lookup is a parameter so a unit test does not have to mutate the
+    // process environment, which every other test in the binary shares.
+    #[cfg(debug_assertions)]
+    fn from_lookup(env: &dyn Fn(&str) -> Option<String>) -> Self {
+        match env("GTUNNEL_TEST_GCP_ENDPOINT") {
+            Some(base) if !base.is_empty() => Self::single(&base),
+            _ => Self::google(),
+        }
+    }
+
     // Point every API at one base, so a mock server can serve them all
-    #[cfg(test)]
+    #[cfg(any(test, debug_assertions))]
     pub fn single(base: &str) -> Self {
         Self {
             compute: base.to_string(),
@@ -149,7 +176,7 @@ impl GcpClient {
     pub fn for_account(acct: &Account) -> Self {
         Self::new(
             TokenSource::Gcloud(Box::new(acct.clone())),
-            Endpoints::google(),
+            Endpoints::from_env(),
         )
     }
 
@@ -346,6 +373,26 @@ mod tests {
     use serde::Deserialize;
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn an_unset_endpoint_variable_leaves_every_api_at_google() {
+        assert_eq!(Endpoints::from_lookup(&|_| None), Endpoints::google());
+        // An empty value is a shell that exported the name and nothing else
+        assert_eq!(
+            Endpoints::from_lookup(&|_| Some(String::new())),
+            Endpoints::google()
+        );
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_set_endpoint_variable_points_every_api_at_that_base() {
+        let got = Endpoints::from_lookup(&|name| {
+            (name == "GTUNNEL_TEST_GCP_ENDPOINT").then(|| "http://127.0.0.1:9".to_string())
+        });
+        assert_eq!(got, Endpoints::single("http://127.0.0.1:9"));
+    }
 
     #[derive(Debug, Deserialize, PartialEq, Eq)]
     struct Thing {

@@ -106,6 +106,21 @@ jobs:
       - name: Test
         if: matrix.check == 'test'
         run: cargo test
+      # A release binary that read this variable would send the account's access
+      # token wherever the environment said. The name is compiled in under
+      # debug_assertions only, so it must be in the debug binary `cargo test`
+      # just built (the control: a renamed variable would otherwise pass this
+      # step for the wrong reason) and absent from the release one.
+      - name: Release binary has no test endpoint
+        if: matrix.check == 'test' && runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          cargo build --release
+          grep -aq GTUNNEL_TEST_GCP_ENDPOINT target/debug/gtunnel
+          if grep -aq GTUNNEL_TEST_GCP_ENDPOINT target/release/gtunnel; then
+            echo "the release binary contains GTUNNEL_TEST_GCP_ENDPOINT" >&2
+            exit 1
+          fi
       # The install snippets quote the version a reader downloads. The release
       # train rewrites them in the bump commit, so a mismatch here means a doc
       # edit reintroduced an old version by hand.
