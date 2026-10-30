@@ -30,12 +30,6 @@ pub struct RuntimeInfo {
     pub restarts: u32,
 }
 
-// A daemon does not inherit an interactive shell's PATH, so gcloud's directory
-// is written into the unit. Without it the daemon dies at startup every time.
-fn daemon_env(gcloud: &std::path::Path) -> Vec<(String, String)> {
-    daemon_env_with(gcloud, &|name| std::env::var(name).ok())
-}
-
 /// The restart budget is read by the supervisor, which a service manager
 /// starts with none of the installing shell's variables. Whatever
 /// `GTUNNEL_RESTART_*` is set when the service is written is written into it,
@@ -76,6 +70,8 @@ pub const FORWARDED_ENV_VARS: [&str; 12] = [
     "CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE",
 ];
 
+// A daemon does not inherit an interactive shell's PATH, so gcloud's directory
+// is written into the unit. Without it the daemon dies at startup every time.
 fn daemon_env_with(
     gcloud: &std::path::Path,
     get: &dyn Fn(&str) -> Option<String>,
@@ -221,7 +217,34 @@ pub fn watchdog_label() -> &'static str {
 const _: () = assert!(TUNNEL_MAX_FILES > 256);
 const _: () = assert!(TUNNEL_MAX_FILES <= 61440);
 
+/// The definition `add`, `start` and `restart` write, from the live shell:
+/// this is the one place the shell's gcloud, proxy and CA values are taken.
+/// The refresh rewrites with [`keep_installed_forwarded`] on top, so a command
+/// typed in another shell cannot change what a running tunnel was set up with.
 pub fn service_spec(cfg: &Config, t: &PersistentTunnel) -> Result<ServiceSpec> {
+    service_spec_with(cfg, t, &|name| std::env::var(name).ok())
+}
+
+/// Puts the forwarded values `installed` already holds into `spec` in place
+/// of the ones the current shell supplied, and drops the ones it lacks. The
+/// refresh rewrites a definition for a reason that has nothing to do with the
+/// proxy, and must not carry the refreshing shell's into a job that was set up
+/// with others. `gtunnel restart` is how a new value is taken.
+pub fn keep_installed_forwarded(spec: &mut ServiceSpec, installed: &str) {
+    spec.env
+        .retain(|(k, _)| !FORWARDED_ENV_VARS.contains(&k.as_str()));
+    for name in FORWARDED_ENV_VARS {
+        if let Some(value) = forwarded_in(installed, name) {
+            spec.env.push((name.to_string(), value));
+        }
+    }
+}
+
+fn service_spec_with(
+    cfg: &Config,
+    t: &PersistentTunnel,
+    get: &dyn Fn(&str) -> Option<String>,
+) -> Result<ServiceSpec> {
     let acct = cfg.get_account(Some(&t.account_name))?;
     // Before gcloud is looked for: a relative path would be written into a
     // service file, where it resolves against nothing
@@ -294,7 +317,7 @@ pub fn service_spec(cfg: &Config, t: &PersistentTunnel) -> Result<ServiceSpec> {
         program,
         args,
         log_path: t.log_path()?,
-        env: daemon_env(&gcloud),
+        env: daemon_env_with(&gcloud, get),
         auto_start: t.auto_start,
         description: format!("{} -> {}", t.name, t.display_target()),
     })
@@ -1258,7 +1281,7 @@ mod tests {
     // that is what this pins.
     #[test]
     fn the_child_does_not_block_buffer_its_output_into_the_log() {
-        let env = daemon_env(std::path::Path::new("/opt/homebrew/bin/gcloud"));
+        let env = daemon_env_with(std::path::Path::new("/opt/homebrew/bin/gcloud"), &|_| None);
         assert!(
             env.iter().any(|(k, v)| k == "PYTHONUNBUFFERED" && v == "1"),
             "gcloud is Python and its stdout block-buffers into a redirected \
@@ -1397,6 +1420,51 @@ mod tests {
             );
             assert_eq!(forwarded_in(&text, "NO_PROXY"), None, "{text}");
         }
+    }
+
+    // `start` and `add` build the definition through `service_spec`, which
+    // reads the live shell; the refresh does not. This holds the first half.
+    #[test]
+    fn a_service_spec_takes_the_shell_value_it_is_given() {
+        if crate::gcp::gcloud::require_gcloud().is_err() {
+            eprintln!("no gcloud on this machine; skipping");
+            return;
+        }
+        let tunnel = crate::state::PersistentTunnel {
+            name: "db".to_string(),
+            account_name: "dev".to_string(),
+            auto_start: false,
+            spec: TunnelSpec::Access {
+                target: crate::state::AccessTarget::Instance {
+                    instance: "bastion".to_string(),
+                    zone: "europe-west1-b".to_string(),
+                },
+                remote_port: 5432,
+                local_port: 15432,
+            },
+        };
+        let cfg = Config {
+            selected_account: "dev".to_string(),
+            accounts: vec![crate::config::Account {
+                name: "dev".to_string(),
+                gcloud_configuration: "work".to_string(),
+                project: "example-dev-1a2b".to_string(),
+                default_zone: "europe-west1-b".to_string(),
+                impersonate_service_account: None,
+                credential_file: None,
+                expose: None,
+            }],
+            ..Config::default()
+        };
+        let get = |n: &str| (n == "HTTPS_PROXY").then(|| "http://proxy.example:3128".to_string());
+        let got = service_spec_with(&cfg, &tunnel, &get).expect("spec");
+        assert!(
+            got.env
+                .iter()
+                .any(|(k, v)| k == "HTTPS_PROXY" && v == "http://proxy.example:3128"),
+            "{:?}",
+            got.env
+        );
     }
 
     #[test]

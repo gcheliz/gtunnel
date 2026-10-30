@@ -454,12 +454,19 @@ error.
 | `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` and `https_proxy`, `http_proxy`, `no_proxy` | A proxy, and the hosts that skip it |
 | `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE` | A corporate CA bundle |
 
-A variable that is unset or blank is not written. The values are read when the definition is
-written, so changing one in the shell has no effect until the definition is rewritten: the next
-gtunnel command does it and restarts a running tunnel, or `gtunnel restart <name>` does it now.
+A variable that is unset or blank is not written. The values are captured only when you write
+the definition yourself: `add`, `start` and `restart`. To pick up a new proxy, a new gcloud
+home or a new CA bundle, run `gtunnel restart <name>` from the shell that has it.
+
+The automatic rewrite after an upgrade keeps the values a definition already holds and never
+takes the ones of the shell it runs in, and a difference in these values alone never rewrites
+or restarts anything. Otherwise a command typed in a shell with another proxy would restart
+every running tunnel, and the next shell would undo it.
+
 `gtunnel doctor` names a variable your shell sets that differs from the one in a tunnel's
-definition; it never prints the value, because a proxy URL can carry a password. A variable
-your shell lacks is not reported.
+definition; it never prints the value, because a proxy URL can carry a password. It keeps
+reporting until you `restart` the tunnel or the shell stops differing. A variable your shell
+lacks is not reported.
 
 The values are stored in clear text in the service file, under `~/Library/LaunchAgents` or
 `~/.config/systemd/user`. A proxy URL with a password in it is written there too.

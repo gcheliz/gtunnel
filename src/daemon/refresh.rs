@@ -57,9 +57,12 @@ pub async fn refresh(host: &impl ServiceHost, tunnels: &[PersistentTunnel]) -> O
         // credential file) could not be started either, and that failure has
         // its own message at the command that needs it. Reporting it here
         // would print on every command until it was fixed.
-        let Ok(spec) = host.spec_for(t) else {
+        let Ok(mut spec) = host.spec_for(t) else {
             continue;
         };
+        // The shell that happens to run this is not the user's word on the
+        // proxy: only add, start and restart take its values
+        super::keep_installed_forwarded(&mut spec, &installed);
         if !is_stale(&installed, &host.render(&spec), |p| host.program_exists(p)) {
             continue;
         }
@@ -92,8 +95,13 @@ pub async fn refresh(host: &impl ServiceHost, tunnels: &[PersistentTunnel]) -> O
 /// restart every running tunnel, and the next plain command would do it back.
 /// So their values are masked, the `GTUNNEL_*` entries are dropped (their
 /// absence is as legitimate as their presence), and the program path is
-/// masked too, because a moved binary is judged separately.
+/// masked too, because a moved binary is judged separately. The forwarded
+/// gcloud, proxy and CA variables are dropped the same way: the shell that
+/// runs a command is not the one that set the tunnel up, so a different proxy
+/// there must not rewrite and restart every running tunnel. A new value is
+/// taken by `add`, `start` or `restart`, and `doctor` reports the gap.
 fn shape(text: &str) -> Vec<String> {
+    let text = without_forwarded(text);
     let mut out = Vec::new();
     let mut prev = String::new();
     let mut skip_value = false;
@@ -134,6 +142,39 @@ fn shape(text: &str) -> Vec<String> {
         after_array = t == "<array>" && prev == "<key>ProgramArguments</key>";
         prev = t.to_string();
         out.push(tok);
+    }
+    out
+}
+
+/// The text with every forwarded variable's entry removed, key and value.
+/// Their values differ per shell, so a difference must not count (see
+/// [`shape`]), and a value may hold a space (a gcloud home under `Application
+/// Support`), which the whitespace split would turn into stray tokens, so
+/// this works a line at a time first.
+fn without_forwarded(text: &str) -> String {
+    let mut out = String::new();
+    let mut lines = text.lines();
+    while let Some(line) = lines.next() {
+        let t = line.trim();
+        let plist_key = t
+            .strip_prefix("<key>")
+            .and_then(|r| r.strip_suffix("</key>"));
+        if plist_key.is_some_and(|k| super::FORWARDED_ENV_VARS.contains(&k)) {
+            lines.next();
+            continue;
+        }
+        let unit = t
+            .strip_prefix("Environment=")
+            .map(|r| r.trim_start_matches('"'));
+        if unit.is_some_and(|r| {
+            super::FORWARDED_ENV_VARS
+                .iter()
+                .any(|n| r.strip_prefix(n).is_some_and(|x| x.starts_with('=')))
+        }) {
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
     }
     out
 }
@@ -303,6 +344,7 @@ mod tests {
         // Set to render real unit text, carrying the level this shell has
         real_render: Option<String>,
         env: Vec<(String, String)>,
+        written: RefCell<Vec<ServiceSpec>>,
         calls: RefCell<Vec<String>>,
     }
 
@@ -360,6 +402,7 @@ mod tests {
             self.calls
                 .borrow_mut()
                 .push(format!("write {}", spec.label));
+            self.written.borrow_mut().push(spec.clone());
             if self.fail_write.contains(&spec.label) {
                 anyhow::bail!("disk full");
             }
@@ -561,20 +604,76 @@ mod tests {
     }
 
     #[test]
-    fn a_changed_gcloud_or_proxy_value_makes_a_definition_stale() {
-        let installed = unit(&BASE, &[("CLOUDSDK_CONFIG", "/home/you/gcloud-a")]);
-        let same = unit(&BASE, &[("CLOUDSDK_CONFIG", "/home/you/gcloud-a")]);
-        let moved = unit(&BASE, &[("CLOUDSDK_CONFIG", "/home/you/gcloud-b")]);
+    fn a_value_change_alone_does_not_make_a_definition_stale() {
+        let installed = unit(&BASE, &[("CLOUDSDK_CONFIG", "/home/you/gcloud a")]);
+        let moved = unit(&BASE, &[("CLOUDSDK_CONFIG", "/home/you/gcloud b")]);
         let added = unit(
             &BASE,
             &[
-                ("CLOUDSDK_CONFIG", "/home/you/gcloud-a"),
-                ("HTTPS_PROXY", "http://proxy.example:3128"),
+                ("CLOUDSDK_CONFIG", "/home/you/gcloud a"),
+                ("HTTPS_PROXY", "http://proxy.example:3128/?a=1&b=2%40x"),
             ],
         );
-        assert!(!is_stale(&installed, &same, |_| true));
-        assert!(is_stale(&installed, &moved, |_| true));
-        assert!(is_stale(&installed, &added, |_| true));
+        let none = unit(&BASE, &[]);
+        // A shell with another proxy, or none, would otherwise rewrite and
+        // restart every running tunnel, and the next shell would undo it
+        for shell in [&moved, &added, &none] {
+            assert!(!is_stale(&installed, shell, |_| true));
+            assert!(!is_stale(shell, &installed, |_| true));
+        }
+        // but a flag next to them still counts
+        let behind = unit(&["__supervise", "--"], &[("CLOUDSDK_CONFIG", "/x y")]);
+        assert!(is_stale(&behind, &installed, |_| true));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_same_holds_for_a_plist() {
+        let render = |value: &str| {
+            let mut spec = Fake::default().spec_for(&tunnel("k8s")).unwrap();
+            spec.env = vec![("CLOUDSDK_CONFIG".to_string(), value.to_string())];
+            super::super::launchd::render_plist(&spec)
+        };
+        assert!(!is_stale(&render("/a b"), &render("/c d"), |_| true));
+    }
+
+    #[tokio::test]
+    async fn a_refresh_rewrite_keeps_the_forwarded_values_already_in_the_definition() {
+        let mut installed = Fake::default().spec_for(&tunnel("k8s")).unwrap();
+        installed.args = vec!["__supervise".to_string(), "--".to_string()];
+        installed.env = vec![
+            (
+                "CLOUDSDK_CONFIG".to_string(),
+                "/home/you/gcloud a".to_string(),
+            ),
+            ("PATH".to_string(), "/bin".to_string()),
+        ];
+        let text = super::super::systemd::render_unit(&installed);
+
+        let mut host = Fake::with(LABEL, &text, TunnelStatus::Stopped);
+        host.real_render = Some("info".to_string());
+        // The refreshing shell has another gcloud home, a proxy, and a blank
+        host.env = vec![
+            ("CLOUDSDK_CONFIG".to_string(), "/home/you/other".to_string()),
+            (
+                "HTTPS_PROXY".to_string(),
+                "http://proxy.example:3128".to_string(),
+            ),
+            ("PATH".to_string(), "/bin".to_string()),
+        ];
+        let out = refresh(&host, &[tunnel("k8s")]).await;
+        assert_eq!(out.reinstalled.len(), 1, "{out:?}");
+
+        let written = host.written.borrow();
+        let env = &written[0].env;
+        let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+        assert_eq!(
+            get("CLOUDSDK_CONFIG"),
+            Some("/home/you/gcloud a"),
+            "{env:?}"
+        );
+        assert_eq!(get("HTTPS_PROXY"), None, "{env:?}");
+        assert_eq!(get("PATH"), Some("/bin"));
     }
 
     #[test]
