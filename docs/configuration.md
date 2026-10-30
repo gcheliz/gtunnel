@@ -52,6 +52,7 @@ in the configuration directory (see [Where the files live](#where-the-files-live
 | `notifications` | table | no | Which lifecycle changes raise a desktop notification: `enabled` (the master switch), then `up`, `degraded`, `recovered`, `failed`, all booleans. `enabled` is `false` when absent and written as `false` by `init`; `N` in the TUI flips it. See [Notifications](commands.md#notifications) |
 | `restart` | table | no | When a tunnel that keeps failing is stopped: `max_restarts`, `window`, `min_uptime`, `base_backoff`, `max_backoff`. `init` writes all five at their defaults. See [The restart budget](#the-restart-budget) |
 | `watch` | table | no | How the watchdog probes and when it calls a tunnel degraded: `probe_timeout`, `degraded_after`, `interval`. `init` writes all three at their defaults. See [Settings the environment can override](#settings-the-environment-can-override) |
+| `relay` | table | no | What `relay up` builds: `machine_type`, the instance's machine type, `"e2-micro"` when absent. `init` writes it at its default. See [The relay's machine type](#the-relays-machine-type) |
 | `accounts` | array of tables | yes | One entry per account; may be empty |
 
 Each entry in `accounts`:
@@ -252,7 +253,7 @@ that level on the tunnel's start at login.
 
 ## Settings the environment can override
 
-Twenty keys of `config.toml` have a variable each, and so do the five `[restart]` keys; every
+Twenty-one keys of `config.toml` have a variable each, and so do the five `[restart]` keys; every
 one is in the table under [Environment](#environment). Where they disagree the variable wins,
 always: there is no key that opts out, so a value edited in the file that has no effect has one
 cause, and `gtunnel doctor` names it.
@@ -279,6 +280,7 @@ into it: it falls back to the file with the environment, then the file alone, th
 | `token_ttl` | how long an access token is reused; Google issues them for an hour, so a value past `1h` gets 401s until it lapses |
 | `lock_deadline`, `fingerprint_attempts` | under `[gcp]` for want of a section of their own: the wait for a lock another gtunnel holds on a file, and the redos of a URL map or named port change after a concurrent edit |
 | `backend_timeout` | under `[expose]`, not to be confused with an account's `expose` relay table: the backend service timeout of every tunnel `expose` creates, and of the existing ones at `relay up`, `expose`, `start` and `restart`. For a websocket it is the longest the connection may sit idle, for a request the longest it may take. Whole seconds; GCP closes every websocket at 24h whatever it says |
+| `relay.machine_type` | a machine type name, lower case, digits and dashes (`e2-micro`, `e2-small`); an empty value or any other character fails with exit 2 naming the key. Read only when `relay up` creates the instance: see [The relay's machine type](#the-relays-machine-type) |
 | `list_probe_timeout` | one probe of a running tunnel's local port, in `list` and the MCP list and status tools; the TUI's probes keep a fixed 2 seconds. `list` probes all tunnels at once, so it waits one probe however many run. Longer helps a slow far end and slows `list` when a tunnel is silent. Not `watch.probe_timeout` (3s), the watchdog's wait |
 | `update_check_interval` | paces the background release check of [update](commands.md#update) |
 | File-descriptor limit (4096) | no key: checked at compile time (above 256, at most the kernel's 61440) and written into the plist and the unit, so a change needs every service reinstalled and a file value would not reach a running tunnel |
@@ -345,6 +347,9 @@ fingerprint_attempts = 5
 
 [expose]
 backend_timeout = "1h"
+
+[relay]
+machine_type = "e2-micro"
 ```
 
 When a variable gives a value other than the file's, `gtunnel doctor` says so and what to unset:
@@ -361,6 +366,22 @@ into the launchd `StartInterval` or the systemd timer, so a new value reaches th
 watchdog only after `gtunnel watch install` runs again (the foreground `gtunnel watch` loop
 reads it at once). The TUI trusts the watchdog's heartbeat for three intervals and never less
 than 90 seconds, so a slower watchdog is not read as a dead one; there is no key for that.
+
+## The relay's machine type
+
+`relay.machine_type` is the size `relay up` gives a new relay instance. The default,
+`e2-micro`, is what every relay has been created with. Capacity at either size is unmeasured:
+see [Limits](architecture.md#limits).
+
+```toml
+[relay]
+machine_type = "e2-small"
+```
+
+The setting is read when the instance is created and never applied to one that exists: a
+resize needs a stop, and a stop drops every exposed URL until the instance is back. When the
+running relay has another type, `relay up` and `relay status` say so and print the commands
+that change it (see [relay](commands.md#relay)); nothing is stopped for you.
 
 ## The restart budget
 
@@ -439,6 +460,7 @@ precedence are under [Settings the environment can override](#settings-the-envir
 | `GTUNNEL_GCP_LOCK_DEADLINE` | | `gcp.lock_deadline` | `5s` | How long a command that writes `config.toml`, `tunnels.toml` or the lifecycle ledger waits for the lock another gtunnel holds before reporting `is held by another gtunnel process` |
 | `GTUNNEL_GCP_FINGERPRINT_ATTEMPTS` | | `gcp.fingerprint_attempts` | `5` | Tries of a read-modify-write on a URL map or named port after a `412` from a concurrent edit, in `expose` and `doctor --fix`; for `Gave up after N attempts` |
 | `GTUNNEL_EXPOSE_BACKEND_TIMEOUT` | | `expose.backend_timeout` | `1h` | The backend service timeout: how long the load balancer waits on a backend, and how long an idle websocket or server-sent stream stays open. Its own default is 30s, which cuts both and fails a request slower than that. Whole seconds, above zero; for `502` or `504` on a slow request, or a stream cut at 30s. Read by `expose`, `start`, `restart` and `relay up` |
+| `GTUNNEL_RELAY_MACHINE_TYPE` | | `relay.machine_type` | `e2-micro` | The machine type `relay up` creates the relay instance with, such as `e2-small`; a relay that exists keeps its type. See [The relay's machine type](#the-relays-machine-type) |
 | `GTUNNEL_RESTART_MAX_RESTARTS` | | `restart.max_restarts` | `5` | Fast failures tolerated inside the window; `0` to 4294967295, and `0` turns the budget off. For a tunnel that loops, or one that must never be parked. Read by the supervisor, `start` and `restart`, as are the next four. See [The restart budget](#the-restart-budget) |
 | `GTUNNEL_RESTART_WINDOW` | | `restart.window` | `10m` | How long a failure counts. Not shorter than the base backoff |
 | `GTUNNEL_RESTART_MIN_UPTIME` | | `restart.min_uptime` | `60s` | How long a run must last to clear the count |

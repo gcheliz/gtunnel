@@ -1944,6 +1944,7 @@ mod tests {
             "gt-dev-relay",
             "default",
             "gt-relay",
+            "e2-micro",
         )
         .await
         .expect("insert");
