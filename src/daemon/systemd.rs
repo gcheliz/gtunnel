@@ -62,8 +62,7 @@ pub async fn install_watchdog(program: &std::path::Path) -> Result<()> {
             std::fs::create_dir_all(dir)
                 .with_context(|| format!("Failed to create {}", dir.display()))?;
         }
-        std::fs::write(&path, text)
-            .with_context(|| format!("Failed to write {}", path.display()))?;
+        crate::fsutil::write_atomic(&path, &text)?;
     }
     let _ = systemctl(&["daemon-reload"]).await;
     let out = systemctl(&["enable", "--now", &format!("{label}.timer")]).await?;
@@ -232,8 +231,7 @@ pub async fn install(spec: &ServiceSpec) -> Result<()> {
     let dir = units_dir()?;
     std::fs::create_dir_all(&dir).with_context(|| format!("Failed to create {}", dir.display()))?;
     let path = unit_path(&spec.label)?;
-    std::fs::write(&path, render_unit(spec))
-        .with_context(|| format!("Failed to write {}", path.display()))?;
+    crate::fsutil::write_atomic(&path, &render_unit(spec))?;
     daemon_reload().await?;
     set_auto_start(spec).await
 }
@@ -244,8 +242,7 @@ pub async fn write_definition(spec: &ServiceSpec) -> Result<()> {
     let dir = units_dir()?;
     std::fs::create_dir_all(&dir).with_context(|| format!("Failed to create {}", dir.display()))?;
     let path = unit_path(&spec.label)?;
-    std::fs::write(&path, render_unit(spec))
-        .with_context(|| format!("Failed to write {}", path.display()))?;
+    crate::fsutil::write_atomic(&path, &render_unit(spec))?;
     daemon_reload().await?;
     set_auto_start(spec).await
 }
