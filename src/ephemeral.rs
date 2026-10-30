@@ -7,7 +7,7 @@ use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
-use crate::config::{config_dir, ExposeConfig};
+use crate::config::config_dir;
 use crate::expose::routes;
 use crate::gcp::{gcloud, GcpClient};
 use crate::state::{
@@ -512,9 +512,86 @@ async fn unless_stopped<T>(
     signals: &mut StopSignals,
     work: impl std::future::Future<Output = T>,
 ) -> Option<T> {
+    // Work first: a result that is already there is never thrown away for a
+    // signal that arrived in the same instant
     tokio::select! {
+        biased;
         out = work => Some(out),
         _ = signals.next() => None,
+    }
+}
+
+/// The exit status of a run that stopped Ctrl+C-style twice: 128 plus SIGINT,
+/// what a shell reports for a process the user interrupted.
+const ABANDONED_EXIT: i32 = 130;
+
+/// Run the route teardown unless a stop signal comes first. The first signal
+/// started the teardown and was read by whoever raced it; one that arrives now
+/// is the person asking again, and the teardown can stall for as long as the
+/// GCP operations take, up to the operation timeout. Abandoning leaves the
+/// record in place, which is what lets the sweep find the route and remove it.
+async fn finish_teardown(
+    console: &Console,
+    signals: &mut StopSignals,
+    url: &str,
+    work: impl std::future::Future<Output = ()>,
+) -> Result<()> {
+    if unless_stopped(signals, work).await.is_some() {
+        return Ok(());
+    }
+    console.warn(format_args!(
+        "Route for {url} left in place; `gtunnel doctor --fix` or the watchdog sweep removes it"
+    ));
+    Err(crate::error::Exited(ABANDONED_EXIT).into())
+}
+
+/// The status a run exits with when gcloud ended it. gcloud's own code says
+/// what failed; a signal death has none, and an exit 0 still means the tunnel
+/// is gone, so a script chained with `&&` must not go on.
+fn gcloud_exit_code(status: std::process::ExitStatus) -> i32 {
+    status.code().filter(|code| *code != 0).unwrap_or(1)
+}
+
+/// Print gcloud's output a line at a time until both streams are closed. Bytes
+/// are read raw and decoded lossily, as `logfilter::pump` does: a Latin-1 ssh
+/// banner is a line to show, and a read that errs on one stream closes that
+/// stream and not the run. The caller treats the end of this as nothing: only
+/// gcloud exiting, a signal or the TTL ends a run.
+async fn pump_lines<A, B>(stdout: Option<A>, stderr: Option<B>, mut on_line: impl FnMut(String))
+where
+    A: tokio::io::AsyncRead + Unpin,
+    B: tokio::io::AsyncRead + Unpin,
+{
+    let mut out = stdout.map(BufReader::new);
+    let mut err = stderr.map(BufReader::new);
+    // Kept across loop turns: a read cancelled by the other stream winning the
+    // select has already moved its bytes here, and the next call appends
+    let mut out_buf = Vec::new();
+    let mut err_buf = Vec::new();
+    loop {
+        let (n, is_out) = match (&mut out, &mut err) {
+            (Some(o), Some(e)) => tokio::select! {
+                n = o.read_until(b'\n', &mut out_buf) => (n, true),
+                n = e.read_until(b'\n', &mut err_buf) => (n, false),
+            },
+            (Some(o), None) => (o.read_until(b'\n', &mut out_buf).await, true),
+            (None, Some(e)) => (e.read_until(b'\n', &mut err_buf).await, false),
+            (None, None) => return,
+        };
+        if !matches!(n, Ok(n) if n > 0) {
+            // EOF or an error: this stream has nothing more to say
+            if is_out {
+                out = None;
+            } else {
+                err = None;
+            }
+        }
+        let buf = if is_out { &mut out_buf } else { &mut err_buf };
+        if !buf.is_empty() {
+            let text = String::from_utf8_lossy(buf);
+            on_line(text.trim_end_matches(['\n', '\r']).to_string());
+            buf.clear();
+        }
     }
 }
 
@@ -751,18 +828,9 @@ fn claim_and_start(
     })
 }
 
-/// Undo a started run whose route could not be made: the group first, so
-/// nothing holds the port, then the route and the record.
-#[allow(clippy::print_stdout, clippy::print_stderr)]
-async fn abort_started(
-    guard: &mut ChildGuard,
-    console: &Console,
-    client: &GcpClient,
-    acct: &crate::config::Account,
-    expose: Option<&ExposeConfig>,
-    tunnel: &PersistentTunnel,
-    record: &EphemeralRecord,
-) {
+/// Stop a started run's gcloud group first, so nothing holds the port while
+/// the route and the record are undone.
+async fn stop_started(guard: &mut ChildGuard, console: &Console, record: &EphemeralRecord) {
     if let Err(e) = crate::proc::stop_group(
         &mut guard.child,
         signalable(record.pid),
@@ -773,7 +841,6 @@ async fn abort_started(
         console.warn(format_args!("Failed to stop gcloud: {e:#}"));
     }
     guard.disarm();
-    teardown(console, client, acct, expose, tunnel, record).await;
 }
 
 #[allow(clippy::print_stdout, clippy::print_stderr)]
@@ -860,16 +927,14 @@ pub async fn cmd_run(
             None => Some(Ok(())),
         };
         if let Some(outcome) = failure {
-            abort_started(
-                &mut guard,
+            stop_started(&mut guard, &console, &record).await;
+            finish_teardown(
                 &console,
-                &client,
-                &acct,
-                Some(expose),
-                &tunnel,
-                &record,
+                &mut signals,
+                &tunnel.display_url(),
+                teardown(&console, &client, &acct, Some(expose), &tunnel, &record),
             )
-            .await;
+            .await?;
             return outcome;
         }
     }
@@ -890,40 +955,32 @@ pub async fn cmd_run(
 
     let stdout = guard.child.stdout.take();
     let stderr = guard.child.stderr.take();
+    // The pump ending changes nothing: gcloud may close a stream and keep
+    // forwarding, so it waits here for the arms below to decide
     let pump = async {
-        let mut out_lines = stdout.map(|s| BufReader::new(s).lines());
-        let mut err_lines = stderr.map(|s| BufReader::new(s).lines());
-        loop {
-            let line = match (&mut out_lines, &mut err_lines) {
-                (Some(out), Some(err)) => tokio::select! {
-                    line = out.next_line() => line,
-                    line = err.next_line() => line,
-                },
-                (Some(out), None) => out.next_line().await,
-                (None, Some(err)) => err.next_line().await,
-                (None, None) => return,
-            };
-            match line {
-                Ok(Some(line)) => match diagnose_log_line(&line) {
-                    Some(hint) => console.say(format_args!("{line}\n  {hint}")),
-                    None => console.say(format_args!("{line}")),
-                },
-                Ok(None) => return,
-                Err(e) => {
-                    console.warn(format_args!("Failed to read gcloud output: {e}"));
-                    return;
-                }
-            }
-        }
+        pump_lines(stdout, stderr, |line| match diagnose_log_line(&line) {
+            Some(hint) => console.say(format_args!("{line}\n  {hint}")),
+            None => console.say(format_args!("{line}")),
+        })
+        .await;
+        std::future::pending::<()>().await;
     };
 
+    // Set only when gcloud ended the run without being asked
+    let mut gcloud_failed = None;
     tokio::select! {
         _ = pump => {}
         status = guard.child.wait() => {
-            if let Ok(status) = status
-                && !status.success() {
+            gcloud_failed = Some(match status {
+                Ok(status) => {
                     console.say(format_args!("gcloud exited with {status}"));
+                    gcloud_exit_code(status)
                 }
+                Err(e) => {
+                    console.warn(format_args!("Failed to wait for gcloud: {e}"));
+                    1
+                }
+            });
         }
         _ = signals.next() => {
             console.say(format_args!(""));
@@ -941,16 +998,24 @@ pub async fn cmd_run(
         console.warn(format_args!("Failed to stop gcloud: {e:#}"));
     }
     guard.disarm();
-    teardown(
+    finish_teardown(
         &console,
-        &client,
-        &acct,
-        expose_config.as_ref(),
-        &tunnel,
-        &record,
+        &mut signals,
+        &tunnel.display_url(),
+        teardown(
+            &console,
+            &client,
+            &acct,
+            expose_config.as_ref(),
+            &tunnel,
+            &record,
+        ),
     )
-    .await;
-    Ok(())
+    .await?;
+    match gcloud_failed {
+        Some(code) => Err(crate::error::Exited(code).into()),
+        None => Ok(()),
+    }
 }
 
 // Every removal is reported as it happened: a DNS record that is still there
@@ -965,6 +1030,7 @@ async fn teardown(
     record: &EphemeralRecord,
 ) {
     if let Some(expose) = expose {
+        console.say(format_args!("Removing the route..."));
         match routes::remove_route(client, acct, expose, tunnel).await {
             Ok(removal) => {
                 if removal.dns {
@@ -1660,7 +1726,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn abort_started_stops_the_group_and_removes_the_record() {
+    async fn stop_started_then_teardown_stops_the_group_and_removes_the_record() {
         let _temp = TempConfigDir::new();
         let dir = tempfile::tempdir().unwrap();
         let gcloud = fake_gcloud(dir.path(), "exec sleep 30");
@@ -1668,9 +1734,10 @@ mod tests {
         let (child, run, tunnel) =
             claim_and_start(&gcloud, &acct, &None, "db", access(None), None).unwrap();
         let mut guard = ChildGuard::new(child, signalable(run.pid));
-        abort_started(
-            &mut guard,
-            &Console::new(),
+        let console = Console::new();
+        stop_started(&mut guard, &console, &run).await;
+        teardown(
+            &console,
             &GcpClient::for_account(&acct),
             &acct,
             None,
@@ -2060,6 +2127,83 @@ mod tests {
             );
             let done = unless_stopped(&mut signals, async { 7 }).await;
             assert_eq!(done, Some(7), "work that finishes is not cut short");
+        });
+    }
+
+    #[tokio::test]
+    async fn a_byte_that_is_not_utf8_is_printed_lossily_and_ends_nothing() {
+        let out: &[u8] = b"first\n\xff broken\nlast without a newline";
+        let mut lines = Vec::new();
+        pump_lines(Some(out), None::<&[u8]>, |line| lines.push(line)).await;
+        assert_eq!(
+            lines,
+            ["first", "\u{fffd} broken", "last without a newline"]
+        );
+    }
+
+    #[tokio::test]
+    async fn one_stream_closing_keeps_the_other_read() {
+        use tokio::io::AsyncWriteExt;
+        let (out_tx, out_rx) = tokio::io::duplex(64);
+        let (mut err_tx, err_rx) = tokio::io::duplex(64);
+        drop(out_tx);
+        let writer = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            err_tx.write_all(b"late\n").await.unwrap();
+        });
+        let mut lines = Vec::new();
+        pump_lines(Some(out_rx), Some(err_rx), |line| lines.push(line)).await;
+        writer.await.unwrap();
+        assert_eq!(lines, ["late"], "stdout closing first did not end stderr");
+    }
+
+    #[test]
+    fn the_exit_a_run_makes_for_gcloud_is_its_code_and_never_zero() {
+        use std::os::unix::process::ExitStatusExt;
+        let exited = |code: i32| std::process::ExitStatus::from_raw(code << 8);
+        assert_eq!(gcloud_exit_code(exited(7)), 7);
+        assert_eq!(gcloud_exit_code(exited(1)), 1);
+        assert_eq!(
+            gcloud_exit_code(exited(0)),
+            1,
+            "a tunnel that ended on its own is a failure"
+        );
+        assert_eq!(
+            gcloud_exit_code(std::process::ExitStatus::from_raw(9)),
+            1,
+            "a signal death has no code"
+        );
+    }
+
+    #[test]
+    fn a_second_stop_signal_abandons_the_route_teardown_and_exits_130() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let console = Console::new();
+            let mut signals = StopSignals::register().expect("register");
+            // SAFETY: raise(3) sends a signal to this process; SIGHUP has a
+            // handler registered just above, so it does not end the test run.
+            // Not SIGINT: the supervisor's tests in this process stop their
+            // child on it, and a raised one ends them early.
+            unsafe { libc::raise(libc::SIGHUP) };
+            let err = finish_teardown(
+                &console,
+                &mut signals,
+                "https://x.example.com",
+                std::future::pending::<()>(),
+            )
+            .await
+            .expect_err("a stalled teardown is abandoned");
+            assert_eq!(
+                err.downcast_ref::<crate::error::Exited>().map(|e| e.0),
+                Some(130)
+            );
+            finish_teardown(&console, &mut signals, "https://x.example.com", async {})
+                .await
+                .expect("a teardown that finishes is not cut short");
         });
     }
 

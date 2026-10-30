@@ -47,6 +47,10 @@ fn is_broken_pipe_panic(message: &str) -> bool {
 /// Prints a failure the way the caller asked for it and ends the process
 /// with the code its kind maps to.
 pub fn exit_with(e: &anyhow::Error, json: bool) -> ! {
+    // The command already said why and chose its own status
+    if let Some(exited) = e.downcast_ref::<crate::error::Exited>() {
+        std::process::exit(exited.0);
+    }
     let kind = crate::error::kind_of(e);
     // The command already printed this failure; printing it again would
     // double it on stderr. Its kind still decides the code: a start that

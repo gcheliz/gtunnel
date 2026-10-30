@@ -22,16 +22,21 @@ struct Harness {
 // The stub's child is written next to its own pid so a test can look for both.
 // STUB_STUBBORN gives the child a SIGTERM handler that ignores the signal, as
 // an ssh holding a forward may; STUB_EXIT_AFTER makes the stub itself exit
-// first and leave that child behind.
+// first and leave that child behind, with STUB_EXIT_CODE as its code.
+// STUB_CLOSE_STDOUT prints one byte that is not UTF-8 and closes the stub's
+// stdout while it stays up, which its child does not hold open.
 const STUB: &str = r#"#!/bin/sh
 case "$1 $2" in
   "auth print-access-token") echo stub-token; exit 0 ;;
 esac
 [ "$1" = compute ] || exit 0
-if [ -n "$STUB_STUBBORN" ]; then (trap '' TERM; exec sleep 300) & else sleep 300 & fi
+if [ -n "$STUB_STUBBORN" ]; then (trap '' TERM; exec sleep 300) &
+elif [ -n "$STUB_CLOSE_STDOUT" ]; then sleep 300 >/dev/null &
+else sleep 300 & fi
 echo "$$ $!" >> "$STUB_DIR/pids"
 echo "Listening on port [15000]."
-if [ -n "$STUB_EXIT_AFTER" ]; then sleep "$STUB_EXIT_AFTER"; exit 1; fi
+if [ -n "$STUB_CLOSE_STDOUT" ]; then printf '\377\n'; exec >&-; fi
+if [ -n "$STUB_EXIT_AFTER" ]; then sleep "$STUB_EXIT_AFTER"; exit "${STUB_EXIT_CODE:-1}"; fi
 wait
 "#;
 
@@ -449,5 +454,54 @@ fn a_run_past_its_ttl_with_no_owner_on_record_is_stopped_by_the_next_list() {
     let (code, err) = h.run(&["list", "--json"]);
     assert_eq!(code, Some(0), "stderr: {err}");
     assert!(err.contains("past its TTL"), "stderr: {err}");
+    h.assert_nothing_left();
+}
+
+#[test]
+fn a_non_utf8_byte_and_a_closed_stdout_do_not_end_a_run() {
+    let h = Harness::new();
+    let n = h.spawn(&["run", "db", "my-vm:5432"], &[("STUB_CLOSE_STDOUT", "1")]);
+    h.wait_for_stub();
+    // The stub has written its bad byte and closed stdout by now: a pump that
+    // ended the run on either would have taken gcloud down with it
+    assert!(
+        h.wait_exit(n, Duration::from_millis(1500)).is_none(),
+        "the run ended when gcloud's output did: {}",
+        h.stdout(n)
+    );
+    assert!(
+        h.stdout(n).contains('\u{fffd}'),
+        "the bad byte is printed lossily: {:?}",
+        h.stdout(n)
+    );
+    h.terminate(n);
+    let status = h.wait_exit(n, BOUND).expect("the run ignored SIGTERM");
+    assert_eq!(status.code(), Some(0), "a requested stop exits 0");
+    h.assert_nothing_left();
+}
+
+#[test]
+fn a_gcloud_that_exits_at_once_makes_the_run_fail_with_its_code_and_tear_down() {
+    let h = Harness::new();
+    let n = h.spawn(
+        &["run", "db", "my-vm:5432"],
+        &[("STUB_EXIT_AFTER", "0"), ("STUB_EXIT_CODE", "7")],
+    );
+    let status = h.wait_exit(n, BOUND).expect("the run never ended");
+    assert_eq!(status.code(), Some(7), "stdout: {}", h.stdout(n));
+    assert!(
+        h.stdout(n).contains("gcloud exited with"),
+        "stdout: {}",
+        h.stdout(n)
+    );
+    h.assert_nothing_left();
+}
+
+#[test]
+fn a_gcloud_that_exits_1_makes_the_run_exit_1() {
+    let h = Harness::new();
+    let n = h.spawn(&["run", "db", "my-vm:5432"], &[("STUB_EXIT_AFTER", "0")]);
+    let status = h.wait_exit(n, BOUND).expect("the run never ended");
+    assert_eq!(status.code(), Some(1), "stdout: {}", h.stdout(n));
     h.assert_nothing_left();
 }
