@@ -3370,3 +3370,25 @@ fn a_notifications_toggle_that_cannot_save_leaves_the_value_and_says_why() {
     );
     assert_eq!(read_config(), "selected_account = [\n");
 }
+
+fn ansi(command: impl crossterm::Command) -> String {
+    let mut out = String::new();
+    command.write_ansi(&mut out).unwrap();
+    out
+}
+
+#[test]
+fn the_terminal_is_asked_for_wheel_reports_and_never_for_mouse_motion() {
+    let on = ansi(EnableWheel);
+    assert!(on.contains("?1000h") && on.contains("?1006h"), "{on:?}");
+    for motion in ["?1002h", "?1003h", "?1015h"] {
+        assert!(!on.contains(motion), "{motion} in {on:?}");
+    }
+}
+
+#[test]
+fn leaving_the_terminal_releases_exactly_what_entering_took() {
+    let off = ansi(DisableWheel);
+    assert!(off.contains("?1006l") && off.contains("?1000l"), "{off:?}");
+    assert!(!off.contains("?1003l"), "{off:?}");
+}

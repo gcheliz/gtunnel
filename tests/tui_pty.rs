@@ -411,6 +411,14 @@ fn the_mouse_is_captured_while_the_tui_runs_and_released_on_quit() {
         !s.raw_contains(b"\x1b[?1000l"),
         "capture was released while the TUI still runs"
     );
+    // Any-motion tracking floods the input with reports, and a report split
+    // across two reads is typed into the app as Esc and characters (issue 362)
+    for motion in ["?1002h", "?1003h", "?1015h"] {
+        assert!(
+            !s.raw_contains(format!("\x1b[{motion}").as_bytes()),
+            "{motion} asks the terminal to report mouse moves"
+        );
+    }
     s.press("q");
     let status = s.wait_exit();
     assert!(status.success(), "exit status {status:?}");
