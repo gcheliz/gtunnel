@@ -135,7 +135,9 @@ pub async fn run(args: Cli) -> Result<()> {
     // The hint reads a cache file; `update` does the real check itself
     let quiet = matches!(
         args.command,
-        None | Some(Commands::Update { .. } | Commands::Completions { .. })
+        None | Some(
+            Commands::Update { .. } | Commands::Completions { .. } | Commands::Reset { .. }
+        )
     );
 
     // Ahead of the gate below, which needs an account to exist; a failure or an

@@ -250,12 +250,37 @@ pub async fn stop_group(
 /// counts ticks since boot, qualified by the boot id. A clock step must not
 /// make a live run read as dead, which `/proc/stat` `btime` would do.
 pub fn start_token(pid: u32) -> Option<String> {
-    let pid = i32::try_from(pid).ok().filter(|p| *p > 0)?;
-    start_token_of(pid)
+    match presence(pid) {
+        Presence::Alive(token) => Some(token),
+        Presence::Gone | Presence::Unknown => None,
+    }
+}
+
+/// What a lookup of one pid found. Three answers, because "I could not read it"
+/// and "it is not there" lead to opposite actions: a process wrongly read as
+/// gone is deleted from under (`reset` removed the directory of a run that was
+/// still tearing down), one wrongly read as alive only costs a wait.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Presence {
+    /// Running, with its start token.
+    Alive(String),
+    /// No such process, or one that has exited and only waits to be reaped: a
+    /// zombie answers `kill(pid, 0)` but will never do anything again.
+    Gone,
+    /// The lookup failed for a reason other than absence (a permission error, an
+    /// unreadable `/proc`), or this platform cannot say.
+    Unknown,
+}
+
+pub fn presence(pid: u32) -> Presence {
+    match i32::try_from(pid).ok().filter(|p| *p > 0) {
+        Some(pid) => presence_of(pid),
+        None => Presence::Gone,
+    }
 }
 
 #[cfg(target_os = "macos")]
-fn start_token_of(pid: i32) -> Option<String> {
+fn presence_of(pid: i32) -> Presence {
     use std::mem::{size_of, MaybeUninit};
     let mut info = MaybeUninit::<libc::proc_bsdinfo>::zeroed();
     let size = size_of::<libc::proc_bsdinfo>() as libc::c_int;
@@ -271,35 +296,47 @@ fn start_token_of(pid: i32) -> Option<String> {
         )
     };
     if got != size {
-        return None;
+        // ESRCH is the answer for a pid that is gone and for a zombie alike
+        return match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::ESRCH) => Presence::Gone,
+            _ => Presence::Unknown,
+        };
     }
     // SAFETY: the call filled the whole struct (got == size), and zeroed is a
     // valid value for it besides.
     let info = unsafe { info.assume_init() };
-    Some(format!(
+    Presence::Alive(format!(
         "{}.{:06}",
         info.pbi_start_tvsec, info.pbi_start_tvusec
     ))
 }
 
 #[cfg(target_os = "linux")]
-fn start_token_of(pid: i32) -> Option<String> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+fn presence_of(pid: i32) -> Presence {
+    let stat = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(stat) => stat,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Presence::Gone,
+        // ESRCH is what a process that exits during the read reports
+        Err(e) if e.raw_os_error() == Some(libc::ESRCH) => return Presence::Gone,
+        Err(_) => return Presence::Unknown,
+    };
     // A zombie keeps its stat until its parent reaps it, but it has done all it
-    // will do; macOS already answers None for one, so Linux says gone as well
+    // will do; macOS answers ESRCH for one, so Linux says gone as well
     if linux_has_exited(&stat) {
-        return None;
+        return Presence::Gone;
     }
-    let ticks = linux_start_ticks(&stat)?;
+    let Some(ticks) = linux_start_ticks(&stat) else {
+        return Presence::Unknown;
+    };
     match std::fs::read_to_string("/proc/sys/kernel/random/boot_id") {
-        Ok(boot) => Some(format!("{}/{ticks}", boot.trim())),
-        Err(_) => Some(ticks.to_string()),
+        Ok(boot) => Presence::Alive(format!("{}/{ticks}", boot.trim())),
+        Err(_) => Presence::Alive(ticks.to_string()),
     }
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn start_token_of(_pid: i32) -> Option<String> {
-    None
+fn presence_of(_pid: i32) -> Presence {
+    Presence::Unknown
 }
 
 /// Field 22 of `/proc/<pid>/stat`, the start time in ticks since boot. The
@@ -418,6 +455,31 @@ mod tests {
     fn a_live_process_has_a_stable_start_token() {
         let a = start_token(std::process::id()).expect("our own start");
         assert_eq!(start_token(std::process::id()), Some(a));
+    }
+
+    #[test]
+    fn a_missing_pid_is_gone_and_a_live_one_is_alive() {
+        assert_eq!(presence(999_999), Presence::Gone);
+        assert_eq!(presence(0), Presence::Gone);
+        assert_eq!(presence(u32::MAX), Presence::Gone);
+        assert!(matches!(presence(std::process::id()), Presence::Alive(_)));
+    }
+
+    // kill(pid, 0) answers for a zombie, so an exited child that nobody has
+    // reaped must read as gone from the process state, not from the signal
+    #[test]
+    fn an_exited_child_not_yet_reaped_is_gone_not_unknown() {
+        let mut child = std::process::Command::new("true")
+            .spawn()
+            .expect("spawn true");
+        let pid = child.id();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while presence(pid) != Presence::Gone && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let found = presence(pid);
+        child.wait().unwrap();
+        assert_eq!(found, Presence::Gone);
     }
 
     #[test]
