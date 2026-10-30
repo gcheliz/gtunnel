@@ -109,6 +109,12 @@ pub enum Finding {
     RelayMissing {
         account: String,
     },
+    // A relay that no `relay up` has converged since an upgrade. Not
+    // fixable by `--fix`: the repair is `relay up`, which asks before it runs.
+    RelayOutOfDate {
+        account: String,
+        what: &'static str,
+    },
     CertNotActive {
         domain: String,
         state: String,
@@ -285,6 +291,10 @@ impl Finding {
             }
             Finding::RelayMissing { account } => format!(
                 "Account '{account}' has Expose tunnels but no relay. Run `gtunnel relay up`"
+            ),
+            Finding::RelayOutOfDate { account, what } => format!(
+                "The relay for account '{account}' has an out-of-date {what}. Run \
+                 `gtunnel relay up` to update it in place"
             ),
             Finding::CertNotActive { domain, state } => {
                 format!("Certificate for {domain} is {state}, so HTTPS does not work yet")
@@ -1181,6 +1191,35 @@ fn starts_at_login(label: &str) -> bool {
     }
 }
 
+// What `relay up` would rewrite, read without writing. A failed read is
+// not a finding: the other checks already say when GCP cannot be reached.
+async fn relay_drift(
+    client: &GcpClient,
+    acct: &Account,
+    expose: &crate::config::ExposeConfig,
+) -> Vec<Finding> {
+    let names = Names::new(&acct.name);
+    let mut findings = Vec::new();
+    if let Ok(Some(vm)) =
+        compute::get_instance(client, &acct.project, &expose.relay_zone, &names.relay_vm).await
+        && vm.startup_script() != Some(compute::RELAY_STARTUP_SCRIPT)
+    {
+        findings.push(Finding::RelayOutOfDate {
+            account: acct.name.clone(),
+            what: "startup script",
+        });
+    }
+    if let Ok(Some(false)) =
+        compute::health_check_is_current(client, &acct.project, &names.health_check).await
+    {
+        findings.push(Finding::RelayOutOfDate {
+            account: acct.name.clone(),
+            what: "health check",
+        });
+    }
+    findings
+}
+
 async fn relay_findings(
     client: &GcpClient,
     acct: &Account,
@@ -1188,7 +1227,7 @@ async fn relay_findings(
     owned: &[PersistentTunnel],
 ) -> Vec<Finding> {
     let names = Names::new(&acct.name);
-    let mut findings = Vec::new();
+    let mut findings = relay_drift(client, acct, expose).await;
 
     for domain in &expose.domains {
         if let Ok(state) = certmanager::certificate_state(
@@ -2245,6 +2284,10 @@ mod tests {
             Finding::RelayMissing {
                 account: "dev".to_string(),
             },
+            Finding::RelayOutOfDate {
+                account: "dev".to_string(),
+                what: "health check",
+            },
             Finding::CertNotActive {
                 domain: "dev.example.com".to_string(),
                 state: "PROVISIONING".to_string(),
@@ -2786,5 +2829,75 @@ mod tests {
             "took {:?}",
             began.elapsed()
         );
+    }
+
+    fn expose_config() -> crate::config::ExposeConfig {
+        crate::config::ExposeConfig {
+            relay_instance: "gt-dev-relay".to_string(),
+            relay_zone: "europe-west1-b".to_string(),
+            network: "default".to_string(),
+            default_domain: "dev.example.com".to_string(),
+            domains: vec![],
+        }
+    }
+
+    async fn drift_server(script: &str, interval: u32) -> wiremock::MockServer {
+        use wiremock::matchers::{method, path_regex};
+        use wiremock::{Mock, ResponseTemplate};
+        let server = wiremock::MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_regex(r".*/instances/.*"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "name": "gt-dev-relay",
+                "status": "RUNNING",
+                "metadata": {"items": [{"key": "startup-script", "value": script}]}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path_regex(r".*/healthChecks/.*"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "type": "TCP",
+                "tcpHealthCheck": {"portSpecification": "USE_SERVING_PORT"},
+                "checkIntervalSec": interval,
+                "timeoutSec": 5,
+                "healthyThreshold": 1,
+                "unhealthyThreshold": 3
+            })))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    fn drift_client(server: &wiremock::MockServer) -> GcpClient {
+        GcpClient::new(
+            crate::gcp::TokenSource::Static("tok".to_string()),
+            crate::gcp::Endpoints::single(&server.uri()),
+        )
+    }
+
+    // `relay up` converges these now, so a relay that has not been through it
+    // since an upgrade is a finding with a one-line fix
+    #[tokio::test]
+    async fn a_relay_with_an_old_script_and_health_check_is_reported_out_of_date() {
+        let server = drift_server("#!/bin/bash\necho old\n", 10).await;
+
+        let findings = relay_drift(&drift_client(&server), &account(), &expose_config()).await;
+
+        let described: Vec<String> = findings.iter().map(|f| f.describe()).collect();
+        assert_eq!(described.len(), 2, "{described:?}");
+        assert!(described.iter().any(|d| d.contains("startup script")));
+        assert!(described.iter().any(|d| d.contains("health check")));
+        assert!(described.iter().all(|d| d.contains("gtunnel relay up")));
+        assert!(findings.iter().all(|f| !f.fixable()));
+    }
+
+    #[tokio::test]
+    async fn a_relay_that_is_current_has_no_drift_finding() {
+        let server = drift_server(crate::gcp::compute::RELAY_STARTUP_SCRIPT, 5).await;
+
+        let findings = relay_drift(&drift_client(&server), &account(), &expose_config()).await;
+
+        assert!(findings.is_empty(), "{findings:?}");
     }
 }

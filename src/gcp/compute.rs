@@ -648,6 +648,37 @@ fn health_check_fields() -> serde_json::Value {
     })
 }
 
+// Compared field by field, not as a whole: GCP adds fields of its own (ids,
+// links, per-protocol defaults) that are not ours to fight over
+fn health_check_matches(have: &serde_json::Value) -> bool {
+    health_check_fields().as_object().is_some_and(|fields| {
+        fields.iter().all(|(key, value)| match key.as_str() {
+            "tcpHealthCheck" => {
+                have["tcpHealthCheck"]["portSpecification"] == value["portSpecification"]
+            }
+            _ => have.get(key) == Some(value),
+        })
+    })
+}
+
+// Read-only twin of `reconcile_health_check` for `doctor`: None when the
+// health check does not exist
+pub async fn health_check_is_current(
+    client: &GcpClient,
+    project: &str,
+    name: &str,
+) -> Result<Option<bool>> {
+    let url = format!(
+        "{}/projects/{project}/global/healthChecks/{name}",
+        client.endpoints.compute
+    );
+    match client.get::<serde_json::Value>(&url).await {
+        Ok(have) => Ok(Some(health_check_matches(&have))),
+        Err(e) if is_not_found(&e) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
 // One health check serves every backend: USE_SERVING_PORT follows each
 // backend's own named port
 pub async fn reconcile_health_check(
@@ -674,17 +705,7 @@ pub async fn reconcile_health_check(
         }
         Err(e) => return Err(e),
     };
-    // Compared field by field, not as a whole: GCP adds fields of its own
-    // (ids, links, per-protocol defaults) that are not ours to fight over
-    let differs = want.as_object().is_some_and(|fields| {
-        fields.iter().any(|(key, value)| match key.as_str() {
-            "tcpHealthCheck" => {
-                have["tcpHealthCheck"]["portSpecification"] != value["portSpecification"]
-            }
-            _ => have.get(key) != Some(value),
-        })
-    });
-    if !differs {
+    if health_check_matches(&have) {
         return Ok(Reconciled::Unchanged);
     }
     let op: Operation = client.patch(&format!("{base}/{name}"), &want).await?;
