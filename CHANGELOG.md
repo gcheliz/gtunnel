@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.56](https://github.com/gcheliz/gtunnel/compare/v0.2.55...v0.2.56) - 2026-10-30
+
+### Fixed
+
+- *(tui)* read a key typed right after a resize, drive gtunnel demo through a pseudo-terminal ([#346](https://github.com/gcheliz/gtunnel/pull/346))
+
 ## [0.2.55](https://github.com/gcheliz/gtunnel/compare/v0.2.54...v0.2.55) - 2026-10-30
 
 ### Fixed
