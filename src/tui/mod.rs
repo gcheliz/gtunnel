@@ -142,6 +142,34 @@ pub async fn run_tui(initial_account: Option<&str>) -> Result<()> {
     result
 }
 
+/// Asks the terminal for button reports and nothing else: the wheel arrives as
+/// a button press, so `?1000h` with SGR encoding (`?1006h`) is all it takes.
+///
+/// crossterm's `EnableMouseCapture` also asks for any-motion tracking
+/// (`?1003h`), which sends a report for every move. A steady stream makes a
+/// report split across two reads likely, and crossterm parses the lone ESC of
+/// a split report as the Esc key and the rest as typed characters.
+///
+/// Unix only, like the rest of the crate: `Command` wants `execute_winapi`
+/// on Windows, and gtunnel drives launchd and gcloud subprocesses there is no
+/// Windows port of.
+pub struct EnableWheel;
+
+/// The matching release, in the reverse order of `EnableWheel`.
+pub struct DisableWheel;
+
+impl crossterm::Command for EnableWheel {
+    fn write_ansi(&self, f: &mut impl std::fmt::Write) -> std::fmt::Result {
+        f.write_str("\x1b[?1000h\x1b[?1006h")
+    }
+}
+
+impl crossterm::Command for DisableWheel {
+    fn write_ansi(&self, f: &mut impl std::fmt::Write) -> std::fmt::Result {
+        f.write_str("\x1b[?1006l\x1b[?1000l")
+    }
+}
+
 /// Takes the terminal: raw mode, the alternate screen, and the mouse.
 ///
 /// Capture is on so the wheel can scroll a pane, which has a cost the keymap
@@ -151,13 +179,13 @@ pub async fn run_tui(initial_account: Option<&str>) -> Result<()> {
 /// printing escape codes for every mouse move is worse than a missing wheel.
 pub fn enter_terminal() -> ratatui::DefaultTerminal {
     let terminal = ratatui::init();
-    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture);
+    let _ = crossterm::execute!(std::io::stdout(), EnableWheel);
     // `init` hooks panics to restore the screen but knows nothing of the
     // mouse. This hook runs first and then hands on to that one, so the order
     // on a panic is: mouse off, screen restored, message printed.
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
+        let _ = crossterm::execute!(std::io::stdout(), DisableWheel);
         previous(info);
     }));
     terminal
@@ -166,7 +194,7 @@ pub fn enter_terminal() -> ratatui::DefaultTerminal {
 /// Gives the terminal back as it was found. The mouse goes first, so no event
 /// reaches a shell that has not asked for it.
 pub fn leave_terminal() {
-    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
+    let _ = crossterm::execute!(std::io::stdout(), DisableWheel);
     ratatui::restore();
 }
 

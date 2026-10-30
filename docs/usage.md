@@ -498,7 +498,8 @@ them.
 
 The mouse is captured so the wheel can scroll a pane, which stops the terminal selecting text on a
 plain drag. Hold `Shift` while dragging to select, as before (`Option` in some macOS terminals).
-Other mouse events are ignored, and capture is released on exit, on a panic, on `Ctrl+Z` and
+Only button and wheel reports are requested, never mouse movement, so moving the pointer sends the
+TUI nothing. Other mouse events are ignored, and capture is released on exit, on a panic, on `Ctrl+Z` and
 while an editor has the terminal.
 
 The Metrics pane shows the tunnel's health as a symbol. A failed probe is named by what

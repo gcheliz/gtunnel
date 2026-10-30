@@ -3449,7 +3449,7 @@ pub fn edit_in_terminal(path: &Path) -> anyhow::Result<()> {
             use crossterm::{execute, terminal};
             let _ = terminal::enable_raw_mode();
             let _ = execute!(std::io::stdout(), terminal::EnterAlternateScreen);
-            let _ = execute!(std::io::stdout(), crossterm::event::EnableMouseCapture);
+            let _ = execute!(std::io::stdout(), super::EnableWheel);
         }
     }
 
