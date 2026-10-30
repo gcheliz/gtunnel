@@ -596,6 +596,12 @@ impl Filter {
 ///
 /// `conn` is shared with the other stream of the same child, so a connection
 /// opened on one and closed on the other still pairs.
+///
+/// A failing `out` (a full disk, a closed log) costs the output and nothing
+/// else. Returning would drop the reader and close the child's pipe, and the
+/// correlator would stop seeing an expired login, the ready line and the
+/// probes, with nothing saying why. So the reading goes on, and the first
+/// error is said once on stderr, which the service manager logs separately.
 pub async fn pump<R: AsyncBufRead + Unpin, W: Write>(
     mut reader: R,
     out: &mut W,
@@ -603,6 +609,21 @@ pub async fn pump<R: AsyncBufRead + Unpin, W: Write>(
 ) -> std::io::Result<()> {
     let mut filter = Filter::new();
     let mut buf = Vec::new();
+    let mut broken = false;
+    let mut emit = |lines: Vec<String>, out: &mut W| {
+        for formatted in lines {
+            if broken {
+                return;
+            }
+            let wrote = out
+                .write_all(formatted.as_bytes())
+                .and_then(|()| out.flush());
+            if let Err(e) = wrote {
+                broken = true;
+                eprintln!("gtunnel: log output failed, dropping it: {e}");
+            }
+        }
+    };
     loop {
         buf.clear();
         let bytes_read = reader.read_until(b'\n', &mut buf).await?;
@@ -613,15 +634,9 @@ pub async fn pump<R: AsyncBufRead + Unpin, W: Write>(
         // The guard is dropped before the write: it is a std mutex and must
         // never be held across an await, and the write is blocking enough
         let lines = filter.process_line(&line_str, &mut lock(&conn));
-        for formatted in lines {
-            out.write_all(formatted.as_bytes())?;
-            out.flush()?;
-        }
+        emit(lines, out);
     }
-    for formatted in filter.flush_eof() {
-        out.write_all(formatted.as_bytes())?;
-        out.flush()?;
-    }
+    emit(filter.flush_eof(), out);
     Ok(())
 }
 
@@ -1003,6 +1018,29 @@ mod tests {
         assert!(!output.contains("noise"));
         assert!(output.contains("Local forwarding listening on"));
         assert!(output.contains("Listening on port [15432]."));
+    }
+
+    struct FullDisk;
+    impl Write for FullDisk {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("no space left on device"))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    // The pipe closing under a child is what hid an expired login from the
+    // supervisor, so the proof is the last line, read after the first failure
+    #[tokio::test]
+    async fn a_pump_whose_writer_fails_keeps_reading_and_still_sees_expired_credentials() {
+        let conn = Correlator::new(LogLevel::Info).share();
+        let input = b"first line\nsecond line\nERROR: Reauthentication required.\n";
+        let reader = tokio::io::BufReader::new(&input[..]);
+        pump(reader, &mut FullDisk, conn.clone())
+            .await
+            .expect("a write error is not a read error");
+        assert!(lock(&conn).credentials_expired(std::time::Instant::now()));
     }
 
     #[tokio::test]
