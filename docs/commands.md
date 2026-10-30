@@ -315,6 +315,9 @@ carries `[restart budget spent: exit status: 1]`, the last thing gcloud died of,
 shows it as a crash loop. `gtunnel start` clears the marker and the count; `gtunnel watch`
 never restarts it.
 
+`stop` makes no GCP call, so it works with an expired login and never asks for one; `start` and
+`restart` do reach GCP and check the login first.
+
 The TUI tags the same row `[run, stops at 14:32]`, or `[ephemeral]` without a TTL, and its
 details pane counts down: `stops at  14:32 (in 25m)`.
 
