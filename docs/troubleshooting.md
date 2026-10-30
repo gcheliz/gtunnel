@@ -364,6 +364,21 @@ one of the choices) stops every command, and `account add` and `init` refuse to 
 the error names the file and the line, and the file is left byte for byte as it was. Fix that
 line, or move the file aside to start again with `gtunnel init`.
 
+## A file written by a newer gtunnel
+
+An older gtunnel reads a file a newer one wrote, and refuses to change it.
+
+```console,ignore
+$ gtunnel account add prod
+Error: ~/.gtunnel/config.toml was written by a newer gtunnel (v3); upgrade this one
+```
+
+| You see | It means | Do |
+|---|---|---|
+| `written by a newer gtunnel (vN); upgrade this one` on `config.toml` or `tunnels.toml` | A second install, an open TUI or a downgrade is older than the file. Writing would drop what it cannot see | Upgrade that binary; `command -v gtunnel` shows which one runs |
+| `  mesh  unsupported by this version (mesh_relay)` under `gtunnel list` | `tunnels.toml` holds a tunnel of a kind this version does not know. It is kept as written and cannot be started or edited here | Upgrade, or remove the entry by hand if it is stale |
+| `run record <file> cannot be read by this version` under `gtunnel list`, and a `doctor` finding | A run started by another version, or a damaged file. Its ports stay reserved | Upgrade; if it is damaged, stop its process and delete the file |
+
 ## Connections drop after an hour
 
 A pooled connection that sat idle comes back dead, or a client stalls and then recovers.

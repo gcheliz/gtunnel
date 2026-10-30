@@ -127,7 +127,10 @@ pub fn validate_config(text: &str) -> Result<Config> {
 fn refuse_unknown_keys<T: serde::de::DeserializeOwned + serde::Serialize>(
     text: &str,
 ) -> Result<()> {
-    let keys = crate::config::unknown_keys::<T>(text)?;
+    refuse_keys(crate::config::unknown_keys::<T>(text)?)
+}
+
+fn refuse_keys(keys: Vec<String>) -> Result<()> {
     match keys.as_slice() {
         [] => Ok(()),
         [only] => bail!("unknown key {only}"),
@@ -235,7 +238,7 @@ pub fn validate_tunnels(
             );
         }
     }
-    refuse_unknown_keys::<TunnelState>(text)?;
+    refuse_keys(crate::state::unknown_tunnel_keys(text)?)?;
     Ok(state)
 }
 
@@ -674,6 +677,15 @@ mod tests {
             .expect_err("invalid toml")
             .to_string();
         assert!(msg.contains("line 1"), "{msg}");
+    }
+
+    // The page validates the whole text and saves it whole, so an entry kept
+    // aside on load would be written away; refusing the edit is what keeps it
+    #[test]
+    fn a_tunnel_of_a_newer_kind_makes_the_page_refuse_the_edit() {
+        let cfg = config("dev", &["dev"]);
+        let text = "schema_version = 1\n\n[[tunnels]]\nname = \"mesh\"\naccount_name = \"dev\"\n\n[tunnels.spec]\nmode = \"mesh_relay\"\n";
+        assert!(validate_tunnels(text, &cfg, &HashMap::new()).is_err());
     }
 
     #[test]

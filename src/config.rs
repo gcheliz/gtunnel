@@ -627,11 +627,117 @@ pub fn validate_credential_file(path: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
+/// The refusal every writer of a versioned state file gives when the file says
+/// a newer gtunnel wrote it. Reading such a file is allowed, because a newer
+/// file is mostly a superset; writing it would drop whatever the newer binary
+/// added and this one cannot see, with no sign that anything was lost.
+pub fn refuse_newer_version(path: &std::path::Path, found: u32, known: u32) -> Result<()> {
+    if found > known {
+        bail!(
+            "{} was written by a newer gtunnel (v{found}); upgrade this one",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+/// Keys the structs leave out of a save when they are unset. A key in the file
+/// that the new text no longer has is deleted only if it is one of these: any
+/// other key the struct did not write is one this version does not know, and
+/// stays.
+const OPTIONAL_KEYS: [&str; 3] = ["impersonate_service_account", "credential_file", "expose"];
+
+/// Writes `config` into the text already on disk instead of replacing it, so a
+/// key or a comment this version does not know survives any write. The struct
+/// is serialised first and merged in: a changed value replaces the old one
+/// under the old key, so the comment above the key stays with it.
+pub(crate) fn merge_into_existing(existing: &str, config: &Config) -> Result<String> {
+    let fresh = toml::to_string_pretty(config).context("Failed to serialize config")?;
+    let Ok(mut doc) = existing.parse::<toml_edit::DocumentMut>() else {
+        // Nothing to preserve in text that is not TOML; `load_config` already
+        // refused such a file, so this is a first write or a damaged one
+        return Ok(fresh);
+    };
+    let new: toml_edit::DocumentMut = fresh
+        .parse()
+        .context("Failed to re-read the serialised config")?;
+    merge_table(doc.as_table_mut(), new.as_table());
+    Ok(doc.to_string())
+}
+
+fn merge_table(old: &mut toml_edit::Table, new: &toml_edit::Table) {
+    use toml_edit::Item;
+    let gone: Vec<String> = old
+        .iter()
+        .map(|(k, _)| k.to_string())
+        .filter(|k| OPTIONAL_KEYS.contains(&k.as_str()) && !new.contains_key(k))
+        .collect();
+    for key in gone {
+        old.remove(&key);
+    }
+    for (key, item) in new.iter() {
+        match (old.get_mut(key), item) {
+            (Some(Item::Table(o)), Item::Table(n)) => merge_table(o, n),
+            (Some(Item::ArrayOfTables(o)), Item::ArrayOfTables(n)) => merge_array(o, n),
+            (Some(Item::Value(o)), Item::Value(n)) if same_value(o, n) => {}
+            (Some(slot), _) => *slot = item.clone(),
+            (None, _) => {
+                old.insert(key, item.clone());
+            }
+        }
+    }
+}
+
+fn same_value(a: &toml_edit::Value, b: &toml_edit::Value) -> bool {
+    let bare = |v: &toml_edit::Value| {
+        let mut v = v.clone();
+        v.decor_mut().clear();
+        v.to_string()
+    };
+    bare(a) == bare(b)
+}
+
+// Rows are matched by their identity, not their position: removing the first
+// account must not hand its unknown keys to the second
+fn merge_array(old: &mut toml_edit::ArrayOfTables, new: &toml_edit::ArrayOfTables) {
+    const IDENTITY: [&str; 2] = ["name", "domain"];
+    let id_of = |t: &toml_edit::Table| {
+        IDENTITY
+            .iter()
+            .find_map(|k| t.get(k).and_then(|i| i.as_str()).map(str::to_string))
+    };
+    let mut merged = toml_edit::ArrayOfTables::new();
+    for fresh in new.iter() {
+        let matched = id_of(fresh).and_then(|id| {
+            old.iter()
+                .find(|t| id_of(t).as_deref() == Some(id.as_str()))
+        });
+        let mut row = match matched {
+            Some(existing) => existing.clone(),
+            None => {
+                merged.push(fresh.clone());
+                continue;
+            }
+        };
+        merge_table(&mut row, fresh);
+        merged.push(row);
+    }
+    *old = merged;
+}
+
 pub fn save_config(config: &Config) -> Result<()> {
     let dir = config_dir()?;
     std::fs::create_dir_all(&dir).with_context(|| format!("Failed to create {}", dir.display()))?;
     let path = config_path()?;
-    let text = toml::to_string_pretty(config).context("Failed to serialize config")?;
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    if let Some(found) = toml::from_str::<toml::Table>(&existing)
+        .ok()
+        .and_then(|t| t.get("config_version").and_then(|v| v.as_integer()))
+        .and_then(|v| u32::try_from(v).ok())
+    {
+        refuse_newer_version(&path, found, CONFIG_VERSION)?;
+    }
+    let text = merge_into_existing(&existing, config)?;
     crate::fsutil::write_atomic(&path, &text)
 }
 
@@ -650,6 +756,7 @@ pub fn toggle_notifications() -> Result<bool> {
         .with_context(|| format!("Failed to read {}", path.display()))?;
     let config: Config =
         toml::from_str(&text).with_context(|| format!("Failed to parse {}", path.display()))?;
+    refuse_newer_version(&path, config.config_version, CONFIG_VERSION)?;
     // An unmarked file is read as off, as `load_config` reads it
     let now = config.config_version >= CONFIG_VERSION && config.notifications.enabled;
     let edited = with_notifications_enabled(&text, !now, config.config_version);
@@ -1995,5 +2102,117 @@ mod tests {
             err.to_string().contains("gtunnel domains add"),
             "got: {err}"
         );
+    }
+
+    fn write_config_text(text: &str) {
+        let path = config_path().expect("path");
+        std::fs::write(path, text).expect("write fixture");
+    }
+
+    fn sample_account(name: &str) -> Account {
+        Account {
+            name: name.to_string(),
+            gcloud_configuration: name.to_string(),
+            project: "example-dev-1a2b".to_string(),
+            default_zone: "europe-west1-b".to_string(),
+            impersonate_service_account: None,
+            credential_file: None,
+            expose: None,
+        }
+    }
+
+    #[test]
+    fn a_config_from_a_newer_gtunnel_is_read_but_never_written() {
+        with_temp_dir(|| {
+            let newer = CONFIG_VERSION + 1;
+            write_config_text(&format!(
+                "config_version = {newer}\nselected_account = \"dev\"\n"
+            ));
+            let mut cfg = load_config().expect("a newer file is still read");
+            assert_eq!(cfg.selected_account, "dev");
+
+            let before = std::fs::read_to_string(config_path().unwrap()).unwrap();
+            cfg.selected_account = "prod".to_string();
+            let err = save_config(&cfg).expect_err("a write must refuse");
+            assert!(
+                format!("{err:#}").contains(&format!(
+                    "written by a newer gtunnel (v{newer}); upgrade this one"
+                )),
+                "{err:#}"
+            );
+            let err = update_config(|c| {
+                c.selected_account = "prod".to_string();
+                Ok(())
+            })
+            .expect_err("an update is a write");
+            assert!(format!("{err:#}").contains("newer gtunnel"), "{err:#}");
+            let err = toggle_notifications().expect_err("a toggle is a write");
+            assert!(format!("{err:#}").contains("newer gtunnel"), "{err:#}");
+            assert_eq!(
+                std::fs::read_to_string(config_path().unwrap()).unwrap(),
+                before,
+                "the file is untouched"
+            );
+        });
+    }
+
+    #[test]
+    fn a_write_keeps_an_unknown_key_and_a_comment() {
+        with_temp_dir(|| {
+            let mut cfg = Config::default();
+            cfg.accounts.push(sample_account("dev"));
+            save_config(&cfg).expect("first save");
+            let mut text = std::fs::read_to_string(config_path().unwrap()).unwrap();
+            text = format!("# my own notes\nfuture_top_level = \"kept\"\n{text}");
+            text = text.replacen(
+                "[restart]",
+                "[restart]\n# tuned by hand\nfuture_restart_key = 7",
+                1,
+            );
+            text = text.replacen(
+                "name = \"dev\"",
+                "name = \"dev\"\nfuture_account_key = true",
+                1,
+            );
+            write_config_text(&text);
+
+            let mut loaded = load_config().expect("load");
+            loaded.selected_account = "dev".to_string();
+            loaded.restart.max_restarts = 9;
+            loaded.accounts[0].default_zone = "europe-west1-c".to_string();
+            save_config(&loaded).expect("second save");
+
+            let after = std::fs::read_to_string(config_path().unwrap()).unwrap();
+            for kept in [
+                "# my own notes",
+                "future_top_level = \"kept\"",
+                "# tuned by hand",
+                "future_restart_key = 7",
+                "future_account_key = true",
+            ] {
+                assert!(after.contains(kept), "lost {kept:?} in:\n{after}");
+            }
+            let reread = load_config().expect("reload");
+            assert_eq!(reread, loaded, "the known keys are what was saved");
+        });
+    }
+
+    #[test]
+    fn a_removed_account_and_a_cleared_optional_key_leave_the_file() {
+        with_temp_dir(|| {
+            let mut cfg = Config::default();
+            let mut dev = sample_account("dev");
+            dev.impersonate_service_account = Some("sa@example.com".to_string());
+            cfg.accounts = vec![dev, sample_account("prod")];
+            cfg.accounts[1].impersonate_service_account = Some("sa@example.com".to_string());
+            save_config(&cfg).expect("save");
+            cfg.accounts.remove(0);
+            cfg.accounts[0].impersonate_service_account = None;
+            save_config(&cfg).expect("save again");
+            let after = std::fs::read_to_string(config_path().unwrap()).unwrap();
+            assert!(!after.contains("\"dev\""), "{after}");
+            assert!(!after.contains("impersonate_service_account"), "{after}");
+            assert_eq!(load_config().unwrap(), cfg);
+        });
     }
 }

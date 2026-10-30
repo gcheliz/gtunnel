@@ -1011,6 +1011,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml",
+ "toml_edit",
  "trycmd",
  "vt100",
  "wiremock",
