@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.3.7](https://github.com/gcheliz/gtunnel/compare/v0.3.6...v0.3.7) - 2026-10-30
+
+### Fixed
+
+- *(watch)* ride out a network outage instead of stopping every tunnel ([#406](https://github.com/gcheliz/gtunnel/pull/406))
+
 ## [0.3.6](https://github.com/gcheliz/gtunnel/compare/v0.3.5...v0.3.6) - 2026-10-30
 
 ### Fixed
