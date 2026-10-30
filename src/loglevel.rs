@@ -45,16 +45,21 @@ impl LogLevel {
     /// prints three lines for a whole session and nothing per connection.
     pub fn ssh_log_level(&self) -> &'static str {
         match self {
-            // `ERROR`, not `QUIET`: `QUIET` suppresses the failure messages
-            // that are the only reason to open a quiet tunnel's log.
+            // `INFO`, not `QUIET` and not `ERROR`: `QUIET` suppresses the
+            // failure messages that are the only reason to open a quiet
+            // tunnel's log, and `ERROR` still drops two of them.
             //
-            // `ERROR` is enough only because every tunnel gtunnel builds sets
-            // `ExitOnForwardFailure=yes`, which is what turns a failed remote
-            // forward from OpenSSH's `logit("Warning: ...")`, suppressed below
-            // `INFO`, into `fatal("Error: ...")`, which survives here. Drop
-            // that option and `quiet` starts hiding the one line that explains
-            // why a public tunnel will not come up.
-            LogLevel::Quiet => "ERROR",
+            // A remote forward that fails is covered either way, because every
+            // tunnel gtunnel builds sets `ExitOnForwardFailure=yes`, which
+            // turns OpenSSH's `logit("Warning: ...")` into
+            // `fatal("Error: ...")`. A per-channel refusal is not: a jump
+            // tunnel whose target says no gets `channel N: open failed:
+            // connect failed: Connection refused` from `logit`, which is
+            // INFO, and the tunnel itself stays up. At `ERROR` that line, the
+            // one `probe` looks for, never reached the log and the row read
+            // healthy. The per-connection lines are `debug1`, so `INFO` costs
+            // a handful of lines per session start and nothing per client.
+            LogLevel::Quiet => "INFO",
             LogLevel::Info => "DEBUG",
             LogLevel::Debug => "DEBUG3",
         }
@@ -184,7 +189,7 @@ mod tests {
     #[test]
     fn every_level_maps_to_both_tools() {
         let table = [
-            (LogLevel::Quiet, "warning", "ERROR"),
+            (LogLevel::Quiet, "warning", "INFO"),
             (LogLevel::Info, "info", "DEBUG"),
             (LogLevel::Debug, "debug", "DEBUG3"),
         ];
@@ -217,7 +222,14 @@ mod tests {
 
     #[test]
     fn quiet_still_lets_ssh_report_a_failure() {
-        assert_eq!(LogLevel::Quiet.ssh_log_level(), "ERROR");
+        assert_ne!(LogLevel::Quiet.ssh_log_level(), "QUIET");
+    }
+
+    // A jump tunnel whose target refuses is reported by ssh at INFO and
+    // nowhere else, and the probe reads that line to call the row unhealthy
+    #[test]
+    fn quiet_ssh_level_keeps_channel_open_failures() {
+        assert_eq!(LogLevel::Quiet.ssh_log_level(), "INFO");
     }
 
     // The flag and the environment both lower-case what they are given, so a
