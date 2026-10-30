@@ -236,7 +236,7 @@ and refuses everything while staying up.
 4096 is more than a tunnel needs, so hitting it means something holds connections open.
 `gtunnel doctor` finds the line in the log and names the process holding them:
 
-```
+```console,ignore
 $ gtunnel doctor
 account dev:
   ! Tunnel 'k8s' ran out of file descriptors: my-client (pid 4471) is holding 3804 of its connections right now. Deal with that, then `gtunnel restart k8s`
@@ -266,14 +266,14 @@ the machine's listening sockets.
 
 When another gtunnel tunnel already uses the port:
 
-```
+```console,ignore
 $ gtunnel add db postgres:5432 --local-port 5432
 Error: Local port 5432 is already used by another gtunnel tunnel
 ```
 
 When an outside process holds the port:
 
-```
+```console,ignore
 $ gtunnel add db postgres:5432 --local-port 5432
 Error: Local port 5432 is already in use on this machine
 ```

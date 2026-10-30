@@ -33,7 +33,7 @@ section below that shows its full output.
 gtunnel shells out to `gcloud` for every connection and stores no credential of its own, so
 the SDK comes first: [cloud.google.com/sdk/docs/install](https://cloud.google.com/sdk/docs/install).
 
-```
+```console,ignore
 $ gcloud version
 Google Cloud SDK 590.0.0
 alpha 2026.10.16
@@ -42,7 +42,7 @@ bq 2.1.40
 
 ### 2. Authenticate and pick a project
 
-```
+```text
 gcloud init                 # creates a configuration: account, project, region
 gcloud auth login           # the credential gtunnel will mint tokens from
 gcloud config list          # confirm account and project
@@ -91,7 +91,7 @@ The Homebrew route installs a prebuilt binary, so it needs no Rust toolchain, an
 Specify the release version and substitute your machine's file: `gtunnel-macos-arm64`,
 `gtunnel-macos-intel`, `gtunnel-linux-amd64` or `gtunnel-linux-arm64`.
 
-```
+```text
 VERSION="v0.2.55"
 F="gtunnel-macos-arm64-${VERSION}.tar.gz"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F"
@@ -102,9 +102,10 @@ shasum -a 256 -c "$F.sha256" && tar -xzf "$F" && sudo mv gtunnel /usr/local/bin/
 On Linux the checksum tool is `sha256sum -c`. Both Linux builds are static musl binaries,
 so they run on any glibc.
 
-```
+```console
 $ gtunnel --version
 gtunnel 0.2.55
+
 ```
 
 #### Already installed another way
@@ -124,7 +125,7 @@ tunnels. A service whose binary no longer exists is rewritten to name the runnin
 gtunnel prints `gtunnel: reinstalled N services to match this version`. `gtunnel restart <name>`
 does the same for one tunnel.
 
-```
+```console,ignore
 $ rm ~/.cargo/bin/gtunnel
 $ hash -r
 $ gtunnel list
@@ -140,14 +141,14 @@ the tarball could replace the checksum. Every release
 asset also carries a build attestation, signed by GitHub with a short-lived certificate
 tied to this repository's Release workflow and recorded in a public transparency log.
 
-```
+```text
 gh attestation verify "gtunnel-macos-arm64-${VERSION}.tar.gz" -o gcheliz
 ```
 
 It exits 0 when the file checks out; an unattested file gets `HTTP 404: Not Found` and exit 1,
 whatever its checksum says. To see what the attestation claims, ask for the certificate:
 
-```
+```console,ignore
 $ gh attestation verify "gtunnel-macos-arm64-${VERSION}.tar.gz" -o gcheliz --format json \
   | python3 -c 'import json,sys; c=json.load(sys.stdin)[0]["verificationResult"]["signature"]["certificate"]; print(c["buildSignerURI"]); print(c["sourceRepositoryDigest"]); print(c["runnerEnvironment"])'
 https://github.com/gcheliz/gtunnel/.github/workflows/release.yml@refs/tags/v0.1.1
@@ -175,7 +176,7 @@ Distribution packages of Rust often lag behind 1.89, so use rustup rather than `
 
 Load the profile rustup wrote into the open shell, then check both tools:
 
-```
+```console,ignore
 $ . "$HOME/.cargo/env"
 $ cargo --version
 cargo 1.88.0 (873a06493 2025-05-10)
@@ -186,7 +187,7 @@ Apple clang version 21.0.0 (clang-2100.3.34.2)
 Any `cargo` of 1.89 or later passes. Without a C compiler the build stops in its first
 seconds:
 
-```
+```text
 error: linker `cc` not found
   |
   = note: No such file or directory (os error 2)
@@ -200,12 +201,14 @@ Install the compiler from the table and run `cargo install` again. `cargo instal
 
 Order matters: every other command needs an account, and says so until one exists.
 
-```
+```console
 $ gtunnel doctor
+? 1
 Error: gtunnel is not initialized. Run `gtunnel init`.
-```
 
 ```
+
+```text
 gtunnel init
 ```
 
@@ -220,7 +223,7 @@ fallback and the relay's zone; `gtunnel zones` lists the project's zones.
 
 ### 6. Check the ground before the first tunnel
 
-```
+```text
 gtunnel doctor
 ```
 
@@ -230,7 +233,7 @@ so a later failure is about the tunnel, not the setup.
 
 ### 7. Add a tunnel
 
-```
+```text
 gtunnel add db bastion:5432 --local-port 15432 -s
 psql -h localhost -p 15432
 ```
@@ -311,17 +314,19 @@ A runner has no gcloud configuration to read a project from. Pass the project an
 and gtunnel builds the account with no gcloud call. `GTUNNEL_CONFIG_DIR` keeps the runner's
 files apart.
 
-```
-$ export GTUNNEL_CONFIG_DIR=/workspace/gtunnel
+```console
 $ gtunnel account add ci --configuration ci --project example-dev-1a2b --zone europe-west1-b
-Account 'ci' saved to /workspace/gtunnel
+Account 'ci' saved to [HOME]/.gtunnel
+
 ```
+
+With `GTUNNEL_CONFIG_DIR` exported, as on a runner, the files go there and the message names that directory instead. `[HOME]` stands for the home directory the run used.
 
 The `--configuration` name need not exist: gcloud 590 accepts an unknown one
 (`gcloud --configuration=ci config list` exits 0), but warns on each call, so every tunnel's
 log carries:
 
-```
+```text
 WARNING: Could not open the configuration file: [<gcloud config dir>/configurations/config_ci].
 ```
 
@@ -333,7 +338,7 @@ Outside GCP, point the account at the file. gtunnel stores the path and passes i
 every call as `--credential-file-override=<path>`; it never copies, stores or logs the
 file, and `doctor` reads it to check its type and mode ([decision 1](decisions.md#1-gtunnel-stores-no-credential)).
 
-```
+```console,ignore
 $ gtunnel account add ci --configuration ci --project example-dev-1a2b \
     --zone europe-west1-b --credential-file /secrets/ci-key.json
 ```
@@ -354,7 +359,7 @@ a key readable by group or others. It reads the `type` field and the mode, nothi
 The step runs a tunnel in the background for the length of the job and stops it with `--ttl`
 when the job overruns. `bastion` and `10.0.0.10` are placeholders.
 
-```
+```text
 steps:
   - name: gcr.io/google.com/cloudsdktool/google-cloud-cli
     entrypoint: bash
@@ -420,7 +425,7 @@ On a terminal, a failed probe asks `[y/N]` (default `No`), runs
 the second probe counts: a login that exits 0 and still cannot mint a token fails. Illustrative
 sample; the login output is gcloud's:
 
-```
+```console,ignore
 $ gtunnel start db
 gcloud has no usable credentials for account 'prod'.
 gtunnel requires an authenticated GCP account to establish tunnels.
@@ -436,7 +441,7 @@ as under cron or CI), gtunnel exits 4 (`auth`, see
 [Errors and exit codes](commands.md#errors-and-exit-codes)) without starting anything or
 opening a browser.
 
-```
+```console,ignore
 $ gtunnel start db < /dev/null
 Error: gtunnel needs a logged-in Google account for 'prod'. Run `gcloud auth login`
 ```
@@ -448,7 +453,7 @@ version, naming the command for how gtunnel was installed: `brew upgrade gtunnel
 Homebrew, `gtunnel update` for a downloaded binary. [update](commands.md#update) has the
 check itself. On a Homebrew install:
 
-```
+```console,ignore
 $ gtunnel list
 gtunnel v9.9.9 is available (current: v0.2.55). Run `brew upgrade gtunnel`.
 ```
@@ -546,7 +551,7 @@ What each pane sheds as the terminal narrows or shortens, with the thresholds, i
 
 When a newer release is cached, the header's closing rule carries it at its right end:
 
-```
+```text
  ───────────────────────────────────────────────────────────────────────────────────────── ↑ v9.9.9 · gtunnel update ──
 ```
 
@@ -615,7 +620,7 @@ a launchd job is rewritten only on a restart; the page and the status line both 
 A throwaway config (`GTUNNEL_CONFIG_DIR=/tmp/cfgdemo`, 80x24), after an `EDITOR` script that
 appended one valid tunnel:
 
-```
+```text
 ┌ /tmp/cfgdemo/tunnels.toml ───────────────────────────────────────────────┐
 │ [[tunnels]]                                                              │
 │ name = "db"                                                              │
@@ -729,7 +734,7 @@ CLI's `--json` errors carry. Only a call the server cannot act on is a JSON-RPC 
 | A line that is not JSON | `error.code` -32700 |
 | A notification (`notifications/...`) | No reply at all, as JSON-RPC requires |
 
-```
+```text
 {"jsonrpc":"2.0","id":1,"result":{"content":[{"text":"Account 'nope' not found","type":"text"}],"isError":true,"structuredContent":{"error":{"kind":"not_found","message":"Account 'nope' not found"}}}}
 {"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"'local_port' must be between 1 and 65535"}}
 ```
@@ -765,14 +770,15 @@ Nothing but JSON-RPC frames is ever written to stdout.
 
 To verify tool definitions and JSON schemas non-interactively:
 
-```
+```console
 $ gtunnel mcp --validate
 Validated 14 tools and 2 resources successfully.
+
 ```
 
 To inspect tools, schemas, and test calls interactively using the official MCP Inspector:
 
-```
+```text
 npx @modelcontextprotocol/inspector gtunnel mcp
 ```
 
@@ -833,20 +839,22 @@ Environment variables, such as a config directory or a log level, go in `"env"`:
 [list](commands.md#start-stop-restart-autostart-logs-list-delete) and the failure object in
 [Errors and exit codes](commands.md#errors-and-exit-codes):
 
-```
+```console
 $ gtunnel account list --json
 [
   {
-    "name": "demo",
-    "gcloud_configuration": "work",
+    "name": "ci",
+    "gcloud_configuration": "ci",
     "project": "example-dev-1a2b",
     "default_zone": "europe-west1-b",
     "selected": true
   }
 ]
-```
 
 ```
+
+```console
 $ gtunnel doctor --json
 []
+
 ```

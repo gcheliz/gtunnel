@@ -21,7 +21,7 @@ Contents:
 - [Errors and exit codes](#errors-and-exit-codes)
 - [Shell completions](#shell-completions)
 
-Every command with the output it really prints, success and failure alike. The two modes, the target kinds and the
+Every command with the output it really prints, success and failure alike. A block fenced `console` is run against the binary by `cargo test`, so it cannot drift (the rest need a live tunnel, a prompt or a real project): `[HOME]` stands for the home directory the run used, and a line `? N` after a command is its exit code when that is not 0. The two modes, the target kinds and the
 lifetime axis are defined once in [Concepts](usage.md#concepts); the files and environment
 variables are in [configuration.md](configuration.md).
 
@@ -32,18 +32,18 @@ cannot infer. A bare `gtunnel` runs it too when there is no `config.toml` and st
 stdout are a terminal, then opens the TUI; without a terminal it prints the `not initialized`
 error and exits 1.
 
-```
+```console
 $ gtunnel init
 An account is a name gtunnel gives to one GCP project. It is built from a gcloud configuration (the profile `gcloud init` made: login, project, zone). Enter takes the value shown.
 
 gcloud configurations:
-  1. work (active)  project=example-dev-1a2b  account=you@example.com
+  1. sandbox (active)  project=example-dev-1a2b  account=you@example.com
 
   The gcloud configuration whose login, project and zone this account uses
   To list: gcloud config configurations list
 Configuration number (Enter = 1): 
   What you pass to `--account`. Lower case, digits and dashes, e.g. `dev`
-Account name (Enter = work): Could not list projects: Could not get a gcloud access token. No terminal to log in from. On a workstation run `gcloud auth login --configuration=work`; on a CI runner, give the runner a service account with roles/iap.tunnelResourceAccessor, or set credential_file on the account: gcloud auth print-access-token --configuration=work --project= --verbosity=info failed: ERROR: (gcloud.auth.print-access-token) Your current active account [you@example.com] does not have any valid credentials
+Account name (Enter = sandbox): Could not list projects: not found (404)
 
   The GCP project every tunnel and API call of this account targets
   To list: gcloud projects list
@@ -52,11 +52,12 @@ Project (Enter = example-dev-1a2b):
 Service account to impersonate (optional, Enter to skip): 
   Fallback when an instance's zone cannot be looked up, and the relay's zone
   To list: gcloud compute zones list
-Default zone (optional, Enter to skip): Account 'sandbox' saved to ~/Library/Application Support/gtunnel
+Default zone (optional, Enter to skip): Account 'sandbox' saved to [HOME]/.gtunnel
 No default zone saved; commands look an instance's zone up by name
+
 ```
 
-The answers were `1`, `sandbox`, then Enter for the project, the service account and the zone, piped in, so they do not echo. This configuration has no zone, so the zone was asked and Enter skipped it.
+Standard input was empty, so every prompt took its default and nothing echoed. The gcloud configuration has no zone, so the zone was asked and left empty.
 
 `init` also writes every tunable key of `config.toml` at its default, `[restart]`, `[watch]`,
 `[logs]` and `[gcp]` included, adding only the keys that are missing:
@@ -106,7 +107,7 @@ service account to impersonate, and the relay once one exists; never a credentia
 
 ## add
 
-```
+```text
 gtunnel add <NAME> <INSTANCE:PORT> [-z ZONE] [--local-port N] [-s]
 gtunnel add <NAME> <HOST:PORT> --via INSTANCE [-z ZONE] [--local-port N] [-s]
 gtunnel add <NAME> <HOST:PORT> --dest-group G --region R --network N [-s]
@@ -122,7 +123,7 @@ gtunnel add <NAME> <HOST:PORT> --dest-group G --region R --network N [-s]
 
 `--help` says what each value is and shows a placeholder to copy:
 
-```
+```console
 $ gtunnel add --help
 Add a persistent Access tunnel (IAP TCP forward to localhost)
 
@@ -143,6 +144,7 @@ Options:
       --network <NETWORK>        VPC network of the destination group, e.g. default
   -s, --start                    Start the tunnel immediately after adding
   -h, --help                     Print help
+
 ```
 
 Without `--zone`, `add` asks the project which zone holds the instance (one filtered
@@ -188,7 +190,7 @@ name only makes a command that works in one account.
 | Allowed | up to 40 characters of `a-z`, `0-9` and `-`, starting with a letter and ending with a letter or digit |
 | Refused | a name whose `<account>-<name>` another account already holds, e.g. `eu-api` on `prod` when `prod-eu` has `api`; both would write `prod-eu-api.log` |
 
-```
+```text
 gtunnel add k8s   … --account dev     # same name
 gtunnel add k8s   … --account prod    # different account, different port
 ```
@@ -211,9 +213,10 @@ An IAP TCP forward lands on a port of the instance itself, so a private endpoint
 bastion needs `--via`: IAP carries ssh, and ssh forwards from the far side. A private GKE
 master:
 
-```
+```console
 $ gtunnel add k8s 10.0.0.10:443 --via bastion -z europe-west1-b --local-port 8443
 ○ k8s  localhost:8443 -> 10.0.0.10:443 via bastion
+
 ```
 
 The tunnel is installed and stopped; `-s` starts it in the same command.
@@ -228,7 +231,7 @@ IP, not `127.0.0.1`:
 
 ## expose
 
-```
+```text
 gtunnel expose <NAME> <TARGET> [-d DOMAIN] [--private] [-s]
 ```
 
@@ -243,9 +246,11 @@ a killed command is cleared by `gtunnel doctor --fix` after ten minutes.
 
 Without a relay the command stops before changing anything:
 
-```
+```console
 $ gtunnel expose web 8000
+? 2
 Error: No relay for account 'dev'. Run `gtunnel relay up`
+
 ```
 
 ## run
@@ -254,7 +259,7 @@ An ephemeral tunnel in the foreground. It is recorded while it runs so `list`, t
 `doctor` can see it, and every route it created is torn down on exit, including on Ctrl+C
 and on a crash.
 
-```
+```text
 gtunnel run bastion:5432                 # access, prints the local port
 gtunnel run db bastion:5432              # access, under a name
 gtunnel run --public 3000              # https://gt-<random>.<domain>
@@ -289,7 +294,7 @@ route and the record in `run/` go the same way.
 
 ## start, stop, restart, autostart, logs, list, delete
 
-```
+```console,ignore
 $ gtunnel list
 STATUS     NAME             MODE    URL                              TARGET
 ○ stopped  db               access  localhost:15432                  postgres-1:5432 (europe-west1-b)
@@ -315,7 +320,7 @@ details pane counts down: `stops at  14:32 (in 25m)`.
 
 Add `--json` for machine-readable output:
 
-```
+```console,ignore
 $ gtunnel list --json
 [
   {
@@ -368,9 +373,11 @@ close. A tunnel not running is `stopped` (or `auth_expired`); a running public o
 cannot be probed and stays `unknown`. `gtunnel_list_tunnels` returns the same rows
 less the unmanaged ones, so its `unmanaged` is always `false`.
 
-```
+```console
 $ gtunnel logs nope
+? 3
 Error: Tunnel 'nope' not found for account 'dev'
+
 ```
 
 `logs` and `stop` take the name of a live run when no saved tunnel has it, and a saved tunnel
@@ -380,11 +387,13 @@ a run started in a terminal prints there instead and has none, so `logs` says so
 Each launch starts the log fresh, and the log stays after the run ends, so `logs` reads a finished
 run until its name is launched again.
 
-```
+```console
 $ gtunnel autostart db           # ask
 db auto-start is off
+
 $ gtunnel autostart db --on      # set
 db auto-start is on
+
 ```
 
 `autostart` with no flag reports only. `--on` and `--off` write the record and bring the
@@ -399,7 +408,7 @@ A start waits for the tunnel to listen.
 | Public | no listener to wait for: judged after a fixed 3 seconds. One still connecting then reads as running, so `gtunnel list` is the check for a later failure |
 | Failed start (service failed, or not listening by the deadline) | the lines below on stdout, exit 1 (4 when the hint is expired credentials), the record stays. A hint line follows when the log holds a line gtunnel recognises (the newest, from [the log table](troubleshooting.md#what-the-log-says-and-what-it-means)), or `not listening after 20s`. The TUI status line shows the same text; an MCP client gets an `isError` result |
 
-```
+```console,ignore
 $ gtunnel start db
 ✗ db failed to start
   Logs: gtunnel logs db
@@ -425,7 +434,7 @@ when it leaves, in the same shape for an IAP tunnel and a jump tunnel, whether o
 is open. The source port is the client's local port, so it names the process:
 `lsof -nP -iTCP:54321` finds it while it is open, and the timestamp beside it afterwards.
 
-```
+```text
 2026-10-27T10:15:02Z gtunnel: conn iap-7 open
 2026-10-27T10:15:14Z gtunnel: conn iap-7 from 127.0.0.1:54321 closed after 12.0s
 ```
@@ -449,33 +458,39 @@ Starting a public tunnel re-creates a missing backend, host rule, named port or 
 A tunnel's name is also its service's and its log's, so both commands stop the tunnel, rewrite
 the record, carry the log across and reinstall the service under the new label.
 
-```
-$ gtunnel rename kubernetes k8s
-Renamed kubernetes to k8s
+```console
+$ gtunnel rename k8s kubernetes
+Renamed k8s to kubernetes
+
 ```
 
 `move` hands an Access tunnel to another account: `--account` names the source, `--to` the
 destination.
 
-```
+```text
 gtunnel move <name> --to <account> [--rename <new>]
 ```
 
 Both refuse before they write anything:
 
-```
+```console
 $ gtunnel rename nope other
+? 3
 Error: Tunnel 'nope' not found for account 'dev'
 
 $ gtunnel move kubernetes --to dev
+? 2
 Error: Tunnel 'kubernetes' is already on account 'dev'; use `gtunnel rename` to change its name
+
 ```
 
 A move verifies the target in the destination before the first write:
 
-```
-$ gtunnel move k8s --to prod
+```console
+$ gtunnel move kubernetes --to prod
+? 1
 Error: Instance 'bastion' not found in zone 'europe-west1-b' of project 'example-prod-3c4d' (account 'prod'); nothing was changed. If it lives in another zone, `gtunnel delete` the tunnel and `gtunnel add` it on 'prod'
+
 ```
 
 On success `move` prints `Moved <name> from <source> to <destination>`, plus a line with the
@@ -485,7 +500,7 @@ its account, so use `delete` and `expose`.
 
 ## zones and domains
 
-```
+```text
 gtunnel zones                       # list zones in the project
 gtunnel zones default <zone>        # set the account default
 gtunnel domains                     # list registered domains
@@ -499,7 +514,7 @@ to reach ACTIVE; `relay status` shows the state.
 
 ## relay
 
-```
+```text
 gtunnel relay up [--zone Z] [--network N] [--managed-zone M]
 gtunnel relay status
 gtunnel relay down [--force] [-y]
@@ -508,14 +523,14 @@ gtunnel relay down [--force] [-y]
 `up` is idempotent and prints one line per resource, created or already there. `down` refuses
 while tunnels use the relay, unless `--force`.
 
-```
+```console,ignore
 $ gtunnel relay status
 No relay for account 'dev'. Run `gtunnel relay up`
 ```
 
 `up` prompts for confirmation before creating cloud resources:
 
-```
+```console,ignore
 $ gtunnel relay up
 Relay for account 'dev' in europe-west1-b:
   Global forwarding rule (~USD 18/month) and e2-micro instance (~USD 7/month, free tier in some US regions)
@@ -524,7 +539,7 @@ Create it? [y/N] [n]: y
 
 Declining prints `Cancelled` and creates nothing. `down` confirms before deleting the relay:
 
-```
+```console,ignore
 $ gtunnel relay down
 Delete the relay for account 'dev' and everything it owns? [y/N] [n]: Cancelled
 ```
@@ -544,14 +559,17 @@ it.** Check the network's rules before the first `gtunnel expose`.
 
 ## account
 
-```
+```console
 $ gtunnel account list
-* dev              project=demo-project             zone=europe-west1-b
+* dev              project=example-dev-1a2b         zone=europe-west1-b
+  prod             project=example-prod-3c4d        zone=europe-west1-b
+  sandbox          project=example-dev-1a2b         zone=
+
 ```
 
 `account select <name>` sets the default. The star marks it.
 
-```
+```text
 gtunnel account add <name> --configuration <gcloud-configuration> [--project P] [--zone Z] [--credential-file PATH]
 gtunnel account edit <name> [--project P] [--zone Z] [--credential-file PATH]
 gtunnel account remove <name>
@@ -561,13 +579,15 @@ gtunnel account remove <name>
 `--project`, it reads nothing and the configuration name need not exist: the form for a CI
 runner ([Running in CI](usage.md#running-in-ci)).
 
-```
+```console
 $ gtunnel account add ci --configuration ci --project example-dev-1a2b --zone europe-west1-b --credential-file /secrets/ci-key.json
-Account 'ci' saved to /workspace/gtunnel
-$ cat /workspace/gtunnel/config.toml
-selected_account = "ci"
-log_level = "info"
+Account 'ci' saved to [HOME]/.gtunnel
 
+```
+
+The account is then in `config.toml`:
+
+```toml
 [[accounts]]
 name = "ci"
 gcloud_configuration = "ci"
@@ -584,7 +604,7 @@ credential_file = "/secrets/ci-key.json"
 
 With a file set, a missing token names the file, never `gcloud auth login`:
 
-```
+```console,ignore
 $ gtunnel --account ci run bastion:22 --ttl 2m
 Error: gtunnel could not get a token for 'ci'. The credential file /nonexistent/ci-key.json gave no token. Check that it exists, is a service-account key or a workload identity federation file, and that its identity is not disabled; gcloud said: ERROR: (gcloud.auth.print-access-token) Failed to load credential file: [/nonexistent/ci-key.json].  File /nonexistent/ci-key.json was not found.
 ```
@@ -600,15 +620,16 @@ An older account that breaks the rule keeps working; `gtunnel doctor` says to re
 `edit` changes only what it is given, and exits 2 on nothing to change or an empty project or
 zone:
 
-```
+```console
 $ gtunnel account edit dev --zone europe-west4-a
 Account 'dev' updated
+
 ```
 
 An installed tunnel keeps its `--project` and `--credential-file-override` until it restarts.
 `edit` does not restart, because that drops live connections; it names the stale tunnels:
 
-```
+```console,ignore
 $ gtunnel account edit ci --credential-file /secrets/new-key.json
 Account 'ci' updated
 Installed tunnels still use the old value: db. Restart to apply: `gtunnel restart db`
@@ -617,17 +638,20 @@ Installed tunnels still use the old value: db. Restart to apply: `gtunnel restar
 A changed `--zone` needs no restart: the zone is not in a service file. `remove` refuses while
 the account holds tunnels, or an `expose` still in flight, and names both ways out:
 
-```
+```console
 $ gtunnel account remove dev
-Error: Account 'dev' still has 1 tunnel(s). Delete them with `gtunnel delete`, or move them to another account with `gtunnel move`, then remove the account
+? 1
+Error: Account 'dev' still has 2 tunnel(s). Delete them with `gtunnel delete`, or move them to another account with `gtunnel move`, then remove the account
+
 ```
 
 An account with no tunnels is removed after a confirmation (`Removed account 'dev'`);
 declining leaves it untouched:
 
-```
-$ gtunnel account remove dev
-Remove account 'dev'? [y/N] [n]: Cancelled
+```console
+$ gtunnel account remove sandbox
+Remove account 'sandbox'? [y/N] [n]: Cancelled
+
 ```
 
 ## watch
@@ -639,7 +663,7 @@ port is healthy, whatever its log says. When one does not answer, the log names 
 `Too many open files` since the last pass means out of descriptors, anything else is refusing
 connections. That word goes into the log line and `gtunnel doctor`.
 
-```
+```console,ignore
 $ gtunnel watch --once --verbose
 dev.mongodb: NotRunning -> Nothing
 dev.kubernetes: Pass -> Nothing
@@ -695,7 +719,7 @@ restarting it would undo that decision with a fresh count.
 makes one pass and exits. It is a timer, not a service, because a job that exits at once under
 `KeepAlive` is respawned in a tight loop.
 
-```
+```console,ignore
 $ gtunnel watch install
 Watchdog installed: /usr/local/bin/gtunnel every 30s
 Log: ~/.gtunnel/logs/watchdog.log
@@ -746,7 +770,7 @@ every notification off; `init` writes `enabled = true`.
 
 Reports what gtunnel can see without changing anything.
 
-```
+```console,ignore
 $ gtunnel doctor          # with a gcloud whose Python has no numpy
 gtunnel:
   - gcloud's Python is missing numpy, which makes IAP tunnels slow. Run `gcloud components reinstall`
@@ -757,7 +781,7 @@ account dev:
 A service with no record is machine-wide, so it is filed under `gtunnel:` like the watchdog;
 which services count is in [Leftovers](troubleshooting.md#leftovers):
 
-```
+```console,ignore
 $ gtunnel doctor
 gtunnel:
   - Service com.gtunnel.dev.old-tunnel is installed but no tunnel in tunnels.toml owns it, so it may still hold a local port at login
@@ -770,7 +794,7 @@ table. Nothing is removed for you: edit the file, or fix it in the config page, 
 to save one. This is the output for that file, with `gcloud_configuration = "scratch-docs"`
 naming a gcloud configuration that does not exist:
 
-```
+```console,ignore
 $ gtunnel doctor
 gtunnel:
   ! config.toml has a key gtunnel ignores: accounts[0].log_level. Edit the file and remove or move it
@@ -781,7 +805,7 @@ account scratch-docs:
 An account whose `credential_file` is relative or starts with `~` is reported per account,
 and `--fix` does not touch it:
 
-```
+```console,ignore
 $ gtunnel doctor
 account ci:
   ! Account 'ci': credential_file ~/ci-key.json is not an absolute path, so a service cannot resolve it. Run `gtunnel account edit ci --credential-file <absolute path>`, or `--credential-file ""` to clear it
@@ -804,7 +828,7 @@ never fixed for you: renaming an account means adding one and moving its tunnels
 The report comes first, then the question; declining changes nothing. Written from the format
 strings in `src/doctor.rs`:
 
-```
+```console,ignore
 $ gtunnel doctor --fix
 account dev:
   - Tunnel 'old-tunnel' is in tunnels.toml but has no service installed
@@ -815,7 +839,7 @@ Remove 1 leftover(s)? [y/N] [n]: y
 
 When the findings hold nothing gtunnel may remove:
 
-```
+```console,ignore
 $ gtunnel doctor --fix
 account dev:
   ! Tunnel 'db' wants local port 15432, which is already in use
@@ -831,27 +855,28 @@ Removes every local trace: services, config, state, logs. It never deletes anyth
 
 A `gtunnel run` still alive is stopped first, and the config is removed only after the run has exited, so no run is left holding a port with no record to find it by. If the runs cannot be listed, `reset` stops before it changes anything; if one does not stop within 10s, the config is kept and `reset` says which run to stop.
 
-```
+```console
 $ gtunnel reset
-This removes 1 local tunnel(s), 1 account(s) and /Users/you/.gtunnel
+This removes 2 local tunnel(s), 4 account(s) and [HOME]/.gtunnel
 Remove all local gtunnel configuration? [y/N] [n]: Cancelled
-```
 
 ```
+
+```console,ignore
 $ gtunnel reset -y
 This removes 1 local tunnel(s), 1 account(s) and /Users/you/.gtunnel
 Removed /Users/you/.gtunnel
 Cloud resources were not deleted. Run gtunnel relay down first if you want them gone.
 ```
 
-```
+```console,ignore
 $ gtunnel reset -y
 Nothing to remove: /Users/you/.gtunnel does not exist
 ```
 
 ## update
 
-```
+```console,ignore
 $ gtunnel update --check
 Checking for updates...
 Update available: v0.1.34 -> v0.1.35
@@ -876,7 +901,7 @@ rewriting the running one; a Homebrew install is pointed at
 
 ## mcp
 
-```
+```console
 $ gtunnel mcp --help
 Run Model Context Protocol (MCP) stdio server
 
@@ -887,6 +912,7 @@ Options:
       --validate           Validate tool definitions and exit
       --log-level <LEVEL>  How much to log: quiet, info or debug (default: info)
   -h, --help               Print help
+
 ```
 
 `mcp` serves newline-delimited JSON-RPC 2.0 on stdin and stdout, so an MCP client starts it as a
@@ -914,11 +940,11 @@ chose to stop, so there is no failure to report.
 `list --json`, `account list --json` and `doctor --json` print the failure on stdout as one
 object, and nothing on stderr. `message` is the whole cause chain joined with `: `.
 
-```
+```console
 $ gtunnel list --json --account nope
+? 3
 {"error":{"kind":"not_found","message":"Account 'nope' not found"}}
-$ echo $?
-3
+
 ```
 
 Without `--json` the text stays on stderr and only the exit code follows the kind.
@@ -942,7 +968,7 @@ Open a new shell afterwards. On each TAB the script runs `gtunnel` again, so the
 `PATH` must be the one that printed it: regenerate the file after `gtunnel update` or
 `brew upgrade`.
 
-```text
+```console,ignore
 $ gtunnel completions zsh | head -9
 #compdef gtunnel
 function _clap_dynamic_completer_gtunnel() {

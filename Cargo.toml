@@ -40,6 +40,9 @@ jsonschema = "0.60.2"
 portable-pty = "0.9.0"
 vt100 = "0.18.1"
 
+# Runs the console blocks of docs/ against the binary; see tests/doc_transcripts.rs.
+trycmd = "1"
+
 [lints.rust]
 # Edition 2024 makes this warn by default; stating it keeps the policy
 # readable in one place and holds if the edition ever changes.
