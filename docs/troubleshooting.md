@@ -478,6 +478,19 @@ outage was short.
 
 The design is in [decision 20](decisions.md#20-restarts-belong-to-launchd-and-systemd-and-readiness-is-a-file).
 
+## A tunnel the watchdog restarted came back, or did not
+
+The watchdog restarts a wedged tunnel as a stop and a start. A `gtunnel stop` or `gtunnel start` of yours in the seconds between them wins, and a watch pass that was killed in between is finished by the next one.
+
+| You see | Meaning | Do |
+|---|---|---|
+| The tunnel stayed stopped after you stopped it during a restart | Expected. The log says `not restarting it: it was stopped or started by a person while the watch pass was restarting it` | `gtunnel start <name>` when you want it |
+| The tunnel is up after a watch pass was killed (logout, `watch uninstall`) | The next pass found it stopped with a restart unfinished and started it once. The log says `restarting it: an earlier watch pass stopped it and ended before starting it` | Nothing |
+| The tunnel is down after a killed pass and you stopped it afterwards | Expected: your stop is newer than the unfinished restart, so it is dropped, not obeyed | `gtunnel start <name>` |
+| A tunnel the watchdog gave up on (`stopped after 4 restarts that did not hold`) was started by you and wedges again | It is watched again from your start: the breaker closes when the tunnel is found running, so a later wedge is restarted | Read the log for the cause |
+
+The design is in [A restart and a person](architecture.md#a-restart-and-a-person).
+
 ## `no zone for account`
 
 ```
