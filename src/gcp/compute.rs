@@ -727,18 +727,32 @@ pub struct BackendSettings {
 }
 
 impl BackendSettings {
+    /// The defaults, for tests that must not read the tester's `config.toml`.
+    #[cfg(test)]
     pub fn new(iap: bool) -> Self {
+        Self::with_timeout(
+            iap,
+            crate::settings::EXPOSE_BACKEND_TIMEOUT.as_secs() as u32,
+        )
+    }
+
+    pub fn with_timeout(iap: bool, timeout_sec: u32) -> Self {
         BackendSettings {
-            timeout_sec: BACKEND_TIMEOUT_SEC,
+            timeout_sec,
             draining_sec: BACKEND_DRAINING_SEC,
             iap,
         }
     }
+
+    /// What `expose.backend_timeout` says. Read here, not in `new`, so a unit
+    /// test of the reconcile never depends on the tester's own `config.toml`.
+    pub fn configured(iap: bool) -> Self {
+        let timeout = crate::settings::current().expose_backend_timeout;
+        // Whole seconds are enforced at resolve; the clamp is for the type
+        Self::with_timeout(iap, u32::try_from(timeout.as_secs()).unwrap_or(u32::MAX))
+    }
 }
 
-// Long enough for a websocket or a slow upload; the load balancer's own
-// default of 30 s cuts both
-pub const BACKEND_TIMEOUT_SEC: u32 = 3600;
 pub const BACKEND_DRAINING_SEC: u32 = 30;
 
 #[derive(Deserialize)]
@@ -833,7 +847,10 @@ pub async fn insert_backend_service(
         "healthChecks": [health_check],
         "backends": [{"group": instance_group, "balancingMode": "UTILIZATION"}],
         "timeoutSec": settings.timeout_sec,
-        "connectionDraining": {"drainingTimeoutSec": settings.draining_sec}
+        "connectionDraining": {"drainingTimeoutSec": settings.draining_sec},
+        // Off is what GCP does when the field is absent; stating it keeps the
+        // body the one place that shows what the backend is created with
+        "logConfig": {"enable": false}
     });
     if settings.iap {
         body["iap"] = json!({"enabled": true});
@@ -1749,6 +1766,48 @@ mod tests {
     fn the_backend_defaults_are_the_ones_the_issue_agreed() {
         let want = BackendSettings::new(false);
         assert_eq!((want.timeout_sec, want.draining_sec), (3600, 30));
+    }
+
+    // The body is the whole contract with the load balancer: a field missing
+    // from it is a field GCP fills with its 30 s default
+    #[tokio::test]
+    async fn a_new_backend_service_is_created_with_a_long_timeout_draining_and_logging_stated() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(done_op()))
+            .mount(&server)
+            .await;
+
+        insert_backend_service(
+            &client(&server),
+            "p",
+            "gt-dev-api",
+            "gt-api",
+            "projects/p/zones/z/instanceGroups/g",
+            "projects/p/global/healthChecks/hc",
+            &BackendSettings::new(false),
+            "owner",
+        )
+        .await
+        .expect("insert");
+
+        let posts = sent(&server, "POST").await;
+        let body: serde_json::Value = serde_json::from_slice(&posts[0].body).expect("json");
+        assert_eq!(body["timeoutSec"], 3600);
+        assert_eq!(
+            body["connectionDraining"],
+            serde_json::json!({"drainingTimeoutSec": 30})
+        );
+        assert_eq!(body["logConfig"], serde_json::json!({"enable": false}));
+    }
+
+    #[test]
+    fn a_configured_timeout_replaces_the_default_and_nothing_else() {
+        let want = BackendSettings::with_timeout(true, 120);
+        assert_eq!(
+            (want.timeout_sec, want.draining_sec, want.iap),
+            (120, BACKEND_DRAINING_SEC, true)
+        );
     }
 
     fn instance(script: Option<&str>) -> Instance {

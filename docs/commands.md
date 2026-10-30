@@ -535,7 +535,7 @@ relay, unless `--force`.
 | Resource | What `up` compares, and does on a difference |
 |---|---|
 | Health check | Interval, timeout, thresholds and port specification: one `PATCH` |
-| Backend services | `timeoutSec`, `connectionDraining` and `iap`: one `PATCH` with the fields that differ. `expose`, `start` and `restart` do the same for a tunnel's backend |
+| Backend services | `timeoutSec` (`expose.backend_timeout`, default `1h`), `connectionDraining` (30s) and `iap`: one `PATCH` with the fields that differ. `expose`, `start` and `restart` do the same for a tunnel's backend |
 | Relay instance | The `startup-script` metadata: `setMetadata` with the new script, then the script is re-run over IAP ssh (`sudo google_metadata_script_runner startup`), so sshd changes without recreating the VM. A stopped instance gets the metadata and runs it at its next boot |
 
 A relay that already matches receives no write. If re-running the script fails, `up` stops with

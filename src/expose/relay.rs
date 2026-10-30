@@ -322,7 +322,7 @@ pub async fn relay_up(
     let hc_change = compute::reconcile_health_check(client, project, &names.health_check).await?;
     step_reconciled(hc_change, &format!("health check {}", names.health_check));
 
-    let backend_settings = compute::BackendSettings::new(false);
+    let backend_settings = compute::BackendSettings::configured(false);
     let backend_change =
         match compute::get_backend_service(client, project, &names.default_backend).await? {
             None => {
