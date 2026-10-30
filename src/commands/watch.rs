@@ -1,3 +1,6 @@
+// The whole module is CLI output, so printing is its job
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+
 //! One pass over every tunnel: look, decide, act, remember.
 //!
 //! The deciding lives in [`crate::breaker`] and stays pure. This file is the
@@ -180,12 +183,85 @@ fn key(tunnel: &PersistentTunnel) -> String {
     format!("{}.{}", tunnel.account_name, tunnel.name)
 }
 
+/// The two things a person can change while a pass is looking at a tunnel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Seen {
+    parked: bool,
+    status: TunnelStatus,
+}
+
+async fn look(label: &str) -> Seen {
+    Seen {
+        parked: crate::config::config_dir().is_ok_and(|dir| parked(&dir, label)),
+        status: daemon::status(label).await,
+    }
+}
+
+/// Whether the decision still stands, putting the breaker back when it does
+/// not.
+///
+/// The observation is read, then a probe may take the whole probe timeout,
+/// then the breaker decides. A `stop` or a park that lands in that gap is
+/// newer than everything the decision rests on, and acting on it would undo
+/// the person. Dropping the pass for this tunnel costs one pass of delay;
+/// the next one looks again.
+fn hold_decision(
+    row: &mut Row,
+    before: &crate::breaker::Breaker,
+    observed: Seen,
+    reread: Seen,
+) -> bool {
+    if observed == reread {
+        return true;
+    }
+    row.breaker = before.clone();
+    false
+}
+
+/// How long a pass waits for another one to finish before skipping the round.
+/// A pass is seconds long and runs every thirty, so a held lock is a pass in
+/// progress, not one worth queueing behind.
+const PASS_LOCK_WAIT: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// The lock that makes a pass one read-modify-write of the breaker file.
+///
+/// `None` is another pass holding it. Any other failure to lock is an error:
+/// skipping on it would turn a lock file that cannot be created into a
+/// watchdog that never looks at anything.
+fn take_pass_lock(
+    path: &std::path::Path,
+    wait: std::time::Duration,
+    verbose: bool,
+) -> Result<Option<crate::fsutil::Lock>> {
+    match crate::fsutil::lock_exclusive(path, wait) {
+        Ok(lock) => Ok(Some(lock)),
+        Err(err) if format!("{err:#}").contains("is held by another") => {
+            if verbose {
+                println!("skipped this pass: another watch pass is running");
+            }
+            Ok(None)
+        }
+        Err(err) => Err(err),
+    }
+}
+
 /// One pass over every watched tunnel.
 ///
-/// Reads the breaker file once, visits each tunnel, writes it back once. A
+/// Reads the breaker file once, visits each tunnel, writes it back once, all
+/// under a lock so two passes cannot lose each other's decisions. A
 /// pass that cannot read the file stops rather than starting over, because
 /// starting over would restart tunnels a previous pass deliberately stopped.
 pub async fn one_pass(verbose: bool) -> Result<()> {
+    // Held to the end: the file is read once and written once, so a second
+    // pass in between would have its decisions overwritten by this one's save
+    let Some(_pass) = take_pass_lock(
+        &persist::path()?.with_extension("lock"),
+        PASS_LOCK_WAIT,
+        verbose,
+    )?
+    else {
+        return Ok(());
+    };
     // Read once per pass: the file is the TUI's to edit while this runs
     let settings = crate::settings::current();
     let state = TunnelState::load()?;
@@ -257,7 +333,12 @@ async fn visit(
     if crate::config::config_dir().is_ok_and(|dir| parked(&dir, &label)) {
         return Ok(());
     }
+    let sighted = SystemTime::now();
     let status = daemon::status(&label).await;
+    let observed = Seen {
+        parked: false,
+        status,
+    };
     // The probe reads the log to tell a refused tunnel from a quiet service
     let log_path = tunnel.log_path()?;
     let probe_ok = probe::probe_tunnel(&addr, settings.watch_probe_timeout, &log_path)
@@ -289,9 +370,6 @@ async fn visit(
         consecutive_failures(&row.breaker, settings.watch_degraded_after),
         settings.watch_degraded_after,
     );
-    edges.extend(seen.and_then(|to| {
-        lifecycle::transition(&tunnel.account_name, &tunnel.name, to, Cause::Observed)
-    }));
 
     let holders = match action {
         // Only asked for when it is about to be printed: one lsof listing
@@ -299,6 +377,26 @@ async fn visit(
         Action::StopAndReport(_) => probe::holders_for_port(port),
         _ => Vec::new(),
     };
+    // Last thing before anything is written or stopped, so the gap a person
+    // can land in is as short as it can be made
+    if !hold_decision(row, &before, observed, look(&label).await) {
+        if verbose {
+            println!(
+                "{}: changed during the pass, left for the next",
+                key(tunnel)
+            );
+        }
+        return Ok(());
+    }
+    edges.extend(seen.and_then(|to| {
+        lifecycle::transition_since(
+            &tunnel.account_name,
+            &tunnel.name,
+            to,
+            Cause::Observed,
+            sighted,
+        )
+    }));
     // The action first, then the line that describes it. A breaker that
     // moved on a restart the service manager refused would spend the whole
     // ladder on restarts that never happened, and park in Stopped reporting
@@ -336,11 +434,12 @@ async fn visit(
     // Stopped on purpose by the watchdog, for a reason it just logged: that
     // is a failure to say so, not an unexplained stop on the next pass
     if matches!(action, Action::StopAndReport(_)) && failed.is_none() {
-        edges.extend(lifecycle::transition(
+        edges.extend(lifecycle::transition_since(
             &tunnel.account_name,
             &tunnel.name,
             State::Failed,
             Cause::Observed,
+            sighted,
         ));
     }
     outcome
@@ -701,6 +800,87 @@ mod tests {
 
         std::fs::write(&log, format!("{old}accept: Too many open files\n")).expect("write");
         assert!(read_since(&log, old.len() as u64));
+    }
+
+    fn seen(parked: bool, status: TunnelStatus) -> Seen {
+        Seen { parked, status }
+    }
+
+    // A row whose breaker has already moved on a failure, and the one it
+    // moved from
+    fn decided() -> (Row, crate::breaker::Breaker) {
+        let before = crate::breaker::Breaker::default();
+        let mut after = before.clone();
+        after.observe(
+            Observation::Failed(Reason::ProbeRefused),
+            SystemTime::UNIX_EPOCH,
+        );
+        assert_ne!(before, after, "the failure moved the breaker");
+        let row = Row {
+            breaker: after,
+            log_len: 9,
+        };
+        (row, before)
+    }
+
+    // The probe can take the whole probe timeout, and a `gtunnel stop` lands
+    // in it. Restarting a tunnel a person just parked is the watchdog
+    // undoing them
+    #[test]
+    fn a_park_written_after_the_observation_cancels_a_restart() {
+        let (mut row, before) = decided();
+        let observed = seen(false, TunnelStatus::Running);
+        let reread = seen(true, TunnelStatus::Running);
+        assert!(!hold_decision(&mut row, &before, observed, reread));
+        assert_eq!(row.breaker, before, "the breaker is put back");
+        assert_eq!(row.log_len, 9, "what was read of the log stays read");
+    }
+
+    #[test]
+    fn a_stop_that_landed_during_the_probe_cancels_the_decision() {
+        let (mut row, before) = decided();
+        let observed = seen(false, TunnelStatus::Running);
+        let reread = seen(false, TunnelStatus::Stopped);
+        assert!(!hold_decision(&mut row, &before, observed, reread));
+        assert_eq!(row.breaker, before);
+    }
+
+    #[test]
+    fn an_unchanged_world_keeps_the_decision() {
+        let (mut row, before) = decided();
+        let kept = row.breaker.clone();
+        let same = seen(false, TunnelStatus::Running);
+        assert!(hold_decision(&mut row, &before, same, same));
+        assert_eq!(row.breaker, kept, "nothing is undone");
+    }
+
+    // Two passes at once would each save the whole breaker file and the last
+    // to finish would erase the other's decisions
+    #[test]
+    fn a_second_pass_while_the_lock_is_held_does_nothing_and_is_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("breakers.lock");
+        let first = take_pass_lock(&path, std::time::Duration::from_millis(5), false)
+            .expect("the first pass is not an error")
+            .expect("the first pass takes the lock");
+        let second = take_pass_lock(&path, std::time::Duration::from_millis(5), true)
+            .expect("a pass that cannot run is not a failure");
+        assert!(second.is_none(), "the second pass skips this round");
+        drop(first);
+        assert!(
+            take_pass_lock(&path, std::time::Duration::from_millis(5), false)
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn a_lock_that_cannot_be_opened_is_an_error_not_a_skipped_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        // A directory where the lock file should be
+        let path = dir.path().join("breakers.lock");
+        std::fs::create_dir(&path).unwrap();
+        assert!(take_pass_lock(&path, std::time::Duration::from_millis(5), false).is_err());
     }
 
     fn access(name: &str) -> crate::state::PersistentTunnel {

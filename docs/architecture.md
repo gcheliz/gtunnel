@@ -134,7 +134,7 @@ services first. It never touches the Cloud DNS managed zone, which is yours.
 
 | Concern | Decision |
 |---|---|
-| Supervision | launchd on macOS, systemd `--user` on Linux. Both restart on failure |
+| Supervision | launchd on macOS, systemd `--user` on Linux. Both restart on failure. The supervisor answers a stop at once, during its restart backoff too. When gcloud exits it stops the rest of gcloud's process group (ssh, the IAP proxy), and a supervisor that was killed leaves its group's id beside the ready file for the next one to end, so nothing is left holding the port |
 | Reboot | Auto-start is per tunnel; off by default, toggled with `A` in the TUI or `autostart`. How each platform holds it is under [Service lifecycle](#service-lifecycle) |
 | Wedged tunnels | Supervision only catches a process that exits. A tunnel that stays up and refuses connections is caught instead by one watchdog job for the whole machine, which wakes every 30s by default (`watch.interval`), makes one pass over every tunnel and exits. It is an interval job rather than a supervised one precisely because it is supposed to exit every time |
 | PATH | A daemon does not inherit a shell, so gcloud's directory is written into the unit. Without it the service dies at every start |
@@ -210,7 +210,7 @@ An agent drives gtunnel through the same binary a person uses: `gtunnel mcp` spe
 | Stateless era | `modern_version`, `stamp_modern` in `src/mcp/protocol.rs` | A request is modern when `params._meta` carries the protocol version key, never by method name, so legacy traffic is untouched. `2026-07-28` is the only modern version; an unknown one is `-32022` listing it. `server/discover` and every modern result carry `resultType` and the server identity in `_meta` |
 | Handshake | `negotiate_version` in `src/mcp/protocol.rs` | Echoes the client's revision when it is one of `2025-11-25`, `2025-06-18`, `2024-11-05`, and offers `2025-11-25` otherwise, so a newer client stays on this handshake |
 | Tool metadata | `ToolDefinition` | `title`, four always-present annotation hints and, for the six tools that answer in JSON, an `outputSchema` that admits the error envelope too, because a structured result must conform even when it is a failure |
-| Dispatch | `execute_tool`, `read_resource` | A failed operation, including an unknown account or tunnel, is a result with `isError` and a `kind`, the same kinds the CLI's `--json` errors carry. Only parameters the server cannot act on are JSON-RPC errors |
+| Dispatch | `execute_tool`, `read_resource` | A failed operation, including an unknown account or tunnel, is a result with `isError` and a `kind`, the same kinds the CLI's `--json` errors carry: a GCP 401 or 403 is `auth`, a 404 is `not_found`. Only parameters the server cannot act on are JSON-RPC errors |
 | Accounts | `accounts_payload` | The `gtunnel_list_accounts` tool and the `gtunnel://accounts` resource call one function, so the two cannot describe the selection differently |
 | Run launcher | `src/mcp/run.rs`: `launch` | Spawns `gtunnel run <name> <target> --ttl <n>m` in its own process group, so the tunnel outlives the server and the TTL is its only owner. Waits `LAUNCH_BUDGET` (5s) for the run record, and on failure returns the log's tail as the tool error |
 | Run lookup | `find_live_run`, `live_run_log` | `stop`, `status` and `logs` look for a saved tunnel first and a live run second, in the CLI and in the tools alike |
@@ -237,9 +237,9 @@ Keys, defaults and the traps of editing `config.toml` and `tunnels.toml` are in
 | `<config>/run/probes/` | One file per local port gtunnel is probing, so the supervisor leaves gtunnel's own health checks out of the `conn` lines |
 | `<config>/run/watchdog.heartbeat` | Time of the watchdog's last pass. `watch status` reports its age; while it is under 90s old (three intervals when `watch.interval` is above 30s) the TUI leaves notifications to the watchdog |
 | `<config>/lifecycle.json`, `<config>/lifecycle.lock` | The last state each tunnel was seen in, shared by the watchdog, the TUI and the CLI so that a change is notified once. The lock serialises its updates |
-| `<config>/agents/<label>.plist` | macOS: the service definition gtunnel loads and unloads. Rewritten by the first command after an upgrade when it differs from what the new binary renders (`src/daemon/refresh.rs`); a running tunnel is restarted, a stopped one is not |
+| `<config>/agents/<label>.plist` | macOS: the service definition gtunnel loads and unloads. Written atomically, like every file under `<config>`. Rewritten by the first command after an upgrade when it differs from what the new binary renders (`src/daemon/refresh.rs`); a running tunnel is restarted, a stopped one is not |
 | `~/Library/LaunchAgents/<label>.plist` | macOS: present only while auto-start is on |
-| `<config>/breakers.toml` | One row per tunnel: what the watchdog has seen of it, and how far up the restart ladder it is. Rewritten whole on every pass, by writing a sibling file and renaming it, and pruned to the tunnels that still exist |
+| `<config>/breakers.toml`, `<config>/breakers.lock` | One row per tunnel: what the watchdog has seen of it, and how far up the restart ladder it is. Rewritten whole on every pass, by writing a sibling file and renaming it, and pruned to the tunnels that still exist. A pass holds the lock from its read to its write, so a second watchdog skips its round instead of overwriting the first one's decisions |
 | `<config>/logs/watchdog.log` | What the watchdog did. A pass where nothing needed doing writes nothing |
 | `<config>/logs/<account>-<name>.log` | Per-tunnel log, written by the service |
 | `<config>/logs/run-<account>-<name>.log` | Output of a `gtunnel run` that `gtunnel_run_tunnel` started. A run started in a terminal prints there and has no file |

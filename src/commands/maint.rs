@@ -1,3 +1,6 @@
+// The whole module is CLI output, so printing is its job
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+
 use anyhow::Result;
 
 use crate::commands::confirm;

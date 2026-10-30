@@ -28,7 +28,7 @@ first. The words Access, Expose, target kind and lifetime are defined once in
 |---|---|
 | Directory | `~/.gtunnel`. A legacy `~/Library/Application Support/gtunnel` (macOS) or `~/.config/gtunnel` (Linux) is used only when it exists and `~/.gtunnel` does not. `GTUNNEL_CONFIG_DIR` overrides both |
 | Mode | 0600, because the contents name accounts, projects and hosts |
-| Writes | Atomic, for every file gtunnel writes: a sibling `<name>.<pid>.new`, then a rename, so a crash or a full disk leaves the previous file whole |
+| Writes | Atomic, for every file gtunnel writes: a sibling `<name>.<pid>.<n>.new` unique to each write, then a rename and an fsync of the directory, so a crash, a full disk or two writers at once leave one whole file. This covers the launchd plists and systemd units too |
 | Locks | `tunnels.lock` and `config.lock` serialise writers, so two gtunnels cannot drop each other's change. No lock is held while a command waits on gcloud or a service manager: that work happens first, then the record changes in one short locked update ([decision 16](decisions.md#16-state-files-are-written-atomically-under-an-advisory-lock)) |
 | Unknown keys | Ignored on load, so a file that has one keeps working. The config page refuses to save one and `gtunnel doctor` names each, with its path |
 

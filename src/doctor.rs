@@ -758,11 +758,27 @@ async fn numpy_is_missing() -> bool {
     let Some(gcloud_path) = gcloud::find_gcloud() else {
         return false;
     };
-    let Ok(info) = tokio::process::Command::new(&gcloud_path)
-        .args(["info", "--format=value(basic.python_location)"])
-        .output()
-        .await
-    else {
+    numpy_is_missing_at(
+        &gcloud_path,
+        crate::proc::GCLOUD_BOUND,
+        crate::proc::LOCAL_TOOL_BOUND,
+    )
+    .await
+}
+
+// Both children are bounded and read nothing from stdin: under MCP stdin is
+// the JSON-RPC stream, and a gcloud that hangs would hold every later tool
+// call behind this one. Running out of time is the same as not being able to
+// run: no finding, because the check never learned the answer.
+async fn numpy_is_missing_at(
+    gcloud_path: &std::path::Path,
+    gcloud_bound: std::time::Duration,
+    python_bound: std::time::Duration,
+) -> bool {
+    let mut info = tokio::process::Command::new(gcloud_path);
+    info.args(["info", "--format=value(basic.python_location)"])
+        .stdin(std::process::Stdio::null());
+    let Ok(info) = crate::proc::output_within(info, gcloud_bound, "gcloud info").await else {
         return false;
     };
     if !info.status.success() {
@@ -771,11 +787,11 @@ async fn numpy_is_missing() -> bool {
     let Some(python) = python_location(&String::from_utf8_lossy(&info.stdout)) else {
         return false;
     };
-    match tokio::process::Command::new(python)
+    let mut probe = tokio::process::Command::new(python);
+    probe
         .args(["-c", "import numpy"])
-        .output()
-        .await
-    {
+        .stdin(std::process::Stdio::null());
+    match crate::proc::output_within(probe, python_bound, "python import numpy").await {
         Ok(out) => !out.status.success(),
         Err(_) => false,
     }
@@ -1179,6 +1195,7 @@ pub struct FindingJson {
     pub fixable: bool,
 }
 
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub async fn cmd_doctor(
     account: Option<&str>,
     fix: bool,
@@ -2592,6 +2609,25 @@ mod tests {
                 .expect("a string")
                 .contains("tunnels[0].spec.remote_prot"),
             "{json}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_gcloud_that_hangs_ends_the_numpy_check_within_its_bound() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fake = dir.path().join("gcloud");
+        std::fs::write(&fake, "#!/bin/sh\nexec sleep 30\n").expect("write");
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+        let bound = std::time::Duration::from_millis(300);
+        let began = std::time::Instant::now();
+        let missing = numpy_is_missing_at(&fake, bound, bound).await;
+        assert!(!missing, "a check that timed out reports no finding");
+        assert!(
+            began.elapsed() < std::time::Duration::from_secs(5),
+            "took {:?}",
+            began.elapsed()
         );
     }
 }

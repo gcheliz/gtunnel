@@ -1,3 +1,6 @@
+// The whole module is CLI output, so printing is its job
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+
 //! The command dispatch, in the library crate so the binary stays a shell
 //! around it: `main` owns the process (the runtime, the exit code, what an
 //! error prints) and this owns what each subcommand calls.
@@ -44,12 +47,13 @@ fn is_broken_pipe_panic(message: &str) -> bool {
 /// Prints a failure the way the caller asked for it and ends the process
 /// with the code its kind maps to.
 pub fn exit_with(e: &anyhow::Error, json: bool) -> ! {
-    // The command already printed this failure; printing it again would
-    // double it on stderr
-    if e.downcast_ref::<commands::access::Printed>().is_some() {
-        std::process::exit(1);
-    }
     let kind = crate::error::kind_of(e);
+    // The command already printed this failure; printing it again would
+    // double it on stderr. Its kind still decides the code: a start that
+    // stopped for expired credentials is `auth`, not a bug
+    if e.downcast_ref::<commands::access::Printed>().is_some() {
+        std::process::exit(kind.exit_code());
+    }
     if json {
         println!("{}", crate::error::to_json(e));
     } else {

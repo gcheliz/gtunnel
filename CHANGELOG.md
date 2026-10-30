@@ -3,6 +3,30 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.45](https://github.com/gcheliz/gtunnel/compare/v0.2.44...v0.2.45) - 2026-10-30
+
+### Fixed
+
+- *(fs)* write every service file atomically and replace the binary by rename ([#323](https://github.com/gcheliz/gtunnel/pull/323))
+
+## [0.2.44](https://github.com/gcheliz/gtunnel/compare/v0.2.43...v0.2.44) - 2026-10-30
+
+### Fixed
+
+- *(tui)* no prompt and no print under the alternate screen ([#331](https://github.com/gcheliz/gtunnel/pull/331))
+
+## [0.2.43](https://github.com/gcheliz/gtunnel/compare/v0.2.42...v0.2.43) - 2026-10-30
+
+### Fixed
+
+- *(supervise)* listen for SIGTERM for the whole run and sweep the group after gcloud exits ([#321](https://github.com/gcheliz/gtunnel/pull/321))
+
+## [0.2.42](https://github.com/gcheliz/gtunnel/compare/v0.2.41...v0.2.42) - 2026-10-29
+
+### Fixed
+
+- *(watch)* re-check before acting and hold a lock for the pass ([#325](https://github.com/gcheliz/gtunnel/pull/325))
+
 ## [0.2.41](https://github.com/gcheliz/gtunnel/compare/v0.2.40...v0.2.41) - 2026-10-29
 
 ### Fixed

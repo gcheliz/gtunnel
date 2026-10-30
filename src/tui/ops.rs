@@ -359,27 +359,35 @@ async fn run(account: &str, op: &Op) -> Result<String> {
     }
 }
 
-// Both of these are the CLI's own commands, for the reason `create` calls
-// `cmd_add`: which names are free, what moves with a label and which tunnels
-// may not leave their account at all are answered in one place, and the
-// dialog is a second way to ask rather than a second set of rules.
+// Both of these are the cores of the CLI's own commands, for the reason
+// `create` calls `add_tunnel`: which names are free, what moves with a label and
+// which tunnels may not leave their account at all are answered in one place,
+// and the dialog is a second way to ask rather than a second set of rules. The
+// cores, not the `cmd_` wrappers: a println under the alternate screen lands on
+// the drawn page, so what the CLI would print goes into the status instead.
 async fn rename_tunnel(rename: &RenameTunnel) -> Result<String> {
-    relocate::cmd_rename(Some(&rename.account), &rename.name, &rename.new_name).await?;
-    Ok(format!("renamed {} to {}", rename.name, rename.new_name))
+    let done =
+        relocate::rename_tunnel(Some(&rename.account), &rename.name, &rename.new_name).await?;
+    Ok(status_line(&done.message_with_warnings()))
 }
 
+// `interactive` is false: the terminal is in raw mode and nothing can answer a
+// login prompt, so an expired destination login fails with the command to run
 async fn move_tunnel(moving: &MoveTunnel) -> Result<String> {
-    relocate::cmd_move(
+    let done = relocate::move_tunnel(
         &moving.name,
         Some(&moving.from),
         &moving.to,
         moving.rename_to.as_deref(),
+        false,
     )
     .await?;
-    Ok(match &moving.rename_to {
-        Some(new) => format!("moved {} to {} as {new}", moving.name, moving.to),
-        None => format!("moved {} to {}", moving.name, moving.to),
-    })
+    Ok(status_line(&done.message_with_warnings()))
+}
+
+// The status is one line, and the core's message is one per fact
+fn status_line(message: &str) -> String {
+    message.lines().collect::<Vec<_>>().join(". ")
 }
 
 // The four below are the cores of the CLI's own commands, for the reason
@@ -444,7 +452,7 @@ async fn create(new: &NewTunnel) -> Result<String> {
     match new.mode {
         TunnelMode::Access => {
             let (target, via) = add_arguments(new);
-            crate::commands::access::add_tunnel(
+            let added = crate::commands::access::add_tunnel(
                 Some(&new.account),
                 crate::commands::access::AddRequest {
                     name: &new.name,
@@ -459,17 +467,38 @@ async fn create(new: &NewTunnel) -> Result<String> {
                 },
             )
             .await?;
+            if !added.warnings.is_empty() {
+                return Ok(format!(
+                    "created {}. {}",
+                    new.name,
+                    added.warnings.join(". ")
+                ));
+            }
         }
         TunnelMode::Public => {
-            crate::commands::expose::cmd_expose(
-                Some(&new.account),
-                &new.name,
-                &new.local_target,
-                Some(&new.domain),
-                false,
-                true,
-            )
-            .await?
+            // The cores, not `cmd_expose`: it prints, and so does `cmd_start`
+            let req = crate::commands::expose::ExposeRequest {
+                name: &new.name,
+                target: &new.local_target,
+                domain: Some(&new.domain),
+                private: false,
+            };
+            let exposed = crate::commands::expose::expose_tunnel(Some(&new.account), &req).await?;
+            // The route and record exist by now, so say so if the start fails
+            start_tunnel(Some(&new.account), &new.name)
+                .await
+                .with_context(|| {
+                    format!(
+                        "{} was created at {} but not started",
+                        new.name, exposed.url
+                    )
+                })?;
+            if exposed.certificate_state != "ACTIVE" {
+                return Ok(format!(
+                    "created {}. certificate {}: HTTPS works once it is ACTIVE",
+                    new.name, exposed.certificate_state
+                ));
+            }
         }
     }
     Ok(format!("created {}", new.name))
