@@ -207,6 +207,12 @@ pub fn restart_history_beside(marker: &std::path::Path) -> PathBuf {
     marker.with_extension("restarts")
 }
 
+/// When the current run of `remote port forwarding failed` exits began. Its own
+/// file, because those exits are not counted in the history.
+pub fn busy_beside(marker: &std::path::Path) -> PathBuf {
+    marker.with_extension("busy")
+}
+
 /// How many runs in a row died of the network, beside the history. Kept apart
 /// from it because these exits never spend the budget: an hour offline is a
 /// long count here and an empty history there.
@@ -219,6 +225,7 @@ pub fn net_failures_beside(marker: &std::path::Path) -> PathBuf {
 pub fn clear_crash_state(marker: &std::path::Path) {
     let _ = std::fs::remove_file(marker);
     let _ = std::fs::remove_file(restart_history_beside(marker));
+    let _ = std::fs::remove_file(busy_beside(marker));
     let _ = std::fs::remove_file(net_failures_beside(marker));
 }
 
@@ -726,6 +733,25 @@ pub fn remove_log(path: &std::path::Path) -> Result<()> {
 #[allow(clippy::print_stdout, clippy::print_stderr)]
 mod tests {
     use std::io::Write;
+
+    #[test]
+    fn starting_a_tunnel_forgets_the_budget_the_network_count_and_the_busy_streak() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let marker = dir.path().join("com.gtunnel.dev.db.crash");
+        let files = [
+            marker.clone(),
+            super::restart_history_beside(&marker),
+            super::net_failures_beside(&marker),
+            super::busy_beside(&marker),
+        ];
+        for f in &files {
+            std::fs::write(f, "1\n").expect("write");
+        }
+        super::clear_crash_state(&marker);
+        for f in &files {
+            assert!(!f.exists(), "{} survived", f.display());
+        }
+    }
 
     fn append(path: &std::path::Path, bytes: &[u8]) {
         let mut file = std::fs::OpenOptions::new()

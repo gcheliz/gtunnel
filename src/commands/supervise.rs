@@ -1,5 +1,5 @@
 use crate::logfilter::{lock, Backend, Correlator};
-use crate::restart_budget::{judge, Budget, History, Verdict};
+use crate::restart_budget::{judge, judge_busy, Budget, Busy, History, Verdict};
 use anyhow::{bail, Context, Result};
 use std::io::Write;
 use std::path::PathBuf;
@@ -218,6 +218,7 @@ pub async fn supervise(
     if let Some((dir, port)) = &probes {
         crate::probe::unwatch_probes(dir, *port);
     }
+    let busy = lock(&conn).listener_busy(std::time::Instant::now());
     let stopping = lock(&conn).stopping_failure(std::time::Instant::now());
     let expired = stopping.is_some();
     if let Some(failure) = stopping
@@ -253,7 +254,40 @@ pub async fn supervise(
             _ = tokio::time::sleep(after) => {}
             _ = stops.next() => {}
         }
+        // The outage is the cause, so a busy streak would only be a second
+        // clock running on the same fault: it starts over when the network is back
+        let _ = std::fs::remove_file(crate::daemon::busy_beside(&spend.marker));
         return Ok(code);
+    }
+    // A relay that still holds the dead session's listener frees it within
+    // about 30 s, so waiting is the cure and the budget is not spent. The
+    // streak is kept in a file because each attempt is a new process.
+    if let Some(spend) = &spend {
+        let busy_file = crate::daemon::busy_beside(&spend.marker);
+        if !(busy && spends_budget(status.success(), expired, asked_to_stop)) {
+            let _ = std::fs::remove_file(&busy_file);
+        } else {
+            let since = std::fs::read_to_string(&busy_file)
+                .ok()
+                .and_then(|t| crate::restart_budget::parse_since(&t));
+            let now = std::time::SystemTime::now();
+            if let Busy::Wait { since, after } =
+                judge_busy(&spend.budget, since, began.elapsed(), now)
+            {
+                if let Some(parent) = busy_file.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = crate::fsutil::write_atomic(
+                    &busy_file,
+                    &crate::restart_budget::render_since(since),
+                );
+                tokio::select! {
+                    _ = tokio::time::sleep(after) => {}
+                    _ = stops.next() => {}
+                }
+                return Ok(code);
+            }
+        }
     }
     if let Some(spend) = &spend
         && spends_budget(status.success(), expired, asked_to_stop)
@@ -453,7 +487,56 @@ mod tests {
             min_uptime,
             base_backoff: Duration::from_millis(1),
             max_backoff: Duration::from_millis(5),
+            busy_delay: Duration::from_millis(1),
+            busy_window: Duration::from_secs(300),
         }
+    }
+
+    const BUSY_LINE: &str = "echo 'Error: remote port forwarding failed for listen port 30123' >&2";
+    const BUSY: &str =
+        "echo 'Error: remote port forwarding failed for listen port 30123' >&2; exit 255";
+
+    // The relay keeps a dead session's listener until sshd reaps it, so every
+    // restart inside that window fails the same way. None of them is the
+    // tunnel's fault, and parking the job after six would make a laptop that
+    // slept need a person
+    #[tokio::test]
+    async fn a_run_of_taken_relay_ports_never_parks_the_job_inside_its_window() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let marker = dir.path().join("com.gtunnel.dev.db.crash");
+        let budget = tiny(2, Duration::from_secs(60));
+        for n in 0..12 {
+            assert_eq!(run_once(dir.path(), BUSY, budget).await, 255, "attempt {n}");
+        }
+        assert!(!marker.exists(), "parked");
+        assert!(
+            !crate::daemon::restart_history_beside(&marker).exists(),
+            "none of them spent the budget"
+        );
+        assert!(crate::daemon::busy_beside(&marker).exists());
+    }
+
+    #[tokio::test]
+    async fn a_relay_that_never_lets_go_is_counted_once_the_window_is_spent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let marker = dir.path().join("com.gtunnel.dev.db.crash");
+        let budget = tiny(2, Duration::from_secs(60));
+        std::fs::write(crate::daemon::busy_beside(&marker), "1000\n").expect("write");
+        for _ in 0..3 {
+            run_once(dir.path(), BUSY, budget).await;
+        }
+        assert!(marker.exists(), "the third spent failure parks it");
+    }
+
+    #[tokio::test]
+    async fn any_other_exit_ends_the_streak() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let marker = dir.path().join("com.gtunnel.dev.db.crash");
+        let budget = tiny(5, Duration::from_secs(60));
+        run_once(dir.path(), BUSY, budget).await;
+        assert!(crate::daemon::busy_beside(&marker).exists());
+        run_once(dir.path(), "exit 1", budget).await;
+        assert!(!crate::daemon::busy_beside(&marker).exists());
     }
 
     async fn run_once(dir: &std::path::Path, script: &str, budget: Budget) -> i32 {
@@ -758,6 +841,42 @@ mod tests {
         assert_eq!(
             crate::restart_budget::network_wait(&budget, &mut 9, Duration::ZERO),
             budget.max_backoff
+        );
+    }
+
+    const NET_LINE: &str = "echo 'curl: (6) Could not resolve host: oauth2.googleapis.com' >&2";
+
+    // The newest classified line decides, as it does for an outage alone: a
+    // network line after the busy one means the network went away again, and
+    // the unbounded network wait is the right clock, not the 5 minute streak
+    #[tokio::test]
+    async fn a_network_line_after_a_busy_line_takes_the_network_wait() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let budget = tiny(2, Duration::from_secs(60));
+        std::fs::write(
+            crate::daemon::busy_beside(&dir.path().join("com.gtunnel.dev.db.crash")),
+            "1000\n",
+        )
+        .expect("write");
+        let script = format!("{BUSY_LINE}; {NET_LINE}; exit 255");
+        run_once(dir.path(), &script, budget).await;
+        assert!(dir.path().join("com.gtunnel.dev.db.netfails").exists());
+        assert!(
+            !dir.path().join("com.gtunnel.dev.db.busy").exists(),
+            "the busy streak starts over"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_busy_line_after_a_network_line_takes_the_busy_streak() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let budget = tiny(2, Duration::from_secs(60));
+        let script = format!("{NET_LINE}; {BUSY_LINE}; exit 255");
+        run_once(dir.path(), &script, budget).await;
+        assert!(dir.path().join("com.gtunnel.dev.db.busy").exists());
+        assert!(
+            !dir.path().join("com.gtunnel.dev.db.netfails").exists(),
+            "the network count is not touched"
         );
     }
 

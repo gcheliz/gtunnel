@@ -295,6 +295,7 @@ pub struct Correlator {
     ready: Option<(PathBuf, Option<u16>)>,
     backend: Option<Backend>,
     last_stopping: Option<(Instant, crate::failure::Failure)>,
+    last_busy: Option<Instant>,
     /// The newest line of any class, so a supervisor can tell an exit the
     /// network caused from one that merely printed a network line earlier
     last_classified: Option<(Instant, crate::failure::Failure)>,
@@ -316,6 +317,7 @@ impl Correlator {
             ready: None,
             backend: None,
             last_stopping: None,
+            last_busy: None,
             last_classified: None,
             auth_exit_window: crate::settings::LOGS_AUTH_EXIT_WINDOW,
         }
@@ -391,6 +393,14 @@ impl Correlator {
             .map(|(_, failure)| failure)
     }
 
+    /// Whether the relay's port was reported taken within the window before
+    /// `now`. Separate from `stopping_failure`: a restart is the cure here, so
+    /// the supervisor retries instead of stopping.
+    pub fn listener_busy(&self, now: Instant) -> bool {
+        self.last_busy
+            .is_some_and(|at| now.saturating_duration_since(at) <= self.auth_exit_window)
+    }
+
     /// `Network` or `Timeout` when the newest classified line, within the same
     /// window as `stopping_failure`, was one of them. A restart can mend either,
     /// so the supervisor waits and retries instead of spending its budget.
@@ -415,6 +425,9 @@ impl Correlator {
             if failure.is_stopping() {
                 self.last_stopping = Some((now, failure));
             }
+        }
+        if crate::failure::Failure::from_line(raw) == Some(crate::failure::Failure::ListenerBusy) {
+            self.last_busy = Some(now);
         }
         match classify(raw) {
             Line::Drop => {}
@@ -727,6 +740,22 @@ mod tests {
         assert_eq!(
             c.stopping_failure(t0 + Duration::from_secs(2)),
             Some(Failure::LoginExpired)
+        );
+    }
+
+    #[test]
+    fn a_taken_relay_port_is_remembered_apart_from_the_stop_class() {
+        let t0 = Instant::now();
+        let mut c = Correlator::new(LogLevel::Info);
+        assert!(!c.listener_busy(t0));
+        c.feed(
+            "Error: remote port forwarding failed for listen port 30123",
+            t0,
+        );
+        assert!(c.listener_busy(t0 + Duration::from_secs(1)));
+        assert_eq!(c.stopping_failure(t0), None, "a restart is the cure");
+        assert!(
+            !c.listener_busy(t0 + crate::settings::LOGS_AUTH_EXIT_WINDOW + Duration::from_secs(1))
         );
     }
 

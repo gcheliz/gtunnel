@@ -447,6 +447,7 @@ impl RestartConfig {
             min_uptime,
             base_backoff,
             max_backoff,
+            ..crate::restart_budget::Budget::default()
         })
     }
 }

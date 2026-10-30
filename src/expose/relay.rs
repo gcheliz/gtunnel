@@ -127,6 +127,62 @@ async fn rerun_startup_script(acct: &Account, zone: &str, vm: &str) -> Result<()
     Ok(())
 }
 
+// Waits for the startup script's last line, reading only what the serial
+// console printed after `start`: an earlier boot's marker is still in the
+// buffer. Ok(false) is a script that never finished inside `bound`, which is
+// worth saying and not worth failing the command over.
+async fn wait_relay_ready(
+    client: &GcpClient,
+    project: &str,
+    zone: &str,
+    vm: &str,
+    start: u64,
+    bound: std::time::Duration,
+) -> Result<bool> {
+    let began = std::time::Instant::now();
+    let mut from = start;
+    loop {
+        let chunk = compute::serial_output(client, project, zone, vm, from).await?;
+        if chunk.contents.contains(compute::RELAY_READY_MARKER) {
+            return Ok(true);
+        }
+        from = chunk.next.max(from);
+        if began.elapsed() >= bound {
+            return Ok(false);
+        }
+        tokio::time::sleep(client.poll_interval()).await;
+    }
+}
+
+// Where the serial console is now, for a relay whose script is about to be
+// replaced and re-run. Failing to read it only costs the wait.
+async fn serial_offset(client: &GcpClient, project: &str, zone: &str, vm: &str) -> Option<u64> {
+    compute::serial_output(client, project, zone, vm, 0)
+        .await
+        .ok()
+        .map(|c| c.next)
+}
+
+// The script installs nftables at most, so three minutes is already a script
+// that will not finish; waiting out the whole operation timeout only delays the
+// warning.
+const RELAY_READY_BOUND: std::time::Duration = std::time::Duration::from_secs(180);
+
+#[allow(clippy::print_stdout, clippy::print_stderr)]
+async fn await_relay_ready(client: &GcpClient, project: &str, zone: &str, vm: &str, start: u64) {
+    let bound = client.operation_timeout().min(RELAY_READY_BOUND);
+    match wait_relay_ready(client, project, zone, vm, start, bound).await {
+        Ok(true) => println!("  ✓ relay sshd ready"),
+        Ok(false) => eprintln!(
+            "  ! the relay's startup script did not report done within {}s; a tunnel started \
+             now may bind on loopback only. Read the serial console: gcloud compute \
+             instances get-serial-port-output {vm} --zone={zone}",
+            bound.as_secs()
+        ),
+        Err(e) => eprintln!("  ! could not read the relay's serial console ({e:#}); not waiting"),
+    }
+}
+
 fn iap_ssh_firewall(names: &Names, network: &str) -> Firewall {
     Firewall {
         name: names.fw_iap_ssh.clone(),
@@ -282,6 +338,7 @@ pub async fn relay_up(
             )
             .await?;
             client.wait_operation(&op).await?;
+            await_relay_ready(client, project, zone, &names.relay_vm, 0).await;
             Reconciled::Created
         }
         Some(vm) => {
@@ -294,11 +351,21 @@ pub async fn relay_up(
             ) {
                 step_note(&note);
             }
+            let rewriting = vm.status == "RUNNING"
+                && vm.startup_script() != Some(compute::RELAY_STARTUP_SCRIPT);
+            let offset = if rewriting {
+                serial_offset(client, project, zone, &names.relay_vm).await
+            } else {
+                None
+            };
             let change = compute::reconcile_relay_instance(client, project, zone, vm).await?;
             // A stopped VM runs the new script at its next boot anyway, and
             // ssh to it would only fail
             if change == Reconciled::Updated && vm.status == "RUNNING" {
                 rerun_startup_script(acct, zone, &names.relay_vm).await?;
+                if let Some(start) = offset {
+                    await_relay_ready(client, project, zone, &names.relay_vm, start).await;
+                }
             }
             change
         }
@@ -962,6 +1029,68 @@ mod tests {
             .filter(|r| r.method.as_str().eq_ignore_ascii_case(verb))
             .filter(|r| r.url.path().contains(needle))
             .count()
+    }
+
+    async fn serial_server(bodies: Vec<serde_json::Value>) -> MockServer {
+        let server = MockServer::start().await;
+        for body in bodies {
+            Mock::given(method("GET"))
+                .and(path_regex(r".*/serialPort"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(body))
+                .up_to_n_times(1)
+                .mount(&server)
+                .await;
+        }
+        server
+    }
+
+    // `relay up` returns when the instance insert finishes, which is before
+    // the startup script has run: an `expose` straight after would bind on
+    // loopback only, and the load balancer would never reach it
+    #[tokio::test]
+    async fn relay_up_waits_for_the_startup_script_to_print_its_marker() {
+        let server = serial_server(vec![
+            serde_json::json!({"contents": "booting\n", "next": 8}),
+            serde_json::json!({"contents": "startup-script: gtunnel-relay-ready\n", "next": 45}),
+        ])
+        .await;
+        let ready = wait_relay_ready(
+            &client(&server),
+            "p",
+            "z",
+            "vm",
+            0,
+            std::time::Duration::from_secs(5),
+        )
+        .await
+        .expect("serial");
+        assert!(ready);
+        assert_eq!(requests(&server, "GET", "/serialPort").await, 2);
+    }
+
+    #[tokio::test]
+    async fn a_marker_from_an_earlier_boot_does_not_count() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_regex(r".*/serialPort"))
+            .and(wiremock::matchers::query_param("start", "500"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"contents": "", "next": 500})),
+            )
+            .mount(&server)
+            .await;
+        let ready = wait_relay_ready(
+            &client(&server),
+            "p",
+            "z",
+            "vm",
+            500,
+            std::time::Duration::from_millis(100),
+        )
+        .await
+        .expect("serial");
+        assert!(!ready, "only output after the offset is read");
     }
 
     #[tokio::test]

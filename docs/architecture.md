@@ -96,6 +96,17 @@ looks healthy while serving nothing. The relay's startup script sets
 `GatewayPorts clientspecified` so the `0.0.0.0` bind is accepted and the load balancer's
 health check can reach the port.
 
+It writes these as a drop-in, `/etc/ssh/sshd_config.d/gtunnel.conf`, together with
+`ClientAliveInterval 15` and `ClientAliveCountMax 2`. sshd's default never probes a client, so
+after a laptop sleeps or changes network the relay keeps the dead session's listener for about
+two hours, and the reconnect fails with `remote port forwarding failed`. With the probes sshd
+drops a silent session in about 30 seconds and the port is free again.
+
+Until then the supervisor retries every 15 seconds and does not spend the restart budget on
+that failure, for up to 5 minutes from the first one. After that each failure counts like any
+other. `relay up` waits for the startup script to print `gtunnel-relay-ready` on the serial
+console before it returns, so an `expose` straight after it never binds on loopback only.
+
 The bind is on every interface because the load balancer connects to the relay's internal
 address, so the VPC firewall alone decides who else can. The startup script therefore also
 installs an `nftables` table, `gtunnel_relay`, that drops `30000-30999` from every source but

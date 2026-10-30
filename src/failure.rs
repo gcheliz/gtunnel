@@ -22,6 +22,8 @@ pub enum Failure {
     ServiceDisabled,
     NotFound,
     Conflict,
+    /// The relay still holds the listener of a session that is gone.
+    ListenerBusy,
     Network,
     Timeout,
     Other,
@@ -69,6 +71,9 @@ const LINES: &[(Failure, &[&str])] = &[
     (Failure::Network, &["nodename nor servname"]),
     (Failure::Network, &["Failed to establish a new connection"]),
     (Failure::Timeout, &["timed out"]),
+    // ssh's own words for a relay port that is taken. Every gtunnel `-R` sets
+    // ExitOnForwardFailure, so this line is also why ssh exited.
+    (Failure::ListenerBusy, &["remote port forwarding failed"]),
 ];
 
 /// The warning gcloud prints when its Python has no NumPy, and the one thing
@@ -94,6 +99,12 @@ const STOPPING: [Failure; 4] = [
     Failure::KeyInvalid,
     Failure::ConfigurationMissing,
 ];
+
+/// Why a restart does not help and what does. The supervisor already retries
+/// on its own, so the reader is told to wait, not to run `restart`.
+const LISTENER_BUSY_HINT: &str = "The relay still holds the old session's listener. The tunnel \
+     retries every 15 seconds; on a relay updated by `gtunnel relay up` the old session is \
+     reaped within about 30 seconds. If it persists, run: gtunnel relay up";
 
 impl Failure {
     /// What a gcloud stderr or log line says, when it says anything gtunnel
@@ -192,6 +203,7 @@ impl Failure {
             }
             Failure::NotFound => ErrorKind::NotFound,
             Failure::Conflict | Failure::Other => ErrorKind::Internal,
+            Failure::ListenerBusy => ErrorKind::Unavailable,
         }
     }
 
@@ -211,6 +223,7 @@ impl Failure {
             Failure::ServiceDisabled => "service-disabled",
             Failure::NotFound => "not-found",
             Failure::Conflict => "conflict",
+            Failure::ListenerBusy => "listener-busy",
             Failure::Network => "network",
             Failure::Timeout => "timeout",
             Failure::Other => "other",
@@ -287,6 +300,7 @@ impl Failure {
                 "The resource does not exist. Check the name, project and zone".to_string()
             }
             Failure::Conflict => "The resource changed under the request. Retry".to_string(),
+            Failure::ListenerBusy => LISTENER_BUSY_HINT.to_string(),
             Failure::Network => {
                 "Google could not be reached. Check the network connection and retry".to_string()
             }
@@ -322,6 +336,7 @@ impl Failure {
                     "The gcloud configuration named by the account does not exist. Run: gcloud \
                      config configurations list"
                 }
+                Failure::ListenerBusy => LISTENER_BUSY_HINT,
                 _ => return None,
             }
             .to_string(),
@@ -332,6 +347,26 @@ impl Failure {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_busy_relay_port_is_its_own_failure_and_not_a_reason_to_stop() {
+        for line in [
+            "Error: remote port forwarding failed for listen port 30123",
+            "Warning: remote port forwarding failed for listen port 30123",
+        ] {
+            assert_eq!(
+                Failure::from_line(line),
+                Some(Failure::ListenerBusy),
+                "{line}"
+            );
+        }
+        assert!(!Failure::ListenerBusy.is_stopping());
+        assert_eq!(Failure::ListenerBusy.slug(), "listener-busy");
+        let hint = Failure::ListenerBusy.log_hint(false).expect("a hint");
+        assert!(hint.contains("old session"), "{hint}");
+        assert!(hint.contains("30 seconds"), "{hint}");
+        assert!(!hint.contains("gtunnel restart"), "{hint}");
+    }
 
     fn account(credential_file: bool) -> Account {
         Account {
