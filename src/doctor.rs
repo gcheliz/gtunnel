@@ -81,6 +81,13 @@ pub enum Finding {
         tunnel: String,
         command: String,
     },
+    // The project's firewall rules could not be listed, so whether a rule
+    // exists is unknown: reporting every tunnel's rule as missing would send
+    // the person to create one that is already there
+    FirewallUnread {
+        account: String,
+        reason: String,
+    },
     IamMissing {
         tunnel: String,
         role: &'static str,
@@ -244,6 +251,10 @@ impl Finding {
             Finding::FirewallMissing { tunnel, command } => {
                 format!("Tunnel '{tunnel}' has no firewall rule for IAP:\n    {command}")
             }
+            Finding::FirewallUnread { account, reason } => format!(
+                "Account '{account}': could not read firewall rules: {reason}; the IAP firewall \
+                 check was skipped"
+            ),
             Finding::IamMissing { tunnel, role } => {
                 format!("Tunnel '{tunnel}' needs {role} on the instance or project")
             }
@@ -957,6 +968,44 @@ fn gcloud_auth_finding(acct: &Account, interactive: bool, err: &anyhow::Error) -
     }
 }
 
+// An Err is the one finding for the account; a list that is merely empty is
+// still a list, and every tunnel is judged against it
+async fn read_firewalls(
+    client: &GcpClient,
+    acct: &Account,
+) -> std::result::Result<Vec<compute::Firewall>, Finding> {
+    compute::list_firewalls(client, &acct.project)
+        .await
+        .map_err(|e| Finding::FirewallUnread {
+            account: acct.name.clone(),
+            reason: e
+                .root_cause()
+                .to_string()
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .to_string(),
+        })
+}
+
+fn firewall_finding(
+    acct: &Account,
+    tunnel: &str,
+    rules: &std::result::Result<Vec<compute::Firewall>, Finding>,
+    network: &str,
+    tags: &[String],
+    port: u16,
+) -> Option<Finding> {
+    let rules = rules.as_ref().ok()?;
+    if compute::firewall_allows_iap(rules, network, tags, port) {
+        return None;
+    }
+    Some(Finding::FirewallMissing {
+        tunnel: tunnel.to_string(),
+        command: firewall_fix_command(acct, network, port),
+    })
+}
+
 async fn account_findings(_cfg: &Config, state: &TunnelState, acct: &Account) -> Vec<Finding> {
     let mut findings = Vec::new();
     let client = GcpClient::for_account(acct);
@@ -995,9 +1044,10 @@ async fn account_findings(_cfg: &Config, state: &TunnelState, acct: &Account) ->
     }
 
     let tunnels = state.tunnels_for_account(&acct.name);
-    let firewalls = compute::list_firewalls(&client, &acct.project)
-        .await
-        .unwrap_or_default();
+    let firewalls = read_firewalls(&client, acct).await;
+    if let Err(unread) = &firewalls {
+        findings.push(unread.clone());
+    }
 
     for tunnel in &tunnels {
         let label = crate::daemon::platform_label(&acct.name, &tunnel.name);
@@ -1041,17 +1091,14 @@ async fn account_findings(_cfg: &Config, state: &TunnelState, acct: &Account) ->
                         }),
                         Ok(Some(found)) => {
                             let network = found.network.clone().unwrap_or_else(|| "default".into());
-                            if !compute::firewall_allows_iap(
+                            findings.extend(firewall_finding(
+                                acct,
+                                &tunnel.name,
                                 &firewalls,
                                 &network,
                                 &found.tags,
                                 *remote_port,
-                            ) {
-                                findings.push(Finding::FirewallMissing {
-                                    tunnel: tunnel.name.clone(),
-                                    command: firewall_fix_command(acct, &network, *remote_port),
-                                });
-                            }
+                            ));
                             if let Ok(false) =
                                 iap::can_tunnel_instance(&client, &acct.project, zone, instance)
                                     .await
@@ -1908,6 +1955,70 @@ mod tests {
         assert!(finding.describe().contains("Permission denied"));
         // A readable one with nothing dead says nothing
         assert!(run_record_findings(Ok(Vec::new())).is_empty());
+    }
+
+    fn wiremock_client(server: &wiremock::MockServer) -> GcpClient {
+        GcpClient::new(
+            crate::gcp::client::TokenSource::Static("tok".to_string()),
+            crate::gcp::client::Endpoints::single(&server.uri()),
+        )
+    }
+
+    async fn serve_firewalls(response: wiremock::ResponseTemplate) -> wiremock::MockServer {
+        use wiremock::matchers::{method, path};
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(method("GET"))
+            .and(path("/projects/proj-1/global/firewalls"))
+            .respond_with(response)
+            .mount(&server)
+            .await;
+        server
+    }
+
+    #[tokio::test]
+    async fn a_firewall_list_that_is_refused_is_one_skipped_finding_and_no_missing_rule() {
+        let server = serve_firewalls(
+            wiremock::ResponseTemplate::new(403).set_body_string("compute.firewalls.list denied"),
+        )
+        .await;
+        let acct = account();
+
+        let rules = read_firewalls(&wiremock_client(&server), &acct).await;
+        let unread = rules.as_ref().expect_err("a 403 is not an empty list");
+        assert!(matches!(unread, Finding::FirewallUnread { account, .. } if account == "dev"));
+        let text = unread.describe();
+        assert!(text.contains("could not read firewall rules"), "{text}");
+        assert!(text.contains("403"), "{text}");
+        assert!(text.contains("check was skipped"), "{text}");
+
+        let judged = firewall_finding(&acct, "k8s", &rules, "default", &[], 443);
+        assert_eq!(judged, None);
+    }
+
+    #[tokio::test]
+    async fn a_firewall_list_that_is_empty_still_reports_a_missing_rule_per_tunnel() {
+        let server = serve_firewalls(
+            wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({})),
+        )
+        .await;
+        let acct = account();
+
+        let rules = read_firewalls(&wiremock_client(&server), &acct).await;
+        assert!(rules.is_ok());
+        let judged = firewall_finding(&acct, "k8s", &rules, "default", &[], 443);
+        assert!(matches!(
+            judged,
+            Some(Finding::FirewallMissing { ref tunnel, .. }) if tunnel == "k8s"
+        ));
+    }
+
+    #[test]
+    fn an_unread_firewall_finding_is_not_fixable() {
+        assert!(!Finding::FirewallUnread {
+            account: "dev".to_string(),
+            reason: "403".to_string()
+        }
+        .fixable());
     }
 
     #[test]

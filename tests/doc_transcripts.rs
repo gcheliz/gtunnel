@@ -135,6 +135,16 @@ async fn serve_the_dev_bastion(server: &MockServer) {
         .await;
 }
 
+// An empty rule list, answered: doctor says a list it could not read was
+// skipped, so wiremock's 404 would put that finding in the transcript
+async fn serve_an_empty_firewall_list(server: &MockServer) {
+    Mock::given(method("GET"))
+        .and(path(format!("/projects/{PROJECT}/global/firewalls")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .mount(server)
+        .await;
+}
+
 // A local port a transcript binds. `add` refuses one that something on the
 // machine already listens on, so a developer's own ssh tunnel on 8443 would fail
 // a page that is right; the page keeps reading this port and the run swaps in a
@@ -198,6 +208,7 @@ async fn the_command_reference_transcripts_match_the_binary() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_usage_transcripts_match_the_binary() {
     let server = MockServer::start().await;
+    serve_an_empty_firewall_list(&server).await;
     let h = scratch(None, None);
     cases(&h, &server).case("docs/usage.md").run();
 }
