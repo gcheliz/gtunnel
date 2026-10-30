@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.45](https://github.com/gcheliz/gtunnel/compare/v0.2.44...v0.2.45) - 2026-10-30
+
+### Fixed
+
+- *(fs)* write every service file atomically and replace the binary by rename ([#323](https://github.com/gcheliz/gtunnel/pull/323))
+
 ## [0.2.44](https://github.com/gcheliz/gtunnel/compare/v0.2.43...v0.2.44) - 2026-10-30
 
 ### Fixed
