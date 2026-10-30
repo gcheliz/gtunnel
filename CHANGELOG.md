@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.3.13](https://github.com/gcheliz/gtunnel/compare/v0.3.12...v0.3.13) - 2026-10-30
+
+### Fixed
+
+- *(tunnel)* keep refused channels in a quiet tunnel's log ([#420](https://github.com/gcheliz/gtunnel/pull/420))
+
 ## [0.3.12](https://github.com/gcheliz/gtunnel/compare/v0.3.11...v0.3.12) - 2026-10-30
 
 ### Fixed
