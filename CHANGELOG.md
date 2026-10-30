@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.3.6](https://github.com/gcheliz/gtunnel/compare/v0.3.5...v0.3.6) - 2026-10-30
+
+### Fixed
+
+- *(gcp)* retry transient errors and reuse a token only until it expires ([#405](https://github.com/gcheliz/gtunnel/pull/405))
+
 ## [0.3.5](https://github.com/gcheliz/gtunnel/compare/v0.3.4...v0.3.5) - 2026-10-30
 
 ### Fixed
