@@ -43,6 +43,17 @@ pub trait ServiceHost {
     fn watchdog_render(&self) -> Option<String>;
     /// Rewrites the watchdog's definition and reloads it
     async fn watchdog_install(&self) -> Result<()>;
+    /// The version this binary stamps into what it writes
+    fn version(&self) -> &str;
+    /// Where the pass takes its lock, or `None` for a host with no state
+    /// shared with another process
+    fn lock_path(&self) -> Option<std::path::PathBuf>;
+    /// Established connections on a local port
+    fn connections(&self, port: u16) -> u64;
+    /// Records the newest version found stamped on a definition this binary
+    /// had to leave alone, or that none was found (`None`). Returns whether
+    /// that is news: the notice is printed once per version, not per command.
+    fn note_newer(&self, seen: Option<&str>) -> bool;
 }
 
 /// What one pass did: the labels brought up to date, and the ones that could
@@ -54,13 +65,39 @@ pub struct Outcome {
     /// Definitions written whose job did not restart: the label, the tunnel
     /// name the retry command takes, and the reason
     pub restart_failed: Vec<(String, String, String)>,
+    /// Rewritten but left running on the old definition because a client was
+    /// connected: the tunnel name and how many connections
+    pub deferred: Vec<(String, u64)>,
+    /// The newest version found stamped on a definition this binary left
+    /// alone, and this binary's own, when that is news
+    pub newer: Option<(String, String)>,
 }
 
-/// Rewrites each installed definition that differs from the current render.
-/// A running tunnel is restarted so the new argv is read; any other state is
-/// left as it was, because a tunnel the user stopped is stopped on purpose.
+/// Rewrites each installed definition that is behind what this binary would
+/// write, and finishes the restarts that an earlier pass began and did not
+/// end.
+///
+/// A running tunnel is restarted so the new argv is read, unless a client is
+/// connected: that definition is still written, so the next command has
+/// nothing to do, and the tunnel is named so the person can restart it when it
+/// is idle. A tunnel the user stopped stays stopped.
+///
+/// The pass skips itself when another command holds `refresh.lock`. Two
+/// commands that start together (a prompt hook and a manual one) would
+/// otherwise both see the old definition and both restart every tunnel.
 pub async fn refresh(host: &impl ServiceHost, tunnels: &[PersistentTunnel]) -> Outcome {
     let mut out = Outcome::default();
+    // Held to the end of the pass, and never waited for: the holder is doing
+    // this very work, so a command that cannot take it has nothing to add
+    let _lock = match host.lock_path() {
+        Some(path) => match crate::fsutil::lock_exclusive(&path, std::time::Duration::ZERO) {
+            Ok(lock) => Some(lock),
+            Err(_) => return out,
+        },
+        None => None,
+    };
+    let ours = parse_version(host.version());
+    let mut newest: Option<((u64, u64, u64), String)> = None;
     for t in tunnels {
         let label = host.label(t);
         // Read before the spec is built: building one looks for gcloud, and
@@ -76,13 +113,23 @@ pub async fn refresh(host: &impl ServiceHost, tunnels: &[PersistentTunnel]) -> O
         // credential file) could not be started either, and that failure has
         // its own message at the command that needs it. Reporting it here
         // would print on every command until it was fixed.
-        let stale = host.spec_for(t).ok().and_then(|mut spec| {
+        let verdict = host.spec_for(t).ok().map(|mut spec| {
             // The shell that happens to run this is not the user's word on the
             // proxy: only add, start and restart take its values
             super::keep_installed_forwarded(&mut spec, &installed);
-            is_stale(&installed, &host.render(&spec), |p| host.program_exists(p)).then_some(spec)
+            let behind = is_stale(&installed, &host.render(&spec), |p| host.program_exists(p));
+            (spec, judge(&installed, behind, ours))
         });
-        if stale.is_none() && !pending {
+        let rewrite = match verdict {
+            Some((spec, Verdict::Behind)) => Some((spec, true)),
+            Some((spec, Verdict::Unstamped)) => Some((spec, false)),
+            Some((_, Verdict::Newer(version))) => {
+                remember_newest(&mut newest, version);
+                None
+            }
+            _ => None,
+        };
+        if rewrite.is_none() && !pending {
             continue;
         }
         // "The file differs" is the only record of work to do, and a write
@@ -90,14 +137,28 @@ pub async fn refresh(host: &impl ServiceHost, tunnels: &[PersistentTunnel]) -> O
         // cleared only once the job has started again: a later pass retries a
         // pending label even though its file is current.
         let mut restart = pending;
-        if let Some(spec) = &stale {
-            // Read before the write: a running job is the only one to reload,
-            // and the answer must not depend on a file the write is about to
-            // change
-            let running = host.status(&label).await == TunnelStatus::Running;
-            restart |= running;
+        let mut deferred = None;
+        if let Some((_, true)) = &rewrite {
+            // Read before the write: the answer must not depend on a file the
+            // write is about to change. A job in error is reloaded too: launchd
+            // keeps the definition it loaded however often the file changes
+            let status = host.status(&label).await;
+            let live = matches!(status, TunnelStatus::Running | TunnelStatus::Error);
+            // An errored job serves nobody, and a pending restart has already
+            // cost the connections; only a running job has clients to spare
+            let clients = match (status, local_port(t)) {
+                (TunnelStatus::Running, Some(port)) if !pending => host.connections(port),
+                _ => 0,
+            };
+            if live && clients > 0 {
+                deferred = Some(clients);
+            } else {
+                restart |= live;
+            }
+        }
+        if let Some((spec, _)) = &rewrite {
             let written = async {
-                if running {
+                if restart {
                     host.set_restart_pending(&label)?;
                 }
                 host.write(spec).await
@@ -120,27 +181,112 @@ pub async fn refresh(host: &impl ServiceHost, tunnels: &[PersistentTunnel]) -> O
             }
             host.clear_restart_pending(&label);
         }
+        if let Some(clients) = deferred {
+            out.deferred.push((t.name.clone(), clients));
+        }
+        // Stamping a definition that was already right changes nothing the
+        // user could act on, so it is not worth a line
+        if matches!(rewrite, Some((_, false))) && !pending {
+            continue;
+        }
         out.reinstalled.push(label);
     }
-    refresh_watchdog(host, &mut out).await;
+    refresh_watchdog(host, ours, &mut newest, &mut out).await;
+    out.newer = match newest {
+        Some((_, version)) => host
+            .note_newer(Some(&version))
+            .then(|| (version, host.version().to_string())),
+        None => {
+            host.note_newer(None);
+            None
+        }
+    };
     out
+}
+
+fn local_port(t: &PersistentTunnel) -> Option<u16> {
+    match &t.spec {
+        crate::state::TunnelSpec::Access { local_port, .. } => Some(*local_port),
+        // An expose tunnel listens on the relay, not here
+        crate::state::TunnelSpec::Expose { .. } => None,
+    }
+}
+
+type Version = (u64, u64, u64);
+
+/// A version as three numbers, so `0.2.100` is above `0.2.67`. A pre-release or
+/// build suffix is ignored, and anything that is not three numbers is `None`,
+/// which the refresh reads as unstamped and overwrites.
+fn parse_version(text: &str) -> Option<Version> {
+    let core = text.split(['-', '+']).next()?;
+    let mut parts = core.split('.').map(|p| p.parse::<u64>().ok());
+    let version = (parts.next()??, parts.next()??, parts.next()??);
+    parts.next().is_none().then_some(version)
+}
+
+/// What the stamp says about an installed definition, given whether its shape
+/// is behind. The stamp only decides which way a difference points: a
+/// definition that is current is left alone however old its stamp, or a bump
+/// of the version would write every file for nothing.
+#[derive(Debug, PartialEq, Eq)]
+enum Verdict {
+    Current,
+    /// Behind, and not written by a newer binary: rewrite it
+    Behind,
+    /// The right shape and no stamp: write the stamp, restart nothing
+    Unstamped,
+    /// Behind, but written by a newer binary: another install on `PATH`, or a
+    /// downgrade. Rewriting would make that one rewrite it back
+    Newer(String),
+}
+
+fn judge(installed: &str, behind: bool, ours: Option<Version>) -> Verdict {
+    let text = super::forwarded_in(installed, super::DEFINITION_VERSION_VAR);
+    let stamp = text.as_deref().and_then(parse_version);
+    match (behind, stamp, text) {
+        (true, Some(s), Some(text)) if ours.is_some_and(|o| s > o) => Verdict::Newer(text),
+        (true, _, _) => Verdict::Behind,
+        (false, None, _) => Verdict::Unstamped,
+        (false, Some(_), _) => Verdict::Current,
+    }
+}
+
+fn remember_newest(newest: &mut Option<(Version, String)>, version: String) {
+    if let Some(parsed) = parse_version(&version)
+        && newest.as_ref().is_none_or(|(n, _)| parsed > *n)
+    {
+        *newest = Some((parsed, version));
+    }
 }
 
 /// The watchdog is one job for the machine and has its own definition, so it
 /// is judged like a tunnel's but is never restarted: installing it is the
 /// reload. Not installed means not the user's choice to have one yet.
-async fn refresh_watchdog(host: &impl ServiceHost, out: &mut Outcome) {
+async fn refresh_watchdog(
+    host: &impl ServiceHost,
+    ours: Option<Version>,
+    newest: &mut Option<(Version, String)>,
+    out: &mut Outcome,
+) {
     let Some(installed) = host.watchdog_installed_text() else {
         return;
     };
     let Some(rendered) = host.watchdog_render() else {
         return;
     };
-    if !is_stale(&installed, &rendered, |p| host.program_exists(p)) {
-        return;
-    }
+    let behind = is_stale(&installed, &rendered, |p| host.program_exists(p));
+    let quiet = match judge(&installed, behind, ours) {
+        Verdict::Current => return,
+        Verdict::Newer(version) => {
+            remember_newest(newest, version);
+            return;
+        }
+        Verdict::Behind => false,
+        Verdict::Unstamped => true,
+    };
     let label = super::watchdog_label().to_string();
     match host.watchdog_install().await {
+        Ok(()) if quiet => {}
         Ok(()) => out.reinstalled.push(label),
         Err(e) => out.failed.push((label, format!("{e:#}"))),
     }
@@ -303,6 +449,18 @@ pub fn report(outcome: &Outcome) -> Vec<String> {
              `gtunnel restart {name}` retries it"
         ));
     }
+    for (name, clients) in &outcome.deferred {
+        lines.push(format!(
+            "gtunnel: {name} was rewritten but not restarted, it has {clients} open connection{}; \
+             run `gtunnel restart {name}` when it is idle",
+            if *clients == 1 { "" } else { "s" }
+        ));
+    }
+    if let Some((written_by, this)) = &outcome.newer {
+        lines.push(format!(
+            "gtunnel: services were written by gtunnel {written_by}; this is {this}"
+        ));
+    }
     lines
 }
 
@@ -376,6 +534,34 @@ impl ServiceHost for Live {
     }
     async fn watchdog_install(&self) -> Result<()> {
         super::install_watchdog(&std::env::current_exe()?).await
+    }
+    fn version(&self) -> &str {
+        super::DEFINITION_VERSION
+    }
+    fn lock_path(&self) -> Option<std::path::PathBuf> {
+        Some(crate::config::config_dir().ok()?.join("refresh.lock"))
+    }
+    fn connections(&self, port: u16) -> u64 {
+        crate::probe::active_connections(port)
+    }
+    fn note_newer(&self, seen: Option<&str>) -> bool {
+        let Ok(dir) = crate::config::config_dir() else {
+            return false;
+        };
+        let path = dir.join("run").join("definitions-newer");
+        let Some(seen) = seen else {
+            // Nothing newer any more: forget, so a later downgrade is news again
+            let _ = std::fs::remove_file(&path);
+            return false;
+        };
+        if std::fs::read_to_string(&path).is_ok_and(|text| text.trim() == seen) {
+            return false;
+        }
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = crate::fsutil::write_atomic(&path, seen);
+        true
     }
 }
 
@@ -458,6 +644,13 @@ mod tests {
         env: Vec<(String, String)>,
         // Labels whose next `restart` fails, once each
         fail_restart_once: RefCell<Vec<String>>,
+        // The version this fake binary is; empty reads as `VERSION`
+        version: String,
+        lock_path: Option<std::path::PathBuf>,
+        // Established connections by local port
+        busy: HashMap<u16, u64>,
+        // What the last "newer" notice named
+        told: RefCell<Option<String>>,
         pending: RefCell<std::collections::HashSet<String>>,
         // The watchdog as installed, and as this binary would write it
         watchdog: RefCell<Option<String>>,
@@ -481,7 +674,34 @@ mod tests {
 
     // The text this binary writes for a tunnel
     fn current(spec: &ServiceSpec) -> String {
-        format!("{} {}", spec.label, spec.args.join(" "))
+        let stamp = spec
+            .env
+            .iter()
+            .filter(|(k, _)| k == crate::daemon::DEFINITION_VERSION_VAR)
+            .map(|(k, v)| format!("\nEnvironment={k}={v}"))
+            .collect::<String>();
+        format!("{} {}{stamp}", spec.label, spec.args.join(" "))
+    }
+
+    // What an older binary wrote: the same arguments, and no stamp
+    fn unstamped(spec: &ServiceSpec) -> String {
+        current(spec)
+            .lines()
+            .filter(|l| !l.starts_with("Environment="))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    // The default fake binary's version, and ones around it
+    const VERSION: &str = "1.2.3";
+    const OLDER: &str = "1.2.0";
+    const NEWER: &str = "1.3.0";
+
+    fn stamped(version: &str) -> String {
+        format!(
+            "\nEnvironment={}={version}",
+            crate::daemon::DEFINITION_VERSION_VAR
+        )
     }
 
     impl ServiceHost for Fake {
@@ -504,7 +724,15 @@ mod tests {
                     a
                 },
                 log_path: "log".into(),
-                env: self.env.clone(),
+                env: self
+                    .env
+                    .iter()
+                    .cloned()
+                    .chain([(
+                        crate::daemon::DEFINITION_VERSION_VAR.to_string(),
+                        self.version().to_string(),
+                    )])
+                    .collect(),
                 auto_start: false,
                 description: String::new(),
             })
@@ -547,6 +775,26 @@ mod tests {
             }
             Ok(())
         }
+        fn version(&self) -> &str {
+            if self.version.is_empty() {
+                VERSION
+            } else {
+                &self.version
+            }
+        }
+        fn lock_path(&self) -> Option<std::path::PathBuf> {
+            self.lock_path.clone()
+        }
+        fn connections(&self, port: u16) -> u64 {
+            self.calls.borrow_mut().push(format!("connections {port}"));
+            self.busy.get(&port).copied().unwrap_or(0)
+        }
+        fn note_newer(&self, seen: Option<&str>) -> bool {
+            let mut told = self.told.borrow_mut();
+            let news = seen.is_some() && told.as_deref() != seen;
+            *told = seen.map(str::to_string);
+            news
+        }
         fn restart_pending(&self, label: &str) -> bool {
             self.pending.borrow().contains(label)
         }
@@ -577,7 +825,8 @@ mod tests {
     // The watchdog's text as an old binary wrote it and as this one does: a
     // flag the old one lacked, and a binary that is a unit's `ExecStart=`
     const WATCHDOG_OLD: &str = "ExecStart=/opt/gtunnel watch\n";
-    const WATCHDOG_NOW: &str = "ExecStart=/opt/gtunnel watch --once\n";
+    const WATCHDOG_NOW: &str =
+        "ExecStart=/opt/gtunnel watch --once\nEnvironment=GTUNNEL_DEFINITION_VERSION=1.2.3\n";
 
     fn with_watchdog(installed: &str) -> Fake {
         Fake {
@@ -702,6 +951,246 @@ mod tests {
         let again = refresh(&host, &[tunnel("k8s")]).await;
         assert_eq!(again, Outcome::default());
         assert!(host.calls.borrow().is_empty(), "{:?}", host.calls);
+    }
+
+    fn current_shape() -> String {
+        unstamped(&Fake::default().spec_for(&tunnel("k8s")).unwrap())
+    }
+
+    #[tokio::test]
+    async fn a_definition_stamped_newer_than_the_binary_is_not_rewritten() {
+        let behind = format!("{OLD}{}", stamped(NEWER));
+        let host = Fake::with(LABEL, &behind, TunnelStatus::Running);
+        let out = refresh(&host, &[tunnel("k8s")]).await;
+        assert_eq!(
+            out.newer.as_ref().map(|n| n.0.as_str()),
+            Some(NEWER),
+            "{out:?}"
+        );
+        assert!(
+            out.reinstalled.is_empty() && out.failed.is_empty(),
+            "{out:?}"
+        );
+        assert!(host.calls.borrow().is_empty(), "{:?}", host.calls);
+        assert_eq!(host.installed_text(LABEL).as_deref(), Some(behind.as_str()));
+        let lines = report(&out);
+        assert_eq!(
+            lines,
+            vec![format!(
+                "gtunnel: services were written by gtunnel {NEWER}; this is {VERSION}"
+            )]
+        );
+        // Said once: the next command is quiet while the situation is the same
+        let again = refresh(&host, &[tunnel("k8s")]).await;
+        assert_eq!(again, Outcome::default());
+        assert!(report(&again).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_newer_stamp_on_a_definition_that_already_matches_says_nothing() {
+        let text = format!("{}{}", current_shape(), stamped(NEWER));
+        let host = Fake::with(LABEL, &text, TunnelStatus::Running);
+        assert_eq!(refresh(&host, &[tunnel("k8s")]).await, Outcome::default());
+        assert!(host.calls.borrow().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_unstamped_definition_is_rewritten_and_stamped_without_a_restart() {
+        // The right shape, written before stamps existed: nothing to reload
+        let host = Fake::with(LABEL, &current_shape(), TunnelStatus::Running);
+        let out = refresh(&host, &[tunnel("k8s")]).await;
+        assert_eq!(*host.calls.borrow(), vec![format!("write {LABEL}")]);
+        let text = host.installed_text(LABEL).unwrap();
+        assert!(text.contains(&stamped(VERSION)), "{text}");
+        // Not worth a line: nothing the user could act on changed
+        assert!(report(&out).is_empty(), "{out:?}");
+        host.calls.borrow_mut().clear();
+        assert_eq!(refresh(&host, &[tunnel("k8s")]).await, Outcome::default());
+        assert!(host.calls.borrow().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_older_stamp_on_the_right_shape_is_left_alone() {
+        // Rewriting on every version bump would restart nothing but write
+        // every file; the stamp only has to be there, not current
+        let text = format!("{}{}", current_shape(), stamped(OLDER));
+        let host = Fake::with(LABEL, &text, TunnelStatus::Running);
+        assert_eq!(refresh(&host, &[tunnel("k8s")]).await, Outcome::default());
+        assert!(host.calls.borrow().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_definition_stamped_older_with_a_different_shape_is_rewritten_and_restarted() {
+        let text = format!("{OLD}{}", stamped(OLDER));
+        let host = Fake::with(LABEL, &text, TunnelStatus::Running);
+        let out = refresh(&host, &[tunnel("k8s")]).await;
+        assert_eq!(out.reinstalled, vec![LABEL.to_string()], "{out:?}");
+        assert!(host
+            .installed_text(LABEL)
+            .unwrap()
+            .contains(&stamped(VERSION)));
+        assert!(host.calls.borrow().contains(&format!("restart {LABEL}")));
+    }
+
+    #[tokio::test]
+    async fn a_pass_that_cannot_take_the_lock_does_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock = dir.path().join("refresh.lock");
+        let mut host = Fake::with(LABEL, OLD, TunnelStatus::Running);
+        host.lock_path = Some(lock.clone());
+        let held = crate::fsutil::lock_exclusive(&lock, std::time::Duration::ZERO).unwrap();
+        // The other command is mid-pass: this one skips, with no wait
+        let started = std::time::Instant::now();
+        assert_eq!(refresh(&host, &[tunnel("k8s")]).await, Outcome::default());
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        assert!(host.calls.borrow().is_empty(), "{:?}", host.calls);
+        drop(held);
+        // and once it is done, the next one does the work, once
+        let out = refresh(&host, &[tunnel("k8s")]).await;
+        assert_eq!(out.reinstalled.len(), 1, "{out:?}");
+        let restarts = host
+            .calls
+            .borrow()
+            .iter()
+            .filter(|c| c.starts_with("restart "))
+            .count();
+        assert_eq!(restarts, 1);
+    }
+
+    #[tokio::test]
+    async fn an_errored_job_with_a_stale_definition_is_reloaded() {
+        let host = Fake::with(LABEL, OLD, TunnelStatus::Error);
+        let out = refresh(&host, &[tunnel("k8s")]).await;
+        assert_eq!(out.reinstalled, vec![LABEL.to_string()], "{out:?}");
+        let calls = host.calls.borrow().clone();
+        let write = calls.iter().position(|c| c.starts_with("write ")).unwrap();
+        let restart = calls
+            .iter()
+            .position(|c| c.starts_with("restart "))
+            .expect("an errored job keeps its loaded definition until it is reloaded");
+        assert!(write < restart, "{calls:?}");
+        // An errored job has no client to drop: connections are not asked
+        assert!(
+            calls.iter().all(|c| !c.starts_with("connections ")),
+            "{calls:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_busy_tunnel_is_rewritten_but_not_restarted_and_is_named() {
+        let mut host = Fake::with(LABEL, OLD, TunnelStatus::Running);
+        host.busy.insert(2222, 3);
+        let out = refresh(&host, &[tunnel("k8s")]).await;
+        assert_eq!(out.deferred, vec![("k8s".to_string(), 3)], "{out:?}");
+        let calls = host.calls.borrow().clone();
+        assert!(calls.contains(&format!("write {LABEL}")), "{calls:?}");
+        assert!(
+            calls.iter().all(|c| !c.starts_with("restart ")),
+            "{calls:?}"
+        );
+        assert!(
+            !host.restart_pending(LABEL),
+            "a deferral is not a failed restart"
+        );
+        let lines = report(&out);
+        let said = lines.join("\n");
+        assert!(
+            said.contains("k8s") && said.contains("3 open connection"),
+            "{said}"
+        );
+        assert!(said.contains("gtunnel restart k8s"), "{said}");
+        // The file is current now, so the next command has nothing to say
+        host.calls.borrow_mut().clear();
+        assert_eq!(refresh(&host, &[tunnel("k8s")]).await, Outcome::default());
+        assert!(host.calls.borrow().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_idle_tunnel_is_restarted_and_its_port_was_asked_about() {
+        let host = Fake::with(LABEL, OLD, TunnelStatus::Running);
+        let out = refresh(&host, &[tunnel("k8s")]).await;
+        assert!(out.deferred.is_empty(), "{out:?}");
+        let calls = host.calls.borrow().clone();
+        assert!(calls.contains(&"connections 2222".to_string()), "{calls:?}");
+        assert!(calls.contains(&format!("restart {LABEL}")), "{calls:?}");
+    }
+
+    #[tokio::test]
+    async fn a_pending_restart_goes_ahead_even_when_a_client_is_connected() {
+        // The job was already taken down by the failed attempt, so there is
+        // no connection worth sparing
+        let mut host = Fake::with(LABEL, &current_shape(), TunnelStatus::Running);
+        host.busy.insert(2222, 3);
+        host.pending.borrow_mut().insert(LABEL.to_string());
+        refresh(&host, &[tunnel("k8s")]).await;
+        assert!(host.calls.borrow().contains(&format!("restart {LABEL}")));
+        assert!(!host.restart_pending(LABEL));
+    }
+
+    #[tokio::test]
+    async fn a_watchdog_stamped_newer_is_left_alone_and_an_unstamped_one_is_stamped() {
+        let newer = format!("{WATCHDOG_OLD}{}", stamped(NEWER));
+        let host = with_watchdog(&newer);
+        let out = refresh(&host, &[]).await;
+        assert_eq!(
+            out.newer.as_ref().map(|n| n.0.as_str()),
+            Some(NEWER),
+            "{out:?}"
+        );
+        assert!(host.calls.borrow().is_empty());
+
+        // The right shape, no stamp: rewritten, quietly
+        let unstamped_now =
+            WATCHDOG_NOW.replace("Environment=GTUNNEL_DEFINITION_VERSION=1.2.3\n", "");
+        let host = with_watchdog(&unstamped_now);
+        let out = refresh(&host, &[]).await;
+        assert!(report(&out).is_empty(), "{out:?}");
+        assert_eq!(*host.calls.borrow(), vec!["watchdog install".to_string()]);
+    }
+
+    #[test]
+    fn a_version_compares_by_its_numbers_and_an_unreadable_one_is_unstamped() {
+        assert!(parse_version("0.2.67") < parse_version("0.2.100"));
+        assert!(parse_version("1.0.0") > parse_version("0.99.99"));
+        assert_eq!(parse_version("1.2.3-rc.1"), parse_version("1.2.3"));
+        assert_eq!(parse_version("1.2.3+build"), parse_version("1.2.3"));
+        assert_eq!(parse_version("main"), None);
+        assert_eq!(parse_version("1.2"), None);
+        assert_eq!(parse_version(""), None);
+    }
+
+    #[test]
+    fn every_definition_this_binary_renders_carries_the_stamp() {
+        use crate::daemon::{forwarded_in, DEFINITION_VERSION, DEFINITION_VERSION_VAR};
+        let program = std::path::Path::new("/opt/gtunnel");
+        let log = std::path::Path::new("/tmp/watchdog.log");
+        let plist = super::super::launchd::render_watchdog_plist(program, log, 30);
+        let (service, _) = super::super::systemd::render_watchdog_units(program, log, 30);
+        for text in [&plist, &service] {
+            assert_eq!(
+                forwarded_in(text, DEFINITION_VERSION_VAR).as_deref(),
+                Some(DEFINITION_VERSION),
+                "{text}"
+            );
+        }
+        // and a tunnel's, through the same reader the refresh uses
+        let mut spec = Fake::default().spec_for(&tunnel("k8s")).unwrap();
+        spec.env = vec![(
+            DEFINITION_VERSION_VAR.to_string(),
+            DEFINITION_VERSION.to_string(),
+        )];
+        for text in [
+            super::super::launchd::render_plist(&spec),
+            super::super::systemd::render_unit(&spec),
+        ] {
+            assert_eq!(
+                forwarded_in(&text, DEFINITION_VERSION_VAR).as_deref(),
+                Some(DEFINITION_VERSION)
+            );
+        }
+        // A version bump alone never makes a definition stale
+        let bumped = plist.replace(DEFINITION_VERSION, "999.0.0");
+        assert!(!is_stale(&bumped, &plist, |_| true));
     }
 
     #[tokio::test]

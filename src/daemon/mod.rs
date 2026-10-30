@@ -70,6 +70,20 @@ pub const FORWARDED_ENV_VARS: [&str; 12] = [
     "CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE",
 ];
 
+/// The environment entry that says which gtunnel wrote a definition.
+///
+/// The refresh cannot tell an older definition from a newer one by reading its
+/// arguments: a downgrade, or a second install on `PATH`, looks exactly like
+/// an upgrade to a binary that treats every difference as "mine is right", and
+/// two versions then rewrite and restart every tunnel back and forth. The
+/// stamp gives the comparison a direction. It lives in the environment, where
+/// the refresh already ignores `GTUNNEL_*` entries when it compares shapes, so
+/// a version bump alone never makes a definition stale.
+pub const DEFINITION_VERSION_VAR: &str = "GTUNNEL_DEFINITION_VERSION";
+
+/// The version this binary stamps into what it writes
+pub const DEFINITION_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 // A daemon does not inherit an interactive shell's PATH, so gcloud's directory
 // is written into the unit. Without it the daemon dies at startup every time.
 fn daemon_env_with(
@@ -90,6 +104,10 @@ fn daemon_env_with(
         // without this a line is held until 4 KiB have accumulated or the
         // process exits, and a working tunnel reads as a silent one.
         ("PYTHONUNBUFFERED".to_string(), "1".to_string()),
+        (
+            DEFINITION_VERSION_VAR.to_string(),
+            DEFINITION_VERSION.to_string(),
+        ),
     ];
     for name in RESTART_VARS.into_iter().chain(FORWARDED_ENV_VARS) {
         if let Some(value) = get(name).filter(|v| !v.trim().is_empty()) {
