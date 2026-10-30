@@ -237,7 +237,13 @@ pub async fn supervise(
         }
         return Ok(crate::daemon::auth_expired_exit(cfg!(target_os = "macos")));
     }
-    let code = status.code().unwrap_or(1);
+    let mut code = status.code().unwrap_or(1);
+    if exited_clean_unasked(status.success(), asked_to_stop) {
+        // Outside the budget and the park code on purpose: the tunnel is not
+        // failing, it is gone, and only a non-zero exit gets it started again
+        let _ = writeln!(std::io::stderr(), "gcloud exited 0 on its own, restarting");
+        code = 1;
+    }
     let outage = is_outage_exit(
         status.success(),
         asked_to_stop,
@@ -497,6 +503,13 @@ fn is_outage_exit(
     !succeeded && !asked_to_stop && matches!(last, Some(Failure::Network | Failure::Timeout))
 }
 
+/// Whether the child quit with 0 and nobody asked it to. The service managers
+/// treat 0 as finished, and on macOS 0 is also the deliberate park code, so
+/// this exit has to be turned into a failure to bring the tunnel back.
+fn exited_clean_unasked(succeeded: bool, asked_to_stop: bool) -> bool {
+    succeeded && !asked_to_stop
+}
+
 /// Whether the verdict ends the job.
 fn stops_for_budget(verdict: Verdict) -> bool {
     matches!(verdict, Verdict::Stop)
@@ -749,7 +762,8 @@ mod tests {
         )
         .await
         .expect("run echo");
-        assert_eq!(code, 0);
+        // Nobody asked it to stop, so even a clean exit is a restart
+        assert_eq!(code, 1);
     }
 
     #[tokio::test]
@@ -784,8 +798,9 @@ mod tests {
         )
         .await
         .expect("run");
-        // Gone before the child started, and back once it said it listens
-        assert_eq!(code, 0);
+        // Gone before the child started, and back once it said it listens;
+        // it then quit on its own, which is reported as a failure
+        assert_eq!(code, 1);
         assert!(!ready.exists(), "removed when the supervisor exits");
         assert!(
             !dir.path().join("probes").join("18443").exists(),
@@ -795,6 +810,29 @@ mod tests {
 
     fn fake_gcloud(script: &str) -> Vec<String> {
         vec!["sh".to_string(), "-c".to_string(), script.to_string()]
+    }
+
+    // launchd (`SuccessfulExit:false`) and systemd (`Restart=on-failure`) read
+    // 0 as done, so a child that quit by itself has to be reported as a failure
+    #[tokio::test]
+    async fn a_clean_exit_nobody_asked_for_exits_nonzero() {
+        let code = supervise(fake_gcloud("exit 0"), None, None, None, None, None)
+            .await
+            .expect("run");
+        assert_ne!(code, 0, "the service manager would call the tunnel done");
+        assert_ne!(code, crate::daemon::AUTH_EXPIRED_EXIT, "that is the park");
+        assert_eq!(code, 1);
+    }
+
+    #[test]
+    fn a_clean_exit_is_restarted_only_when_nobody_asked_for_it() {
+        assert!(exited_clean_unasked(true, false));
+        assert!(!exited_clean_unasked(true, true), "the person asked");
+        assert!(
+            !exited_clean_unasked(false, false),
+            "a failure has its own paths"
+        );
+        assert!(!exited_clean_unasked(false, true));
     }
 
     // A restart cannot fix an expired login, so the exit must be one the
@@ -913,7 +951,8 @@ mod tests {
         )
         .await
         .expect("run");
-        assert_eq!(code, 0);
+        // Nobody asked it to stop, so the clean exit is a restart, not a park
+        assert_eq!(code, 1);
         assert!(!marker.exists());
     }
 
