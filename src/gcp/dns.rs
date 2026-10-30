@@ -1,6 +1,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
+use super::client::encode_query_value;
 use super::{is_not_found, GcpClient};
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -10,16 +11,9 @@ pub struct ManagedZone {
     pub dns_name: String,
 }
 
-#[derive(Deserialize)]
-struct ManagedZoneList {
-    #[serde(default, rename = "managedZones")]
-    managed_zones: Vec<ManagedZone>,
-}
-
 pub async fn list_managed_zones(client: &GcpClient, project: &str) -> Result<Vec<ManagedZone>> {
     let url = format!("{}/projects/{project}/managedZones", client.endpoints.dns);
-    let raw: ManagedZoneList = client.get(&url).await?;
-    Ok(raw.managed_zones)
+    client.get_all(&url, "managedZones").await
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,12 +27,6 @@ pub struct RecordSet {
     pub rrdatas: Vec<String>,
 }
 
-#[derive(Deserialize)]
-struct RecordSetList {
-    #[serde(default)]
-    rrsets: Vec<RecordSet>,
-}
-
 pub async fn list_record_sets(
     client: &GcpClient,
     project: &str,
@@ -48,8 +36,30 @@ pub async fn list_record_sets(
         "{}/projects/{project}/managedZones/{zone}/rrsets",
         client.endpoints.dns
     );
-    let raw: RecordSetList = client.get(&url).await?;
-    Ok(raw.rrsets)
+    client.get_all(&url, "rrsets").await
+}
+
+/// One record by name and type. The route code asks this instead of listing
+/// the zone, so a zone larger than a page can neither hide the record nor cost
+/// a walk of every page to find it. The answer is filtered again here because
+/// the name is what an existing-record decision rests on.
+pub async fn find_record_set(
+    client: &GcpClient,
+    project: &str,
+    zone: &str,
+    name: &str,
+    rtype: &str,
+) -> Result<Option<RecordSet>> {
+    let url = format!(
+        "{}/projects/{project}/managedZones/{zone}/rrsets?name={}&type={}",
+        client.endpoints.dns,
+        encode_query_value(name),
+        encode_query_value(rtype)
+    );
+    let found: Vec<RecordSet> = client.get_all(&url, "rrsets").await?;
+    Ok(found
+        .into_iter()
+        .find(|r| r.name == name && r.rtype == rtype))
 }
 
 pub async fn create_record_set(
@@ -165,5 +175,75 @@ mod tests {
         )
         .await
         .expect("delete");
+    }
+
+    #[tokio::test]
+    async fn a_record_on_the_second_page_of_a_zone_is_found() {
+        use wiremock::matchers::query_param;
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/projects/p/managedZones/example-dev/rrsets"))
+            .and(query_param("pageToken", "page-2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "rrsets": [{"name": "late.dev.example.com.", "type": "A", "ttl": 60,
+                            "rrdatas": ["34.1.2.3"]}]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/projects/p/managedZones/example-dev/rrsets"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "rrsets": [{"name": "early.dev.example.com.", "type": "A", "ttl": 60,
+                            "rrdatas": ["34.1.2.4"]}],
+                "nextPageToken": "page-2"
+            })))
+            .mount(&server)
+            .await;
+
+        let got = list_record_sets(&client(&server), "p", "example-dev")
+            .await
+            .expect("list");
+        assert!(got.iter().any(|r| r.name == "late.dev.example.com."));
+    }
+
+    #[tokio::test]
+    async fn find_record_set_asks_for_one_name_and_type() {
+        use wiremock::matchers::query_param;
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/projects/p/managedZones/example-dev/rrsets"))
+            .and(query_param("name", "api.dev.example.com."))
+            .and(query_param("type", "A"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "rrsets": [{"name": "api.dev.example.com.", "type": "A", "ttl": 60,
+                            "rrdatas": ["34.1.2.3"]}]
+            })))
+            .mount(&server)
+            .await;
+
+        let got = find_record_set(
+            &client(&server),
+            "p",
+            "example-dev",
+            "api.dev.example.com.",
+            "A",
+        )
+        .await
+        .expect("find");
+        assert_eq!(got.map(|r| r.rrdatas), Some(vec!["34.1.2.3".to_string()]));
+    }
+
+    #[tokio::test]
+    async fn find_record_set_is_none_when_the_zone_has_no_such_record() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .mount(&server)
+            .await;
+
+        let got = find_record_set(&client(&server), "p", "example-dev", "x.example.com.", "A")
+            .await
+            .expect("find");
+        assert_eq!(got, None);
     }
 }
