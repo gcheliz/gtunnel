@@ -14,6 +14,7 @@ pub enum ErrorKind {
     NotFound,
     Auth,
     Gcloud,
+    Unavailable,
     Internal,
 }
 
@@ -26,6 +27,7 @@ impl ErrorKind {
             ErrorKind::NotFound => "not_found",
             ErrorKind::Auth => "auth",
             ErrorKind::Gcloud => "gcloud",
+            ErrorKind::Unavailable => "unavailable",
             ErrorKind::Internal => "internal",
         }
     }
@@ -40,6 +42,7 @@ impl ErrorKind {
             ErrorKind::NotFound => 3,
             ErrorKind::Auth => 4,
             ErrorKind::Gcloud => 5,
+            ErrorKind::Unavailable => 6,
         }
     }
 
@@ -53,6 +56,7 @@ impl ErrorKind {
             ErrorKind::NotFound,
             ErrorKind::Auth,
             ErrorKind::Gcloud,
+            ErrorKind::Unavailable,
         ]
         .into_iter()
         .find(|kind| Some(kind.exit_code()) == code)
@@ -194,6 +198,7 @@ mod tests {
         let api = |status| GcpError::Api {
             status,
             message: "m".into(),
+            reason: None,
         };
         let cases = [
             (api(401), ErrorKind::Auth, 4),
@@ -259,6 +264,7 @@ mod tests {
             (ErrorKind::NotFound, "not_found", 3),
             (ErrorKind::Auth, "auth", 4),
             (ErrorKind::Gcloud, "gcloud", 5),
+            (ErrorKind::Unavailable, "unavailable", 6),
         ];
         for (kind, name, code) in kinds {
             assert_eq!(kind.as_str(), name);
@@ -274,6 +280,7 @@ mod tests {
             ErrorKind::NotFound,
             ErrorKind::Auth,
             ErrorKind::Gcloud,
+            ErrorKind::Unavailable,
         ] {
             assert_eq!(ErrorKind::from_exit_code(Some(kind.exit_code())), kind);
         }

@@ -12,6 +12,10 @@ mod doctor;
 mod ephemeral;
 mod error;
 mod expose;
+// Callers arrive one commit at a time (exit codes, advice, supervisor), each
+// landing green; the allowance goes with the last of them
+#[allow(dead_code)]
+mod failure;
 mod fields;
 mod fsutil;
 mod gcp;
