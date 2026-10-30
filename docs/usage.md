@@ -410,7 +410,9 @@ token that cannot be minted, including an expired refresh token, counts as logge
 `doctor` skips it because it reports broken credentials as a finding; `init` has no account
 yet; a prompt would corrupt `mcp`'s JSON-RPC on stdin and stdout. Background services run
 `gcloud` directly and never check. Only the selected account is checked: after switching
-accounts in the TUI, a logged-out account surfaces as the error in that tunnel's log.
+accounts in the TUI, a logged-out account surfaces as the error in that tunnel's log. An
+operation the TUI or `mcp` starts, such as a move to a logged-out account, never prompts: it
+fails with an `auth` error, shown in the status line or returned as the tool error.
 
 On a terminal, a failed probe asks `[y/N]` (default `No`), runs
 `gcloud auth login --configuration=<configuration>` on the terminal, then probes again. Only
