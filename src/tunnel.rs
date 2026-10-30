@@ -111,9 +111,16 @@ pub fn access_argv(acct: &Account, t: &PersistentTunnel, level: LogLevel) -> Res
 // gcloud's --verbosity governs gcloud, not the ssh it execs, so ssh needs the
 // level spelled in its own scale. `LogLevel::ssh_log_level` is where that
 // translation lives and why `info` reaches ssh as DEBUG.
+//
+// ConnectTimeout is here because ServerAlive* only starts after authentication:
+// through gcloud's ProxyCommand nothing else bounds a banner exchange that
+// stalls behind IAP. The watchdog rescues a jump tunnel with a port probe but
+// skips expose tunnels, so for those this option is the only bound.
 fn ssh_forward_options(level: LogLevel, forward_flag: &str) -> Vec<String> {
     let mut opts: Vec<String> = [
         "-N",
+        "-o",
+        "ConnectTimeout=30",
         "-o",
         "ExitOnForwardFailure=yes",
         "-o",
@@ -521,6 +528,8 @@ mod tests {
                 "--",
                 "-N",
                 "-o",
+                "ConnectTimeout=30",
+                "-o",
                 "ExitOnForwardFailure=yes",
                 "-o",
                 "ServerAliveInterval=30",
@@ -547,6 +556,8 @@ mod tests {
                 "--verbosity=info",
                 "--",
                 "-N",
+                "-o",
+                "ConnectTimeout=30",
                 "-o",
                 "ExitOnForwardFailure=yes",
                 "-o",
@@ -761,6 +772,23 @@ mod tests {
             argv.contains(&"ServerAliveInterval=30".to_string()),
             "{argv:?}"
         );
+    }
+
+    #[test]
+    fn forward_options_bound_the_handshake() {
+        // ServerAlive* only starts after authentication, so through a
+        // ProxyCommand ConnectTimeout alone bounds a stalled banner exchange.
+        let jump = access_argv(&account(), &jump_tunnel(), LogLevel::Info).expect("jump");
+        let expose = expose_argv(
+            &account(),
+            &expose_config(),
+            &expose_tunnel("3000"),
+            LogLevel::Info,
+        )
+        .expect("expose");
+        for argv in [jump, expose] {
+            assert!(argv.contains(&"ConnectTimeout=30".to_string()), "{argv:?}");
+        }
     }
 
     #[test]
