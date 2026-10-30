@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -198,10 +198,29 @@ async fn dispatch(req: JsonRpcRequest, id: Option<serde_json::Value>) -> Option<
 pub async fn run() -> Result<()> {
     let stdin = tokio::io::stdin();
     let mut stdout = tokio::io::stdout();
-    let mut reader = BufReader::new(stdin).lines();
+    let mut reader = BufReader::new(stdin);
+    let mut raw = Vec::new();
 
-    while let Ok(Some(line)) = reader.next_line().await {
-        if let Some(resp) = handle_message(&line).await {
+    // Bytes, not `lines()`: a line that is not UTF-8 is one client's mistake,
+    // and `lines()` reports it as an error that a `while let Ok` took for the
+    // end of input, so every request after it went unanswered with exit 0
+    loop {
+        raw.clear();
+        let read = reader
+            .read_until(b'\n', &mut raw)
+            .await
+            .context("Failed to read from stdin")?;
+        if read == 0 {
+            break;
+        }
+        let resp = match std::str::from_utf8(&raw) {
+            Ok(line) => handle_message(line).await,
+            Err(e) => Some(JsonRpcResponse::error(
+                None,
+                JsonRpcError::new(PARSE_ERROR, format!("Parse error: {e}")),
+            )),
+        };
+        if let Some(resp) = resp {
             let serialized = serde_json::to_string(&resp)?;
             match write_line(&mut stdout, &serialized).await {
                 // The client closed its end: it has gone, which ends the

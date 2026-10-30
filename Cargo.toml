@@ -1,6 +1,6 @@
 [package]
 name = "gtunnel"
-version = "0.2.41"
+version = "0.2.46"
 edition = "2024"
 # std File::lock sets this floor; ratatui 0.30 needs 1.88.
 rust-version = "1.89"
@@ -51,6 +51,12 @@ undocumented_unsafe_blocks = "warn"
 dbg_macro = "warn"
 todo = "warn"
 unimplemented = "warn"
+# The TUI owns the screen and the MCP server owns stdout, so a print reachable
+# from either corrupts them. Printing is allowed where it is the job: the CLI
+# `cmd_` wrappers and modules that are CLI output by nature, the supervisor,
+# and tests. Anywhere else it fails CI.
+print_stdout = "warn"
+print_stderr = "warn"
 
 # Sizes are macOS arm64, measured one key at a time on top of the previous.
 [profile.release]

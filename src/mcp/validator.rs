@@ -182,6 +182,7 @@ pub fn validate_registered_tools() -> Result<ValidationSummary, Vec<String>> {
 }
 
 /// CLI command runner for `gtunnel mcp --validate`.
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub fn run_validate() -> Result<()> {
     match validate_registered_tools() {
         Ok(summary) => {

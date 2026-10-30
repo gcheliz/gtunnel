@@ -1,3 +1,6 @@
+// The whole module is CLI output, so printing is its job
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+
 //! One pass over every tunnel: look, decide, act, remember.
 //!
 //! The deciding lives in [`crate::breaker`] and stays pure. This file is the
@@ -727,6 +730,7 @@ mod tests {
     fn a_public_tunnel_is_skipped_and_said_to_be_skipped() {
         let state = crate::state::TunnelState {
             tunnels: vec![access("kubernetes"), expose("docs")],
+            ..Default::default()
         };
         let (watched, skipped) = targets(&state);
 

@@ -212,6 +212,10 @@ The bound is the same at all three: a log is emptied when its tunnel starts, and
 (`logs.max_size`) gtunnel keeps the last 2 MiB (`logs.keep_size`) behind a first line saying so.
 At `debug` a busy tunnel reaches 8 MiB in minutes rather than weeks.
 
+A log that cannot be written, on a full disk for example, stops growing but does not stop the
+tunnel: the supervisor keeps reading gcloud's output, so it still stops the job on expired
+credentials.
+
 The trim runs only when a gtunnel process writes to the log (the TUI open or a command
 running), so an unattended tunnel grows until someone looks. `du -sh` over the logs directory
 is worth a look; `gtunnel restart <name>` empties one.
@@ -502,6 +506,7 @@ So a relay is about USD 25/month per account, and a tunnel on top of it is free.
 | Finding | What it removes |
 |---|---|
 | Stale local record | A tunnel in `tunnels.toml` with no service installed |
+| Stale reservation | An `expose` that claimed a name and relay port in `tunnels.toml` ten minutes ago and never finished, so the port stays held. A reservation is not a tunnel: `list`, `status` and the TUI do not show it |
 | Dead ephemeral | A `run` record whose process is gone |
 | Auto-start drift | Nothing: the service manager is brought to the `auto_start` in `tunnels.toml` |
 | Missing watchdog | Nothing: the watchdog agent is installed |

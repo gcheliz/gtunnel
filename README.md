@@ -54,7 +54,7 @@ brew install gcheliz/tap/gtunnel
 [latest release](https://github.com/gcheliz/gtunnel/releases/latest):
 
 ```
-VERSION="v0.2.41"
+VERSION="v0.2.46"
 F="gtunnel-macos-arm64-${VERSION}.tar.gz"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F.sha256"

@@ -92,7 +92,7 @@ Specify the release version and substitute your machine's file: `gtunnel-macos-a
 `gtunnel-macos-intel`, `gtunnel-linux-amd64` or `gtunnel-linux-arm64`.
 
 ```
-VERSION="v0.2.41"
+VERSION="v0.2.46"
 F="gtunnel-macos-arm64-${VERSION}.tar.gz"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F.sha256"
@@ -104,7 +104,7 @@ so they run on any glibc.
 
 ```
 $ gtunnel --version
-gtunnel 0.2.41
+gtunnel 0.2.46
 ```
 
 #### Already installed another way
@@ -410,7 +410,9 @@ token that cannot be minted, including an expired refresh token, counts as logge
 `doctor` skips it because it reports broken credentials as a finding; `init` has no account
 yet; a prompt would corrupt `mcp`'s JSON-RPC on stdin and stdout. Background services run
 `gcloud` directly and never check. Only the selected account is checked: after switching
-accounts in the TUI, a logged-out account surfaces as the error in that tunnel's log.
+accounts in the TUI, a logged-out account surfaces as the error in that tunnel's log. An
+operation the TUI or `mcp` starts, such as a move to a logged-out account, never prompts: it
+fails with an `auth` error, shown in the status line or returned as the tool error.
 
 On a terminal, a failed probe asks `[y/N]` (default `No`), runs
 `gcloud auth login --configuration=<configuration>` on the terminal, then probes again. Only
@@ -447,7 +449,7 @@ check itself. On a Homebrew install:
 
 ```
 $ gtunnel list
-gtunnel v9.9.9 is available (current: v0.2.41). Run `brew upgrade gtunnel`.
+gtunnel v9.9.9 is available (current: v0.2.46). Run `brew upgrade gtunnel`.
 ```
 
 ## The TUI

@@ -1386,6 +1386,7 @@ mod tests {
         };
         let state = TunnelState {
             tunnels: vec![access, expose],
+            ..Default::default()
         };
         let text = toml::to_string_pretty(&state).expect("serialize");
         assert!(

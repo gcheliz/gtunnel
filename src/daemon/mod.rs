@@ -469,6 +469,7 @@ pub fn remove_log(path: &std::path::Path) -> Result<()> {
 }
 
 #[cfg(test)]
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 mod tests {
     use super::*;
     use crate::state::TunnelStatus;
@@ -1582,6 +1583,7 @@ mod tests {
 // Live launchd lifecycle check, run by hand on macOS:
 //   cargo test --features _live_daemon daemon::live -- --ignored --nocapture
 #[cfg(all(test, target_os = "macos"))]
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 mod live {
     use super::*;
     use crate::state::TunnelStatus;

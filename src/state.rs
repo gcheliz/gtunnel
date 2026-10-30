@@ -164,10 +164,34 @@ impl PersistentTunnel {
     }
 }
 
+/// How long a reservation may stand before `doctor` calls it stale. A route
+/// takes seconds to build, so ten minutes is a command that died, not one that
+/// is slow.
+pub const RESERVATION_STALE_SECS: u64 = 600;
+
+/// A relay port and name held for an `expose` whose route is still being built.
+/// It lives beside `tunnels`, not in it, so status, list, the TUI, MCP and
+/// discovery never see a tunnel that has no service and no route yet; only the
+/// port allocator, the name check and `doctor` read it. `reserved_at` leads the
+/// struct because TOML wants plain values before the tunnel's tables.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Reservation {
+    pub reserved_at: u64,
+    pub tunnel: PersistentTunnel,
+}
+
+impl Reservation {
+    pub fn is_stale(&self, now: u64) -> bool {
+        now.saturating_sub(self.reserved_at) >= RESERVATION_STALE_SECS
+    }
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TunnelState {
     #[serde(default)]
     pub tunnels: Vec<PersistentTunnel>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reservations: Vec<Reservation>,
 }
 
 impl TunnelState {
@@ -284,6 +308,66 @@ impl TunnelState {
         found
     }
 
+    /// Choose a relay port and hold it, in one step under the caller's lock, so
+    /// two `expose` commands cannot pick the same one before either has built
+    /// its route. `taken` is what the caller knows beyond this file (live runs);
+    /// the saved tunnels and the other reservations are counted here.
+    pub fn reserve_relay_port(
+        &mut self,
+        name: &str,
+        account: &str,
+        taken: &HashSet<u16>,
+        now: u64,
+        build: impl FnOnce(u16) -> PersistentTunnel,
+    ) -> Result<PersistentTunnel> {
+        if self.find_for_account(name, account).is_some() || self.find_reservation(name, account) {
+            return Err(crate::error::GtunnelError::usage(format!(
+                "Tunnel '{name}' already exists for account '{account}'"
+            ))
+            .into());
+        }
+        self.check_label(account, name)?;
+        let mut used = self.used_relay_ports(account);
+        used.extend(taken);
+        let port = allocate_port(name, RELAY_PORT_BASE, RELAY_PORT_SPAN, &used, |_| true)?;
+        let tunnel = build(port);
+        self.reservations.push(Reservation {
+            reserved_at: now,
+            tunnel: tunnel.clone(),
+        });
+        Ok(tunnel)
+    }
+
+    fn find_reservation(&self, name: &str, account: &str) -> bool {
+        self.reservations
+            .iter()
+            .any(|r| r.tunnel.name == name && r.tunnel.account_name == account)
+    }
+
+    /// Drop a reservation, for a route that failed or a stale one `doctor` is
+    /// clearing. Says whether one was there.
+    pub fn release_reservation(&mut self, name: &str, account: &str) -> bool {
+        let before = self.reservations.len();
+        self.reservations
+            .retain(|r| !(r.tunnel.name == name && r.tunnel.account_name == account));
+        self.reservations.len() != before
+    }
+
+    /// Turn a reservation into the saved tunnel once its route exists. A
+    /// missing reservation is an error: `doctor` cleared it as stale, and the
+    /// port may since have gone to another tunnel.
+    pub fn commit_reservation(&mut self, name: &str, account: &str) -> Result<()> {
+        let idx = self
+            .reservations
+            .iter()
+            .position(|r| r.tunnel.name == name && r.tunnel.account_name == account)
+            .ok_or_else(|| {
+                anyhow!("The reservation for '{name}' was cleared while the route was created")
+            })?;
+        let held = self.reservations.remove(idx);
+        self.add(held.tunnel)
+    }
+
     pub fn remove_for_account(&mut self, name: &str, account: &str) -> Option<PersistentTunnel> {
         let idx = self
             .tunnels
@@ -303,10 +387,12 @@ impl TunnelState {
             .collect()
     }
 
-    // Relay ports live on one account's relay instance
+    // Relay ports live on one account's relay instance; a reservation holds its
+    // port the same as a saved tunnel does
     pub fn used_relay_ports(&self, account: &str) -> HashSet<u16> {
         self.tunnels
             .iter()
+            .chain(self.reservations.iter().map(|r| &r.tunnel))
             .filter(|t| t.account_name == account)
             .filter_map(|t| match &t.spec {
                 TunnelSpec::Expose { relay_port, .. } => Some(*relay_port),
@@ -624,6 +710,96 @@ mod tests {
         }
     }
 
+    fn reserve(state: &mut TunnelState, name: &str, now: u64) -> PersistentTunnel {
+        state
+            .reserve_relay_port(name, "dev", &HashSet::new(), now, |p| expose(name, p))
+            .expect("reserved")
+    }
+
+    fn relay_port_of(t: &PersistentTunnel) -> u16 {
+        match &t.spec {
+            TunnelSpec::Expose { relay_port, .. } => *relay_port,
+            _ => panic!("not an expose tunnel"),
+        }
+    }
+
+    // Two names whose hash starts them at the same port: the second has to
+    // see the first's claim or both walk away with it
+    #[test]
+    fn two_reservations_never_get_the_same_port() {
+        let first = "web";
+        let start = name_hash(first) % RELAY_PORT_SPAN as u32;
+        let second = (0..)
+            .map(|n| format!("api{n}"))
+            .find(|n| name_hash(n) % RELAY_PORT_SPAN as u32 == start)
+            .expect("a colliding name");
+        let mut state = TunnelState::default();
+        let a = reserve(&mut state, first, 0);
+        let b = reserve(&mut state, &second, 0);
+        assert_ne!(relay_port_of(&a), relay_port_of(&b));
+    }
+
+    #[test]
+    fn a_reserved_name_is_refused_to_a_second_claimant() {
+        let mut state = TunnelState::default();
+        reserve(&mut state, "web", 0);
+        let again =
+            state.reserve_relay_port("web", "dev", &HashSet::new(), 0, |p| expose("web", p));
+        assert!(again.is_err());
+    }
+
+    #[test]
+    fn a_reservation_is_not_a_tunnel_until_it_is_committed() {
+        let mut state = TunnelState::default();
+        let held = reserve(&mut state, "web", 0);
+        assert!(state.tunnels_for_account("dev").is_empty());
+        assert!(state
+            .used_relay_ports("dev")
+            .contains(&relay_port_of(&held)));
+
+        state.commit_reservation("web", "dev").expect("committed");
+        assert_eq!(state.tunnels, vec![held]);
+        assert!(state.reservations.is_empty());
+        assert!(state.commit_reservation("web", "dev").is_err());
+    }
+
+    #[test]
+    fn a_released_reservation_frees_its_port() {
+        let mut state = TunnelState::default();
+        let held = reserve(&mut state, "web", 0);
+        assert!(state.release_reservation("web", "dev"));
+        assert!(!state.release_reservation("web", "dev"));
+        assert!(state.used_relay_ports("dev").is_empty());
+        assert_eq!(
+            relay_port_of(&reserve(&mut state, "web", 0)),
+            relay_port_of(&held)
+        );
+    }
+
+    #[test]
+    fn reservations_round_trip_and_an_empty_list_leaves_the_file_unchanged() {
+        let mut state = TunnelState::default();
+        state.tunnels.push(expose("kept", 30001));
+        assert!(!toml::to_string_pretty(&state)
+            .expect("serialize")
+            .contains("reservations"));
+
+        reserve(&mut state, "web", 42);
+        let text = toml::to_string_pretty(&state).expect("serialize");
+        let back: TunnelState = toml::from_str(&text).expect("parse");
+        assert_eq!(back, state);
+    }
+
+    #[test]
+    fn a_reservation_is_stale_only_after_the_window() {
+        let mut state = TunnelState::default();
+        reserve(&mut state, "web", 1000);
+        let r = &state.reservations[0];
+        assert!(!r.is_stale(1000 + RESERVATION_STALE_SECS - 1));
+        assert!(r.is_stale(1000 + RESERVATION_STALE_SECS));
+        assert!(!r.is_stale(0), "a clock that went back is not stale");
+    }
+
     fn access_jump(name: &str) -> PersistentTunnel {
         PersistentTunnel {
             name: name.to_string(),
@@ -681,6 +857,7 @@ mod tests {
                 access_dest_group("pg"),
                 expose("api", 30123),
             ],
+            ..Default::default()
         };
         let text = toml::to_string_pretty(&state).expect("serialize");
         assert!(text.contains(r#"mode = "access""#), "got:\n{text}");
