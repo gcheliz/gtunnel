@@ -448,7 +448,15 @@ async fn resume_logins(state: &TunnelState, verbose: bool) {
     let (Ok(dir), Ok(config)) = (crate::config::config_dir(), crate::config::load_config()) else {
         return;
     };
-    let outcome = resume::pass(state, &dir, &resume::Live { config }).await;
+    let outcome = resume::pass(
+        state,
+        &dir,
+        &resume::Live {
+            config,
+            paced: true,
+        },
+    )
+    .await;
     if verbose {
         for line in resume::report(&outcome, &[]) {
             println!("{line}");

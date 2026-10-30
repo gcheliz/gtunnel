@@ -72,6 +72,9 @@ pub trait Resumer {
     /// implementation: a hung gcloud is a refusal, not a wait.
     async fn token_ok(&self, account: &str) -> bool;
     async fn start(&self, tunnel: &Parked) -> Result<()>;
+    /// A pause before each start, so tunnels a login brings back do not start
+    /// their gcloud processes in one second. Nothing for a person waiting.
+    async fn settle(&self);
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -107,6 +110,7 @@ pub async fn resume(dir: &Path, parked: Vec<Parked>, with: &impl Resumer) -> Out
         for tunnel in tunnels {
             let id = format!("{}.{}", tunnel.account, tunnel.name);
             daemon::remove_auth_marker_in(dir, &tunnel.label);
+            with.settle().await;
             match with.start(&tunnel).await {
                 Ok(()) => outcome.started.push(id),
                 Err(err) => outcome.failed.push((id, format!("{err:#}"))),
@@ -126,6 +130,9 @@ pub async fn pass(state: &TunnelState, dir: &Path, with: &impl Resumer) -> Outco
 /// The real world: gcloud for the token, the service manager for the start.
 pub struct Live {
     pub config: crate::config::Config,
+    /// Spread the starts. The watchdog's pass sets it; a command or a tool
+    /// call has a person waiting on it and does not.
+    pub paced: bool,
 }
 
 impl Resumer for Live {
@@ -133,6 +140,15 @@ impl Resumer for Live {
         match self.config.get_account(Some(account)) {
             Ok(acct) => crate::gcp::gcloud::print_access_token(acct).await.is_ok(),
             Err(_) => false,
+        }
+    }
+
+    async fn settle(&self) {
+        if self.paced {
+            tokio::time::sleep(crate::daemon::backoff::spread(
+                crate::daemon::backoff::RESTART_SPREAD,
+            ))
+            .await;
         }
     }
 
@@ -230,7 +246,15 @@ pub async fn cmd_start_auth_expired(account: Option<&str>) -> Result<()> {
         println!("No tunnel is stopped on an expired login");
         return Ok(());
     }
-    let outcome = resume(&dir, found.resumable, &Live { config }).await;
+    let outcome = resume(
+        &dir,
+        found.resumable,
+        &Live {
+            config,
+            paced: false,
+        },
+    )
+    .await;
     for line in report(&outcome, &found.left_alone) {
         println!("{line}");
     }
@@ -287,6 +311,7 @@ mod tests {
         login_works: bool,
         tokens: RefCell<Vec<String>>,
         starts: RefCell<Vec<String>>,
+        settles: RefCell<u32>,
         refuse: Option<&'static str>,
     }
 
@@ -296,6 +321,7 @@ mod tests {
                 login_works,
                 tokens: RefCell::default(),
                 starts: RefCell::default(),
+                settles: RefCell::default(),
                 refuse: None,
             }
         }
@@ -306,6 +332,9 @@ mod tests {
             self.tokens.borrow_mut().push(account.to_string());
             self.login_works
         }
+        async fn settle(&self) {
+            *self.settles.borrow_mut() += 1;
+        }
         async fn start(&self, tunnel: &Parked) -> Result<()> {
             if self.refuse == Some(tunnel.name.as_str()) {
                 anyhow::bail!("port in use");
@@ -313,6 +342,31 @@ mod tests {
             self.starts.borrow_mut().push(tunnel.name.clone());
             Ok(())
         }
+    }
+
+    #[tokio::test]
+    async fn each_tunnel_a_login_brings_back_is_started_after_its_own_pause() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["db", "cache", "k8s"] {
+            mark(dir.path(), "dev", name, "login-expired");
+        }
+        let all = vec![
+            parked("dev", "db"),
+            parked("dev", "cache"),
+            parked("dev", "k8s"),
+        ];
+        let fake = Fake::new(true);
+
+        resume(dir.path(), all.clone(), &fake).await;
+        assert_eq!(*fake.settles.borrow(), 3, "one pause per start");
+
+        let refused = Fake::new(false);
+        resume(dir.path(), all, &refused).await;
+        assert_eq!(
+            *refused.settles.borrow(),
+            0,
+            "a login that fails starts nothing"
+        );
     }
 
     #[tokio::test]
