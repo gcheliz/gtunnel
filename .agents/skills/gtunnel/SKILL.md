@@ -82,7 +82,7 @@ The `<service>` suffix only tells apart several instances of one platform in one
 ```bash
 gtunnel add db bastion:5432 -z europe-west1-b
 ```
-`-z <zone>` when the instance is not in the account's default zone.
+The zone is looked up from the instance name; pass `-z <zone>` only when the same name exists in several zones (the tool then fails asking for it).
 
 ### 2. Destination Group (internal IP via IAP)
 ```bash

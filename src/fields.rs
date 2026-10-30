@@ -65,7 +65,7 @@ pub fn help(f: Field) -> &'static str {
             "What you pass to `--account`. Lower case, digits and dashes, e.g. `dev`"
         }
         Field::Project => "The GCP project every tunnel and API call of this account targets",
-        Field::Zone => "Used when a tunnel names an instance without a zone",
+        Field::Zone => "Fallback when an instance's zone cannot be looked up, and the relay's zone",
         Field::Impersonate => {
             "Every gcloud call of this account acts as this service account; you need \
              roles/iam.serviceAccountTokenCreator on it. Most people press Enter and act as themselves"

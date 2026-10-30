@@ -50,13 +50,13 @@ Account name (Enter = work): Could not list projects: Could not get a gcloud acc
 Project (Enter = example-dev-1a2b): 
   Every gcloud call of this account acts as this service account; you need roles/iam.serviceAccountTokenCreator on it. Most people press Enter and act as themselves
 Service account to impersonate (optional, Enter to skip): 
-  Used when a tunnel names an instance without a zone
+  Fallback when an instance's zone cannot be looked up, and the relay's zone
   To list: gcloud compute zones list
 Default zone (optional, Enter to skip): Account 'sandbox' saved to ~/Library/Application Support/gtunnel
-No default zone saved; pass --zone to commands that need one
+No default zone saved; commands look an instance's zone up by name
 ```
 
-The answers were `1`, `sandbox`, then Enter for the project, the service account and the zone, piped in, so they do not echo. This configuration has no zone, so Enter skipped it.
+The answers were `1`, `sandbox`, then Enter for the project, the service account and the zone, piped in, so they do not echo. This configuration has no zone, so the zone was asked and Enter skipped it.
 
 `init` also writes every tunable key of `config.toml` at its default, `[restart]`, `[watch]`,
 `[logs]` and `[gcp]` included, adding only the keys that are missing:
@@ -81,17 +81,19 @@ does not show still works.
 | Has rows | Prints them, asks `Project, by number or id` |
 | Is empty, or the call fails | Prints `Could not list projects: <cause>` once, then asks `Project` as a typed field; the transcript above is this path |
 
-The zone step works the same way: the project's zones are printed as `N. <zone>`, the
-configuration's zone marked `(default)`, and `Default zone, by number or name`
-takes a row number or a zone name. A zone the project does not have is refused. When the
-zones cannot be listed, as in the transcript, the prompt is `Default zone`
-with the same `optional, Enter to skip` hint.
+A zone the gcloud configuration holds is saved without a question. Only a configuration
+with none gets the zone step, which works like the project step: the project's zones are
+printed as `N. <zone>` and `Default zone, by number or name` takes a row number or a zone
+name. A zone the project does not have is refused. When the zones cannot be listed, as in
+the transcript, the prompt is `Default zone` with the same `optional, Enter to skip` hint.
 
-The zone is optional, because many gcloud configurations have none. Without one, the
-commands that reach an instance by zone (`add` and `run` to an instance, `add --via`,
-`relay up`) stop with exit code 2 and `no zone for account '<name>'` before any request, until
-you pass `--zone` or run `gtunnel account edit <name> --zone <zone>`. A `--dest-group` tunnel
-takes a region and needs no zone.
+The zone is optional, because `add` and `run` look an instance's zone up by its name. The
+default is the fallback when that lookup cannot run (no permission, no network) and the
+relay's zone: `relay up` stops with exit code 2 and `no zone for account '<name>'` without
+`--zone` or a default. Set one later with `gtunnel account edit <name> --zone <zone>`.
+
+`init` checks the gcloud login before it lists projects and zones, offering `gcloud auth
+login` on a terminal, as [Startup](usage.md#startup) describes.
 
 The list is fetched with the configuration's own credentials, and only projects in the
 `ACTIVE` state are offered, up to 5,000. The cause is one line: a `403` means the account
@@ -112,7 +114,7 @@ gtunnel add <NAME> <HOST:PORT> --dest-group G --region R --network N [-s]
 
 | Flag | Effect |
 |---|---|
-| `-z`, `--zone` | Zone of the instance; the account default otherwise |
+| `-z`, `--zone` | Zone of the instance. Looked up from the instance name when omitted, see below |
 | `--local-port` | Fixed local port; otherwise one is allocated from 15000-15999, stable per name, skipping any a saved tunnel or a live run holds |
 | `--via` | Reach a host the instance can reach, rather than a port of the instance |
 | `--dest-group` | Target an IAP destination group instead of an instance |
@@ -134,7 +136,7 @@ Options:
       --account <ACCOUNT>        Use a specific account (overrides the default)
       --via <VIA>                GCP instance name (port 22 open) to forward from, for a host only it can reach, e.g. bastion
       --log-level <LEVEL>        How much to log: quiet, info or debug (default: info)
-  -z, --zone <ZONE>              Zone of the instance, e.g. europe-west1-b (default: the account's zone)
+  -z, --zone <ZONE>              Zone of the instance, e.g. europe-west1-b (default: looked up from the instance)
       --local-port <LOCAL_PORT>  Port on localhost you connect to, e.g. 15432 (allocated automatically when omitted)
       --dest-group <DEST_GROUP>  IAP destination group, for targets that are not a compute instance, e.g. my-group
       --region <REGION>          Region of the destination group, e.g. europe-west1
@@ -142,6 +144,25 @@ Options:
   -s, --start                    Start the tunnel immediately after adding
   -h, --help                     Print help
 ```
+
+Without `--zone`, `add` asks the project which zone holds the instance (one filtered
+`aggregated/instances` call), so an instance in a zone other than the account's default needs
+no flag, and the instance is checked in the same call.
+
+| The lookup finds | `add` does |
+|---|---|
+| One instance | Saves its zone |
+| None | Exit 3, `Instance '<name>' not found in project '<project>'` |
+| Several, in different zones | Exit 2, naming the zones and asking for `--zone` |
+| Cannot run (permission, network) | Without a terminal: the account's default zone with a warning, or with none exit 2 asking for `--zone` |
+
+On a terminal, the last three, and a lookup that cannot run, ask for the zone instead of failing: the prompt lists the
+zones when there are several, starts from the account default (or blank), and accepts a
+number or a name. A script and the MCP server never prompt and keep the exit codes above;
+the TUI reopens its add dialog at an extra `Zone (Enter keeps it)` step, filled with the
+account default or blank. `run` resolves the zone the same way. Because the lookup reaches GCP, `add`
+without `--zone` checks the login first, as [Startup](usage.md#startup) lists; `add --zone`
+without `-s` does not.
 
 The local port is derived from the tunnel name, so the same name gets the same port on
 every machine unless it is taken. A port held by a live `gtunnel run`, in any account,

@@ -328,6 +328,7 @@ pub async fn execute(account: &str, op: Op) -> OpResult {
         Ok(message) => OpResult {
             message,
             ok: true,
+            zone_needed: None,
             reload: true,
             from_create: matches!(op, Op::Create(_)),
             from_account: touches_accounts(&op),
@@ -337,6 +338,10 @@ pub async fn execute(account: &str, op: Op) -> OpResult {
         Err(e) => OpResult {
             message: format!("{e:#}"),
             ok: false,
+            // An answer the dialog can ask for, so it reopens at a zone step
+            zone_needed: e
+                .downcast_ref::<crate::commands::ZoneUnresolved>()
+                .map(|z| z.prefill.clone()),
             // A failed create may already have saved its record: `add` saves
             // before it installs and starts, so the list must be re-read or
             // the name check cannot see the half-made tunnel. A move that
@@ -512,19 +517,21 @@ async fn create(new: &NewTunnel) -> Result<String> {
     match new.mode {
         TunnelMode::Access => {
             let (target, via) = add_arguments(new);
-            let added = crate::commands::access::add_tunnel(
+            let added = crate::commands::access::add_tunnel_with(
                 Some(&new.account),
                 crate::commands::access::AddRequest {
                     name: &new.name,
                     target: &target,
                     via: via.as_deref(),
-                    zone: Some(&new.zone),
+                    // Empty means the instance was typed, not picked: looked up
+                    zone: (!new.zone.is_empty()).then_some(new.zone.as_str()),
                     local_port: Some(new.local_port),
                     dest_group: None,
                     region: None,
                     network: None,
                     start: true,
                 },
+                true,
             )
             .await?;
             if !added.warnings.is_empty() {

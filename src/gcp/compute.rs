@@ -124,6 +124,52 @@ pub async fn get_instance(
     }
 }
 
+/// Every instance of the project called `name`, with the zone each one is in.
+/// The compute API answers "which zone holds X" with one filtered aggregated
+/// list, so a caller that has only a name never has to ask the person for a
+/// zone. Zero, one or several come back: names are unique per zone, not per
+/// project, and deciding what several means is the resolver's job.
+pub async fn find_instances(
+    client: &GcpClient,
+    project: &str,
+    name: &str,
+) -> Result<Vec<Instance>> {
+    let filter = format!("name=\"{name}\"");
+    let url = format!(
+        "{}/projects/{project}/aggregated/instances?filter={}",
+        client.endpoints.compute,
+        query_encode(&filter)
+    );
+    let raw: AggregatedInstances = client.get(&url).await?;
+    let mut out = Vec::new();
+    for (scope, bucket) in raw.items {
+        let zone_hint = scope.strip_prefix("zones/").unwrap_or(&scope).to_string();
+        out.extend(
+            bucket
+                .instances
+                .into_iter()
+                .filter(|i| i.name == name)
+                .map(|i| i.into_instance(&zone_hint)),
+        );
+    }
+    out.sort_by(|a, b| a.zone.cmp(&b.zone));
+    Ok(out)
+}
+
+// Only unreserved characters pass; `=` and `"` in a filter must not be read as
+// query syntax
+fn query_encode(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
 #[derive(Deserialize)]
 struct NamedList {
     #[serde(default)]
@@ -1288,6 +1334,35 @@ mod tests {
         let got = list_instances(&client(&server), "p").await.expect("list");
         let names: Vec<&str> = got.iter().map(|i| i.name.as_str()).collect();
         assert_eq!(names, vec!["alpha", "middle", "zeta"]);
+    }
+
+    #[tokio::test]
+    async fn find_instances_asks_for_the_name_and_returns_each_zone() {
+        use wiremock::matchers::query_param;
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/projects/p/aggregated/instances"))
+            .and(query_param("filter", "name=\"bastion\""))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+              "items": {
+                "zones/us-central1-a": {"instances": [{"name":"bastion","zone":"https://x/projects/p/zones/us-central1-a"}]},
+                "zones/europe-west1-b": {"instances": [{"name":"bastion","zone":"https://x/projects/p/zones/europe-west1-b"}]},
+                "zones/asia-east1-a": {"warning": {"code": "NO_RESULTS_ON_PAGE"}}
+              }
+            })))
+            .mount(&server)
+            .await;
+
+        let got = find_instances(&client(&server), "p", "bastion")
+            .await
+            .expect("find");
+        let zones: Vec<&str> = got.iter().map(|i| i.zone.as_str()).collect();
+        assert_eq!(zones, vec!["europe-west1-b", "us-central1-a"]);
+    }
+
+    #[test]
+    fn a_filter_is_encoded_so_its_quotes_are_not_query_syntax() {
+        assert_eq!(query_encode("name=\"a-b\""), "name%3D%22a-b%22");
     }
 
     #[tokio::test]

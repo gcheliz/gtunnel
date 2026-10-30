@@ -163,6 +163,7 @@ async fn demo_loop(
                     app.apply(OpResult {
                         message: format!("demo: {op:?} does nothing here"),
                         ok: true,
+                        zone_needed: None,
                         reload: false,
                         from_create: matches!(op, Op::Create(_)),
                         from_account: false,

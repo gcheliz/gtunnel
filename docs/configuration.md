@@ -59,7 +59,7 @@ Each entry in `accounts`:
 | `name` | string | yes | What you type after `--account`, and the first half of the service label |
 | `gcloud_configuration` | string | yes | The gcloud configuration whose credentials and project gtunnel uses |
 | `project` | string | yes | The GCP project every API call targets. Picked or typed: `init` and the TUI's edit dialog list the projects the account can see and accept a typed id as well, with the gcloud configuration's project as the default |
-| `default_zone` | string | yes | The zone assumed when `add` is given an instance and no `--zone`. Typed |
+| `default_zone` | string | yes | The zone `relay up` uses without `--zone`, and the fallback when `add` or `run` cannot look an instance's zone up (an instance's own zone is read from the project by name). Saved from the gcloud configuration when it has one, else typed or left empty |
 | `impersonate_service_account` | string | no | A service account to impersonate; omitted entirely when unset. The logged-in user needs `roles/iam.serviceAccountTokenCreator` on it |
 | `credential_file` | string | no | Absolute path of a service-account key or a workload identity federation file. gtunnel passes it to gcloud on every call as `--credential-file-override=<path>` and never copies, stores or logs it; `doctor` reads it to check its type and mode. Omitted entirely when unset; a relative path or `~` does not stop the config loading: the commands of that account exit 2 naming it, `account edit` clears it, and `doctor` reports it. See [Running in CI](usage.md#running-in-ci) |
 | `expose` | table | no | The account's relay, written by `relay up` and removed by `relay down` |

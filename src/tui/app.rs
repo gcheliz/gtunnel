@@ -352,6 +352,9 @@ pub struct AccountDraft {
 pub struct OpResult {
     pub message: String,
     pub ok: bool,
+    // A create that could not settle the instance's zone by itself: the zone
+    // to offer in the dialog's extra step (empty when there is none)
+    pub zone_needed: Option<String>,
     // The op changed tunnels.toml or a service, so the list is stale
     pub reload: bool,
     // Ops overlap, so only a create's own result may settle a create's draft
@@ -377,6 +380,8 @@ pub enum InputMode {
     AddJumpHost,
     AddRemotePort,
     AddLocalPort,
+    // Only reached when a create could not look the instance's zone up
+    AddZone,
     AddLocalTarget,
     AddDomain,
     // What `e` asks first: the target and ports, a rename, or a move. One
@@ -417,6 +422,7 @@ impl InputMode {
                 | InputMode::AddJumpHost
                 | InputMode::AddRemotePort
                 | InputMode::AddLocalPort
+                | InputMode::AddZone
                 | InputMode::AddLocalTarget
                 | InputMode::EditTarget
                 | InputMode::RenameTo
@@ -451,6 +457,7 @@ impl InputMode {
             InputMode::AddJumpHost => "Target private host (Enter for the instance itself):",
             InputMode::AddRemotePort => "Remote port:",
             InputMode::AddLocalPort => "Local port (Enter keeps the suggestion):",
+            InputMode::AddZone => "Zone (Enter keeps it):",
             InputMode::AddLocalTarget => "Local target (e.g. localhost:3000):",
             InputMode::AddDomain => "Domain:",
             InputMode::EditTarget => "Ports (remote:local):",
@@ -468,6 +475,9 @@ impl InputMode {
     pub fn describe(&self) -> &'static str {
         if *self == InputMode::AccountConfiguration {
             return fields::CONFIGURATION_WITH_LISTING;
+        }
+        if *self == InputMode::AddZone {
+            return "The instance's zone could not be looked up. Enter keeps the one shown, e.g. europe-west1-b";
         }
         self.field().map_or("", fields::help)
     }
@@ -509,6 +519,8 @@ impl InputMode {
             InputMode::AddJumpHost => Some((3, 5)),
             InputMode::AddRemotePort => Some((4, 5)),
             InputMode::AddLocalPort => Some((5, 5)),
+            // An extra step, on the one path where the lookup could not answer
+            InputMode::AddZone => Some((6, 6)),
             InputMode::AddName => Some((1, 3)),
             InputMode::AddLocalTarget => Some((2, 3)),
             InputMode::AddDomain => Some((3, 3)),
@@ -2469,6 +2481,25 @@ impl App {
                 self.last_draft = Some((draft.clone(), InputMode::AddLocalPort));
                 Some(Op::Create(draft))
             }
+            InputMode::AddZone => {
+                let zone = value.trim().to_string();
+                if zone.is_empty() {
+                    self.input = value;
+                    self.draft_error = Some("Type a zone".to_string());
+                    return None;
+                }
+                if let Err(e) = crate::state::validate_zone(&zone) {
+                    self.input = value;
+                    self.draft_error = Some(e.to_string());
+                    return None;
+                }
+                self.draft.zone = zone;
+                let draft = std::mem::take(&mut self.draft);
+                self.cancel_dialog();
+                self.spinner.start(&format!("create {}", draft.name));
+                self.last_draft = Some((draft.clone(), InputMode::AddLocalPort));
+                Some(Op::Create(draft))
+            }
             InputMode::AddLocalTarget => {
                 if value.trim().is_empty() {
                     return None;
@@ -2609,19 +2640,10 @@ impl App {
                     Some(c) => (c.name, c.zone),
                     // A filter that matches nothing is the person naming an
                     // instance the list lacks, or could not fetch: take it
+                    // The zone is left empty: the add looks it up by name, and
+                    // asks in an extra step when that cannot answer
                     None if !self.input.trim().is_empty() => {
-                        // An account saved without a zone has nothing to
-                        // fill in for an instance the list lacks
-                        if self.default_zone.is_empty() {
-                            self.draft_error = Some(format!(
-                                "no zone for account '{}': pick an instance from the list, \
-                                 or set one with \
-                                 gtunnel account edit {0} --zone <zone>",
-                                self.account
-                            ));
-                            return None;
-                        }
-                        (self.input.trim().to_string(), self.default_zone.clone())
+                        (self.input.trim().to_string(), String::new())
                     }
                     None => {
                         self.draft_error = Some("Type an instance name".to_string());
@@ -2865,6 +2887,7 @@ impl App {
     fn reopen(&mut self, draft: NewTunnel, step: InputMode, message: &str) {
         self.input = match step {
             InputMode::AddLocalPort => draft.local_port.to_string(),
+            InputMode::AddZone => draft.zone.clone(),
             _ => String::new(),
         };
         self.draft = draft;
@@ -2892,7 +2915,15 @@ impl App {
             && !result.ok
             && self.input_mode == InputMode::Normal
         {
-            self.reopen(draft, step, &result.message);
+            match result.zone_needed.clone() {
+                // Offered rather than assumed: the account default, or blank
+                Some(prefill) => {
+                    let mut draft = draft;
+                    draft.zone = prefill;
+                    self.reopen(draft, InputMode::AddZone, &result.message);
+                }
+                None => self.reopen(draft, step, &result.message),
+            }
         }
         // By account as well as name: the result of prod's `db` must not
         // settle dev's, and the row it belongs to may not be on screen
@@ -3464,6 +3495,7 @@ mod follow_up_tests {
         app.apply(OpResult {
             message: "started".to_string(),
             ok: true,
+            zone_needed: None,
             reload: true,
             from_create: false,
             from_account: false,
@@ -3482,6 +3514,7 @@ mod follow_up_tests {
         app.apply(OpResult {
             message: "copied".to_string(),
             ok: true,
+            zone_needed: None,
             reload: false,
             from_create: false,
             from_account: false,

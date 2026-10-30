@@ -186,3 +186,33 @@ fn doctor_is_not_stopped_by_the_startup_check() {
     );
     assert!(!h.exists("login-ran"));
 }
+
+#[test]
+fn an_add_that_looks_the_zone_up_needs_a_login() {
+    // No --zone, so the add asks compute where the instance is: a logged-out
+    // account ends at the gate, exit 4, and no login is started
+    let h = Harness::new(false);
+    let out = h.run(&["add", "db", "bastion:5432"]);
+    assert_eq!(out.status.code(), Some(4), "stderr: {}", stderr(&out));
+    assert!(h.calls().contains("auth print-access-token"));
+    assert!(!h.exists("login-ran"));
+}
+
+#[test]
+fn an_add_to_a_destination_group_stays_offline() {
+    let h = Harness::new(false);
+    h.run(&[
+        "add",
+        "db",
+        "10.0.0.10:5432",
+        "--dest-group",
+        "grp",
+        "--region",
+        "europe-west1",
+    ]);
+    assert!(
+        !h.calls().contains("print-access-token"),
+        "calls: {}",
+        h.calls()
+    );
+}

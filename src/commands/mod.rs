@@ -216,6 +216,175 @@ pub fn require_zone(acct: &Account, flag: Option<&str>) -> Result<String> {
     Ok(acct.default_zone.clone())
 }
 
+/// A zone that could not be settled by itself. Its own type, not a bare
+/// `GtunnelError`, because a person at a terminal or in the TUI can answer it:
+/// the candidates and the prefill are what the zone prompt shows. The kind
+/// keeps the exit code the issue fixes for a script (not found 3, ambiguous 2).
+#[derive(Debug)]
+pub struct ZoneUnresolved {
+    pub kind: crate::error::ErrorKind,
+    message: String,
+    /// The zones that hold an instance of that name, when several do
+    pub candidates: Vec<String>,
+    /// What the prompt starts with: the account default, or empty
+    pub prefill: String,
+}
+
+impl std::fmt::Display for ZoneUnresolved {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ZoneUnresolved {}
+
+/// Where an existing instance lives. `verified` says the lookup itself found
+/// it, so the separate existence check would only repeat the question.
+pub struct InstanceZone {
+    pub zone: String,
+    pub verified: bool,
+    /// Set when the lookup could not run and the account default stood in
+    pub warning: Option<String>,
+}
+
+/// The zone of an instance the command names. `can_ask` says someone is there
+/// to answer a prompt (a terminal, the TUI): a failed lookup then comes back as
+/// `ZoneUnresolved` prefilled with the default, where a script gets the default
+/// with a warning. `--zone` wins; otherwise the
+/// project is asked, because a name identifies the instance and the zone is a
+/// fact to read rather than a question to put to the person. `require_zone`
+/// stays for callers with nothing to look up (the relay creates its VM).
+pub async fn resolve_instance_zone(
+    client: &crate::gcp::GcpClient,
+    acct: &Account,
+    flag: Option<&str>,
+    instance: &str,
+    can_ask: bool,
+) -> Result<InstanceZone> {
+    use crate::error::ErrorKind;
+    if let Some(zone) = flag {
+        crate::state::validate_zone(zone)?;
+        return Ok(InstanceZone {
+            zone: zone.to_string(),
+            verified: false,
+            warning: None,
+        });
+    }
+    let unresolved = |kind, message: String, candidates| ZoneUnresolved {
+        kind,
+        message,
+        candidates,
+        prefill: acct.default_zone.clone(),
+    };
+    match crate::gcp::compute::find_instances(client, &acct.project, instance).await {
+        Ok(found) => match found.as_slice() {
+            [one] => Ok(InstanceZone {
+                zone: one.zone.clone(),
+                verified: true,
+                warning: None,
+            }),
+            [] => Err(unresolved(
+                ErrorKind::NotFound,
+                format!(
+                    "Instance '{instance}' not found in project '{}'. Check the name, or \
+                     pass --zone if it lives in another project's zone list",
+                    acct.project
+                ),
+                Vec::new(),
+            )
+            .into()),
+            many => {
+                let zones: Vec<String> = many.iter().map(|i| i.zone.clone()).collect();
+                Err(unresolved(
+                    ErrorKind::Usage,
+                    format!(
+                        "Instance '{instance}' exists in several zones of project '{}' ({}); \
+                         pass --zone to choose one",
+                        acct.project,
+                        zones.join(", ")
+                    ),
+                    zones,
+                )
+                .into())
+            }
+        },
+        // Someone who can answer is asked, with the default as the prefill:
+        // a lookup that failed is not a reason to pick their zone for them
+        Err(e) if !acct.default_zone.is_empty() && can_ask => Err(unresolved(
+            ErrorKind::Usage,
+            format!("could not look up the zone of instance '{instance}': {e:#}"),
+            Vec::new(),
+        )
+        .into()),
+        Err(e) if !acct.default_zone.is_empty() => Ok(InstanceZone {
+            zone: acct.default_zone.clone(),
+            verified: false,
+            warning: Some(format!(
+                "could not look up the zone of '{instance}' ({e:#}); \
+                 using the account's default zone '{}'",
+                acct.default_zone
+            )),
+        }),
+        Err(e) => {
+            let mut err = unresolved(
+                ErrorKind::Usage,
+                format!(
+                    "could not look up the zone of instance '{instance}': {e:#}. \
+                     Pass --zone"
+                ),
+                Vec::new(),
+            );
+            // A lookup refused for credentials keeps its own exit code
+            err.kind = crate::error::kind_of(&e);
+            if err.kind == ErrorKind::Internal {
+                err.kind = ErrorKind::Usage;
+            }
+            Err(err.into())
+        }
+    }
+}
+
+/// Ask for the zone a failed resolution could not settle. Several matches are
+/// listed and picked by number or name, as an account's zones are; the
+/// prefill is what Enter keeps.
+#[allow(clippy::print_stdout, clippy::print_stderr)]
+pub fn prompt_zone(why: &ZoneUnresolved) -> Result<String> {
+    eprintln!("{why}");
+    for (index, z) in why.candidates.iter().enumerate() {
+        println!("  {}. {z}", index + 1);
+    }
+    let prefill = (!why.prefill.is_empty()).then_some(why.prefill.as_str());
+    let answer = prompt("Zone", prefill)?;
+    let zone = account::resolve_zone_choice(&answer, &why.candidates);
+    if zone.is_empty() {
+        return Err(GtunnelError::new(why.kind, why.to_string()).into());
+    }
+    crate::state::validate_zone(&zone)?;
+    Ok(zone)
+}
+
+/// `resolve_instance_zone`, then the prompt when a terminal is there to
+/// answer it. A script keeps the typed error and its exit code.
+pub async fn resolve_instance_zone_or_ask(
+    client: &crate::gcp::GcpClient,
+    acct: &Account,
+    flag: Option<&str>,
+    instance: &str,
+) -> Result<InstanceZone> {
+    let can_ask = crate::gcp::gcloud::is_interactive();
+    match resolve_instance_zone(client, acct, flag, instance, can_ask).await {
+        Err(e) if can_ask => match e.downcast_ref::<ZoneUnresolved>() {
+            Some(why) => Ok(InstanceZone {
+                zone: prompt_zone(why)?,
+                verified: false,
+                warning: None,
+            }),
+            None => Err(e),
+        },
+        other => other,
+    }
+}
+
 pub fn confirm(question: &str, assume_yes: bool) -> Result<bool> {
     if assume_yes {
         return Ok(true);
@@ -248,6 +417,187 @@ pub async fn tunnel_status(t: &PersistentTunnel) -> TunnelStatus {
 
 #[cfg(test)]
 mod tests {
+
+    // The zone is a fact the project holds, so an add that names only the
+    // instance must read it rather than ask for it
+    mod zone_lookup {
+        use super::super::*;
+        use crate::error::{kind_of, ErrorKind};
+        use crate::gcp::{Endpoints, GcpClient, TokenSource};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        fn acct(default_zone: &str) -> Account {
+            Account {
+                name: "dev".to_string(),
+                gcloud_configuration: "dev".to_string(),
+                project: "example-dev-1a2b".to_string(),
+                default_zone: default_zone.to_string(),
+                impersonate_service_account: None,
+                credential_file: None,
+                expose: None,
+            }
+        }
+
+        fn client(server: &MockServer) -> GcpClient {
+            GcpClient::new(
+                TokenSource::Static("tok".to_string()),
+                Endpoints::single(&server.uri()),
+            )
+        }
+
+        async fn answering(zones: &[&str]) -> MockServer {
+            let server = MockServer::start().await;
+            let items: serde_json::Map<String, serde_json::Value> = zones
+                .iter()
+                .map(|z| {
+                    (
+                        format!("zones/{z}"),
+                        serde_json::json!({"instances": [{"name": "bastion",
+                            "zone": format!("https://x/projects/p/zones/{z}")}]}),
+                    )
+                })
+                .collect();
+            Mock::given(method("GET"))
+                .and(path("/projects/example-dev-1a2b/aggregated/instances"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({ "items": items })),
+                )
+                .mount(&server)
+                .await;
+            server
+        }
+
+        #[tokio::test]
+        async fn one_match_gives_its_zone_with_no_flag_and_no_default() {
+            let server = answering(&["europe-west4-a"]).await;
+            let got = resolve_instance_zone(&client(&server), &acct(""), None, "bastion", false)
+                .await
+                .expect("resolved");
+            assert_eq!(got.zone, "europe-west4-a");
+            assert!(got.verified, "the lookup already proved it exists");
+        }
+
+        #[tokio::test]
+        async fn the_flag_is_used_without_asking_the_api() {
+            let server = MockServer::start().await;
+            let got = resolve_instance_zone(
+                &client(&server),
+                &acct("europe-west1-b"),
+                Some("us-central1-a"),
+                "bastion",
+                false,
+            )
+            .await
+            .expect("resolved");
+            assert_eq!(got.zone, "us-central1-a");
+            assert!(!got.verified);
+            let seen = server.received_requests().await.unwrap_or_default();
+            assert!(seen.is_empty(), "{} requests", seen.len());
+        }
+
+        #[tokio::test]
+        async fn two_zones_are_a_usage_error_naming_both() {
+            let server = answering(&["us-central1-a", "europe-west1-b"]).await;
+            let err = resolve_instance_zone(&client(&server), &acct(""), None, "bastion", false)
+                .await
+                .err()
+                .expect("ambiguous");
+            assert_eq!(kind_of(&err).exit_code(), 2);
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains("europe-west1-b") && msg.contains("us-central1-a"),
+                "{msg}"
+            );
+            assert!(msg.contains("--zone"), "{msg}");
+            let why = err.downcast_ref::<ZoneUnresolved>().expect("typed");
+            assert_eq!(why.candidates, vec!["europe-west1-b", "us-central1-a"]);
+        }
+
+        #[tokio::test]
+        async fn no_such_instance_is_not_found_and_names_the_project() {
+            let server = answering(&[]).await;
+            let err = resolve_instance_zone(
+                &client(&server),
+                &acct("europe-west1-b"),
+                None,
+                "bastion",
+                false,
+            )
+            .await
+            .err()
+            .expect("not found");
+            assert_eq!(kind_of(&err), ErrorKind::NotFound);
+            assert_eq!(kind_of(&err).exit_code(), 3);
+            assert!(format!("{err:#}").contains("example-dev-1a2b"));
+            let why = err.downcast_ref::<ZoneUnresolved>().expect("typed");
+            assert_eq!(
+                why.prefill, "europe-west1-b",
+                "the prompt offers the default"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_lookup_that_fails_falls_back_to_the_default_zone() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(403))
+                .mount(&server)
+                .await;
+            let got = resolve_instance_zone(
+                &client(&server),
+                &acct("europe-west1-b"),
+                None,
+                "bastion",
+                false,
+            )
+            .await
+            .expect("falls back");
+            assert_eq!(got.zone, "europe-west1-b");
+            assert!(!got.verified, "the fallback still has to be checked");
+            assert!(got.warning.is_some());
+        }
+
+        // Someone who can answer is asked, with the default to hand, rather
+        // than given a zone they never chose
+        #[tokio::test]
+        async fn a_lookup_that_fails_asks_a_person_prefilled_with_the_default() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(403))
+                .mount(&server)
+                .await;
+            let err = resolve_instance_zone(
+                &client(&server),
+                &acct("europe-west1-b"),
+                None,
+                "bastion",
+                true,
+            )
+            .await
+            .err()
+            .expect("asks");
+            let why = err.downcast_ref::<ZoneUnresolved>().expect("typed");
+            assert_eq!(why.prefill, "europe-west1-b");
+            assert!(why.candidates.is_empty());
+            assert!(format!("{err:#}").contains("could not look up"), "{err:#}");
+        }
+
+        #[tokio::test]
+        async fn a_lookup_that_fails_with_no_default_says_to_pass_the_zone() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(403))
+                .mount(&server)
+                .await;
+            let err = resolve_instance_zone(&client(&server), &acct(""), None, "bastion", false)
+                .await
+                .err()
+                .expect("no zone");
+            assert!(format!("{err:#}").contains("Pass --zone"), "{err:#}");
+            assert!(err.downcast_ref::<ZoneUnresolved>().is_some());
+        }
+    }
     use super::*;
     use crate::state::{AccessTarget, PersistentTunnel, TunnelSpec, TunnelStatus};
 

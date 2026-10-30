@@ -333,7 +333,7 @@ pub fn all_tools() -> Vec<ToolDefinition> {
                     },
                     "zone": {
                         "type": "string",
-                        "description": "Compute zone of the instance"
+                        "description": "Compute zone of the instance (looked up from the instance name when omitted)"
                     },
                     "local_port": {
                         "type": "integer",
@@ -386,7 +386,7 @@ pub fn all_tools() -> Vec<ToolDefinition> {
                     },
                     "zone": {
                         "type": "string",
-                        "description": "Compute zone of the instance"
+                        "description": "Compute zone of the instance (looked up from the instance name when omitted)"
                     },
                     "local_port": {
                         "type": "integer",

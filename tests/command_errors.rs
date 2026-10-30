@@ -257,9 +257,17 @@ fn account_edit_no_args_fails_with_hint() {
 }
 
 #[test]
-fn add_without_start_does_not_require_gcp_login() {
+fn add_with_a_zone_and_without_start_does_not_require_gcp_login() {
     let h = Harness::logged_out();
-    let out = h.run(&["add", "new-db", "10.0.0.10:5432", "--via", "bastion"]);
+    let out = h.run(&[
+        "add",
+        "new-db",
+        "10.0.0.10:5432",
+        "--via",
+        "bastion",
+        "--zone",
+        "europe-west1-b",
+    ]);
     let err = stderr(&out);
     assert!(out.status.success(), "stderr: {err}");
     assert!(

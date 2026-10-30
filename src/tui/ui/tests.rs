@@ -2884,6 +2884,7 @@ fn a_create_that_succeeded_leaves_no_dialog_behind() {
     app.apply(OpResult {
         message: "cache created".to_string(),
         ok: true,
+        zone_needed: None,
         reload: true,
         from_create: true,
         from_account: false,

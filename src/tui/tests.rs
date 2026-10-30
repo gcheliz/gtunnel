@@ -539,6 +539,7 @@ fn a_failed_operation_marks_the_status_line() {
     app.apply(OpResult {
         message: "permission denied".to_string(),
         ok: false,
+        zone_needed: None,
         reload: false,
         from_create: false,
         from_account: false,
@@ -551,6 +552,7 @@ fn a_failed_operation_marks_the_status_line() {
     app.apply(OpResult {
         message: "db starting".to_string(),
         ok: true,
+        zone_needed: None,
         reload: true,
         from_create: false,
         from_account: false,
@@ -902,7 +904,7 @@ fn an_instance_the_picker_never_offered_can_still_be_typed() {
     keys(&mut app, "bastion\n");
     assert_eq!(app.input_mode, InputMode::AddJumpHost);
     assert_eq!(app.draft.instance, "bastion");
-    assert_eq!(app.draft.zone, "europe-west1-b");
+    assert_eq!(app.draft.zone, "", "left for the add to look up");
     assert!(app.draft_error.is_none(), "an accepted name kept the error");
 }
 
@@ -936,24 +938,7 @@ fn the_suggested_port_is_the_one_the_cli_would_allocate() {
 }
 
 #[test]
-fn a_typed_instance_takes_the_zone_of_the_account_switched_to() {
-    let mut app = app_with_two();
-    app.accounts = vec!["dev".to_string(), "prod".to_string()];
-    app.zones = [
-        ("dev".to_string(), "europe-west1-b".to_string()),
-        ("prod".to_string(), "europe-west4-a".to_string()),
-    ]
-    .into();
-    app.default_zone = "europe-west1-b".to_string();
-    keys(&mut app, ";");
-    assert_eq!(app.account, "prod");
-    keys(&mut app, "a1cache\nbastion\n");
-    assert_eq!(app.input_mode, InputMode::AddJumpHost);
-    assert_eq!(app.draft.zone, "europe-west4-a");
-}
-
-#[test]
-fn a_filter_that_matches_none_of_the_listed_instances_accepts_what_was_typed() {
+fn a_typed_instance_leaves_the_zone_for_the_add_to_look_up() {
     let mut app = at_the_name_prompt();
     app.default_zone = "europe-west1-b".to_string();
     app.instances = vec![InstanceChoice {
@@ -965,22 +950,102 @@ fn a_filter_that_matches_none_of_the_listed_instances_accepts_what_was_typed() {
     keys(&mut app, "cache\nbastion\n");
     assert_eq!(app.input_mode, InputMode::AddJumpHost);
     assert_eq!(app.draft.instance, "bastion");
-    assert_eq!(app.draft.zone, "europe-west1-b");
+    assert_eq!(app.draft.zone, "", "the account default was assumed");
 }
 
 #[test]
-fn typed_instance_without_a_zone_sets_a_draft_error() {
+fn a_typed_instance_needs_no_default_zone_to_go_on() {
     let mut app = at_the_name_prompt();
     app.default_zone = String::new();
     keys(&mut app, "cache\nbastion\n");
+    assert_eq!(app.input_mode, InputMode::AddJumpHost);
+    assert!(app.draft_error.is_none(), "{:?}", app.draft_error);
+}
+
+fn zone_unresolved(prefill: &str) -> OpResult {
+    OpResult {
+        zone_needed: Some(prefill.to_string()),
+        message: "Instance 'bastion' exists in several zones".to_string(),
+        ..failed("")
+    }
+}
+
+fn submitted_with_a_typed_instance(default_zone: &str) -> App {
+    let mut app = at_the_name_prompt();
+    app.default_zone = default_zone.to_string();
+    keys(&mut app, "cache\nbastion\n\n5432\n");
+    assert_eq!(app.input_mode, InputMode::AddLocalPort);
+    let op = keys(&mut app, "\n");
+    assert!(matches!(op, Some(Op::Create(_))), "{op:?}");
+    app
+}
+
+#[test]
+fn a_create_that_cannot_find_the_zone_reopens_at_a_zone_step_prefilled() {
+    let mut app = submitted_with_a_typed_instance("europe-west1-b");
+    app.apply(zone_unresolved("europe-west1-b"));
+    assert_eq!(app.input_mode, InputMode::AddZone);
+    assert_eq!(app.input, "europe-west1-b", "the default is the prefill");
+    assert!(app
+        .draft_error
+        .as_deref()
+        .unwrap_or("")
+        .contains("several zones"));
     assert_eq!(
-        app.input_mode,
-        InputMode::AddInstance,
-        "advanced without a zone"
+        app.draft.instance, "bastion",
+        "the rest of the draft stayed"
     );
-    let error = app.draft_error.as_deref().unwrap_or("");
-    assert!(error.contains("no zone"), "{error}");
-    assert!(app.draft.zone.is_empty(), "a zone-less draft was kept");
+}
+
+#[test]
+fn a_failed_lookup_reopens_at_the_zone_step_with_the_default_prefilled() {
+    let mut app = submitted_with_a_typed_instance("europe-west4-a");
+    app.apply(OpResult {
+        message: "could not look up the zone of instance 'bastion': forbidden".to_string(),
+        ..zone_unresolved("europe-west4-a")
+    });
+    assert_eq!(app.input_mode, InputMode::AddZone);
+    assert_eq!(app.input, "europe-west4-a");
+    let op = keys(&mut app, "\n");
+    match op {
+        Some(Op::Create(draft)) => assert_eq!(draft.zone, "europe-west4-a"),
+        other => panic!("Enter should keep the default, got {other:?}"),
+    }
+}
+
+#[test]
+fn the_zone_step_is_blank_when_no_default_zone_is_known() {
+    let mut app = submitted_with_a_typed_instance("");
+    app.apply(zone_unresolved(""));
+    assert_eq!(app.input_mode, InputMode::AddZone);
+    assert_eq!(app.input, "");
+    let op = keys(&mut app, "\n");
+    assert!(op.is_none(), "an empty zone was submitted");
+    assert_eq!(app.input_mode, InputMode::AddZone);
+}
+
+#[test]
+fn a_zone_typed_at_the_zone_step_is_sent_with_the_resubmitted_create() {
+    let mut app = submitted_with_a_typed_instance("");
+    app.apply(zone_unresolved(""));
+    let op = keys(&mut app, "us-central1-a\n");
+    match op {
+        Some(Op::Create(draft)) => {
+            assert_eq!(draft.zone, "us-central1-a");
+            assert_eq!(draft.instance, "bastion");
+        }
+        other => panic!("expected a create, got {other:?}"),
+    }
+    assert_eq!(app.input_mode, InputMode::Normal);
+}
+
+#[test]
+fn the_zone_step_counts_as_an_extra_sixth_step() {
+    assert_eq!(InputMode::AddZone.step(TunnelMode::Access), Some((6, 6)));
+    assert_eq!(
+        InputMode::AddLocalPort.step(TunnelMode::Access),
+        Some((5, 5))
+    );
 }
 
 #[test]
@@ -1062,6 +1127,7 @@ pub(super) fn failed(message: &str) -> OpResult {
     OpResult {
         message: message.to_string(),
         ok: false,
+        zone_needed: None,
         reload: false,
         from_create: true,
         from_account: false,
@@ -1074,6 +1140,7 @@ fn unrelated(ok: bool, message: &str) -> OpResult {
     OpResult {
         message: message.to_string(),
         ok,
+        zone_needed: None,
         reload: false,
         from_create: false,
         from_account: false,
@@ -1143,6 +1210,7 @@ fn pending_clears_on_the_first_round_after_the_op() {
     app.apply(OpResult {
         message: "db running".to_string(),
         ok: true,
+        zone_needed: None,
         reload: true,
         from_create: false,
         from_account: false,
@@ -2412,6 +2480,7 @@ fn done(account: &str, name: &str, ok: bool, reload: bool) -> OpResult {
     OpResult {
         message: format!("{name} finished"),
         ok,
+        zone_needed: None,
         reload,
         from_create: false,
         from_account: false,

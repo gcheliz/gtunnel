@@ -102,6 +102,12 @@ pub async fn cmd_init() -> Result<()> {
         credential_file: None,
         expose: None,
     };
+    // The project and zone lists below call GCP, and `init` is where a first
+    // login is most likely missing, so a session is ensured before they run
+    // (the dispatcher cannot: it needs an account, and none exists yet)
+    let mut probe = account.clone();
+    probe.project = chosen.project.clone().unwrap_or_default();
+    gcloud::ensure_logged_in(&probe).await?;
     let client = GcpClient::for_account(&account);
 
     let project = match projects::list_projects(&client).await {
@@ -136,39 +142,43 @@ pub async fn cmd_init() -> Result<()> {
     account.project = project;
     account.impersonate_service_account = (!impersonate.is_empty()).then_some(impersonate);
 
-    let client = GcpClient::for_account(&account);
-    let zones = compute::list_zones(&client, &account.project)
-        .await
-        .unwrap_or_default();
-    // Listed as the projects are, so the zone is picked rather than recalled;
-    // an empty list (denied or unreachable) leaves the prompt as it was
-    let zone = if zones.is_empty() {
-        ask(Field::Zone, "Default zone", chosen.zone.as_deref())?
-    } else {
-        println!("Zones:");
-        for (index, z) in zones.iter().enumerate() {
-            let default = if chosen.zone.as_deref() == Some(z.as_str()) {
-                " (default)"
-            } else {
-                ""
-            };
-            println!("  {}. {z}{default}", index + 1);
+    // A zone the gcloud configuration already holds is saved as it is: an
+    // instance's own zone is looked up by name later, so this is only the
+    // fallback and the relay's zone. Only a configuration without one is asked
+    let zoneless;
+    account.default_zone = match chosen.zone.clone().filter(|z| !z.is_empty()) {
+        Some(zone) => {
+            zoneless = false;
+            zone
         }
-        let answer = ask(
-            Field::Zone,
-            "Default zone, by number or name",
-            chosen.zone.as_deref(),
-        )?;
-        resolve_zone_choice(&answer, &zones)
+        None => {
+            let client = GcpClient::for_account(&account);
+            let zones = compute::list_zones(&client, &account.project)
+                .await
+                .unwrap_or_default();
+            // Listed as the projects are, so the zone is picked rather than
+            // recalled; an empty list (denied or unreachable) leaves the
+            // prompt as it was
+            let zone = if zones.is_empty() {
+                ask(Field::Zone, "Default zone", None)?
+            } else {
+                println!("Zones:");
+                for (index, z) in zones.iter().enumerate() {
+                    println!("  {}. {z}", index + 1);
+                }
+                let answer = ask(Field::Zone, "Default zone, by number or name", None)?;
+                resolve_zone_choice(&answer, &zones)
+            };
+            check_zone(&zone, &zones, &account.project)?;
+            zoneless = zone.is_empty();
+            zone
+        }
     };
-    check_zone(&zone, &zones, &account.project)?;
-    let zoneless = zone.is_empty();
-    account.default_zone = zone;
 
     update_or_init_config(|config| config.add_account(account))?;
     println!("Account '{name}' saved to {}", config_dir()?.display());
     if zoneless {
-        println!("No default zone saved; pass --zone to commands that need one");
+        println!("No default zone saved; commands look an instance's zone up by name");
     }
     Ok(())
 }
@@ -209,7 +219,7 @@ fn resolve_project_choice(input: &str, projects: &[Project]) -> String {
 // The same rule as a project: a number in range picks that row, anything else
 // is the zone as typed, which the existence check after the prompt then judges.
 // A zone name never parses as a number.
-fn resolve_zone_choice(input: &str, zones: &[String]) -> String {
+pub(crate) fn resolve_zone_choice(input: &str, zones: &[String]) -> String {
     let typed = input.trim();
     typed
         .parse::<usize>()

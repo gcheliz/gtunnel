@@ -2,7 +2,10 @@ use crate::error::{ErrorKind, GtunnelError};
 use anyhow::{bail, Context, Result};
 use std::time::Duration;
 
-use super::{find_tunnel, require_zone, resolve, status_word, tunnel_status, ListLayout, ListRow};
+use super::{
+    find_tunnel, prompt_zone, resolve, resolve_instance_zone, status_word, tunnel_status,
+    ListLayout, ListRow, ZoneUnresolved,
+};
 use crate::config::Account;
 use crate::daemon;
 use crate::expose::routes;
@@ -108,7 +111,7 @@ pub struct Added {
 
 // The record and the service, without the start: the CLI prints the added line
 // between the two, so a start that fails still leaves it on screen
-async fn save_tunnel(account: Option<&str>, req: &AddRequest<'_>) -> Result<Added> {
+async fn save_tunnel(account: Option<&str>, req: &AddRequest<'_>, can_ask: bool) -> Result<Added> {
     let AddRequest {
         name,
         target,
@@ -141,8 +144,7 @@ async fn save_tunnel(account: Option<&str>, req: &AddRequest<'_>) -> Result<Adde
         // The instance is what gtunnel checks exists; the host behind it is
         // reachable from there or it is not, which only the tunnel can tell
         (_, Some(instance)) => {
-            let zone = require_zone(&acct, zone)?;
-            warnings.extend(verify_instance(&acct, &zone, instance).await?);
+            let zone = instance_zone(&acct, zone, instance, can_ask, &mut warnings).await?;
             AccessTarget::Jump {
                 instance: instance.to_string(),
                 zone,
@@ -158,8 +160,7 @@ async fn save_tunnel(account: Option<&str>, req: &AddRequest<'_>) -> Result<Adde
             network: network.unwrap_or("default").to_string(),
         },
         (None, None) => {
-            let zone = require_zone(&acct, zone)?;
-            warnings.extend(verify_instance(&acct, &zone, &host).await?);
+            let zone = instance_zone(&acct, zone, &host, can_ask, &mut warnings).await?;
             AccessTarget::Instance {
                 instance: host,
                 zone,
@@ -187,6 +188,26 @@ async fn save_tunnel(account: Option<&str>, req: &AddRequest<'_>) -> Result<Adde
         started: None,
         warnings,
     })
+}
+
+// The zone of an instance an add names, checked on the way: a lookup that found
+// it has verified it already, so only a zone from the flag or the default is
+// asked about separately. Never prompts: this is shared with the TUI and MCP,
+// whose callers answer a `ZoneUnresolved` their own way.
+async fn instance_zone(
+    acct: &Account,
+    flag: Option<&str>,
+    instance: &str,
+    can_ask: bool,
+    warnings: &mut Vec<String>,
+) -> Result<String> {
+    let client = GcpClient::for_account(acct);
+    let found = resolve_instance_zone(&client, acct, flag, instance, can_ask).await?;
+    warnings.extend(found.warning);
+    if !found.verified {
+        warnings.extend(verify_instance_with_client(&client, acct, &found.zone, instance).await?);
+    }
+    Ok(found.zone)
 }
 
 /// Vets an explicit port or allocates one, against everything that holds a
@@ -226,7 +247,18 @@ fn pick_local_port(state: &TunnelState, name: &str, requested: Option<u16>) -> R
 /// failed `start: true` is an error about a tunnel that now exists, not about
 /// one that was never made.
 pub async fn add_tunnel(account: Option<&str>, req: AddRequest<'_>) -> Result<Added> {
-    let mut added = save_tunnel(account, &req).await?;
+    add_tunnel_with(account, req, false).await
+}
+
+/// `add_tunnel` for a caller with someone to ask (the TUI): an unsettled zone
+/// comes back as a `ZoneUnresolved` it can turn into a question. The MCP server
+/// stays on `add_tunnel`, which never asks.
+pub async fn add_tunnel_with(
+    account: Option<&str>,
+    req: AddRequest<'_>,
+    can_ask: bool,
+) -> Result<Added> {
+    let mut added = save_tunnel(account, &req, can_ask).await?;
     if req.start {
         added.started = Some(start_tunnel(account, req.name).await?);
     }
@@ -258,7 +290,27 @@ pub async fn cmd_add(
         network,
         start,
     };
-    let added = save_tunnel(account, &req).await?;
+    let can_ask = crate::gcp::gcloud::is_interactive();
+    let added = match save_tunnel(account, &req, can_ask).await {
+        // Nothing was saved before the zone was settled, so asking and trying
+        // again is the same add with one more flag
+        Err(e) if can_ask => match e.downcast_ref::<ZoneUnresolved>() {
+            Some(why) => {
+                let zone = prompt_zone(why)?;
+                save_tunnel(
+                    account,
+                    &AddRequest {
+                        zone: Some(&zone),
+                        ..req
+                    },
+                    false,
+                )
+                .await?
+            }
+            None => return Err(e),
+        },
+        other => other?,
+    };
     for w in &added.warnings {
         eprintln!("Warning: {w}");
     }
@@ -276,15 +328,6 @@ pub async fn cmd_add(
 }
 
 // A typo in an instance name otherwise surfaces as a tunnel that never starts
-pub(crate) async fn verify_instance(
-    acct: &Account,
-    zone: &str,
-    instance: &str,
-) -> Result<Option<String>> {
-    let client = GcpClient::for_account(acct);
-    verify_instance_with_client(&client, acct, zone, instance).await
-}
-
 pub(crate) async fn verify_instance_with_client(
     client: &GcpClient,
     acct: &Account,

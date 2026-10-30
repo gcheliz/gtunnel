@@ -134,6 +134,9 @@ pub fn kind_of(err: &anyhow::Error) -> ErrorKind {
             if let Some(e) = cause.downcast_ref::<crate::gcp::client::GcpError>() {
                 return gcp_kind(e);
             }
+            if let Some(e) = cause.downcast_ref::<crate::commands::ZoneUnresolved>() {
+                return Some(e.kind);
+            }
             if let Some(e) = cause.downcast_ref::<crate::commands::access::StartFailed>() {
                 return Some(e.kind);
             }
