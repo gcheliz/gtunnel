@@ -28,7 +28,7 @@ dirs = "7"
 anyhow = "1"
 rand = "0.10"
 ratatui = "0.30"
-crossterm = "0.29"
+crossterm = { version = "0.29", features = ["use-dev-tty"] }
 libc = "0.2"
 humantime = "2"
 clap_complete = { version = "4.6.11", features = ["unstable-dynamic"] }
@@ -37,6 +37,8 @@ clap_complete = { version = "4.6.11", features = ["unstable-dynamic"] }
 wiremock = "0.6"
 tempfile = "3"
 jsonschema = "0.60.2"
+portable-pty = "0.9.0"
+vt100 = "0.18.1"
 
 [lints.rust]
 # Edition 2024 makes this warn by default; stating it keeps the policy
