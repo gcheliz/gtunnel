@@ -602,6 +602,7 @@ impl Filter {
 /// correlator would stop seeing an expired login, the ready line and the
 /// probes, with nothing saying why. So the reading goes on, and the first
 /// error is said once on stderr, which the service manager logs separately.
+#[allow(clippy::print_stderr)]
 pub async fn pump<R: AsyncBufRead + Unpin, W: Write>(
     mut reader: R,
     out: &mut W,

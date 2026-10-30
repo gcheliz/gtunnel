@@ -20,6 +20,7 @@ pub fn relay_cost_line() -> String {
         .to_string()
 }
 
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub async fn cmd_relay_up(
     account: Option<&str>,
     zone: Option<&str>,
@@ -58,6 +59,7 @@ pub async fn cmd_relay_up(
 }
 
 // One managed zone needs no question; several do
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 async fn pick_managed_zone(client: &GcpClient, project: &str) -> Result<String> {
     let zones = dns::list_managed_zones(client, project).await?;
     match zones.len() {
@@ -81,6 +83,7 @@ async fn pick_managed_zone(client: &GcpClient, project: &str) -> Result<String> 
     }
 }
 
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub async fn cmd_relay_down(account: Option<&str>, force: bool, assume_yes: bool) -> Result<()> {
     let (config, acct) = resolve(account)?;
     let client = GcpClient::for_account(&acct);
@@ -106,6 +109,7 @@ pub async fn cmd_relay_down(account: Option<&str>, force: bool, assume_yes: bool
     Ok(())
 }
 
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub async fn cmd_relay_status(account: Option<&str>) -> Result<()> {
     let (_, acct) = resolve(account)?;
     if acct.expose.is_none() {
@@ -140,6 +144,7 @@ pub async fn cmd_relay_status(account: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub async fn cmd_domains(
     account: Option<&str>,
     default: Option<&str>,
@@ -329,6 +334,7 @@ pub async fn expose_tunnel(account: Option<&str>, req: &ExposeRequest<'_>) -> Re
     })
 }
 
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub async fn cmd_expose(
     account: Option<&str>,
     name: &str,

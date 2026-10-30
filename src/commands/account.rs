@@ -24,6 +24,7 @@ fn field_hint(f: Field, default: Option<&str>) -> String {
 // Says what the value is and where to list it, then asks. The helper lines are
 // plain text on stdout and the default is applied here, so a piped answer is
 // read exactly as `prompt` read it before.
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 fn ask(f: Field, label: &str, default: Option<&str>) -> Result<String> {
     println!();
     println!("  {}", fields::help(f));
@@ -44,6 +45,7 @@ fn ask(f: Field, label: &str, default: Option<&str>) -> Result<String> {
 }
 
 // First run: turn a gcloud configuration into a gtunnel account
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub async fn cmd_init() -> Result<()> {
     gcloud::require_gcloud()?;
     let configurations = gcloud::list_configurations().await?;
@@ -233,6 +235,7 @@ pub struct AccountJson {
     pub selected: bool,
 }
 
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub fn cmd_account_list(json: bool) -> Result<()> {
     let config = load_config()?;
     if json {
@@ -268,6 +271,7 @@ pub fn cmd_account_list(json: bool) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub fn cmd_account_select(name: &str) -> Result<()> {
     account_select(name)?;
     println!("Selected account '{name}'");
@@ -284,6 +288,7 @@ pub fn account_select(name: &str) -> Result<()> {
 // records that no command can reach. `--yes` answers the confirmation below and
 // nothing else: it cannot answer what becomes of the tunnels, which is the one
 // question a script cannot have settled by passing a flag.
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub fn cmd_account_remove(name: &str, assume_yes: bool) -> Result<()> {
     refuse_if_held(name)?;
     if !confirm(&format!("Remove account '{name}'?"), assume_yes)? {
@@ -391,6 +396,7 @@ fn account_from_flags(configuration: &str, name: &str, opts: &AddOptions) -> Res
 // The non-interactive counterpart of `init`, for callers that already know which
 // configuration they mean. It is async because listing configurations shells out
 // to gcloud, which `--project` makes unnecessary.
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub async fn cmd_account_add(configuration: &str, name: &str, opts: AddOptions) -> Result<()> {
     account_add(configuration, name, opts).await?;
     println!("Account '{name}' saved to {}", config_dir()?.display());
@@ -425,6 +431,7 @@ pub async fn account_add(configuration: &str, name: &str, opts: AddOptions) -> R
 // Only the fields given change; an empty value is refused so an edit cannot
 // leave an account without the project or zone every command needs. The
 // credential file is the one field that may be emptied: "" clears it.
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub fn cmd_account_edit(
     name: &str,
     project: Option<&str>,

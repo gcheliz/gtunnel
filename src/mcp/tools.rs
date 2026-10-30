@@ -890,9 +890,13 @@ pub async fn execute_tool(
             // The record is saved before a start is tried, so an error here
             // may describe a tunnel that exists: the text says what failed
             Ok(match add_tunnel(account, req).await {
-                Ok(_) => ToolCallResult::text(format!(
-                    "Added tunnel '{tunnel_name}' for target '{target}'"
-                )),
+                Ok(added) => {
+                    let mut text = format!("Added tunnel '{tunnel_name}' for target '{target}'");
+                    for w in &added.warnings {
+                        text.push_str(&format!("\nWarning: {w}"));
+                    }
+                    ToolCallResult::text(text)
+                }
                 Err(e) => ToolCallResult::failure(&e),
             })
         }
@@ -926,7 +930,7 @@ pub async fn execute_tool(
                 .ok_or_else(|| JsonRpcError::new(INVALID_PARAMS, "Missing 'new_name'"))?;
             Ok(
                 match rename_tunnel(get_str("account"), tunnel_name, new_name).await {
-                    Ok(done) => ToolCallResult::text(done.message()),
+                    Ok(done) => ToolCallResult::text(done.message_with_warnings()),
                     Err(e) => ToolCallResult::failure(&e),
                 },
             )
@@ -937,8 +941,17 @@ pub async fn execute_tool(
             let to =
                 get_str("to").ok_or_else(|| JsonRpcError::new(INVALID_PARAMS, "Missing 'to'"))?;
             Ok(
-                match move_tunnel(tunnel_name, get_str("account"), to, get_str("rename")).await {
-                    Ok(done) => ToolCallResult::text(done.message()),
+                // false: stdin is the JSON-RPC stream, so no login can be asked for
+                match move_tunnel(
+                    tunnel_name,
+                    get_str("account"),
+                    to,
+                    get_str("rename"),
+                    false,
+                )
+                .await
+                {
+                    Ok(done) => ToolCallResult::text(done.message_with_warnings()),
                     Err(e) => ToolCallResult::failure(&e),
                 },
             )
