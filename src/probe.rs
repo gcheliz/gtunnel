@@ -743,6 +743,19 @@ pub(crate) async fn collect_unmanaged_at(
     measure(cfg, t, false, TunnelStatus::Running, runtime, peaks, trail).await
 }
 
+// One tunnel's load balancer traffic. The client is a parameter so a round can
+// hand every tunnel of an account the same one.
+async fn lb_stats(
+    client: &GcpClient,
+    acct: &crate::config::Account,
+    tunnel: &str,
+) -> Option<LbStats> {
+    let backend = crate::expose::naming::Names::new(&acct.name).backend(tunnel);
+    monitoring::lb_request_stats(client, &acct.project, &backend, LB_WINDOW_MINUTES)
+        .await
+        .ok()
+}
+
 async fn measure(
     cfg: &Config,
     t: &PersistentTunnel,
@@ -782,16 +795,10 @@ async fn measure(
         }
         TunnelSpec::Expose { hostname, .. } => {
             if include_lb && let Ok(acct) = cfg.get_account(Some(&t.account_name)) {
-                let client = GcpClient::for_account(acct);
-                let backend = crate::expose::naming::Names::new(&acct.name).backend(&t.name);
-                metrics.lb = monitoring::lb_request_stats(
-                    &client,
-                    &acct.project,
-                    &backend,
-                    LB_WINDOW_MINUTES,
-                )
-                .await
-                .ok();
+                // The account's one client: a round over several public
+                // tunnels asks Google for one token, not one each
+                let client = crate::gcp::client::session_client(acct);
+                metrics.lb = lb_stats(&client, acct, &t.name).await;
             }
             let probe = http_probe(&format!("https://{hostname}")).await;
             metrics.available = metrics.available && probe == HealthStatus::Healthy;
@@ -842,6 +849,132 @@ mod tests {
     use super::*;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn dev_account() -> crate::config::Account {
+        crate::config::Account {
+            name: "dev".into(),
+            gcloud_configuration: "dev".into(),
+            project: "example-dev-1a2b".into(),
+            default_zone: "europe-west1-b".into(),
+            impersonate_service_account: None,
+            credential_file: None,
+            expose: None,
+        }
+    }
+
+    // One `gcloud auth print-access-token` is a Python start that reads the
+    // credential store; three public tunnels must not start three per round
+    #[tokio::test]
+    async fn a_load_balancer_round_over_three_public_tunnels_fetches_one_token() {
+        use crate::gcp::client::ClientPool;
+        use crate::gcp::client::IssuedToken;
+        use crate::gcp::{Endpoints, TokenSource};
+        use std::sync::Arc;
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/projects/example-dev-1a2b/timeSeries"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .mount(&server)
+            .await;
+        let acct = dev_account();
+        // Three tokens queued; a client that went back for more would use them
+        let issued = |t: &str| IssuedToken {
+            token: t.into(),
+            valid_for: None,
+        };
+        let queue = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::from([
+            issued("one"),
+            issued("two"),
+            issued("three"),
+        ])));
+        let pool = ClientPool::default();
+        let make = |_: &crate::config::Account| {
+            GcpClient::new(
+                TokenSource::Sequence(queue.clone()),
+                Endpoints::single(&server.uri()),
+            )
+        };
+
+        let (a, b, c) = (
+            pool.client(&acct, make),
+            pool.client(&acct, make),
+            pool.client(&acct, make),
+        );
+        let round = tokio::join!(
+            lb_stats(&a, &acct, "web"),
+            lb_stats(&b, &acct, "api"),
+            lb_stats(&c, &acct, "docs"),
+        );
+
+        assert!(round.0.is_some() && round.1.is_some() && round.2.is_some());
+        assert_eq!(queue.lock().unwrap().len(), 2, "one token for the round");
+        assert!(Arc::ptr_eq(&a, &b) && Arc::ptr_eq(&b, &c), "one client");
+    }
+
+    // Sharing the client must not share a token that is about to die: the
+    // pooled client keeps #374's expiry margin
+    #[tokio::test]
+    async fn a_pooled_clients_token_near_expiry_is_fetched_again() {
+        use crate::gcp::client::{ClientPool, IssuedToken};
+        use crate::gcp::{Endpoints, TokenSource};
+        use std::sync::Arc;
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/projects/example-dev-1a2b/timeSeries"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .mount(&server)
+            .await;
+        let acct = dev_account();
+        // 200 s left is inside the five-minute margin, so it is never reusable
+        let queue = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::from([
+            IssuedToken {
+                token: "dying".into(),
+                valid_for: Some(Duration::from_secs(200)),
+            },
+            IssuedToken {
+                token: "fresh".into(),
+                valid_for: None,
+            },
+        ])));
+        let pool = ClientPool::default();
+        let make = |_: &crate::config::Account| {
+            GcpClient::new(
+                TokenSource::Sequence(queue.clone()),
+                Endpoints::single(&server.uri()),
+            )
+        };
+        for name in ["web", "api", "docs"] {
+            let client = pool.client(&acct, make);
+            assert!(lb_stats(&client, &acct, name).await.is_some());
+        }
+        assert!(
+            queue.lock().unwrap().is_empty(),
+            "the second call refetched"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_edited_account_gets_a_new_client_not_the_old_ones_token() {
+        use crate::gcp::client::ClientPool;
+        use crate::gcp::{Endpoints, TokenSource};
+        let acct = dev_account();
+        let moved = crate::config::Account {
+            project: "example-dev-9z9z".into(),
+            ..acct.clone()
+        };
+        let pool = ClientPool::default();
+        let make = |_: &crate::config::Account| {
+            GcpClient::new(
+                TokenSource::Static("tok".into()),
+                Endpoints::single("http://127.0.0.1:9"),
+            )
+        };
+        let before = pool.client(&acct, make);
+        assert!(std::sync::Arc::ptr_eq(&before, &pool.client(&acct, make)));
+        assert!(!std::sync::Arc::ptr_eq(&before, &pool.client(&moved, make)));
+    }
 
     // A probe with no tunnel behind it: no log, so a silent close is an answer
     async fn bare_probe(addr: &str, timeout: Duration) -> Option<Duration> {
