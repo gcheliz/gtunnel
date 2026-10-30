@@ -22,7 +22,7 @@ When executing tunnel operations, select tools according to availability:
 
 ### 1. Primary: Native MCP Tools
 If `gtunnel_*` MCP tools are available, prefer them over the CLI:
-- `gtunnel_list_tunnels`: tunnels and live runs, each with `status`, `local_port` (`null` on a public tunnel) and `health` (`healthy`, `unhealthy`, `auth_expired`, `stopped` or `unknown`). One call answers whether every tunnel works.
+- `gtunnel_list_tunnels`: tunnels and live runs, each with `status`, `local_port` (`null` on a public tunnel) and `health` (`healthy`, `unhealthy`, `auth_expired`, `credentials_refused`, `stopped` or `unknown`). One call answers whether every tunnel works.
 - `gtunnel_start_tunnel`: start a tunnel.
 - `gtunnel_stop_tunnel`: stop a tunnel, or a live run.
 - `gtunnel_restart_tunnel`: restart a tunnel.
@@ -33,7 +33,7 @@ If `gtunnel_*` MCP tools are available, prefer them over the CLI:
 - `gtunnel_delete_tunnel`: delete a tunnel and its service.
 - `gtunnel_rename_tunnel`: rename (`name`, `new_name`); service and log follow, a running tunnel restarts. A name in use is refused.
 - `gtunnel_expose_tunnel`: publish a local service at `https://<name>.<domain>` through the account's relay (`name`, `target`, optional `domain`, `public`, `start`). Private by default (Google sign-in), the reverse of the CLI. Pass `public: true` only when the user asked for anyone on the internet to reach it, and confirm first. Only a service on this machine: refuse another host and point at the CLI. Never creates a relay; `gtunnel relay up` is CLI only, and on an existing relay it updates the health check, backend services and startup script in place. `gtunnel doctor` reports a relay that is out of date.
-- `gtunnel_move_tunnel`: move an Access tunnel to another account (`name`, `to`, optional `rename` when the destination uses the name). Confirm first. A failure of kind `auth` means the user must run `gcloud auth login` for that account: MCP cannot prompt. A warning from a tool (an instance that could not be verified on add, an old log left behind by a rename or move) is a `Warning:` line in the tool text, never on stderr.
+- `gtunnel_move_tunnel`: move an Access tunnel to another account (`name`, `to`, optional `rename` when the destination uses the name). Confirm first. A failure of kind `auth` means the credentials need the user (`gcloud auth login`, or a role or key to fix for an account that uses one): MCP cannot prompt. A failure of kind `unavailable` means retry later, not log in again. A warning from a tool (an instance that could not be verified on add, an old log left behind by a rename or move) is a `Warning:` line in the tool text, never on stderr.
 - `gtunnel_list_accounts`: accounts and the selection (`selected_account`, `selected` on each). The `gtunnel://accounts` resource returns the same object.
 - `gtunnel_doctor`: diagnostics on prerequisites, permissions and service configuration.
 
@@ -132,7 +132,7 @@ Never assume a tunnel works. Before reporting a tunnel created or started, produ
 
 ### Step 1: Daemon State Verification
 Read `isError` on every mutating MCP result first: `true` means the call failed, whatever the text says, including a start that did not come up. Then:
-- MCP: Call `gtunnel_get_status` and verify `"status": "running"`, a non-zero PID and `"health": "healthy"`. `auth_expired` is a credentials problem (`gcloud auth login`), not a tunnel one; `unhealthy` means read the log.
+- MCP: Call `gtunnel_get_status` and verify `"status": "running"`, a non-zero PID and `"health": "healthy"`. `auth_expired` is a credentials problem (`gcloud auth login`), not a tunnel one; `credentials_refused` is one a login does not mend (a denied impersonation, an invalid key, a missing gcloud configuration): read the log; `unhealthy` means read the log.
 - CLI: `gtunnel list --json`; the row has `"status": "running"` and `"health": "healthy"`, read the same way.
 
 ### Step 2: Log Inspection
