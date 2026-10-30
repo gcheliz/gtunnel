@@ -532,10 +532,22 @@ gtunnel relay down [--force] [-y]
 resource: `✓` created, `~` updated, `·` already as wanted. `down` refuses while tunnels use the
 relay, unless `--force`.
 
+`down` also removes a backend service tagged `gtunnel:<account>` that points at the relay's
+instance group but that no tunnel lists, which a `run --public` killed before its cleanup leaves
+behind. A backend service gtunnel did not create that points at the group stops `down` before
+the first delete, naming the service: delete it or point it elsewhere, then run `down` again.
+
+`down` holds a per-account lock, `<config dir>/relay-<account>.lock`, from its first check to its
+last delete. `expose`, `run --public`, `start`, `restart` and `relay up` hold the same lock while
+they build, so one started during a teardown stops with `the relay for '<account>' is being torn
+down; try again after relay down finishes` and sends nothing to GCP. `down` waits up to
+`gcp.lock_deadline` for a build that is already running. The lock is released when the process
+exits, so a crash leaves nothing to clean up.
+
 | Resource | What `up` compares, and does on a difference |
 |---|---|
 | Health check | Interval, timeout, thresholds and port specification: one `PATCH` |
-| Backend services | `timeoutSec`, `connectionDraining` and `iap`: one `PATCH` with the fields that differ. `expose`, `start` and `restart` do the same for a tunnel's backend |
+| Backend services | `timeoutSec` (`expose.backend_timeout`, default `1h`), `connectionDraining` (30s) and `iap`: one `PATCH` with the fields that differ. `expose`, `start` and `restart` do the same for a tunnel's backend |
 | Relay instance | The `startup-script` metadata: `setMetadata` with the new script, then the script is re-run over IAP ssh (`sudo google_metadata_script_runner startup`), so sshd changes without recreating the VM. A stopped instance gets the metadata and runs it at its next boot |
 
 A relay that already matches receives no write. If re-running the script fails, `up` stops with
@@ -579,10 +591,11 @@ opens nothing.
 The rules and their sources are in [What GCP needs](gcp.md#firewall-rules-relay-up-creates).
 
 A public tunnel forwards with `ssh -R 0.0.0.0:<relay-port>:<local target>`, so the port listens
-on every interface of the relay. Any other rule on that network admitting `30000-30999` from
-elsewhere, such as an allow-all, lets a client who knows the relay's address reach the service
-directly. **That skips the load balancer and, with `--private`, the IAP sign-in in front of
-it.** Check the network's rules before the first `gtunnel expose`.
+on every interface of the relay. The relay's startup script adds an `nftables` rule that drops
+`30000-30999` from every source but the load balancer, so a VM in the same VPC cannot skip the
+load balancer or the `--private` IAP sign-in even under an allow-all rule. A relay created
+before that script existed gets it from the next `gtunnel relay up`. The rule protects the
+relay VM only; it does not replace reviewing the network's other rules.
 
 ## account
 

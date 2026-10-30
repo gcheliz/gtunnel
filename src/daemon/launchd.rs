@@ -266,6 +266,8 @@ pub fn render_watchdog_plist(
     <dict>
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>{stamp_var}</key>
+        <string>{stamp}</string>
     </dict>
     <key>RunAtLoad</key>
     <true/>
@@ -281,6 +283,8 @@ pub fn render_watchdog_plist(
 </plist>
 "#,
         label = WATCHDOG_LABEL,
+        stamp_var = super::DEFINITION_VERSION_VAR,
+        stamp = super::DEFINITION_VERSION,
         program = xml_escape(&program.to_string_lossy()),
         interval = interval_secs,
         log = xml_escape(&log.to_string_lossy()),

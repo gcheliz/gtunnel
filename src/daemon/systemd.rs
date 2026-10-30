@@ -116,12 +116,15 @@ Description=gtunnel - restart tunnels that are refusing connections
 
 [Service]
 Type=oneshot
+Environment={stamp_var}={stamp}
 ExecStart={program} watch --once
 StandardOutput=append:{log}
 StandardError=append:{log}
 "#,
         program = quote(&program.to_string_lossy()),
         log = log.display(),
+        stamp_var = super::DEFINITION_VERSION_VAR,
+        stamp = super::DEFINITION_VERSION,
     );
     let timer = format!(
         r#"[Unit]

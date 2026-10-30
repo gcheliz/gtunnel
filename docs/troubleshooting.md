@@ -142,6 +142,10 @@ emptied when its tunnel starts, so a line in it was written by the process runni
 | `The configuration [...] does not exist` | The account's `gcloud_configuration` was renamed or deleted. Same stop and `[credentials refused]` | `gcloud config configurations list`, correct `gcloud_configuration` on the account, then `gtunnel start <name>` |
 | `list` shows `[restart budget spent: ...]` | gcloud died more than `max_restarts` times, each before `min_uptime`, for a reason gtunnel does not recognise. The supervisor stopped the job, and the log says why | Read the log, fix the cause, then `gtunnel start <name>`. To tune or disable the budget see [The restart budget](configuration.md#the-restart-budget) |
 | A tunnel keeps restarting and never shows `[restart budget spent: ...]` | Its definition has no `--crash-marker` | Run any gtunnel command: it reinstalls the definition and prints `gtunnel: reinstalled ...` on stderr. If it prints `could not reinstall`, the reason follows; fix it and run a command again |
+| `gtunnel: services were written by gtunnel X; this is Y` | Two gtunnel versions are on the machine (a second install on `PATH`, or a downgrade), and the older one will not rewrite what the newer one wrote | Run the newer one, or upgrade this one; `command -v gtunnel` shows which runs. Printed once per version |
+| `gtunnel: <name> was rewritten but not restarted, it has N open connections` | The upgrade changed the service definition and a client was connected, so the running tunnel was not cut | `gtunnel restart <name>` when it is idle; until then it runs on the old definition |
+| `gtunnel: reinstalled <label> but could not restart it: ...` | The definition was rewritten and the job did not start again, so the tunnel is down. `run/<label>.restart-pending` records it | Run any gtunnel command to retry, or `gtunnel restart <name>` now. Fix the reason first if it names a missing binary or a service manager that is not running |
+| `watch status` says installed, and the watchdog log shows nothing every interval | The watchdog definition names a binary that no longer exists (a versioned path after an upgrade) | Run any gtunnel command: it rewrites the watchdog and prints `gtunnel: reinstalled com.gtunnel.watchdog` (`gtunnel-watchdog` on Linux). `gtunnel watch install` does the same by hand |
 | `4004` | IAP asked gcloud to reauthenticate; gcloud resumes the session on its own | Nothing, unless it repeats: then check the account's credentials with `gtunnel doctor` |
 | `Unable to reconnect within` | gcloud gave up reconnecting to IAP after 15 minutes and the clients on the tunnel were cut | Restart the tunnel; see [Limits](architecture.md#limits) |
 | `Address already in use` | Another process holds the local port | `gtunnel doctor`, or set `--local-port` |
@@ -163,8 +167,8 @@ exit code and the advice. Only an expired login is told to log in.
 | Key invalid | `Invalid JWT` | `auth` (4) | Replace the key file |
 | Permission denied | a 403 with no reason | `auth` (4) | Check the account's IAM roles in the project; `gtunnel doctor` |
 | Service disabled | a 403 with `SERVICE_DISABLED` | `usage` (2) | `gcloud services enable <api> --project=<project>`: the message names the API |
-| Quota or rate limited | a 429, `RATE_LIMIT_EXCEEDED`, `RESOURCE_EXHAUSTED` | `unavailable` (6) | Wait and retry |
-| Network | `Could not resolve host`, `Network is unreachable`, a 502 to 504 | `unavailable` (6) | Check the connection and retry |
+| Quota or rate limited | a 429, `RATE_LIMIT_EXCEEDED`, `RESOURCE_EXHAUSTED` | `unavailable` (6) | Wait and retry. gtunnel has already retried reads and deletes 4 times over a few seconds, so this is a sustained limit |
+| Network | `Could not resolve host`, `Network is unreachable`, a 502 to 504 | `unavailable` (6) | Check the connection and retry. A reset, a 500, 502, 503, 504 or 429 on a read or a delete is retried 4 times first, with a growing, jittered wait that honours `Retry-After`; a create or update is repeated only when the connection was never made |
 | Timeout | `timed out after` | `unavailable` (6) | Retry; do not log in again |
 | Not found | a 404 | `not_found` (3) | Check the name, project and zone |
 

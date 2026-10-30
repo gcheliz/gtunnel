@@ -136,10 +136,12 @@ and a loopback bind would leave the URL unreachable.
 
 gtunnel allocates the port. It never opens or closes a firewall rule for one.
 
-Leaving `30000-30999` open to the internet lets anyone who knows the relay address and a
-port reach the forwarded service directly, skipping the load balancer and, with
-`--private`, the IAP sign-in in front of it. The alternative — gtunnel managing firewall
-rules — would mean a tool that silently widens a VPC. Documented in
+A broader VPC rule would let anyone who knows the relay address and a port reach the
+forwarded service directly, skipping the load balancer and, with `--private`, the IAP sign-in
+in front of it. gtunnel does not answer that by managing VPC rules, which would mean a tool
+that silently widens or narrows a VPC. The relay's startup script installs an `nftables`
+table on the VM that drops `30000-30999` from every source but the load balancer's ranges, so
+the guard travels with the VM and the VPC stays the operator's. Documented in
 [commands.md](commands.md#the-relays-firewall-is-yours-to-close).
 
 ## 9. Linux releases are static musl binaries
