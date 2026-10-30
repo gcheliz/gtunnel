@@ -318,30 +318,15 @@ pub fn parse_sha256_file(text: &str) -> Option<String> {
     text.split_whitespace().next().map(|s| s.to_string())
 }
 
-// Hashes the download in memory: a file written first and hashed afterwards
-// can be swapped in between
-fn sha256_bytes(bytes: &[u8]) -> Result<String> {
-    use std::io::Write;
-    for (program, args) in [("shasum", vec!["-a", "256"]), ("sha256sum", vec![])] {
-        let spawned = std::process::Command::new(program)
-            .args(&args)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .spawn();
-        let Ok(mut child) = spawned else { continue };
-        child
-            .stdin
-            .take()
-            .context("Could not write to the checksum program")?
-            .write_all(bytes)?;
-        let out = child.wait_with_output()?;
-        if out.status.success() {
-            return parse_sha256_file(&String::from_utf8_lossy(&out.stdout))
-                .context("Could not read the checksum output");
-        }
-    }
-    anyhow::bail!("Neither shasum nor sha256sum is on PATH")
+// Hashed in process and in memory: a file written first and hashed afterwards
+// can be swapped in between, and a `shasum` found on PATH is one more program
+// the digest of a self-replacing binary would depend on
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 // Fails if the path already exists, so a pre-created directory is never used
@@ -436,7 +421,7 @@ async fn perform_update(exe_path: &Path, version: &str) -> Result<()> {
         &get(&format!("{base}/{asset}.sha256")).await?,
     ))
     .context("The release has no usable .sha256 file")?;
-    let actual = sha256_bytes(&bytes)?;
+    let actual = sha256_hex(&bytes);
     if !actual.eq_ignore_ascii_case(&published) {
         anyhow::bail!("Checksum mismatch for {asset}: expected {published}, got {actual}");
     }
@@ -773,9 +758,21 @@ mod tests {
     // The digest is checked before any byte reaches the disk, so there is no
     // window between verifying the archive and reading it back
     #[test]
+    fn the_empty_input_and_a_multi_block_input_hash_to_their_known_digests() {
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            sha256_hex(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"),
+            "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+        );
+    }
+
+    #[test]
     fn bytes_are_hashed_without_a_file() {
         assert_eq!(
-            sha256_bytes(b"abc").unwrap(),
+            sha256_hex(b"abc"),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
     }
