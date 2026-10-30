@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.50](https://github.com/gcheliz/gtunnel/compare/v0.2.49...v0.2.50) - 2026-10-30
+
+### Fixed
+
+- restore the terminal on SIGTERM, dedupe logs -f, surface an unreadable run dir ([#328](https://github.com/gcheliz/gtunnel/pull/328))
+
 ## [0.2.49](https://github.com/gcheliz/gtunnel/compare/v0.2.48...v0.2.49) - 2026-10-30
 
 ### Fixed
