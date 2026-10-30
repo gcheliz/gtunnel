@@ -38,7 +38,7 @@ pub async fn run(
     let asked = ready_file
         .as_deref()
         .is_some_and(|ready| take_asked(&asked_beside(ready)));
-    tokio::time::sleep(start_delay(asked, crate::backoff::draw())).await;
+    tokio::time::sleep(start_delay(asked, crate::daemon::backoff::draw())).await;
     let code = supervise(argv, port, ready_file, conns, auth_marker, spend).await?;
     std::process::exit(code);
 }
@@ -255,7 +255,7 @@ pub async fn supervise(
             &spend.budget,
             &mut fails,
             began.elapsed(),
-            crate::backoff::draw(),
+            crate::daemon::backoff::draw(),
         );
         if let Some(parent) = file.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -311,7 +311,7 @@ pub async fn supervise(
             &mut history,
             began.elapsed(),
             std::time::SystemTime::now(),
-            crate::backoff::draw(),
+            crate::daemon::backoff::draw(),
         );
         if let Some(parent) = history_file.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -465,12 +465,12 @@ fn take_asked(marker: &std::path::Path) -> bool {
 }
 
 /// The wait before the first `gcloud`: none when someone asked for this start,
-/// otherwise a draw from zero to [`crate::backoff::START_SPREAD`].
+/// otherwise a draw from zero to [`crate::daemon::backoff::START_SPREAD`].
 fn start_delay(asked: bool, unit: f64) -> Duration {
     if asked {
         Duration::ZERO
     } else {
-        crate::backoff::spread_at(crate::backoff::START_SPREAD, unit)
+        crate::daemon::backoff::spread_at(crate::daemon::backoff::START_SPREAD, unit)
     }
 }
 

@@ -5,6 +5,7 @@ use crate::config::Config;
 use crate::state::{PersistentTunnel, TunnelSpec};
 use crate::tunnel;
 
+pub mod backoff;
 pub mod launchd;
 pub mod refresh;
 pub mod systemd;

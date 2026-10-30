@@ -95,7 +95,7 @@ pub enum Verdict {
 /// Judge one failed run. `ran_for` is how long the child lived.
 ///
 /// `unit` is the draw in `[0, 1]` that places the wait inside its backoff;
-/// see [`crate::backoff`] for why it is drawn at all.
+/// see [`crate::daemon::backoff`] for why it is drawn at all.
 pub fn judge(
     b: &Budget,
     h: &mut History,
@@ -125,7 +125,7 @@ pub fn judge(
         return Verdict::Stop;
     }
     let attempt = u32::try_from(n).unwrap_or(u32::MAX);
-    let after = crate::backoff::backoff_at(attempt, b.base_backoff, b.max_backoff, unit);
+    let after = crate::daemon::backoff::backoff_at(attempt, b.base_backoff, b.max_backoff, unit);
     Verdict::Restart { after }
 }
 
@@ -192,7 +192,7 @@ pub fn network_wait(b: &Budget, fails: &mut u32, ran_for: Duration, unit: f64) -
         *fails = 0;
     }
     *fails = fails.saturating_add(1);
-    crate::backoff::backoff_at(*fails, b.base_backoff, b.max_backoff, unit)
+    crate::daemon::backoff::backoff_at(*fails, b.base_backoff, b.max_backoff, unit)
 }
 
 /// The persisted network count: one integer. Anything else is zero, because a

@@ -218,8 +218,14 @@ impl Breaker {
         self.state = State::Open;
         self.failures = 0;
         self.attempt = attempt;
-        self.next_attempt =
-            Some(now + crate::backoff::backoff_at(attempt.into(), BASE_BACKOFF, MAX_BACKOFF, unit));
+        self.next_attempt = Some(
+            now + crate::daemon::backoff::backoff_at(
+                attempt.into(),
+                BASE_BACKOFF,
+                MAX_BACKOFF,
+                unit,
+            ),
+        );
     }
 }
 
@@ -243,7 +249,7 @@ fn still_waiting(due: SystemTime, now: SystemTime, backoff: Duration) -> bool {
 /// The longest the wait for `attempt` can be, which is what `still_waiting`
 /// bounds a stored moment by: the draw only ever shortens it.
 fn backoff(attempt: u8) -> Duration {
-    crate::backoff::ceiling(attempt.into(), BASE_BACKOFF, MAX_BACKOFF)
+    crate::daemon::backoff::ceiling(attempt.into(), BASE_BACKOFF, MAX_BACKOFF)
 }
 
 /// Where a breaker's memory lives between runs. A thirty-second agent is a

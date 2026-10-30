@@ -491,7 +491,10 @@ impl Manager for Live<'_> {
     }
 
     async fn settle(&self) {
-        tokio::time::sleep(crate::backoff::spread(crate::backoff::RESTART_SPREAD)).await;
+        tokio::time::sleep(crate::daemon::backoff::spread(
+            crate::daemon::backoff::RESTART_SPREAD,
+        ))
+        .await;
     }
 
     fn overruled(&self, since: SystemTime) -> bool {
@@ -688,7 +691,7 @@ async fn visit(
         obs,
         now,
         stale_after(settings.watch_interval),
-        crate::backoff::draw(),
+        crate::daemon::backoff::draw(),
     );
     if verbose {
         println!("{}: {obs:?} -> {action:?}", key(tunnel));

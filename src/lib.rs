@@ -2,7 +2,6 @@
 //! binary. Everything is crate-private except what `main` and the tests
 //! genuinely call: widening a module here is a decision, not a default.
 
-mod backoff;
 mod breaker;
 pub mod cli;
 mod commands;
