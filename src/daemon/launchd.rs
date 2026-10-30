@@ -552,6 +552,14 @@ pub async fn status(label: &str) -> TunnelStatus {
     }
 }
 
+/// `status`, but a call that errored or timed out is `None` rather than
+/// `Stopped`. Only the watchdog needs the difference: it must not act on a
+/// manager that did not answer.
+pub async fn status_checked(label: &str) -> Option<TunnelStatus> {
+    let out = launchctl(&["print", &format!("{}/{}", domain_target(), label)]).await;
+    super::checked_status(out, |text| parse_launchctl_print(text).0)
+}
+
 pub async fn runtime_info(label: &str) -> RuntimeInfo {
     match print_service(label).await {
         Some(text) => parse_launchctl_print(&text).1,

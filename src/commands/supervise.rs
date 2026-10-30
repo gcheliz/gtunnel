@@ -310,7 +310,7 @@ impl Stops {
 
 /// Where the child's group is written down: beside the ready file, so the
 /// next supervisor of the same job finds it by what the installer chose.
-fn group_file_beside(ready: &std::path::Path) -> PathBuf {
+pub(crate) fn group_file_beside(ready: &std::path::Path) -> PathBuf {
     ready.with_extension("pgid")
 }
 
