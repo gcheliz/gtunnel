@@ -753,6 +753,7 @@ fn claim_and_start(
 
 /// Undo a started run whose route could not be made: the group first, so
 /// nothing holds the port, then the route and the record.
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 async fn abort_started(
     guard: &mut ChildGuard,
     console: &Console,
@@ -775,6 +776,7 @@ async fn abort_started(
     teardown(console, client, acct, expose, tunnel, record).await;
 }
 
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub async fn cmd_run(
     account: Option<&str>,
     args: &[String],
@@ -953,6 +955,7 @@ pub async fn cmd_run(
 
 // Every removal is reported as it happened: a DNS record that is still there
 // must never be announced as deleted
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 async fn teardown(
     console: &Console,
     client: &GcpClient,

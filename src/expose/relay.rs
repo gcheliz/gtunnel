@@ -30,6 +30,7 @@ pub struct RelayStatus {
 }
 
 // One line per step, so `relay up` shows what it created and what it found
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 fn step(created: bool, what: &str) {
     if created {
         println!("  ✓ {what}");

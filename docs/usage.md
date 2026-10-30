@@ -92,7 +92,7 @@ Specify the release version and substitute your machine's file: `gtunnel-macos-a
 `gtunnel-macos-intel`, `gtunnel-linux-amd64` or `gtunnel-linux-arm64`.
 
 ```
-VERSION="v0.2.42"
+VERSION="v0.2.48"
 F="gtunnel-macos-arm64-${VERSION}.tar.gz"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F.sha256"
@@ -104,7 +104,7 @@ so they run on any glibc.
 
 ```
 $ gtunnel --version
-gtunnel 0.2.42
+gtunnel 0.2.48
 ```
 
 #### Already installed another way
@@ -410,7 +410,9 @@ token that cannot be minted, including an expired refresh token, counts as logge
 `doctor` skips it because it reports broken credentials as a finding; `init` has no account
 yet; a prompt would corrupt `mcp`'s JSON-RPC on stdin and stdout. Background services run
 `gcloud` directly and never check. Only the selected account is checked: after switching
-accounts in the TUI, a logged-out account surfaces as the error in that tunnel's log.
+accounts in the TUI, a logged-out account surfaces as the error in that tunnel's log. An
+operation the TUI or `mcp` starts, such as a move to a logged-out account, never prompts: it
+fails with an `auth` error, shown in the status line or returned as the tool error.
 
 On a terminal, a failed probe asks `[y/N]` (default `No`), runs
 `gcloud auth login --configuration=<configuration>` on the terminal, then probes again. Only
@@ -447,7 +449,7 @@ check itself. On a Homebrew install:
 
 ```
 $ gtunnel list
-gtunnel v9.9.9 is available (current: v0.2.42). Run `brew upgrade gtunnel`.
+gtunnel v9.9.9 is available (current: v0.2.48). Run `brew upgrade gtunnel`.
 ```
 
 ## The TUI
@@ -460,10 +462,10 @@ configurations, projects, zones and instances.
 
 | Group | Keys |
 |---|---|
-| Tunnel | `s` start, `S` stop (a run too), `R` restart, `A` toggle auto-start (`s`, `R` and `A` are refused on a run), `h` health check now |
+| Tunnel | `s` start, `S` stop (a run too, and a tunnel that keeps crashing: launchd would start it again), `R` restart, `A` toggle auto-start (`s`, `R` and `A` are refused on a run), `h` health check now |
 | The list | `a` add, `e` edit, `d` delete (refused on a run), `m` import an ephemeral run as managed, `j` `k` or the arrows move the selection |
 | This tunnel's URL and log | `c` copy the URL, `l` copy the log to clipboard, `o` open it, `L` clear the log, `r` refresh the list, metrics and health |
-| The program | `;` cycle accounts (the relay and its domains change with the account), `:` the accounts page, `?` the keymap, `C` the config page, `q` quit, `Esc` close a page or cancel a prompt, `PgUp` `PgDn` and `g` `G` scroll the keymap page, `Ctrl+Z` suspend, `Ctrl+C` quit from anywhere |
+| The program | `;` cycle accounts (the relay and its domains change with the account), `:` the accounts page, `?` the keymap, `C` the config page, `q` quit (it waits for a running operation to finish, and a second `q` quits at once), `Esc` close a page or cancel a prompt, `PgUp` `PgDn` and `g` `G` scroll the keymap page, `Ctrl+Z` suspend, `Ctrl+C` quit from anywhere, with the same wait |
 
 The Metrics pane shows the tunnel's health as a symbol. A failed probe is named by what
 the log says, so the fix is on screen instead of in the log:
@@ -504,7 +506,8 @@ shows the operation running (`add sandbox`) until its result replaces it.
 Every form field has a line under its label saying what the value is for, and the title counts
 the steps: `New account 1/2`, `Edit account 2/2`, `New access tunnel 3/5`, `New public URL 2/3`.
 The tunnel edit dialog labels its value `Ports (remote:local):` for Access and `Local target:`
-for Expose.
+for Expose. A new local port meets the rules `add` applies: not 0, not another tunnel's, not
+a live run's and not bound on the machine; an empty local target is refused.
 
 `e` opens a chooser:
 

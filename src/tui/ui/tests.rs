@@ -2884,6 +2884,7 @@ fn a_create_that_succeeded_leaves_no_dialog_behind() {
         from_create: true,
         from_account: false,
         name: None,
+        account: "dev".to_string(),
     });
     assert_eq!(app.input_mode, InputMode::Normal);
     app.apply(failed("some later failure"));
@@ -2950,7 +2951,12 @@ fn tunnels_on_disk(names: &[(&str, &str)]) -> crate::config::testing::TempConfig
             ..access(name, 15500 + i as u16)
         })
         .collect();
-    crate::state::TunnelState { tunnels }.save().expect("saved");
+    crate::state::TunnelState {
+        tunnels,
+        ..Default::default()
+    }
+    .save()
+    .expect("saved");
     dir
 }
 

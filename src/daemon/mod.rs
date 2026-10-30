@@ -469,6 +469,7 @@ pub fn remove_log(path: &std::path::Path) -> Result<()> {
 }
 
 #[cfg(test)]
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 mod tests {
     use super::*;
     use crate::state::TunnelStatus;
@@ -1171,6 +1172,35 @@ mod tests {
         assert_eq!(info.restarts, 0);
     }
 
+    // `launchctl print` names a sysexits code after the number. The whole value
+    // failed to parse as an integer, so a tunnel that could not start read as
+    // Stopped.
+    #[test]
+    fn a_named_launchd_exit_code_reads_as_an_error() {
+        let named = "\tstate = not running\n\truns = 3\n\tlast exit code = 78: EX_CONFIG\n";
+        let (status, info) = launchd::parse_launchctl_print(named);
+        assert_eq!(status, TunnelStatus::Error);
+        assert_eq!(info.restarts, 2);
+    }
+
+    #[test]
+    fn any_number_then_text_exit_code_yields_the_number() {
+        for code in [1, 2, 64, 70, 78, 126, 127, 255, -1] {
+            for text in ["EX_CONFIG", "EX_USAGE", "some words here", "", "a: b"] {
+                let text = format!("\tstate = not running\n\tlast exit code = {code}: {text}\n");
+                let (status, _) = launchd::parse_launchctl_print(&text);
+                assert_eq!(status, TunnelStatus::Error, "{text:?}");
+            }
+        }
+        let (status, _) =
+            launchd::parse_launchctl_print("\tstate = not running\n\tlast exit code = 0: x\n");
+        assert_eq!(
+            status,
+            TunnelStatus::Stopped,
+            "0 with a name is still clean"
+        );
+    }
+
     // Real `launchctl print` nests endpoint blocks whose own "state = active"
     // lines must not be mistaken for the job's state
     #[test]
@@ -1553,6 +1583,7 @@ mod tests {
 // Live launchd lifecycle check, run by hand on macOS:
 //   cargo test --features _live_daemon daemon::live -- --ignored --nocapture
 #[cfg(all(test, target_os = "macos"))]
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 mod live {
     use super::*;
     use crate::state::TunnelStatus;

@@ -216,6 +216,10 @@ puts IAP in front of the load balancer, so a visitor must sign in with Google. T
 sign-in only holds if the relay's own port range is closed to everything but the load
 balancer: see [The relay's firewall is yours to close](#the-relays-firewall-is-yours-to-close).
 
+The name and the relay port are claimed in `tunnels.toml` before the route is built, so two
+exposes at once cannot pick the same port. A failed route gives the claim back; one left by
+a killed command is cleared by `gtunnel doctor --fix` after ten minutes.
+
 Without a relay the command stops before changing anything:
 
 ```
@@ -370,7 +374,7 @@ A start waits for the tunnel to listen.
 |---|---|
 | Access, `--via` included | up to 20 seconds (`start_deadline`, or `GTUNNEL_START_DEADLINE`); passes as soon as the log reports the listener |
 | Public | no listener to wait for: judged after a fixed 3 seconds. One still connecting then reads as running, so `gtunnel list` is the check for a later failure |
-| Failed start (service failed, or not listening by the deadline) | the lines below on stdout, exit 1, the record stays. A hint line follows when the log holds a line gtunnel recognises (the newest, from [the log table](troubleshooting.md#what-the-log-says-and-what-it-means)), or `not listening after 20s`. The TUI status line shows the same text; an MCP client gets an `isError` result |
+| Failed start (service failed, or not listening by the deadline) | the lines below on stdout, exit 1 (4 when the hint is expired credentials), the record stays. A hint line follows when the log holds a line gtunnel recognises (the newest, from [the log table](troubleshooting.md#what-the-log-says-and-what-it-means)), or `not listening after 20s`. The TUI status line shows the same text; an MCP client gets an `isError` result |
 
 ```
 $ gtunnel start db
@@ -588,7 +592,7 @@ Installed tunnels still use the old value: db. Restart to apply: `gtunnel restar
 ```
 
 A changed `--zone` needs no restart: the zone is not in a service file. `remove` refuses while
-the account holds tunnels, and names both ways out:
+the account holds tunnels, or an `expose` still in flight, and names both ways out:
 
 ```
 $ gtunnel account remove dev
@@ -841,7 +845,8 @@ The check runs in the background, never blocks a command, and runs at most once 
 [`update_check_interval`](configuration.md#settings-the-environment-can-override) (6 hours by
 default). A failed check is recorded and holds the next off for the same interval; the TUI says
 `update check failed` until one succeeds. A downloaded binary and one in `~/.cargo/bin` replace
-themselves after verifying the published SHA-256; a Homebrew install is pointed at
+themselves after verifying the published SHA-256, by renaming a new file into place, never by
+rewriting the running one; a Homebrew install is pointed at
 `brew upgrade gtunnel`.
 
 ## mcp
@@ -871,10 +876,10 @@ line.
 
 | Kind | Exit | Meaning |
 |---|---|---|
-| `internal` | 1 | Anything unclassified: an unreadable config, a failed write, a tunnel that did not come up |
+| `internal` | 1 | Anything unclassified: an unreadable config, a failed write, a tunnel that did not come up for a reason other than credentials, a GCP error other than 401, 403 and 404 |
 | `usage` | 2 | A request gtunnel refuses: a bad argument or setting (a target without a port, a bad `GTUNNEL_LOG_LEVEL`), a name already taken (`add`, `expose`, `rename`, `move`, `account add`), an empty `--configuration`, an invalid `--zone`, an `account edit` with nothing to change or an empty project or zone, a local port a run holds, a move that cannot happen, `expose` or `run --public` on an account with no relay, or a local target that is not a port or host:port. Same code clap uses for a malformed command line |
-| `not_found` | 3 | The tunnel or the account named does not exist |
-| `auth` | 4 | gcloud has no usable credentials for the account |
+| `not_found` | 3 | The tunnel or the account named does not exist, or a GCP API answers 404 |
+| `auth` | 4 | gcloud has no usable credentials for the account, a GCP API answers 401 or 403, or a start failed because the credentials expired |
 | `gcloud` | 5 | A gcloud call ran and failed |
 
 A reader that stops early, such as `gtunnel list | head -1`, a pager quit with `q`, or an MCP

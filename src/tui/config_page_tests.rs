@@ -51,7 +51,12 @@ pub(super) fn seeded(n: usize) -> TempConfigDir {
     let tunnels = (0..n)
         .map(|i| tunnel(&format!("svc-{i:02}"), 15000 + i as u16))
         .collect();
-    TunnelState { tunnels }.save().unwrap();
+    TunnelState {
+        tunnels,
+        ..Default::default()
+    }
+    .save()
+    .unwrap();
     dir
 }
 
@@ -340,6 +345,7 @@ fn adds_a_tunnel(path: &Path) -> anyhow::Result<()> {
     let mut text = std::fs::read_to_string(path)?;
     let extra = toml::to_string_pretty(&TunnelState {
         tunnels: vec![tunnel("queue", 16000)],
+        ..Default::default()
     })?;
     text.push('\n');
     text.push_str(&extra);

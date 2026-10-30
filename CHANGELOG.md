@@ -3,6 +3,42 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.48](https://github.com/gcheliz/gtunnel/compare/v0.2.47...v0.2.48) - 2026-10-30
+
+### Fixed
+
+- validate TUI port edits, parse named launchd exit codes, read spaced gcloud flags ([#327](https://github.com/gcheliz/gtunnel/pull/327))
+
+## [0.2.47](https://github.com/gcheliz/gtunnel/compare/v0.2.46...v0.2.47) - 2026-10-30
+
+### Fixed
+
+- reserve before building in expose, re-check in doctor --fix and account remove ([#326](https://github.com/gcheliz/gtunnel/pull/326))
+
+## [0.2.46](https://github.com/gcheliz/gtunnel/compare/v0.2.45...v0.2.46) - 2026-10-30
+
+### Fixed
+
+- *(errors)* give GCP and start failures their kind, and keep the cause in MCP replies ([#324](https://github.com/gcheliz/gtunnel/pull/324))
+
+## [0.2.45](https://github.com/gcheliz/gtunnel/compare/v0.2.44...v0.2.45) - 2026-10-30
+
+### Fixed
+
+- *(fs)* write every service file atomically and replace the binary by rename ([#323](https://github.com/gcheliz/gtunnel/pull/323))
+
+## [0.2.44](https://github.com/gcheliz/gtunnel/compare/v0.2.43...v0.2.44) - 2026-10-30
+
+### Fixed
+
+- *(tui)* no prompt and no print under the alternate screen ([#331](https://github.com/gcheliz/gtunnel/pull/331))
+
+## [0.2.43](https://github.com/gcheliz/gtunnel/compare/v0.2.42...v0.2.43) - 2026-10-30
+
+### Fixed
+
+- *(supervise)* listen for SIGTERM for the whole run and sweep the group after gcloud exits ([#321](https://github.com/gcheliz/gtunnel/pull/321))
+
 ## [0.2.42](https://github.com/gcheliz/gtunnel/compare/v0.2.41...v0.2.42) - 2026-10-29
 
 ### Fixed

@@ -24,6 +24,7 @@ fn field_hint(f: Field, default: Option<&str>) -> String {
 // Says what the value is and where to list it, then asks. The helper lines are
 // plain text on stdout and the default is applied here, so a piped answer is
 // read exactly as `prompt` read it before.
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 fn ask(f: Field, label: &str, default: Option<&str>) -> Result<String> {
     println!();
     println!("  {}", fields::help(f));
@@ -44,6 +45,7 @@ fn ask(f: Field, label: &str, default: Option<&str>) -> Result<String> {
 }
 
 // First run: turn a gcloud configuration into a gtunnel account
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub async fn cmd_init() -> Result<()> {
     gcloud::require_gcloud()?;
     let configurations = gcloud::list_configurations().await?;
@@ -233,6 +235,7 @@ pub struct AccountJson {
     pub selected: bool,
 }
 
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub fn cmd_account_list(json: bool) -> Result<()> {
     let config = load_config()?;
     if json {
@@ -268,6 +271,7 @@ pub fn cmd_account_list(json: bool) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub fn cmd_account_select(name: &str) -> Result<()> {
     account_select(name)?;
     println!("Selected account '{name}'");
@@ -284,8 +288,11 @@ pub fn account_select(name: &str) -> Result<()> {
 // records that no command can reach. `--yes` answers the confirmation below and
 // nothing else: it cannot answer what becomes of the tunnels, which is the one
 // question a script cannot have settled by passing a flag.
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub fn cmd_account_remove(name: &str, assume_yes: bool) -> Result<()> {
-    refuse_if_held(name)?;
+    // Before the prompt, so a held account is refused without asking; the
+    // locked check in `account_remove` is the one that decides
+    refuse_if_held(&crate::state::TunnelState::load()?, name)?;
     if !confirm(&format!("Remove account '{name}'?"), assume_yes)? {
         println!("Cancelled");
         return Ok(());
@@ -295,16 +302,27 @@ pub fn cmd_account_remove(name: &str, assume_yes: bool) -> Result<()> {
     Ok(())
 }
 
-// Asks nothing: a caller that reaches it has already had the answer
+// Asks nothing: a caller that reaches it has already had the answer. The check
+// and the write share the tunnels lock, which `add` takes to save: a tunnel
+// saved first is seen here, one saved after waits until the account is gone and
+// then fails on it. Lock order is tunnels, then config, and nothing takes them
+// the other way round.
 pub fn account_remove(name: &str) -> Result<()> {
-    refuse_if_held(name)?;
-    update_config(|config| config.remove_account(name))?;
+    crate::state::TunnelState::with_lock(|state| {
+        refuse_if_held(state, name)?;
+        update_config(|config| config.remove_account(name))
+    })?;
     Ok(())
 }
 
-fn refuse_if_held(name: &str) -> Result<()> {
-    let state = crate::state::TunnelState::load()?;
-    let held = state.tunnels_for_account(name).len();
+// A reservation is an `expose` in flight on the account, so it holds it too
+fn refuse_if_held(state: &crate::state::TunnelState, name: &str) -> Result<()> {
+    let held = state.tunnels_for_account(name).len()
+        + state
+            .reservations
+            .iter()
+            .filter(|r| r.tunnel.account_name == name)
+            .count();
     if held > 0 {
         bail!(
             "Account '{name}' still has {held} tunnel(s). Delete them with `gtunnel delete`, \
@@ -391,6 +409,7 @@ fn account_from_flags(configuration: &str, name: &str, opts: &AddOptions) -> Res
 // The non-interactive counterpart of `init`, for callers that already know which
 // configuration they mean. It is async because listing configurations shells out
 // to gcloud, which `--project` makes unnecessary.
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub async fn cmd_account_add(configuration: &str, name: &str, opts: AddOptions) -> Result<()> {
     account_add(configuration, name, opts).await?;
     println!("Account '{name}' saved to {}", config_dir()?.display());
@@ -425,6 +444,7 @@ pub async fn account_add(configuration: &str, name: &str, opts: AddOptions) -> R
 // Only the fields given change; an empty value is refused so an edit cannot
 // leave an account without the project or zone every command needs. The
 // credential file is the one field that may be emptied: "" clears it.
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub fn cmd_account_edit(
     name: &str,
     project: Option<&str>,
@@ -632,6 +652,53 @@ mod tests {
         assert!(err.contains("delete"), "{err}");
         let config = load_config().expect("loads");
         assert!(config.get_account(Some("dev")).is_ok(), "the account stays");
+    }
+
+    // The unlocked check this replaced passed before the add saved, then the
+    // account went, and the new tunnel named an account no command could reach
+    #[test]
+    fn an_add_holding_the_state_lock_is_seen_by_the_account_remove() {
+        let _dir = TempConfigDir::new();
+        save_accounts(&["dev", "prod"]);
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            TunnelState::update(|state| {
+                locked_tx.send(()).expect("signal");
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                state.add(tunnel("db", "dev"))
+            })
+            .expect("add saves");
+        });
+        locked_rx.recv().expect("writer holds the lock");
+
+        let err = account_remove("dev").unwrap_err().to_string();
+        writer.join().expect("writer");
+        assert!(err.contains("1 tunnel(s)"), "{err}");
+        assert!(load_config().unwrap().get_account(Some("dev")).is_ok());
+    }
+
+    #[test]
+    fn an_expose_in_flight_holds_its_account() {
+        let _dir = TempConfigDir::new();
+        save_accounts(&["dev", "prod"]);
+        TunnelState::update(|state| {
+            state
+                .reserve_relay_port("web", "dev", &Default::default(), 0, |port| {
+                    PersistentTunnel {
+                        spec: TunnelSpec::Expose {
+                            local_target: "3000".to_string(),
+                            domain: "example.com".to_string(),
+                            hostname: "web.example.com".to_string(),
+                            relay_port: port,
+                            private: false,
+                        },
+                        ..tunnel("web", "dev")
+                    }
+                })
+                .map(|_| ())
+        })
+        .expect("reserved");
+        assert!(account_remove("dev").is_err());
     }
 
     #[test]

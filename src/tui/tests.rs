@@ -69,7 +69,7 @@ fn a_round_for_the_previous_account_is_dropped() {
     apply_polled(
         &mut app,
         &mut timers,
-        Msg::Entries(old, stale, HashSet::new()),
+        Msg::Entries("dev".to_string(), old, stale, HashSet::new()),
     );
     assert!(app.entries.is_empty(), "the old account's rows landed");
 
@@ -77,7 +77,7 @@ fn a_round_for_the_previous_account_is_dropped() {
     apply_polled(
         &mut app,
         &mut timers,
-        Msg::Entries(new, Vec::new(), HashSet::new()),
+        Msg::Entries("dev".to_string(), new, Vec::new(), HashSet::new()),
     );
     assert!(app.loaded, "the current round was refused");
 }
@@ -543,6 +543,7 @@ fn a_failed_operation_marks_the_status_line() {
         from_create: false,
         from_account: false,
         name: None,
+        account: "dev".to_string(),
     });
     assert_eq!(app.status.as_deref(), Some("permission denied"));
     assert!(app.status_error, "a failure must be marked");
@@ -554,6 +555,7 @@ fn a_failed_operation_marks_the_status_line() {
         from_create: false,
         from_account: false,
         name: None,
+        account: "dev".to_string(),
     });
     assert!(!app.status_error, "success must clear the mark");
 }
@@ -1060,6 +1062,7 @@ pub(super) fn failed(message: &str) -> OpResult {
         from_create: true,
         from_account: false,
         name: None,
+        account: "dev".to_string(),
     }
 }
 
@@ -1071,6 +1074,7 @@ fn unrelated(ok: bool, message: &str) -> OpResult {
         from_create: false,
         from_account: false,
         name: None,
+        account: "dev".to_string(),
     }
 }
 
@@ -1111,7 +1115,7 @@ fn a_round_begun_before_an_op_finished_is_not_applied() {
     apply_polled(
         &mut app,
         &mut timers,
-        Msg::Entries(begun_before, stale, HashSet::new()),
+        Msg::Entries("dev".to_string(), begun_before, stale, HashSet::new()),
     );
     assert_eq!(app.entries.len(), 2, "the stale round must not replace");
     assert_eq!(app.entries[0].status, TunnelStatus::Stopped);
@@ -1139,6 +1143,7 @@ fn pending_clears_on_the_first_round_after_the_op() {
         from_create: false,
         from_account: false,
         name: Some("db".to_string()),
+        account: "dev".to_string(),
     });
     assert!(app.entries[0].pending.is_some(), "not until a round lands");
     app.replace_entries(fresh(TunnelStatus::Running), HashSet::new());
@@ -1493,12 +1498,16 @@ fn a_crash_loop_is_named_even_when_the_probe_just_passed() {
         apply_polled(
             &mut app,
             &mut timers,
-            Msg::Metrics(generation, metrics(restarts)),
+            Msg::Metrics("dev".to_string(), generation, metrics(restarts)),
         );
     }
     let generation = timers.health.begin();
     let results = vec![("db".to_string(), HealthStatus::Healthy)];
-    apply_polled(&mut app, &mut timers, Msg::Health(generation, results));
+    apply_polled(
+        &mut app,
+        &mut timers,
+        Msg::Health("dev".to_string(), generation, results),
+    );
     assert_eq!(app.entries[0].health, HealthStatus::CrashLooping);
     assert_eq!(app.entries[1].health, HealthStatus::Unknown);
 }
@@ -1523,7 +1532,11 @@ fn expired_credentials_outrank_a_crash_loop_and_both_count_as_failing() {
     app.entries[0].crash_looping = true;
     let generation = timers.health.begin();
     let results = vec![("db".to_string(), HealthStatus::AuthExpired)];
-    apply_polled(&mut app, &mut timers, Msg::Health(generation, results));
+    apply_polled(
+        &mut app,
+        &mut timers,
+        Msg::Health("dev".to_string(), generation, results),
+    );
     assert_eq!(app.entries[0].health, HealthStatus::AuthExpired);
     assert!(HealthStatus::AuthExpired.is_failing());
     assert!(HealthStatus::CrashLooping.is_failing());
@@ -2067,7 +2080,11 @@ fn a_verdict_in_a_metrics_result_lands_on_the_row() {
     apply_polled(
         &mut app,
         &mut timers,
-        Msg::Metrics(generation, vec![("db".to_string(), measured)]),
+        Msg::Metrics(
+            "dev".to_string(),
+            generation,
+            vec![("db".to_string(), measured)],
+        ),
     );
     assert_eq!(app.entries[0].health, HealthStatus::Unhealthy);
     assert_eq!(app.entries[1].health, HealthStatus::Unknown);
@@ -2087,7 +2104,11 @@ fn a_crash_loop_is_named_over_a_passing_metrics_probe_too() {
         apply_polled(
             &mut app,
             &mut timers,
-            Msg::Metrics(generation, vec![("db".to_string(), measured)]),
+            Msg::Metrics(
+                "dev".to_string(),
+                generation,
+                vec![("db".to_string(), measured)],
+            ),
         );
     }
     assert_eq!(app.entries[0].health, HealthStatus::CrashLooping);
@@ -2110,7 +2131,11 @@ fn a_tunnel_the_metrics_round_brought_no_verdict_for_is_health_probed_next() {
     apply_polled(
         &mut app,
         &mut timers,
-        Msg::Metrics(generation, vec![("api".to_string(), measured)]),
+        Msg::Metrics(
+            "dev".to_string(),
+            generation,
+            vec![("api".to_string(), measured)],
+        ),
     );
     timers.metrics.last = Instant::now() - app::METRICS_EVERY;
     timers.health.last = Instant::now() - app::HEALTH_EVERY;
@@ -2134,7 +2159,11 @@ fn a_tunnel_with_a_verdict_from_metrics_stays_one_probe_per_tick() {
             (n.to_string(), m)
         })
         .to_vec();
-    apply_polled(&mut app, &mut timers, Msg::Metrics(generation, results));
+    apply_polled(
+        &mut app,
+        &mut timers,
+        Msg::Metrics("dev".to_string(), generation, results),
+    );
     timers.metrics.last = Instant::now() - app::METRICS_EVERY;
     timers.health.last = Instant::now() - app::HEALTH_EVERY;
     let next = plan_probes(&mut app, &mut timers);
@@ -2162,7 +2191,7 @@ fn a_list_that_lands_after_the_first_tick_still_gets_one_probe_per_period() {
         apply_polled(
             &mut app,
             &mut timers,
-            Msg::Metrics(round.generation, Vec::new()),
+            Msg::Metrics("dev".to_string(), round.generation, Vec::new()),
         );
     }
 
@@ -2184,7 +2213,7 @@ fn a_list_that_lands_after_the_first_tick_still_gets_one_probe_per_period() {
             apply_polled(
                 &mut app,
                 &mut timers,
-                Msg::Metrics(round.generation, results),
+                Msg::Metrics("dev".to_string(), round.generation, results),
             );
         }
         timers.metrics.last -= tick;
@@ -2212,6 +2241,7 @@ fn an_older_metrics_verdict_does_not_overwrite_a_newer_health_one() {
         &mut app,
         &mut timers,
         Msg::Health(
+            "dev".to_string(),
             health_generation,
             vec![("db".to_string(), HealthStatus::Unhealthy)],
         ),
@@ -2220,6 +2250,7 @@ fn an_older_metrics_verdict_does_not_overwrite_a_newer_health_one() {
         &mut app,
         &mut timers,
         Msg::Metrics(
+            "dev".to_string(),
             metrics_generation,
             vec![("db".to_string(), verdict(HealthStatus::Healthy))],
         ),
@@ -2243,7 +2274,7 @@ fn a_tunnel_that_appeared_after_the_round_began_is_not_owed_a_probe_for_it() {
     apply_polled(
         &mut app,
         &mut timers,
-        Msg::Metrics(round.generation, results),
+        Msg::Metrics("dev".to_string(), round.generation, results),
     );
     assert!(!app.entries[2].needs_health_probe);
 }
@@ -2307,7 +2338,11 @@ async fn a_metrics_round_that_panics_still_reports_and_the_next_tick_starts_anot
     a_round_that_panics_still_reports_and_the_next_tick_starts_another(
         |app, timers| {
             let round = metrics_round(app, timers)?;
-            Some(Msg::Metrics(round.generation, Vec::new()))
+            Some(Msg::Metrics(
+                "dev".to_string(),
+                round.generation,
+                Vec::new(),
+            ))
         },
         |app, timers| metrics_round(app, timers).is_some(),
     )
@@ -2322,7 +2357,7 @@ async fn a_health_round_that_panics_still_reports_and_the_next_tick_starts_anoth
                 return None;
             }
             let generation = timers.health.begin();
-            Some(Msg::Health(generation, Vec::new()))
+            Some(Msg::Health("dev".to_string(), generation, Vec::new()))
         },
         |app, timers| !health_round(app, timers).is_empty(),
     )
@@ -2352,11 +2387,470 @@ fn an_empty_round_result_keeps_the_rows_last_values() {
     apply_polled(
         &mut app,
         &mut timers,
-        Msg::Metrics(round.generation, Vec::new()),
+        Msg::Metrics("dev".to_string(), round.generation, Vec::new()),
     );
     let generation = timers.health.begin();
-    apply_polled(&mut app, &mut timers, Msg::Health(generation, Vec::new()));
+    apply_polled(
+        &mut app,
+        &mut timers,
+        Msg::Health("dev".to_string(), generation, Vec::new()),
+    );
     assert_eq!(app.entries.len(), 2);
     assert_eq!(app.entries[0].health, HealthStatus::Healthy);
     assert!(!timers.metrics.in_flight && !timers.health.in_flight);
+}
+
+// --- ops are tracked by account and name, across a switch ---
+
+fn done(account: &str, name: &str, ok: bool, reload: bool) -> OpResult {
+    OpResult {
+        message: format!("{name} finished"),
+        ok,
+        reload,
+        from_create: false,
+        from_account: false,
+        name: Some(name.to_string()),
+        account: account.to_string(),
+    }
+}
+
+fn a_stopped_db() -> Vec<TunnelEntry> {
+    vec![TunnelEntry::new(
+        access("db", 15432),
+        TunnelStatus::Stopped,
+        TunnelKind::Managed,
+    )]
+}
+
+// An app on `prod` with a stopped `db`, and `dev` to switch to
+fn prod_with_a_stopped_db() -> App {
+    let mut app = App::new("prod");
+    app.accounts = vec!["prod".to_string(), "dev".to_string()];
+    app.replace_entries(a_stopped_db(), HashSet::new());
+    app
+}
+
+#[test]
+fn a_result_for_the_other_accounts_row_does_not_settle_this_ones() {
+    let mut app = prod_with_a_stopped_db();
+    assert_eq!(
+        keys(&mut app, "s"),
+        Some(Op::Start("db".to_string())),
+        "prod"
+    );
+    keys(&mut app, ";");
+    assert_eq!(app.account, "dev");
+    app.replace_entries(a_stopped_db(), HashSet::new());
+    assert_eq!(
+        keys(&mut app, "s"),
+        Some(Op::Start("db".to_string())),
+        "dev"
+    );
+
+    app.apply(done("prod", "db", true, true));
+    assert!(app.entries[0].pending.is_some(), "prod's result marked dev");
+    assert!(!app.entries[0].pending_settle);
+    // The reload the result asked for: dev's start still runs
+    app.replace_entries(a_stopped_db(), HashSet::new());
+    assert!(
+        app.entries[0].pending.is_some(),
+        "the reload dropped the marker of a start that is still running"
+    );
+
+    app.apply(done("dev", "db", true, true));
+    app.replace_entries(a_stopped_db(), HashSet::new());
+    assert!(
+        app.entries[0].pending.is_none(),
+        "its own result settles it"
+    );
+}
+
+#[test]
+fn coming_back_to_an_account_remembers_the_op_it_left_running() {
+    let mut app = prod_with_a_stopped_db();
+    assert!(keys(&mut app, "s").is_some());
+    keys(&mut app, ";");
+    keys(&mut app, ";");
+    assert_eq!(app.account, "prod");
+    assert!(app.entries.is_empty(), "rows are read again after a switch");
+    app.replace_entries(a_stopped_db(), HashSet::new());
+
+    assert!(app.entries[0].pending.is_some(), "the marker is gone");
+    for k in ['S', 'R', 's'] {
+        assert_eq!(app.handle_key(key(KeyCode::Char(k))), None, "{k}");
+        assert_eq!(
+            app.status.as_deref(),
+            Some("db: start already in progress"),
+            "{k}"
+        );
+    }
+}
+
+#[test]
+fn a_rename_is_refused_while_the_same_tunnel_is_starting() {
+    let mut app = prod_with_a_stopped_db();
+    app.account = "dev".to_string();
+    assert!(keys(&mut app, "s").is_some());
+
+    keys(&mut app, "e2");
+    for _ in 0.."db".len() {
+        app.handle_key(key(KeyCode::Backspace));
+    }
+    assert_eq!(
+        keys(&mut app, "pg\n"),
+        None,
+        "the rename went to the daemon"
+    );
+    assert_eq!(app.status.as_deref(), Some("db: start already in progress"));
+    assert!(app.status_error);
+}
+
+#[test]
+fn an_edit_is_refused_while_the_same_tunnel_is_starting() {
+    let mut app = prod_with_a_stopped_db();
+    assert!(keys(&mut app, "s").is_some());
+    keys(&mut app, "e1");
+    assert_eq!(keys(&mut app, "\n"), None);
+    assert_eq!(app.status.as_deref(), Some("db: start already in progress"));
+}
+
+#[test]
+fn a_move_is_refused_while_the_same_tunnel_is_starting() {
+    let mut app = prod_with_a_stopped_db();
+    assert!(keys(&mut app, "s").is_some());
+    keys(&mut app, "e3");
+    assert_eq!(keys(&mut app, "\n"), None);
+    assert_eq!(app.status.as_deref(), Some("db: start already in progress"));
+}
+
+#[test]
+fn a_rename_marks_the_row_until_its_result_lands() {
+    let mut app = prod_with_a_stopped_db();
+    keys(&mut app, "e2");
+    for _ in 0.."db".len() {
+        app.handle_key(key(KeyCode::Backspace));
+    }
+    assert!(keys(&mut app, "pg\n").is_some());
+    let pending = app.entries[0].pending.expect("a rename in flight");
+    assert_eq!(pending.gerund(), "renaming");
+    assert_eq!(keys(&mut app, "s"), None, "a start raced the rename");
+}
+
+#[test]
+fn rename_move_and_edit_name_the_row_their_result_settles() {
+    let tunnel = |name: &str| name.to_string();
+    let rename = Op::Rename(RenameTunnel {
+        account: tunnel("dev"),
+        name: tunnel("db"),
+        new_name: tunnel("pg"),
+    });
+    let moved = Op::Move(MoveTunnel {
+        name: tunnel("db"),
+        from: tunnel("dev"),
+        to: tunnel("prod"),
+        rename_to: None,
+    });
+    let edit = Op::Edit(EditTunnel {
+        account: tunnel("dev"),
+        name: tunnel("db"),
+        value: tunnel("5432:15433"),
+    });
+    for op in [rename, moved, edit] {
+        assert_eq!(ops::pending_row(&op), Some(tunnel("db")), "{op:?}");
+    }
+    assert_eq!(ops::pending_row(&Op::ClearLog(tunnel("db"))), None);
+}
+
+#[test]
+fn every_op_that_writes_the_records_reloads_when_it_fails() {
+    let name = || "db".to_string();
+    let writes = [
+        Op::Delete(name()),
+        Op::Import(name()),
+        Op::ToggleAutoStart(name()),
+        Op::Edit(EditTunnel::default()),
+        Op::Rename(RenameTunnel::default()),
+        Op::Move(MoveTunnel::default()),
+        Op::Create(NewTunnel::default()),
+    ];
+    for op in &writes {
+        assert!(ops::rewrites_records(op), "{op:?}");
+    }
+    for op in [Op::Start(name()), Op::Stop(name()), Op::ClearLog(name())] {
+        assert!(!ops::rewrites_records(&op), "{op:?}");
+    }
+}
+
+// A move that fails after it uninstalled the old service leaves the list
+// reading Running; the reload is what puts the truth back
+#[test]
+fn a_failed_move_asks_for_a_reload_and_frees_the_row() {
+    let mut app = prod_with_a_stopped_db();
+    app.entries[0].status = TunnelStatus::Running;
+    app.mark_pending("prod", "db", "move");
+    app.apply(done("prod", "db", false, true));
+    assert!(
+        app.force_refresh,
+        "the list stays as the failed move left it"
+    );
+    app.replace_entries(a_stopped_db(), HashSet::new());
+    assert!(app.entries[0].pending.is_none());
+    assert_eq!(app.entries[0].status, TunnelStatus::Stopped);
+}
+
+#[test]
+fn each_result_forgets_the_metrics_of_its_own_op_only() {
+    let clear_db = op_tag("dev", &Op::ClearLog("db".to_string()));
+    let start_api = op_tag("dev", &Op::Start("api".to_string()));
+    assert_eq!(
+        clear_db.forgets,
+        Some(("dev".to_string(), "db".to_string()))
+    );
+    assert_eq!(
+        start_api.forgets,
+        Some(("dev".to_string(), "api".to_string()))
+    );
+    assert_eq!(
+        op_tag("dev", &Op::Stop("api".to_string())).forgets,
+        None,
+        "a stop leaves the log alone"
+    );
+
+    // L on db, then s on api: db's result must not touch api's measurement
+    let mut app = app_with_two();
+    app.entries[0].metrics = Some(Default::default());
+    app.entries[1].metrics = Some(Default::default());
+    forget_for(&mut app, &clear_db);
+    assert!(app.entries[0].metrics.is_none());
+    assert!(
+        app.entries[1].metrics.is_some(),
+        "api's count was forgotten"
+    );
+}
+
+#[test]
+fn a_result_forgets_nothing_in_an_account_that_is_not_on_screen() {
+    let mut app = app_with_two();
+    app.entries[0].metrics = Some(Default::default());
+    forget_for(&mut app, &op_tag("prod", &Op::Start("db".to_string())));
+    assert!(app.entries[0].metrics.is_some());
+}
+
+// --- a switch of account drops what was fetched for the old one ---
+
+#[test]
+fn after_a_switch_a_health_round_for_the_previous_account_changes_no_row() {
+    let mut app = App::new("dev");
+    app.accounts = vec!["dev".to_string(), "prod".to_string()];
+    let mut timers = Timers::due();
+    let generation = timers.health.begin();
+    keys(&mut app, ";");
+    assert!(app.take_account_switched(), "the loop is never told");
+    // What the loop does when it is told
+    timers.account_changed();
+    app.replace_entries(
+        vec![TunnelEntry::new(
+            access("db", 15432),
+            TunnelStatus::Running,
+            TunnelKind::Managed,
+        )],
+        HashSet::new(),
+    );
+    app.entries[0].health = HealthStatus::Healthy;
+    let results = vec![("db".to_string(), HealthStatus::Unhealthy)];
+    apply_polled(
+        &mut app,
+        &mut timers,
+        Msg::Health("dev".to_string(), generation, results),
+    );
+    assert_eq!(app.entries[0].health, HealthStatus::Healthy);
+}
+
+// Even a round the poller still counts as current: the account on the
+// message is what says whose verdicts these are
+#[test]
+fn a_round_tagged_with_another_account_is_dropped_whatever_its_generation() {
+    let mut app = App::new("prod");
+    let mut timers = Timers::due();
+    app.replace_entries(
+        vec![TunnelEntry::new(
+            access("db", 15432),
+            TunnelStatus::Running,
+            TunnelKind::Managed,
+        )],
+        HashSet::new(),
+    );
+    app.entries[0].health = HealthStatus::Healthy;
+
+    let generation = timers.health.begin();
+    let results = vec![("db".to_string(), HealthStatus::Unhealthy)];
+    apply_polled(
+        &mut app,
+        &mut timers,
+        Msg::Health("dev".to_string(), generation, results),
+    );
+    assert_eq!(app.entries[0].health, HealthStatus::Healthy);
+    assert!(!timers.health.in_flight, "the slot stays held");
+
+    let generation = timers.metrics.begin();
+    apply_polled(
+        &mut app,
+        &mut timers,
+        Msg::Metrics(
+            "dev".to_string(),
+            generation,
+            vec![("db".to_string(), Default::default())],
+        ),
+    );
+    assert!(app.entries[0].metrics.is_none());
+
+    let generation = timers.entries.begin();
+    apply_polled(
+        &mut app,
+        &mut timers,
+        Msg::Entries("dev".to_string(), generation, Vec::new(), HashSet::new()),
+    );
+    assert_eq!(app.entries.len(), 1, "dev's list replaced prod's");
+}
+
+#[test]
+fn the_accounts_page_and_the_semicolon_both_tell_the_loop() {
+    let mut app = App::new("dev");
+    app.accounts = vec!["dev".to_string(), "prod".to_string()];
+    assert!(!app.take_account_switched());
+    keys(&mut app, ";");
+    assert!(app.take_account_switched());
+    assert!(!app.take_account_switched(), "taken once");
+}
+
+// --- quitting with an op running ---
+
+#[test]
+fn quitting_with_an_op_running_waits_for_it() {
+    let mut app = app_with_two();
+    app.op_started("delete db".to_string());
+    app.handle_key(key(KeyCode::Char('q')));
+    assert!(!app.should_quit, "quit abandoned the delete");
+    assert!(app.quitting);
+    let status = app.status.clone().expect("a finishing line");
+    assert!(status.starts_with("finishing delete db"), "{status}");
+    assert!(app.quit_since.is_some());
+}
+
+#[test]
+fn ctrl_c_waits_for_a_running_op_too() {
+    let mut app = app_with_two();
+    app.op_started("move db".to_string());
+    app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+    assert!(!app.should_quit);
+    assert!(app.quitting);
+}
+
+#[test]
+fn a_second_quit_exits_at_once() {
+    let mut app = app_with_two();
+    app.op_started("delete db".to_string());
+    app.handle_key(key(KeyCode::Char('q')));
+    app.handle_key(key(KeyCode::Char('q')));
+    assert!(app.should_quit);
+
+    let mut app = app_with_two();
+    app.op_started("delete db".to_string());
+    app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+    app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+    assert!(app.should_quit);
+}
+
+#[test]
+fn quitting_with_nothing_running_exits_without_waiting() {
+    let mut app = app_with_two();
+    app.handle_key(key(KeyCode::Char('q')));
+    assert!(app.should_quit);
+    assert!(!app.quitting);
+}
+
+#[test]
+fn the_wait_ends_when_the_last_op_reports_or_the_bound_passes() {
+    let mut app = app_with_two();
+    app.op_started("delete db".to_string());
+    app.op_started("create cache".to_string());
+    app.handle_key(key(KeyCode::Char('q')));
+    app.op_finished("delete db");
+    assert!(!app.quit_ready(), "one op is still running");
+    let status = app.status.clone().expect("still said");
+    assert!(status.contains("create cache"), "{status}");
+    app.op_finished("create cache");
+    assert!(app.quit_ready());
+
+    let mut app = app_with_two();
+    app.op_started("delete db".to_string());
+    app.handle_key(key(KeyCode::Char('q')));
+    assert!(!app.quit_overdue());
+    app.quit_since = Some(Instant::now() - app::QUIT_WAIT);
+    assert!(app.quit_overdue(), "a wedged op would hold the terminal");
+}
+
+// --- single keys ---
+
+#[test]
+fn stop_is_allowed_on_a_managed_row_in_error() {
+    let mut app = app_with_two();
+    app.entries[0].status = TunnelStatus::Error;
+    assert_eq!(
+        app.handle_key(key(KeyCode::Char('S'))),
+        Some(Op::Stop("db".to_string())),
+        "launchd restarts it in seconds: only an unload ends that"
+    );
+}
+
+#[test]
+fn stop_is_still_refused_on_a_stopped_row() {
+    let mut app = a_stopped_app();
+    assert_eq!(app.handle_key(key(KeyCode::Char('S'))), None);
+    assert_eq!(app.status.as_deref(), Some("db is not running"));
+}
+
+#[test]
+fn restart_on_an_unmanaged_row_leaves_its_health_alone() {
+    let mut app = app_with_two();
+    app.entries[0].kind = TunnelKind::External;
+    app.entries[0].health = HealthStatus::Healthy;
+    assert_eq!(app.handle_key(key(KeyCode::Char('R'))), None);
+    assert_eq!(app.entries[0].health, HealthStatus::Healthy);
+    assert!(app.status_error);
+}
+
+#[test]
+fn turning_auto_start_off_does_not_read_as_starting() {
+    let mut app = app_with_two();
+    app.entries[0].tunnel.auto_start = true;
+    assert!(app.handle_key(key(KeyCode::Char('A'))).is_some());
+    assert_eq!(
+        app.entries[0].pending.expect("pending").gerund(),
+        "disabling auto-start"
+    );
+
+    let mut app = app_with_two();
+    assert!(app.handle_key(key(KeyCode::Char('A'))).is_some());
+    assert_eq!(
+        app.entries[0].pending.expect("pending").gerund(),
+        "enabling auto-start"
+    );
+}
+
+#[test]
+fn the_pending_verbs_take_their_own_spelling() {
+    let gerund = |verb| {
+        PendingOp {
+            verb,
+            since: Instant::now(),
+        }
+        .gerund()
+    };
+    assert_eq!(gerund("stop"), "stopping");
+    assert_eq!(gerund("start"), "starting");
+    assert_eq!(gerund("delete"), "deleting");
+    assert_eq!(gerund("rename"), "renaming");
+    assert_eq!(gerund("move"), "moving");
+    assert_eq!(gerund("edit"), "editing");
 }
