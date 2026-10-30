@@ -8,7 +8,10 @@
 //! The count is of runs that died before `min_uptime`. A run that lived that
 //! long was working, whatever killed it afterwards, so it clears the count:
 //! that is also why a wake from sleep, which ends a long run, never adds up
-//! to a stop.
+//! to a stop. The length of a run is the larger of the monotonic and the wall
+//! clock ([`run_length`]), because the monotonic clock stops during sleep on
+//! macOS; a run that began just before the lid closed still costs one history
+//! entry and one backoff step if it dies before `min_uptime` of either clock.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -90,6 +93,20 @@ pub enum Verdict {
     Restart { after: Duration },
     /// Spent: stay down until a person starts it.
     Stop,
+}
+
+/// How long a run lived, given both clocks.
+///
+/// `Instant` is `CLOCK_UPTIME_RAW` on macOS and does not advance while the
+/// machine sleeps, so a run that spanned a sleep reads as seconds long and
+/// would be judged a fast failure. The wall clock does advance, so the larger
+/// of the two is taken. `wall` is the result of `SystemTime::duration_since`,
+/// which fails when the clock was set back; then the instant is all there is.
+pub fn run_length(
+    instant: Duration,
+    wall: Result<Duration, std::time::SystemTimeError>,
+) -> Duration {
+    wall.map_or(instant, |w| w.max(instant))
 }
 
 /// Judge one failed run. `ran_for` is how long the child lived.
@@ -277,6 +294,38 @@ mod tests {
         }
         let v = judge(&b, &mut h, quick(), at(1100));
         assert_eq!(v, Verdict::Stop, "one past the budget");
+    }
+
+    #[test]
+    fn a_run_that_spanned_a_sleep_clears_the_count() {
+        let b = Budget::default();
+        let mut h = History::default();
+        for n in 0..3 {
+            judge(&b, &mut h, quick(), at(1000 + n));
+        }
+        assert_eq!(h.len(), 3);
+        let eight_hours = Duration::from_secs(8 * 3600);
+        let ran_for = run_length(Duration::from_secs(30), Ok(eight_hours));
+        assert_eq!(ran_for, eight_hours);
+        let v = judge(&b, &mut h, ran_for, at(1010));
+        assert!(h.is_empty(), "the sleep counted as time the run was up");
+        assert_eq!(
+            v,
+            Verdict::Restart {
+                after: Duration::ZERO
+            }
+        );
+    }
+
+    #[test]
+    fn a_wall_clock_that_went_backwards_falls_back_to_the_instant() {
+        let earlier = at(100);
+        let later = at(200);
+        let backwards = earlier.duration_since(later);
+        assert!(backwards.is_err());
+        let thirty = Duration::from_secs(30);
+        assert_eq!(run_length(thirty, backwards), thirty);
+        assert_eq!(run_length(thirty, Ok(Duration::from_secs(5))), thirty);
     }
 
     #[test]
