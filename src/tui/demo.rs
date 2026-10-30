@@ -276,12 +276,21 @@ impl App {
         if std::mem::take(&mut self.want_instances) {
             let zone = self.default_zone.clone();
             self.instances_arrived(
-                ["bastion", "cache-1", "db-1"]
-                    .map(|name| InstanceChoice {
-                        name: name.to_string(),
-                        zone: zone.clone(),
-                    })
-                    .to_vec(),
+                [
+                    // name, hidden, iap
+                    ("bastion", false, true),
+                    ("cache-1", false, false),
+                    ("db-1", false, false),
+                    ("batch-old", true, false),
+                    ("gke-demo-pool-1a2b", true, false),
+                ]
+                .map(|(name, hidden, iap)| InstanceChoice {
+                    name: name.to_string(),
+                    zone: zone.clone(),
+                    hidden,
+                    iap,
+                })
+                .to_vec(),
             );
         }
         if std::mem::take(&mut self.want_configurations) {

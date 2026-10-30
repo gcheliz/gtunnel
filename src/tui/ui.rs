@@ -3214,14 +3214,31 @@ fn render_instance_picker(f: &mut Frame, app: &App) {
     let rows = app
         .filtered_instances()
         .iter()
-        .map(|i| vec![i.name.clone(), i.zone.clone()])
+        .map(|i| {
+            let iap = if i.iap { "iap" } else { "" };
+            vec![i.name.clone(), i.zone.clone(), iap.to_string()]
+        })
         .collect();
+    // What the list leaves out is said where the rows are, since the reader
+    // has no other way to learn that Tab brings it back
+    let hidden = app.hidden_instances();
+    let described = match (hidden, app.show_all_instances) {
+        (0, _) => InputMode::AddInstance.describe().to_string(),
+        (n, false) => format!(
+            "{}. {n} hidden (stopped or GKE nodes), Tab shows all",
+            InputMode::AddInstance.describe()
+        ),
+        (n, true) => format!(
+            "{}. {n} stopped or GKE nodes shown, Tab hides them",
+            InputMode::AddInstance.describe()
+        ),
+    };
     render_picker(
         f,
         Picker {
             title: &step_title("New access tunnel", InputMode::AddInstance, app),
             prompt: InputMode::AddInstance.prompt(),
-            description: InputMode::AddInstance.describe(),
+            description: &described,
             filter: &app.input,
             rows,
             selected: app.instance_selected,

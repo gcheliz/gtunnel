@@ -22,6 +22,7 @@ pub struct Instance {
     pub network: Option<String>,
     pub tags: Vec<String>,
     pub internal_ip: Option<String>,
+    pub labels: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Deserialize)]
@@ -33,6 +34,8 @@ struct RawInstance {
     zone: String,
     #[serde(default)]
     tags: RawTags,
+    #[serde(default)]
+    labels: std::collections::BTreeMap<String, String>,
     #[serde(default, rename = "networkInterfaces")]
     network_interfaces: Vec<RawNic>,
 }
@@ -68,6 +71,7 @@ impl RawInstance {
                 .and_then(|n| n.network.as_deref().map(|u| last_segment(u).to_string())),
             tags: self.tags.items,
             internal_ip: nic.and_then(|n| n.network_ip),
+            labels: self.labels,
         }
     }
 }
@@ -279,18 +283,34 @@ pub fn firewall_allows_iap(
     port: u16,
 ) -> bool {
     rules.iter().any(|fw| {
-        !fw.disabled
-            && fw.direction.eq_ignore_ascii_case("INGRESS")
-            && last_segment(&fw.network) == network
-            && fw.source_ranges.iter().any(|r| range_covers_iap(r))
-            && (fw.target_tags.is_empty()
-                || fw.target_tags.iter().any(|t| instance_tags.contains(t)))
+        rule_reaches_instance(fw, network, instance_tags)
             && fw.allowed.iter().any(|a| {
-                (a.ip_protocol.eq_ignore_ascii_case("tcp")
-                    || a.ip_protocol.eq_ignore_ascii_case("all"))
+                allows_tcp(a)
                     && (a.ports.is_empty() || a.ports.iter().any(|p| port_spec_covers(p, port)))
             })
     })
+}
+
+// Whether some enabled ingress rule lets IAP reach this instance on any TCP
+// port. The picker asks it before the port is known, so it shares the rule
+// predicate with `firewall_allows_iap` and cannot drift from it.
+pub fn firewall_admits_iap(rules: &[Firewall], network: &str, instance_tags: &[String]) -> bool {
+    rules.iter().any(|fw| {
+        rule_reaches_instance(fw, network, instance_tags) && fw.allowed.iter().any(allows_tcp)
+    })
+}
+
+// Everything about a rule except which ports it opens
+fn rule_reaches_instance(fw: &Firewall, network: &str, instance_tags: &[String]) -> bool {
+    !fw.disabled
+        && fw.direction.eq_ignore_ascii_case("INGRESS")
+        && last_segment(&fw.network) == network
+        && fw.source_ranges.iter().any(|r| range_covers_iap(r))
+        && (fw.target_tags.is_empty() || fw.target_tags.iter().any(|t| instance_tags.contains(t)))
+}
+
+fn allows_tcp(a: &FirewallAllow) -> bool {
+    a.ip_protocol.eq_ignore_ascii_case("tcp") || a.ip_protocol.eq_ignore_ascii_case("all")
 }
 
 // Whether a source range contains the IAP forwarding range
@@ -1166,6 +1186,72 @@ mod tests {
         assert_eq!(got[0].internal_ip.as_deref(), Some("10.0.0.5"));
         assert_eq!(got[0].tags, vec!["db".to_string()]);
         assert_eq!(got[1].tags, Vec::<String>::new());
+    }
+
+    #[tokio::test]
+    async fn list_instances_keeps_the_labels() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/projects/p/aggregated/instances"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+              "items": {
+                "zones/europe-west1-b": {
+                  "instances": [
+                    {"name":"gke-node-1","status":"RUNNING",
+                     "labels":{"goog-gke-node":"","env":"dev"},
+                     "zone":"https://x/projects/p/zones/europe-west1-b"},
+                    {"name":"bastion","status":"RUNNING",
+                     "zone":"https://x/projects/p/zones/europe-west1-b"}
+                  ]
+                }
+              }
+            })))
+            .mount(&server)
+            .await;
+
+        let got = list_instances(&client(&server), "p").await.expect("list");
+        let bastion = &got[0];
+        let node = &got[1];
+        assert_eq!(bastion.name, "bastion");
+        assert!(bastion.labels.is_empty());
+        assert_eq!(
+            node.labels.get("goog-gke-node").map(String::as_str),
+            Some("")
+        );
+        assert_eq!(node.labels.get("env").map(String::as_str), Some("dev"));
+    }
+
+    #[test]
+    fn firewall_admits_iap_on_any_tcp_port() {
+        let rules = vec![fw("a", "default", &["35.235.240.0/20"], &["5432"], &[])];
+        assert!(firewall_admits_iap(&rules, "default", &[]));
+        let no_ports = vec![fw("a", "default", &["35.235.240.0/20"], &[], &[])];
+        assert!(firewall_admits_iap(&no_ports, "default", &[]));
+    }
+
+    #[test]
+    fn firewall_admits_iap_rejects_what_allows_iap_rejects() {
+        let rule = || fw("a", "default", &["35.235.240.0/20"], &["22"], &["web"]);
+        let web = ["web".to_string()];
+        assert!(firewall_admits_iap(&[rule()], "default", &web));
+        assert!(!firewall_admits_iap(&[rule()], "other", &web));
+        assert!(!firewall_admits_iap(
+            &[rule()],
+            "default",
+            &["db".to_string()]
+        ));
+        let mut disabled = rule();
+        disabled.disabled = true;
+        assert!(!firewall_admits_iap(&[disabled], "default", &web));
+        let mut egress = rule();
+        egress.direction = "EGRESS".to_string();
+        assert!(!firewall_admits_iap(&[egress], "default", &web));
+        let mut udp = rule();
+        udp.allowed[0].ip_protocol = "udp".to_string();
+        assert!(!firewall_admits_iap(&[udp], "default", &web));
+        let elsewhere = fw("a", "default", &["192.168.0.0/16"], &["22"], &[]);
+        assert!(!firewall_admits_iap(&[elsewhere], "default", &[]));
+        assert!(!firewall_admits_iap(&[], "default", &[]));
     }
 
     // The aggregated list walks one bucket per zone, so without a sort an
