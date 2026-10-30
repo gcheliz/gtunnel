@@ -70,6 +70,20 @@ pub const FORWARDED_ENV_VARS: [&str; 12] = [
     "CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE",
 ];
 
+/// The environment entry that says which gtunnel wrote a definition.
+///
+/// The refresh cannot tell an older definition from a newer one by reading its
+/// arguments: a downgrade, or a second install on `PATH`, looks exactly like
+/// an upgrade to a binary that treats every difference as "mine is right", and
+/// two versions then rewrite and restart every tunnel back and forth. The
+/// stamp gives the comparison a direction. It lives in the environment, where
+/// the refresh already ignores `GTUNNEL_*` entries when it compares shapes, so
+/// a version bump alone never makes a definition stale.
+pub const DEFINITION_VERSION_VAR: &str = "GTUNNEL_DEFINITION_VERSION";
+
+/// The version this binary stamps into what it writes
+pub const DEFINITION_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 // A daemon does not inherit an interactive shell's PATH, so gcloud's directory
 // is written into the unit. Without it the daemon dies at startup every time.
 fn daemon_env_with(
@@ -90,6 +104,10 @@ fn daemon_env_with(
         // without this a line is held until 4 KiB have accumulated or the
         // process exits, and a working tunnel reads as a silent one.
         ("PYTHONUNBUFFERED".to_string(), "1".to_string()),
+        (
+            DEFINITION_VERSION_VAR.to_string(),
+            DEFINITION_VERSION.to_string(),
+        ),
     ];
     for name in RESTART_VARS.into_iter().chain(FORWARDED_ENV_VARS) {
         if let Some(value) = get(name).filter(|v| !v.trim().is_empty()) {
@@ -347,6 +365,45 @@ pub fn installed_service_text(label: &str) -> Option<String> {
     #[cfg(not(target_os = "macos"))]
     let path = systemd::unit_path(label).ok()?;
     std::fs::read_to_string(path).ok()
+}
+
+/// The text of the watchdog's definition as installed, or `None` when it was
+/// never installed. A unit watchdog is two files and the interval lives in the
+/// timer, so both are read and joined: the refresh compares the whole of what
+/// `watch install` wrote.
+pub fn installed_watchdog_text() -> Option<String> {
+    let label = watchdog_label();
+    #[cfg(target_os = "macos")]
+    return installed_service_text(label);
+    #[cfg(not(target_os = "macos"))]
+    {
+        let service = installed_service_text(&format!("{label}.service"))?;
+        let timer = installed_service_text(&format!("{label}.timer")).unwrap_or_default();
+        Some(format!("{service}\n{timer}"))
+    }
+}
+
+/// What `watch install` would write for `program`, in the shape
+/// [`installed_watchdog_text`] reads back.
+pub fn render_watchdog(program: &std::path::Path) -> Result<String> {
+    let log = watchdog_log()?;
+    let interval = watch_interval_secs();
+    #[cfg(target_os = "macos")]
+    return Ok(launchd::render_watchdog_plist(program, &log, interval));
+    #[cfg(not(target_os = "macos"))]
+    {
+        let (service, timer) = systemd::render_watchdog_units(program, &log, interval);
+        Ok(format!("{service}\n{timer}"))
+    }
+}
+
+/// Where a refresh records that it rewrote a definition and has not yet
+/// restarted the job. Beside the other run markers, keyed by the same label,
+/// so one sweep of `run/` finds all of them.
+pub fn restart_pending_in(config_dir: &std::path::Path, label: &str) -> PathBuf {
+    config_dir
+        .join("run")
+        .join(format!("{label}.restart-pending"))
 }
 
 /// Whether `path` is inside `dir`, compared by component so `/tmp/cfg-ab` is

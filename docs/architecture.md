@@ -77,6 +77,13 @@ A gated tunnel, `expose --private`, also turns on IAP for its backend service, s
 signs in with Google before a request reaches the relay. `list` and the TUI show its mode
 as `gated` rather than `public`.
 
+Every backend service is created with a `timeoutSec` of 3600 (`expose.backend_timeout`, see
+[configuration](configuration.md)), a 30 second connection-draining timeout and request logging
+stated as off. The load balancer's own default is 30 seconds, which for a websocket is the
+longest it may stay idle, so without the longer value hot reload and server-sent events
+reconnect in a loop and a slow upload fails with a 502 or 504. GCP closes every websocket at
+24 hours regardless.
+
 The tunnel process runs:
 
 ```
@@ -88,6 +95,15 @@ Without `ExitOnForwardFailure=yes`, SSH stays up after the remote bind fails and
 looks healthy while serving nothing. The relay's startup script sets
 `GatewayPorts clientspecified` so the `0.0.0.0` bind is accepted and the load balancer's
 health check can reach the port.
+
+The bind is on every interface because the load balancer connects to the relay's internal
+address, so the VPC firewall alone decides who else can. The startup script therefore also
+installs an `nftables` table, `gtunnel_relay`, that drops `30000-30999` from every source but
+the load balancer's ranges (`130.211.0.0/22`, `35.191.0.0/16`). It is what keeps `--private`
+meaningful: a VM in the same VPC cannot reach a tunnel's relay port directly, even under a
+rule such as `default-allow-internal`, so IAP sign-in is not skipped. The table is rewritten
+on every run of the script, which `relay up` applies to an existing relay too. It does not
+cover SSH on port 22, which only IAP reaches.
 
 Every relay resource that has a wanted shape is converged, not only created: `relay up` reads
 the health check, each backend service and the relay's startup script, and writes only what
@@ -136,7 +152,12 @@ rule, HTTPS proxy, global address, URL map, default backend, health check, each 
 certificate-map entries, certificate and DNS authorization, the certificate map, the instance
 group, the relay instance, then both firewall rules. It **refuses** while any expose tunnel or live
 `gtunnel run --public` still holds a route — `--force` deletes those tunnels' routes and
-services first. It never touches the Cloud DNS managed zone, which is yours.
+services first. Before it deletes anything it looks for backend services that still point at the
+relay's instance group: one that gtunnel tagged (an orphan left by a `run --public` killed before
+its cleanup) is deleted after the URL map, and one that gtunnel did not create stops the teardown
+by name, with the relay untouched. A per-account lock held for the whole teardown makes `expose`,
+`run --public` and `relay up` refuse meanwhile instead of building a route into a group that is
+about to be deleted. It never touches the Cloud DNS managed zone, which is yours.
 
 ## Process model
 
@@ -248,7 +269,10 @@ Keys, defaults and the traps of editing `config.toml` and `tunnels.toml` are in
 | `<config>/run/probes/` | One file per local port gtunnel is probing, so the supervisor leaves gtunnel's own health checks out of the `conn` lines |
 | `<config>/run/watchdog.heartbeat` | Time of the watchdog's last pass. `watch status` reports its age; while it is under 90s old (three intervals when `watch.interval` is above 30s) the TUI leaves notifications to the watchdog |
 | `<config>/lifecycle.json`, `<config>/lifecycle.lock` | The last state each tunnel was seen in, shared by the watchdog, the TUI and the CLI so that a change is notified once. The lock serialises its updates |
-| `<config>/agents/<label>.plist` | macOS: the service definition gtunnel loads and unloads. Written atomically, like every file under `<config>`. Rewritten by the first command after an upgrade when it differs from what the new binary renders (`src/daemon/refresh.rs`); a running tunnel is restarted, a stopped one is not |
+| `<config>/agents/<label>.plist` | macOS: the service definition gtunnel loads and unloads. Written atomically, like every file under `<config>`. Rewritten by the first command after an upgrade when it differs from what the new binary renders (`src/daemon/refresh.rs`), unless it carries the stamp of a newer gtunnel; a running tunnel is restarted, one with a client connected waits for `gtunnel restart`, a stopped one is not |
+| `<config>/run/<label>.restart-pending` | Written by the refresh before it rewrites a definition it means to restart, removed once the job has started again; a later command finishes the restart if the first one failed |
+| `<config>/run/definitions-newer` | The version of a newer gtunnel whose definitions this one left alone, so the notice prints once per version |
+| `<config>/refresh.lock` | Held for the length of a refresh pass; a command that cannot take it skips the refresh |
 | `~/Library/LaunchAgents/<label>.plist` | macOS: present only while auto-start is on |
 | `<config>/breakers.toml`, `<config>/breakers.lock` | One row per tunnel: what the watchdog has seen of it, and how far up the restart ladder it is. Rewritten whole on every pass, by writing a sibling file and renaming it, and pruned to the tunnels that still exist. A pass holds the lock from its read to its write, so a second watchdog skips its round instead of overwriting the first one's decisions |
 | `<config>/logs/watchdog.log` | What the watchdog did. A pass where nothing needed doing writes nothing |

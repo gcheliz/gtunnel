@@ -278,6 +278,7 @@ into it: it falls back to the file with the environment, then the file alone, th
 |---|---|
 | `token_ttl` | an upper bound on how long an access token is reused, not the usual lifetime: gtunnel asks gcloud when each token expires and stops reusing it 5 minutes before, so a token with 20 minutes left is dropped after 15 whatever this says. Raising it past `1h` changes nothing. It still decides when gcloud reports no expiry. A `401` evicts the token and the request is tried once more with a fresh one |
 | `lock_deadline`, `fingerprint_attempts` | under `[gcp]` for want of a section of their own: the wait for a lock another gtunnel holds on a file, and the redos of a URL map or named port change after a concurrent edit |
+| `backend_timeout` | under `[expose]`, not to be confused with an account's `expose` relay table: the backend service timeout of every tunnel `expose` creates, and of the existing ones at `relay up`, `expose`, `start` and `restart`. For a websocket it is the longest the connection may sit idle, for a request the longest it may take. Whole seconds; GCP closes every websocket at 24h whatever it says |
 | `list_probe_timeout` | one probe of a running tunnel's local port, in `list` and the MCP list and status tools; the TUI's probes keep a fixed 2 seconds. `list` probes all tunnels at once, so it waits one probe however many run. Longer helps a slow far end and slows `list` when a tunnel is silent. Not `watch.probe_timeout` (3s), the watchdog's wait |
 | `update_check_interval` | paces the background release check of [update](commands.md#update) |
 | File-descriptor limit (4096) | no key: checked at compile time (above 256, at most the kernel's 61440) and written into the plist and the unit, so a change needs every service reinstalled and a file value would not reach a running tunnel |
@@ -341,6 +342,9 @@ http_timeout = "30s"
 poll_interval = "2s"
 lock_deadline = "5s"
 fingerprint_attempts = 5
+
+[expose]
+backend_timeout = "1h"
 ```
 
 When a variable gives a value other than the file's, `gtunnel doctor` says so and what to unset:
@@ -397,11 +401,17 @@ the new binary writes, and rewrites each that differs, such as one without `--cr
 
 | Case | Result |
 |---|---|
-| A running tunnel | restarted to read the new definition, which drops its connections for a moment |
+| A running tunnel | rewritten, then restarted to read the new definition, which drops its connections for a moment |
+| A running tunnel with a client connected | rewritten and left running on the old definition; the line names it, and `gtunnel restart <name>` restarts it when it is idle. Connections are counted on the tunnel's local port, so an expose tunnel is always restarted |
+| A tunnel in error | rewritten and reloaded, because launchd keeps the definition it loaded however often the file changes |
 | A stopped tunnel | stays stopped, its log untouched |
+| The watchdog | its definition is compared and rewritten the same way when it is installed, and reloaded; a missing binary counts as out of date, and the interval does not (it is `watch.interval` of the installing shell). Never restarted separately: installing it is the reload |
+| A restart that fails | the pass writes `run/<label>.restart-pending` before the write and removes it once the job has started again, so the next command finishes the restart even though the file is current. The line names the label and `gtunnel restart <name>` |
 | Reporting | one line on stderr names what was reinstalled; a failure names the service and the reason without changing the exit status |
 | Skipped | a tunnel whose service was never installed, a definition that already matches, any run with `GTUNNEL_CONFIG_DIR` set; so a second run does nothing |
+| Two commands at once | the pass takes `refresh.lock` in the config directory and never waits for it, so a command that finds it held skips the refresh and each tunnel is restarted at most once |
 | Out of date means | the argument list differs in shape, or the binary no longer exists. The values of `--log-level` and `GTUNNEL_*` come from the calling shell and are ignored, so exporting `GTUNNEL_LOG_LEVEL` for one command restarts nothing |
+| Which way a difference points | each definition carries `GTUNNEL_DEFINITION_VERSION=<version>` in its environment, ignored when shapes are compared. A definition stamped newer than the running binary is left alone and reported once, `services were written by gtunnel X; this is Y`, because rewriting it would make the newer one rewrite it back. One with no stamp, or an unreadable one, is stamped: a quiet write with no restart when its shape was already current. An older stamp on a current shape is left as it is, so an upgrade alone rewrites nothing |
 
 ## Environment
 
@@ -434,6 +444,7 @@ precedence are under [Settings the environment can override](#settings-the-envir
 | `GTUNNEL_GCP_POLL_INTERVAL` | | `gcp.poll_interval` | `2s` | The pause between looks at a running operation; for API quota, or a wait that feels padded |
 | `GTUNNEL_GCP_LOCK_DEADLINE` | | `gcp.lock_deadline` | `5s` | How long a command that writes `config.toml`, `tunnels.toml` or the lifecycle ledger waits for the lock another gtunnel holds before reporting `is held by another gtunnel process` |
 | `GTUNNEL_GCP_FINGERPRINT_ATTEMPTS` | | `gcp.fingerprint_attempts` | `5` | Tries of a read-modify-write on a URL map or named port after a `412` from a concurrent edit, in `expose` and `doctor --fix`; for `Gave up after N attempts` |
+| `GTUNNEL_EXPOSE_BACKEND_TIMEOUT` | | `expose.backend_timeout` | `1h` | The backend service timeout: how long the load balancer waits on a backend, and how long an idle websocket or server-sent stream stays open. Its own default is 30s, which cuts both and fails a request slower than that. Whole seconds, above zero; for `502` or `504` on a slow request, or a stream cut at 30s. Read by `expose`, `start`, `restart` and `relay up` |
 | `GTUNNEL_RESTART_MAX_RESTARTS` | | `restart.max_restarts` | `5` | Fast failures tolerated inside the window; `0` to 4294967295, and `0` turns the budget off. For a tunnel that loops, or one that must never be parked. Read by the supervisor, `start` and `restart`, as are the next four. See [The restart budget](#the-restart-budget) |
 | `GTUNNEL_RESTART_WINDOW` | | `restart.window` | `10m` | How long a failure counts. Not shorter than the base backoff |
 | `GTUNNEL_RESTART_MIN_UPTIME` | | `restart.min_uptime` | `60s` | How long a run must last to clear the count |
