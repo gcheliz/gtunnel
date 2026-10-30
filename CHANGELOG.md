@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.59](https://github.com/gcheliz/gtunnel/compare/v0.2.58...v0.2.59) - 2026-10-30
+
+### Added
+
+- *(notify)* desktop notifications are off until turned on ([#357](https://github.com/gcheliz/gtunnel/pull/357))
+
 ## [0.2.58](https://github.com/gcheliz/gtunnel/compare/v0.2.57...v0.2.58) - 2026-10-30
 
 ### Fixed
