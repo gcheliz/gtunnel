@@ -24,6 +24,11 @@ pub struct Budget {
     /// The wait after the first failure; each next one doubles it.
     pub base_backoff: Duration,
     pub max_backoff: Duration,
+    /// The fixed wait after a run that died because the relay still holds the
+    /// listener of its dead predecessor.
+    pub busy_delay: Duration,
+    /// How long such deaths may go on before they count like any other.
+    pub busy_window: Duration,
 }
 
 impl Default for Budget {
@@ -34,6 +39,10 @@ impl Default for Budget {
             min_uptime: Duration::from_secs(60),
             base_backoff: Duration::from_secs(10),
             max_backoff: Duration::from_secs(5 * 60),
+            // Two missed keepalives on the relay is about 30 s, so a retry
+            // every 15 s finds the port free on the second or third try
+            busy_delay: Duration::from_secs(15),
+            busy_window: Duration::from_secs(5 * 60),
         }
     }
 }
@@ -112,6 +121,54 @@ pub fn judge(b: &Budget, h: &mut History, ran_for: Duration, now: SystemTime) ->
         .saturating_mul(1 << doublings)
         .min(b.max_backoff);
     Verdict::Restart { after }
+}
+
+/// What to do with a run that died on `remote port forwarding failed`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Busy {
+    /// Wait `after`, then start again. `since` is when this streak began and
+    /// is what the supervisor writes down for the next process.
+    Wait { since: SystemTime, after: Duration },
+    /// The relay never let go: count it like any other fast failure.
+    Spent,
+}
+
+/// Judge a run that died because the relay still holds the old session's
+/// listener. Nothing here is the tunnel's fault and a restart is the cure, so
+/// it does not spend the budget; but a relay that never lets go must not be
+/// retried forever, hence the window. A run that lived `min_uptime` was
+/// working, so what killed it afterwards starts a new streak.
+pub fn judge_busy(
+    b: &Budget,
+    since: Option<SystemTime>,
+    ran_for: Duration,
+    now: SystemTime,
+) -> Busy {
+    let since = match since {
+        Some(t) if ran_for < b.min_uptime => t,
+        _ => now,
+    };
+    // A start stamped in the future (the clock moved back) has an age of
+    // zero, as in `judge`: the streak is kept, and so stays bounded
+    let age = now.duration_since(since).unwrap_or(Duration::ZERO);
+    if age > b.busy_window {
+        return Busy::Spent;
+    }
+    Busy::Wait {
+        since,
+        after: b.busy_delay,
+    }
+}
+
+/// The streak's start as `History` keeps its entries: one unix second.
+pub fn parse_since(text: &str) -> Option<SystemTime> {
+    let s = text.trim().parse::<u64>().ok()?;
+    Some(UNIX_EPOCH + Duration::from_secs(s))
+}
+
+pub fn render_since(t: SystemTime) -> String {
+    let s = t.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    format!("{s}\n")
 }
 
 #[cfg(test)]
@@ -229,5 +286,53 @@ mod tests {
         judge(&b, &mut h, quick(), at(1005));
         assert_eq!(History::parse(&h.render()), h);
         assert_eq!(History::parse("junk\n\n42\n").len(), 1, "junk is dropped");
+    }
+
+    #[test]
+    fn a_relay_that_still_holds_the_old_listener_is_retried_on_a_fixed_delay() {
+        let b = Budget::default();
+        let first = at(1000);
+        let mut since = None;
+        for n in 0..20u64 {
+            let now = at(1000 + n * 15);
+            match judge_busy(&b, since, quick(), now) {
+                Busy::Wait { since: s, after } => {
+                    assert_eq!(after, Duration::from_secs(15), "attempt {n}");
+                    since = Some(s);
+                }
+                Busy::Spent => panic!("spent at attempt {n}, {}s in", n * 15),
+            }
+        }
+        assert_eq!(since, Some(first), "the streak keeps its first start");
+    }
+
+    #[test]
+    fn a_relay_that_never_lets_go_is_counted_after_the_window() {
+        let b = Budget::default();
+        let v = judge_busy(&b, Some(at(1000)), quick(), at(1000) + b.busy_window);
+        assert!(matches!(v, Busy::Wait { .. }), "{v:?}");
+        let v = judge_busy(&b, Some(at(1000)), quick(), at(1001) + b.busy_window);
+        assert_eq!(v, Busy::Spent);
+    }
+
+    #[test]
+    fn a_run_that_worked_starts_a_new_streak() {
+        let b = Budget::default();
+        let now = at(1000) + b.busy_window * 3;
+        let v = judge_busy(&b, Some(at(1000)), b.min_uptime, now);
+        assert_eq!(
+            v,
+            Busy::Wait {
+                since: now,
+                after: b.busy_delay
+            }
+        );
+    }
+
+    #[test]
+    fn the_streak_start_survives_the_file_it_is_kept_in() {
+        let t = at(1234);
+        assert_eq!(parse_since(&render_since(t)), Some(t));
+        assert_eq!(parse_since("not a number"), None);
     }
 }

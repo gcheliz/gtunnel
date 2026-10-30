@@ -218,6 +218,14 @@ impl GcpClient {
         }
     }
 
+    pub fn poll_interval(&self) -> Duration {
+        self.poll_interval
+    }
+
+    pub fn operation_timeout(&self) -> Duration {
+        self.operation_timeout
+    }
+
     pub fn for_account(acct: &Account) -> Self {
         Self::new(
             TokenSource::Gcloud(Box::new(acct.clone())),

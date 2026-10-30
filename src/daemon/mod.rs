@@ -183,11 +183,18 @@ pub fn restart_history_beside(marker: &std::path::Path) -> PathBuf {
     marker.with_extension("restarts")
 }
 
+/// When the current run of `remote port forwarding failed` exits began. Its own
+/// file, because those exits are not counted in the history.
+pub fn busy_beside(marker: &std::path::Path) -> PathBuf {
+    marker.with_extension("busy")
+}
+
 /// Forget a spent budget: the marker that says why the job is down and the
 /// count that produced it. `start` and `delete` both want exactly this.
 pub fn clear_crash_state(marker: &std::path::Path) {
     let _ = std::fs::remove_file(marker);
     let _ = std::fs::remove_file(restart_history_beside(marker));
+    let _ = std::fs::remove_file(busy_beside(marker));
 }
 
 /// Whether this tunnel's supervisor stopped on purpose for a spent budget.

@@ -371,6 +371,11 @@ exit the service manager leaves alone (0 on macOS, 78 on Linux). The tunnel stay
 until `gtunnel start`, which clears the marker and the count. A run that lasts `min_uptime`
 or longer clears the count, so a laptop that sleeps and wakes never adds up to a stop.
 
+One failure is kept out of the count: `remote port forwarding failed`, which means the relay
+still holds a dead session's listener. A restart is the cure, so the supervisor waits a fixed
+15 seconds and starts again, for up to 5 minutes from the first one, and only then counts it.
+Neither number is configurable.
+
 | Key under `[restart]` | Default | Range |
 |---|---|---|
 | `max_restarts` | `5` | whole number, `0` to 4294967295; `0` turns the budget off |

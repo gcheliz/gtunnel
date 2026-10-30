@@ -222,17 +222,31 @@ pub async fn list_zones(client: &GcpClient, project: &str) -> Result<Vec<String>
 // stays the operator's (docs/decisions.md section 8). The ranges repeat
 // LB_HEALTH_CHECK_RANGES because the script is one literal; a test pins them.
 // Sshd is configured first: a failed package install must not undo it.
+//
+// The drop-in replaces an append to sshd_config because Debian's sshd takes
+// the first value it reads and includes sshd_config.d at the top, so a drop-in
+// wins and an appended line at the bottom never could. ClientAliveInterval 15
+// with ClientAliveCountMax 2 makes sshd drop a session whose peer stopped
+// answering in about 30 s; the default never probes, so the kernel's
+// keepalive reaps it after about two hours and the old session keeps the
+// relay port bound against the client that comes back.
 pub const RELAY_STARTUP_SCRIPT: &str = "#!/bin/bash\n\
     set -e\n\
-    grep -q '^GatewayPorts clientspecified' /etc/ssh/sshd_config || \
-    echo 'GatewayPorts clientspecified' >> /etc/ssh/sshd_config\n\
+    mkdir -p /etc/ssh/sshd_config.d\n\
+    printf 'GatewayPorts clientspecified\\nClientAliveInterval 15\\nClientAliveCountMax 2\\n' \
+    > /etc/ssh/sshd_config.d/gtunnel.conf\n\
     systemctl restart ssh || systemctl restart sshd\n\
     command -v nft >/dev/null || { apt-get update -qq && apt-get install -y -qq nftables; }\n\
     nft delete table inet gtunnel_relay 2>/dev/null || true\n\
     nft add table inet gtunnel_relay\n\
     nft add chain inet gtunnel_relay input '{ type filter hook input priority 0; policy accept; }'\n\
     nft add rule inet gtunnel_relay input 'ip saddr != { 35.191.0.0/16, 130.211.0.0/22 } tcp dport 30000-30999 drop'\n\
-    nft add rule inet gtunnel_relay input 'meta nfproto ipv6 tcp dport 30000-30999 drop'\n";
+    nft add rule inet gtunnel_relay input 'meta nfproto ipv6 tcp dport 30000-30999 drop'\n\
+    echo gtunnel-relay-ready\n";
+
+// The line the script prints when it has finished, which `relay up` looks for
+// in the serial console. Kept beside the script so the two cannot drift.
+pub const RELAY_READY_MARKER: &str = "gtunnel-relay-ready";
 
 // What a reconcile did, so `relay up` can say it instead of printing "exists"
 // for a resource it just rewrote
@@ -329,6 +343,31 @@ pub async fn reconcile_relay_instance(
     .await?;
     client.wait_operation(&op).await?;
     Ok(Reconciled::Updated)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SerialChunk {
+    #[serde(default)]
+    pub contents: String,
+    #[serde(default)]
+    pub next: u64,
+}
+
+/// The first serial port from byte `start`. The startup script's own output
+/// lands there, which is the one place a relay with no external IP says what
+/// it has finished without an ssh through IAP.
+pub async fn serial_output(
+    client: &GcpClient,
+    project: &str,
+    zone: &str,
+    name: &str,
+    start: u64,
+) -> Result<SerialChunk> {
+    let url = format!(
+        "{}/projects/{project}/zones/{zone}/instances/{name}/serialPort?port=1&start={start}",
+        client.endpoints.compute
+    );
+    client.get(&url).await
 }
 
 pub async fn delete_instance(
@@ -1972,6 +2011,60 @@ mod tests {
         let sshd = script.find("systemctl restart ssh").expect("sshd restart");
         let nft = script.find("nft add table").expect("nft");
         assert!(sshd < nft, "{script}");
+    }
+
+    // sshd on the relay never probes a client by default, so a laptop that
+    // dropped keeps its listener for about two hours and the reconnect is
+    // refused. Two missed 15 s probes reap it in about 30 s.
+    #[test]
+    fn the_startup_script_writes_a_drop_in_that_reaps_a_dead_session_in_thirty_seconds() {
+        let script = RELAY_STARTUP_SCRIPT;
+        assert!(
+            script.contains("/etc/ssh/sshd_config.d/gtunnel.conf"),
+            "{script}"
+        );
+        for line in [
+            "GatewayPorts clientspecified",
+            "ClientAliveInterval 15",
+            "ClientAliveCountMax 2",
+        ] {
+            assert!(script.contains(line), "{line} missing from {script}");
+        }
+        assert!(
+            !script.contains(">> /etc/ssh/sshd_config"),
+            "the drop-in replaces the append, which could only ever add a line: {script}"
+        );
+    }
+
+    // Printed last, so a script that died on the way never claims the relay
+    // is ready, and after the firewall, so ready means guarded too
+    #[test]
+    fn the_startup_script_ends_with_the_marker_relay_up_waits_for() {
+        let script = RELAY_STARTUP_SCRIPT;
+        let nft = script.rfind("nft add rule").expect("nft");
+        let marker = script.find(RELAY_READY_MARKER).expect("marker");
+        assert!(nft < marker, "{script}");
+        assert!(script.trim_end().ends_with(RELAY_READY_MARKER), "{script}");
+    }
+
+    #[tokio::test]
+    async fn the_serial_console_is_read_from_a_byte_offset() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/projects/p/zones/z/instances/vm/serialPort"))
+            .and(wiremock::matchers::query_param("port", "1"))
+            .and(wiremock::matchers::query_param("start", "42"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "contents": "startup-script: gtunnel-relay-ready\n",
+                "next": 80
+            })))
+            .mount(&server)
+            .await;
+        let chunk = serial_output(&client(&server), "p", "z", "vm", 42)
+            .await
+            .expect("serial");
+        assert!(chunk.contents.contains(RELAY_READY_MARKER));
+        assert_eq!(chunk.next, 80);
     }
 
     #[tokio::test]

@@ -232,6 +232,11 @@ pub fn diagnose_log_line(line: &str, credential_file: bool) -> Option<String> {
     {
         return failure.log_hint(credential_file);
     }
+    if let Some(failure) = Failure::from_line(line)
+        && failure == Failure::ListenerBusy
+    {
+        return failure.log_hint(credential_file);
+    }
     const TABLE: &[(&str, &str)] = &[
         (
             "[4003:",
@@ -250,10 +255,6 @@ pub fn diagnose_log_line(line: &str, credential_file: bool) -> Option<String> {
             "Too many open files",
             "The tunnel ran out of file descriptors: something is holding its connections \
              open. Run: gtunnel doctor to name the process.",
-        ),
-        (
-            "remote port forwarding failed",
-            "Relay port is busy on the relay instance. Restart the tunnel or run gtunnel doctor.",
         ),
         (
             "numpy",
@@ -805,11 +806,11 @@ mod tests {
             ("Error while connecting [4033: 'not authorized'].", "roles/iap.tunnelResourceAccessor"),
             ("Reauthentication required, please rerun gcloud auth login", "gcloud auth login"),
             ("bind: Address already in use", "another process"),
-            ("Warning: remote port forwarding failed for listen port 30123", "relay"),
+            ("Warning: remote port forwarding failed for listen port 30123", "old session"),
             // What gtunnel's own tunnels actually print: every one of them
             // sets ExitOnForwardFailure=yes, and OpenSSH spells the same
             // failure `Error:` and makes it fatal when that option is on
-            ("Error: remote port forwarding failed for listen port 30123", "relay"),
+            ("Error: remote port forwarding failed for listen port 30123", "old session"),
             ("WARNING: Python 3.12 lacks numpy, falling back to a slower implementation", "NumPy"),
             ("INFO: [3] Received WebSocket Close message [4004: 'reauthentication required'].", "resumes the session"),
             ("WARNING: [3] Unable to reconnect within [900000] ms", "15 minutes"),
