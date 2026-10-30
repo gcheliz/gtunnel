@@ -92,7 +92,7 @@ Specify the release version and substitute your machine's file: `gtunnel-macos-a
 `gtunnel-macos-intel`, `gtunnel-linux-amd64` or `gtunnel-linux-arm64`.
 
 ```text
-VERSION="v0.2.66"
+VERSION="v0.3.0"
 F="gtunnel-macos-arm64-${VERSION}.tar.gz"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F.sha256"
@@ -104,7 +104,7 @@ so they run on any glibc.
 
 ```console
 $ gtunnel --version
-gtunnel 0.2.66
+gtunnel 0.3.0
 
 ```
 
@@ -458,7 +458,7 @@ check itself. On a Homebrew install:
 
 ```console,ignore
 $ gtunnel list
-gtunnel v9.9.9 is available (current: v0.2.66). Run `brew upgrade gtunnel`.
+gtunnel v9.9.9 is available (current: v0.3.0). Run `brew upgrade gtunnel`.
 ```
 
 ## The TUI
@@ -513,6 +513,7 @@ the log says, so the fix is on screen instead of in the log:
 | healthy | `✓` | the far end answered | nothing |
 | unhealthy | `✗` | no answer, and no cause the log names | read the log |
 | auth expired | `⊗` | no answer, and the log in the last two minutes says `Reauthentication required` or `gcloud auth login`; or the tunnel stopped itself for that reason and has not been started since | `gcloud auth login`, then `s` (`R` while it still runs) |
+| credentials refused | `⊘` | no answer, and the log says impersonation was denied (`Failed to impersonate`), a key is invalid (`Invalid JWT`) or the gcloud configuration does not exist; or the tunnel stopped itself for that reason | read the log, fix the account, then `s` |
 | crash loop | `↻` | the service restarted three times or more inside two minutes | check the log; a single restart after the machine wakes is expected: [troubleshooting](troubleshooting.md#restarts-after-the-laptop-wakes) |
 | checking | `…` | the first probe is still in flight | wait |
 | stopped | `○` | the tunnel is not running, or a stop is in flight, so there is nothing to probe | `s` to start |
@@ -522,7 +523,7 @@ A `[4033:` line is not auth expired: IAP refused an identity that is logged in, 
 the `roles/iap.tunnelResourceAccessor` role, and the row stays unhealthy. The crash loop is
 counted from one TUI session's metrics rounds, so it is empty for the first seconds after
 `gtunnel` opens. `gtunnel list --json`, `gtunnel_list_tunnels` and `gtunnel_get_status`
-return `health` as `healthy`, `unhealthy`, `auth_expired`, `stopped` or `unknown`, and do not report
+return `health` as `healthy`, `unhealthy`, `auth_expired`, `credentials_refused`, `stopped` or `unknown`, and do not report
 crash loops, which need restarts over time.
 
 The keymap page also has a **SESSION PATHS** section with the loaded `Config`
@@ -639,6 +640,7 @@ after the text has passed the rules for that file:
 | Removes or renames a tunnel | a warning too: a launchd job is named for the tunnel, and editing the file does not unload it |
 | Fails a rule | not saved. The page shows the text and the reason in red with its line (`not saved: line 16: key with no value, expected `=``); the keys become `e edit again` (reopens the same copy) and `Esc discard` (removes it). `Tab` does nothing meanwhile |
 | Has a key gtunnel does not read | refused the same way, naming one key and counting the rest (`not saved: unknown key accounts[0].expose.domains[0].log_level and 1 more`). The path shows which table the key landed in, such as a `log_level` typed below the last `[[accounts]]`. A file that already has such a key still loads, and `gtunnel doctor` reports it |
+| `tunnels.toml` holds a tunnel of a kind from a newer gtunnel | refused as a parse error, because the page checks the whole text. The file is untouched and the tunnel stays; upgrade gtunnel to edit it here. The `schema_version` line at the top is gtunnel's own marker and is never reported as an unknown key |
 | File changed since `e` opened it | refused with `not saved: tunnels.toml changed since you opened it` (or `config.toml`): another gtunnel, the CLI or the MCP server wrote it. The edit stays; a second save replaces that change, and a further write in between is refused again. Unchanged text is not a save, so it cannot overwrite the other change |
 | Editor exits non-zero (`:cq` in vim) | the edit is cancelled and the file left as it was |
 

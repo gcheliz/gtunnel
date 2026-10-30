@@ -294,7 +294,7 @@ pub struct Correlator {
     cap: RateCap,
     ready: Option<(PathBuf, Option<u16>)>,
     backend: Option<Backend>,
-    last_credential_failure: Option<Instant>,
+    last_stopping: Option<(Instant, crate::failure::Failure)>,
     auth_exit_window: Duration,
 }
 
@@ -312,7 +312,7 @@ impl Correlator {
             ),
             ready: None,
             backend: None,
-            last_credential_failure: None,
+            last_stopping: None,
             auth_exit_window: crate::settings::LOGS_AUTH_EXIT_WINDOW,
         }
     }
@@ -373,21 +373,25 @@ impl Correlator {
         }
     }
 
-    /// Whether a line within `logs.auth_exit_window` of `now` said gcloud's login
-    /// expired. Read by the supervisor when gcloud exits: this sees both
-    /// streams, so the answer does not depend on which one gcloud chose to
-    /// complain on. A line from hours ago is not the reason for this exit: the
-    /// user may have logged in again since and the tunnel died of the network.
-    pub fn credentials_expired(&self, now: Instant) -> bool {
-        self.last_credential_failure
-            .is_some_and(|at| now.saturating_duration_since(at) <= self.auth_exit_window)
+    /// The last failure a restart cannot fix (an expired login, a denied
+    /// impersonation, a bad key, a missing configuration) that a line within
+    /// `logs.auth_exit_window` of `now` named. Read by the supervisor when
+    /// gcloud exits: this sees both streams, so the answer does not depend on
+    /// which one gcloud chose to complain on. A line from hours ago is not the
+    /// reason for this exit: the user may have logged in again since and the
+    /// tunnel died of the network. Only stop-class lines are kept, so a network
+    /// line printed after the login one does not hide it.
+    pub fn stopping_failure(&self, now: Instant) -> Option<crate::failure::Failure> {
+        self.last_stopping
+            .filter(|(at, _)| now.saturating_duration_since(*at) <= self.auth_exit_window)
+            .map(|(_, failure)| failure)
     }
 
     /// One line in, the formatted lines it produces out.
     pub fn feed(&mut self, raw: &str, now: Instant) -> Vec<String> {
         let mut out = self.tick(now);
-        if crate::probe::is_credential_failure(raw) {
-            self.last_credential_failure = Some(now);
+        if let Some(failure) = crate::failure::Failure::from_line(raw).filter(|f| f.is_stopping()) {
+            self.last_stopping = Some((now, failure));
         }
         match classify(raw) {
             Line::Drop => {}
@@ -650,6 +654,7 @@ pub fn lock(conn: &SharedCorrelator) -> std::sync::MutexGuard<'_, Correlator> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::failure::Failure;
     use crate::loglevel::LogLevel;
     use std::io::Cursor;
     use std::time::{Duration, Instant};
@@ -658,16 +663,48 @@ mod tests {
     fn an_old_credential_line_does_not_explain_a_later_exit() {
         let t0 = Instant::now();
         let mut c = Correlator::new(LogLevel::Info);
-        assert!(!c.credentials_expired(t0));
+        assert_eq!(c.stopping_failure(t0), None);
         c.feed("ERROR: Reauthentication required.", t0);
-        assert!(c.credentials_expired(t0 + Duration::from_secs(5)));
-        assert!(!c.credentials_expired(
-            t0 + crate::settings::LOGS_AUTH_EXIT_WINDOW + Duration::from_secs(1)
-        ));
+        assert_eq!(
+            c.stopping_failure(t0 + Duration::from_secs(5)),
+            Some(Failure::LoginExpired)
+        );
+        assert_eq!(
+            c.stopping_failure(
+                t0 + crate::settings::LOGS_AUTH_EXIT_WINDOW + Duration::from_secs(1)
+            ),
+            None
+        );
         // A fresh line renews it
         let later = t0 + Duration::from_secs(3600);
         c.feed("Please run: gcloud auth login", later);
-        assert!(c.credentials_expired(later + Duration::from_secs(1)));
+        assert_eq!(
+            c.stopping_failure(later + Duration::from_secs(1)),
+            Some(Failure::LoginExpired)
+        );
+    }
+
+    #[test]
+    fn the_last_stop_class_line_names_the_failure_and_a_network_line_does_not_hide_it() {
+        let t0 = Instant::now();
+        let mut c = Correlator::new(LogLevel::Info);
+        c.feed("ERROR: Failed to impersonate [x].", t0);
+        assert_eq!(c.stopping_failure(t0), Some(Failure::ImpersonationDenied));
+        // Not stop-class: a restart may well mend it, so it is not recorded
+        c.feed(
+            "curl: (6) Could not resolve host: oauth2.googleapis.com",
+            t0,
+        );
+        assert_eq!(c.stopping_failure(t0), Some(Failure::ImpersonationDenied));
+        // The newer of two stop-class lines is the reason
+        c.feed(
+            "ERROR: Reauthentication required.",
+            t0 + Duration::from_secs(1),
+        );
+        assert_eq!(
+            c.stopping_failure(t0 + Duration::from_secs(2)),
+            Some(Failure::LoginExpired)
+        );
     }
 
     #[test]
@@ -1041,7 +1078,10 @@ mod tests {
         pump(reader, &mut FullDisk, conn.clone())
             .await
             .expect("a write error is not a read error");
-        assert!(lock(&conn).credentials_expired(std::time::Instant::now()));
+        assert_eq!(
+            lock(&conn).stopping_failure(std::time::Instant::now()),
+            Some(Failure::LoginExpired)
+        );
     }
 
     #[tokio::test]

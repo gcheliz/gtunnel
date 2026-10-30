@@ -846,9 +846,10 @@ pub(crate) fn status_style(status: TunnelStatus, health: HealthStatus) -> Style 
     match status {
         TunnelStatus::Running => match health {
             HealthStatus::Healthy => Style::default().fg(theme::OK),
-            HealthStatus::Unhealthy | HealthStatus::AuthExpired | HealthStatus::CrashLooping => {
-                Style::default().fg(theme::BAD)
-            }
+            HealthStatus::Unhealthy
+            | HealthStatus::AuthExpired
+            | HealthStatus::CredentialsRefused
+            | HealthStatus::CrashLooping => Style::default().fg(theme::BAD),
             HealthStatus::Checking | HealthStatus::Unknown => Style::default().fg(theme::WARN),
         },
         TunnelStatus::Stopped => Style::default().fg(theme::MUTED),
@@ -1781,7 +1782,7 @@ fn render_logs(f: &mut Frame, app: &App, area: Rect) {
     // on screen and not in lines of unknown length
     let rows_of: Vec<u16> = all
         .iter()
-        .map(|line| log_line_rows(line, width_of(area)))
+        .map(|line| log_line_rows(line, width_of(area), app.signs_in_with_key()))
         .collect();
     let height = area.height.saturating_sub(3);
     let extent = log_extent(&rows_of, height);
@@ -1793,7 +1794,7 @@ fn render_logs(f: &mut Frame, app: &App, area: Rect) {
     for line in shown {
         annotated.push(Line::raw(line.clone()));
         // A hint belongs under the line that caused it, where it reads as an answer
-        if let Some(hint) = diagnose_log_line(line) {
+        if let Some(hint) = diagnose_log_line(line, app.signs_in_with_key()) {
             annotated.push(Line::styled(
                 format!("  {hint}"),
                 Style::default().fg(theme::WARN),
@@ -1853,9 +1854,9 @@ fn render_logs(f: &mut Frame, app: &App, area: Rect) {
 
 /// The rows a log line takes in a pane `width` cells wide, with the hint
 /// `diagnose_log_line` hangs under it.
-fn log_line_rows(line: &str, width: u16) -> u16 {
+fn log_line_rows(line: &str, width: u16, credential_file: bool) -> u16 {
     let mut rows = wrapped_rows(&[Line::raw(line.to_string())], width);
-    if let Some(hint) = diagnose_log_line(line) {
+    if let Some(hint) = diagnose_log_line(line, credential_file) {
         rows += wrapped_rows(&[Line::raw(format!("  {hint}"))], width);
     }
     rows
@@ -2205,7 +2206,12 @@ fn inline(label: &str) -> Span<'static> {
 /// word beside it was the same fact twice; `docs/usage.md` carries the legend.
 fn health_span(entry: &TunnelEntry) -> Span<'static> {
     let stopped = entry.status != TunnelStatus::Running || entry.is_stopping();
-    if stopped && entry.health != HealthStatus::AuthExpired {
+    if stopped
+        && !matches!(
+            entry.health,
+            HealthStatus::AuthExpired | HealthStatus::CredentialsRefused
+        )
+    {
         return Span::styled(
             TunnelStatus::Stopped.symbol(),
             Style::default()

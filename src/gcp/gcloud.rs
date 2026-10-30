@@ -1,4 +1,5 @@
 use crate::error::GtunnelError;
+use crate::failure::Failure;
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -133,34 +134,26 @@ pub async fn print_access_token(acct: &Account) -> Result<String> {
         acct,
         crate::loglevel::current(),
     )?);
-    // A token that cannot be minted is a credential problem whatever gcloud
-    // printed, so this is the one place a gcloud failure is reclassified
-    let stdout = run_gcloud(&args).await.map_err(|e| {
-        GtunnelError::auth(format!(
-            "Could not get a gcloud access token. {}: {e:#}",
-            auth_advice(acct, is_interactive())
-        ))
-    })?;
+    let stdout = run_gcloud(&args)
+        .await
+        .map_err(|e| token_failure(acct, &e, is_interactive()))?;
     Ok(stdout.trim().to_string())
 }
 
-// What to do about a missing token depends on where the credentials come from
-// and on whether anyone is there to answer a login. A runner with no terminal
-// must not be told to open a browser, and a credential-file account must not
-// be told to log in at all: that would sign in a person instead of the key.
-pub fn auth_advice(acct: &Account, interactive: bool) -> String {
-    if let Some(file) = &acct.credential_file {
-        return credential_file_advice(&file.display().to_string());
-    }
-    let cfg = &acct.gcloud_configuration;
-    if interactive {
-        format!("Run `gcloud auth login --configuration={cfg}` and try again")
-    } else {
-        format!(
-            "No terminal to log in from. On a workstation run `gcloud auth login \
-             --configuration={cfg}`; on a CI runner, give the runner a service account with \
-             roles/iap.tunnelResourceAccessor, or set credential_file on the account"
-        )
+// A token that cannot be minted is named by what failed, not blamed on the
+// login: a timeout is retry-later, a deleted configuration is a usage error,
+// a denied impersonation is neither of them a reason to open a browser. Only
+// a failure nobody recognised keeps the old answer, a login problem, because
+// gcloud refusing to print a token it knows nothing about usually is one.
+fn token_failure(acct: &Account, cause: &anyhow::Error, interactive: bool) -> GtunnelError {
+    let failure = Failure::of(cause);
+    let advice = failure
+        .unwrap_or(Failure::LoginExpired)
+        .advice(acct, interactive);
+    let message = format!("Could not get a gcloud access token. {advice}: {cause:#}");
+    match failure {
+        Some(failure) => GtunnelError::from_failure(failure, message),
+        None => GtunnelError::auth(message),
     }
 }
 
@@ -266,7 +259,16 @@ where
     acct.credential_file_for_use()?;
     let probe = print_access_token(acct).await;
     let probe_ok = probe.is_ok();
-    match next_step(probe_ok, interactive, acct.credential_file.is_none()) {
+    let failure = probe.as_ref().err().and_then(Failure::of);
+    // A login mends an expired one and the failures nobody recognised; for
+    // anything else (a missing configuration, a denied impersonation, a
+    // timeout) it would open a browser and change nothing
+    let login_helps = failure.is_none_or(|f| f == Failure::LoginExpired);
+    match next_step(
+        probe_ok,
+        interactive,
+        acct.credential_file.is_none() && login_helps,
+    ) {
         AuthStep::Proceed => return Ok(()),
         AuthStep::Login => {
             if confirm(&acct.name)? {
@@ -283,23 +285,37 @@ where
         }
         AuthStep::Fail => {}
     }
-    let advice = auth_advice(acct, interactive);
-    Err(GtunnelError::auth(if acct.credential_file.is_some() {
-        let reason = probe
-            .err()
-            .and_then(|e| gcloud_reason(&format!("{e:#}")))
-            .map(|r| format!("; gcloud said: {r}"))
-            .unwrap_or_default();
-        format!(
-            "gtunnel could not get a token for '{}'. {advice}{reason}",
-            acct.name
-        )
-    } else {
-        format!(
-            "gtunnel needs a logged-in Google account for '{}'. {advice}",
-            acct.name
-        )
-    })
+    let reason = probe
+        .err()
+        .and_then(|e| gcloud_reason(&format!("{e:#}")))
+        .map(|r| format!("; gcloud said: {r}"))
+        .unwrap_or_default();
+    let named = failure.filter(|f| *f != Failure::LoginExpired);
+    let message = match named {
+        Some(f) => format!(
+            "gtunnel could not get a token for '{}'. {}{reason}",
+            acct.name,
+            f.advice(acct, interactive)
+        ),
+        None => {
+            let advice = Failure::LoginExpired.advice(acct, interactive);
+            if acct.credential_file.is_some() {
+                format!(
+                    "gtunnel could not get a token for '{}'. {advice}{reason}",
+                    acct.name
+                )
+            } else {
+                format!(
+                    "gtunnel needs a logged-in Google account for '{}'. {advice}",
+                    acct.name
+                )
+            }
+        }
+    };
+    Err(match failure {
+        Some(f) => GtunnelError::from_failure(f, message),
+        None => GtunnelError::auth(message),
+    }
     .into())
 }
 
@@ -365,7 +381,7 @@ pub(crate) mod tests {
 
     #[test]
     fn advice_without_a_terminal_does_not_send_a_runner_to_a_browser() {
-        let text = auth_advice(&account(None), false);
+        let text = Failure::LoginExpired.advice(&account(None), false);
         assert!(
             text.contains("CI runner") && text.contains("credential_file"),
             "{text}"
@@ -376,7 +392,7 @@ pub(crate) mod tests {
     #[test]
     fn advice_on_a_terminal_names_the_login_for_the_configuration() {
         assert_eq!(
-            auth_advice(&account(None), true),
+            Failure::LoginExpired.advice(&account(None), true),
             "Run `gcloud auth login --configuration=__gtunnel_test_nonexistent__` and try again"
         );
     }
@@ -386,7 +402,7 @@ pub(crate) mod tests {
         let mut acct = account(None);
         acct.credential_file = Some("/secrets/ci-key.json".into());
         for interactive in [true, false] {
-            let text = auth_advice(&acct, interactive);
+            let text = Failure::LoginExpired.advice(&acct, interactive);
             assert!(
                 text.contains("/secrets/ci-key.json") && !text.contains("gcloud auth login"),
                 "{text}"
@@ -519,6 +535,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn interactive_login_aborts_if_user_declines_confirmation() {
+        let _fake = FakeGcloudOnPath::new("echo 'ERROR: Reauthentication required.' >&2; exit 1");
         let acct = account(None);
         let mut prompted = false;
         let res = ensure_logged_in_with(&acct, true, |name| {
@@ -542,6 +559,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn non_interactive_login_never_prompts_for_confirmation() {
+        let _fake = FakeGcloudOnPath::new("echo 'ERROR: Reauthentication required.' >&2; exit 1");
         let acct = account(None);
         let mut prompted = false;
         let res = ensure_logged_in_with(&acct, false, |_| {
@@ -557,5 +575,79 @@ pub(crate) mod tests {
                 .contains("gtunnel needs a logged-in Google account for 'prod'"),
             "Unexpected error message: {err}"
         );
+    }
+
+    // A token that cannot be minted for a reason a login does not touch must
+    // not offer one: the prompt would open a browser and fix nothing
+    #[tokio::test]
+    async fn a_missing_configuration_is_a_usage_error_and_never_offers_a_login() {
+        let _fake = FakeGcloudOnPath::new(
+            "echo 'ERROR: (gcloud.auth.print-access-token) The configuration [work] does not exist.' >&2; exit 1",
+        );
+        let mut prompted = false;
+        let err = ensure_logged_in_with(&account(None), true, |_| {
+            prompted = true;
+            Ok(true)
+        })
+        .await
+        .expect_err("a missing configuration cannot sign in");
+        assert!(!prompted, "a login does not create a configuration");
+        assert_eq!(crate::error::kind_of(&err), crate::error::ErrorKind::Usage);
+        let text = format!("{err:#}");
+        assert!(!text.contains("gcloud auth login"), "{text}");
+        assert!(text.contains("gcloud config configurations list"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn a_failed_impersonation_is_denied_not_an_expired_login() {
+        let _fake = FakeGcloudOnPath::new(
+            "echo 'ERROR: (gcloud.auth.print-access-token) Failed to impersonate [runner@example-dev-1a2b.iam.gserviceaccount.com].' >&2; exit 1",
+        );
+        let mut prompted = false;
+        let err = ensure_logged_in_with(
+            &account(Some("runner@example-dev-1a2b.iam.gserviceaccount.com")),
+            true,
+            |_| {
+                prompted = true;
+                Ok(true)
+            },
+        )
+        .await
+        .expect_err("impersonation was denied");
+        assert!(!prompted);
+        assert_eq!(crate::error::kind_of(&err), crate::error::ErrorKind::Auth);
+        assert_eq!(Failure::of(&err), Some(Failure::ImpersonationDenied));
+        let text = format!("{err:#}");
+        assert!(text.contains("serviceAccountTokenCreator"), "{text}");
+        assert!(!text.contains("gcloud auth login"), "{text}");
+    }
+
+    // The type is what survives: re-labelling every error `auth` through a
+    // string is how a hung gcloud used to be reported as an expired login
+    #[tokio::test]
+    async fn a_gcloud_timeout_during_token_fetch_exits_with_the_retry_later_code() {
+        let mut cmd = Command::new("sleep");
+        cmd.arg("5");
+        let timeout =
+            crate::proc::output_within(cmd, std::time::Duration::from_millis(20), "gcloud")
+                .await
+                .unwrap_err()
+                .context("Failed to run gcloud");
+        let err: anyhow::Error = token_failure(&account(None), &timeout, false).into();
+        assert_eq!(
+            crate::error::kind_of(&err),
+            crate::error::ErrorKind::Unavailable
+        );
+        assert_eq!(crate::error::kind_of(&err).exit_code(), 6);
+        assert_eq!(Failure::of(&err), Some(Failure::Timeout));
+        assert!(!format!("{err:#}").contains("gcloud auth login"));
+    }
+
+    #[test]
+    fn a_token_failure_nobody_recognises_stays_the_login_it_always_was() {
+        let unknown = anyhow::anyhow!("gcloud auth print-access-token failed: something new");
+        let err: anyhow::Error = token_failure(&account(None), &unknown, true).into();
+        assert_eq!(crate::error::kind_of(&err), crate::error::ErrorKind::Auth);
+        assert!(format!("{err:#}").contains("gcloud auth login"));
     }
 }

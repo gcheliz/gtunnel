@@ -30,7 +30,8 @@ first. The words Access, Expose, target kind and lifetime are defined once in
 | Mode | 0600, because the contents name accounts, projects and hosts |
 | Writes | Atomic, for every file gtunnel writes: a sibling `<name>.<pid>.<n>.new` unique to each write, then a rename and an fsync of the directory, so a crash, a full disk or two writers at once leave one whole file. This covers the launchd plists and systemd units too |
 | Locks | `tunnels.lock` and `config.lock` serialise writers, so two gtunnels cannot drop each other's change. No lock is held while a command waits on gcloud or a service manager: that work happens first, then the record changes in one short locked update ([decision 16](decisions.md#16-state-files-are-written-atomically-under-an-advisory-lock)) |
-| Unknown keys | Ignored on load, so a file that has one keeps working. The config page refuses to save one and `gtunnel doctor` names each, with its path |
+| Unknown keys | Ignored on load, so a file that has one keeps working, and kept by every save of `config.toml`, comments included. The config page refuses to save one and `gtunnel doctor` names each, with its path |
+| Newer files | A file whose `config_version` or `schema_version` is above what this gtunnel knows is read, and every write to it fails with `written by a newer gtunnel (vN); upgrade this one` ([decision 22](decisions.md#22-a-newer-file-is-read-never-written)) |
 
 ## config.toml
 
@@ -39,7 +40,7 @@ in the configuration directory (see [Where the files live](#where-the-files-live
 
 | Key | Type | Required | What it is |
 |---|---|---|---|
-| `config_version` | integer | no | `2` in a file written by this version; absent in an older one. A file without it is switched to `notifications.enabled = false` once, on load, and saved with `config_version = 2`; from then on `enabled = true` stays on. `init` writes it |
+| `config_version` | integer | no | `2` in a file written by this version; absent in an older one. A file without it is switched to `notifications.enabled = false` once, on load, and saved with `config_version = 2`; from then on `enabled = true` stays on. `init` writes it. A value above `2` means a newer gtunnel wrote the file: it is read and never written by this one |
 | `selected_account` | string | yes | The account used when no `--account` is given |
 | `log_level` | string | no | `quiet`, `info` or `debug`; `info` when absent. See [The log level](#the-log-level) |
 | `start_deadline` | string | no | How long a start waits for an Access tunnel to report it is listening, as a duration; `"20s"` when absent. See [Settings the environment can override](#settings-the-environment-can-override) |
@@ -83,6 +84,8 @@ managed zone that serves it). `domains add` writes these; `gtunnel domains` list
 Written by `add`, `expose`, `rename`, `move`, `autostart` and `delete`. Never edit it by
 hand while a tunnel is running: the service label is derived from the name, so a renamed
 tunnel leaves its old launchd or systemd job behind. Use `rename`, which moves both.
+
+The file starts with `schema_version = 1`, which every write stamps; a file without it is older and is read the same way. A `[[tunnels]]` entry whose `mode` or `target.kind` this version does not know is listed by `gtunnel list` as `unsupported by this version` and is written back untouched by every save, so a newer gtunnel's tunnel survives an older one's `add`.
 
 Every tunnel is an entry in a `[[tunnels]]` array:
 

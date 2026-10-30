@@ -853,6 +853,10 @@ pub struct App {
     // switch that changes the account and a typed instance never inherits the
     // previous account's zone
     pub zones: HashMap<String, String>,
+    // The accounts that sign in with a key file. The log pane hangs a hint
+    // under a credential line, and for these a hint to log in is wrong: it
+    // would sign in a person, never the key
+    pub credential_file_accounts: HashSet<String>,
     // Local ports are a property of the laptop, so this is every account's, not
     // the selected one's; `entries` alone would suggest a port another account holds
     pub used_ports: HashSet<u16>,
@@ -1025,6 +1029,7 @@ impl App {
             relays: HashMap::new(),
             default_zone: String::new(),
             zones: HashMap::new(),
+            credential_file_accounts: HashSet::new(),
             used_ports: HashSet::new(),
             entries: Vec::new(),
             loaded: false,
@@ -2060,6 +2065,12 @@ impl App {
             .iter()
             .map(|a| (a.name.clone(), a.default_zone.clone()))
             .collect();
+        self.credential_file_accounts = config
+            .accounts
+            .iter()
+            .filter(|a| a.credential_file.is_some())
+            .map(|a| a.name.clone())
+            .collect();
         // The cursor is an index, so an account removed out from under it
         // would point past the end of a shorter list
         self.account_selected = self
@@ -2088,6 +2099,12 @@ impl App {
         self.default_zone = self.zones.get(&self.account).cloned().unwrap_or_default();
         self.show_relay_for_account();
         self.force_refresh = true;
+    }
+
+    /// Whether the account on screen signs in with a key file, which decides
+    /// what a credential line in its log is told to do.
+    pub fn signs_in_with_key(&self) -> bool {
+        self.credential_file_accounts.contains(&self.account)
     }
 
     /// The Public flow and the domain picker only make sense with a relay, and
@@ -3296,7 +3313,10 @@ impl App {
                         // reload itself read from the marker
                         if entry.status == TunnelStatus::Running {
                             entry.health = old.health;
-                        } else if entry.health != HealthStatus::AuthExpired {
+                        } else if !matches!(
+                            entry.health,
+                            HealthStatus::AuthExpired | HealthStatus::CredentialsRefused
+                        ) {
                             entry.health = HealthStatus::Unknown;
                         }
                         entry.metrics = old.metrics.clone();

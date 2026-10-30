@@ -102,9 +102,16 @@ impl ListRow {
     /// A stopped tunnel whose supervisor gave up on expired credentials. The
     /// reason rides in the trailing note, like a run's, so the status column
     /// keeps the one word `stopped` that scripts and the layout already rely on.
-    pub fn stopped_for_credentials(mut self, marked: bool) -> Self {
-        if marked {
-            self.note = Some("  [auth expired]".to_string());
+    pub fn stopped_for_credentials(mut self, marked: Option<crate::failure::Failure>) -> Self {
+        if let Some(failure) = marked {
+            self.note = Some(
+                if failure == crate::failure::Failure::LoginExpired {
+                    "  [auth expired]"
+                } else {
+                    "  [credentials refused]"
+                }
+                .to_string(),
+            );
         }
         self
     }
@@ -725,14 +732,22 @@ mod tests {
     #[test]
     fn a_stopped_row_with_a_credentials_marker_says_auth_expired() {
         let plain = vec![ListRow::from_tunnel(TunnelStatus::Stopped, &access())];
-        let marked =
-            vec![ListRow::from_tunnel(TunnelStatus::Stopped, &access())
-                .stopped_for_credentials(true)];
+        let marked = vec![ListRow::from_tunnel(TunnelStatus::Stopped, &access())
+            .stopped_for_credentials(Some(crate::failure::Failure::LoginExpired))];
         let before = plain[0].render(&ListLayout::fit(&plain));
         let after = marked[0].render(&ListLayout::fit(&marked));
         assert!(!before.contains("auth expired"), "{before}");
         assert!(after.contains("auth expired"), "{after}");
         assert!(after.starts_with(&before), "{after}");
+    }
+
+    #[test]
+    fn a_stopped_row_whose_impersonation_was_denied_says_credentials_refused() {
+        let marked = vec![ListRow::from_tunnel(TunnelStatus::Stopped, &access())
+            .stopped_for_credentials(Some(crate::failure::Failure::ImpersonationDenied))];
+        let text = marked[0].render(&ListLayout::fit(&marked));
+        assert!(text.contains("credentials refused"), "{text}");
+        assert!(!text.contains("auth expired"), "{text}");
     }
 
     #[test]
