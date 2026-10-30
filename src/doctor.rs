@@ -3045,4 +3045,42 @@ mod tests {
 
         assert!(findings.is_empty(), "{findings:?}");
     }
+
+    // A rule on page two decides whether the tunnel is reachable, so the check
+    // has to be given the whole list or it reports a rule that exists as missing
+    #[tokio::test]
+    async fn a_two_page_firewall_list_reaches_the_check_whole() {
+        use wiremock::matchers::{method, path, query_param};
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(method("GET"))
+            .and(path("/projects/proj-1/global/firewalls"))
+            .and(query_param("pageToken", "page-2"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "items": [{
+                        "name": "allow-iap", "network": "global/networks/default",
+                        "direction": "INGRESS", "sourceRanges": ["35.235.240.0/20"],
+                        "allowed": [{"IPProtocol": "tcp", "ports": ["443"]}]
+                    }]
+                })),
+            )
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(method("GET"))
+            .and(path("/projects/proj-1/global/firewalls"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "items": [{"name": "unrelated", "network": "global/networks/default"}],
+                    "nextPageToken": "page-2"
+                })),
+            )
+            .mount(&server)
+            .await;
+        let acct = account();
+
+        let rules = read_firewalls(&wiremock_client(&server), &acct).await;
+        assert_eq!(rules.as_ref().map(Vec::len), Ok(2));
+        let judged = firewall_finding(&acct, "k8s", &rules, "default", &[], 443);
+        assert_eq!(judged, None, "the rule on page two admits IAP");
+    }
 }

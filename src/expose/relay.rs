@@ -167,10 +167,9 @@ async fn ensure_domain(
     let auth = certmanager::ensure_dns_authorization(client, project, &auth_name, domain).await?;
     step(true, &format!("dns authorization {auth_name}"));
 
-    let records = dns::list_record_sets(client, project, managed_zone).await?;
-    let present = records
-        .iter()
-        .any(|r| r.name == auth.cname_name && r.rtype == "CNAME");
+    let present = dns::find_record_set(client, project, managed_zone, &auth.cname_name, "CNAME")
+        .await?
+        .is_some();
     if !present {
         dns::create_record_set(
             client,
@@ -324,7 +323,7 @@ pub async fn relay_up(
     let hc_change = compute::reconcile_health_check(client, project, &names.health_check).await?;
     step_reconciled(hc_change, &format!("health check {}", names.health_check));
 
-    let backend_settings = compute::BackendSettings::new(false);
+    let backend_settings = compute::BackendSettings::configured(false);
     let backend_change =
         match compute::get_backend_service(client, project, &names.default_backend).await? {
             None => {
@@ -710,6 +709,24 @@ mod tests {
     use crate::state::{PersistentTunnel, TunnelSpec, TunnelState};
     use wiremock::matchers::{method, path_regex};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    // The VM refuses a peer by itself, so no rule gtunnel adds to the VPC may
+    // name an internal source: that would be the operator's decision (design
+    // decision 8), not gtunnel's
+    #[test]
+    fn no_firewall_rule_gtunnel_creates_admits_a_vpc_source() {
+        let names = Names::new("dev");
+        let iap = iap_ssh_firewall(&names, "default");
+        assert_eq!(iap.source_ranges, vec![IAP_RANGE.to_string()]);
+        assert_eq!(iap.allowed[0].ports, vec!["22".to_string()]);
+        let lb = lb_health_check_firewall(&names, "default");
+        assert_eq!(lb.source_ranges, vec!["130.211.0.0/22", "35.191.0.0/16"]);
+        assert_eq!(lb.allowed[0].ports, vec![RELAY_PORT_RANGE.to_string()]);
+        assert!(!lb
+            .source_ranges
+            .iter()
+            .any(|r| r.starts_with("10.") || r == "0.0.0.0/0"));
+    }
 
     fn run_record(name: &str, account: &str, public: bool) -> crate::ephemeral::EphemeralRecord {
         crate::ephemeral::EphemeralRecord {

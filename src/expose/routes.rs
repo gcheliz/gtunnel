@@ -92,8 +92,9 @@ pub async fn remove_route(
 
     let domain = ex.domain(Some(&target.domain))?;
     let record = format!("{}.", target.hostname);
-    let existing = dns::list_record_sets(client, project, &domain.managed_zone).await?;
-    if existing.iter().any(|r| r.name == record && r.rtype == "A") {
+    let existing =
+        dns::find_record_set(client, project, &domain.managed_zone, &record, "A").await?;
+    if existing.is_some() {
         dns::delete_record_set(client, project, &domain.managed_zone, &record, "A").await?;
         removal.dns = true;
     }
@@ -194,7 +195,7 @@ pub async fn add_route(
                     "projects/{project}/global/healthChecks/{}",
                     names.health_check
                 ),
-                &compute::BackendSettings::new(target.private),
+                &compute::BackendSettings::configured(target.private),
                 &names.owner(),
             )
             .await?;
@@ -207,7 +208,7 @@ pub async fn add_route(
                 client,
                 project,
                 &target.backend,
-                &compute::BackendSettings::new(target.private),
+                &compute::BackendSettings::configured(target.private),
                 &existing,
             )
             .await?;
@@ -239,8 +240,9 @@ pub async fn add_route(
 
     let domain = ex.domain(Some(&target.domain))?;
     let record = format!("{}.", target.hostname);
-    let existing = dns::list_record_sets(client, project, &domain.managed_zone).await?;
-    if !existing.iter().any(|r| r.name == record && r.rtype == "A") {
+    let existing =
+        dns::find_record_set(client, project, &domain.managed_zone, &record, "A").await?;
+    if existing.is_none() {
         let ip = compute::get_global_address(client, project, &names.address)
             .await?
             .with_context(|| {
@@ -530,6 +532,39 @@ mod tests {
         assert_eq!(count(&server, "POST", "/rrsets").await, 1);
         assert_eq!(count(&server, "POST", "/backendServices").await, 1);
         assert_eq!(count(&server, "POST", "/setNamedPorts").await, 1);
+    }
+
+    // A zone with more records than one page would hide the route's own record
+    // on a later page, so the route code names the one it wants and never lists
+    #[tokio::test]
+    async fn add_route_asks_dns_for_one_record_and_never_lists_the_zone() {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(done_op()))
+            .mount(&server)
+            .await;
+        base_mocks(&server).await;
+
+        add_route(&client(&server), &account(), &expose(), &tunnel())
+            .await
+            .expect("add route");
+
+        let lists: Vec<_> = server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|r| r.method.as_str() == "GET" && r.url.path().ends_with("/rrsets"))
+            .collect();
+        assert!(!lists.is_empty(), "the record is looked up");
+        for r in lists {
+            let q: std::collections::HashMap<_, _> = r.url.query_pairs().into_owned().collect();
+            assert_eq!(
+                q.get("name").map(String::as_str),
+                Some("api.dev.example.com.")
+            );
+            assert_eq!(q.get("type").map(String::as_str), Some("A"));
+        }
     }
 
     // ytunnel v1.0 lesson: a DNS delete that failed must never be reported as
