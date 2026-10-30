@@ -505,3 +505,43 @@ fn a_gcloud_that_exits_1_makes_the_run_exit_1() {
     assert_eq!(status.code(), Some(1), "stdout: {}", h.stdout(n));
     h.assert_nothing_left();
 }
+
+#[test]
+fn reset_stops_a_live_run_before_removing_the_config() {
+    let h = Harness::new();
+    let n = h.spawn(&["run", "db", "my-vm:5432"], &[]);
+    assert!(h.wait_for_records(1), "the run never published a record");
+    assert!(
+        poll(BOUND, || !h.pids().is_empty()),
+        "the stub never started"
+    );
+    let (code, err) = h.run(&["reset", "--yes"]);
+    assert_eq!(code, Some(0), "{err}");
+    assert!(
+        h.wait_exit(n, BOUND).is_some(),
+        "the run outlived the reset"
+    );
+    assert!(!h.root().join("config").exists(), "the config survived");
+    for (gcloud, child) in h.pids() {
+        assert!(poll(BOUND, || !alive(gcloud)), "gcloud {gcloud} survived");
+        assert!(
+            poll(BOUND, || !alive(child)),
+            "gcloud's child {child} survived"
+        );
+    }
+}
+
+#[test]
+fn reset_removes_nothing_when_the_runs_cannot_be_listed() {
+    let h = Harness::new();
+    // A file where the runs directory belongs: it can be neither created nor read
+    fs::write(h.root().join("config/run"), "").unwrap();
+    let (code, err) = h.run(&["reset", "--yes"]);
+    assert_ne!(code, Some(0), "{err}");
+    assert!(err.contains("Could not list the running tunnels"), "{err}");
+    assert!(err.contains("config/run"), "{err}");
+    assert!(
+        h.root().join("config/config.toml").exists(),
+        "the config was removed"
+    );
+}

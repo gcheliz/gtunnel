@@ -2130,6 +2130,11 @@ impl App {
             self.refuse_external("edit");
             return;
         }
+        // Checked again by claim_row at submit, since an op may start while the
+        // dialog is open; refusing here spares typing an edit that cannot run
+        if self.refuse_pending() {
+            return;
+        }
         self.input.clear();
         self.draft_error = None;
         self.input_mode = InputMode::ChooseEdit;

@@ -2487,15 +2487,30 @@ fn coming_back_to_an_account_remembers_the_op_it_left_running() {
 }
 
 #[test]
-fn a_rename_is_refused_while_the_same_tunnel_is_starting() {
+fn edit_rename_and_move_are_refused_before_the_dialog_while_the_tunnel_is_starting() {
+    let mut app = prod_with_a_stopped_db();
+    assert!(keys(&mut app, "s").is_some());
+    assert_eq!(keys(&mut app, "e"), None);
+    assert_eq!(app.input_mode, InputMode::Normal, "the dialog opened");
+    assert_eq!(app.status.as_deref(), Some("db: start already in progress"));
+    assert!(app.status_error);
+}
+
+// An op can start while the dialog is open, so the submit checks again
+fn starts_while_the_dialog_is_open(app: &mut App) {
+    let account = app.account.clone();
+    app.mark_pending(&account, "db", "start");
+}
+
+#[test]
+fn a_rename_is_refused_if_the_same_tunnel_starts_while_it_is_typed() {
     let mut app = prod_with_a_stopped_db();
     app.account = "dev".to_string();
-    assert!(keys(&mut app, "s").is_some());
-
     keys(&mut app, "e2");
     for _ in 0.."db".len() {
         app.handle_key(key(KeyCode::Backspace));
     }
+    starts_while_the_dialog_is_open(&mut app);
     assert_eq!(
         keys(&mut app, "pg\n"),
         None,
@@ -2506,19 +2521,19 @@ fn a_rename_is_refused_while_the_same_tunnel_is_starting() {
 }
 
 #[test]
-fn an_edit_is_refused_while_the_same_tunnel_is_starting() {
+fn an_edit_is_refused_if_the_same_tunnel_starts_while_it_is_typed() {
     let mut app = prod_with_a_stopped_db();
-    assert!(keys(&mut app, "s").is_some());
     keys(&mut app, "e1");
+    starts_while_the_dialog_is_open(&mut app);
     assert_eq!(keys(&mut app, "\n"), None);
     assert_eq!(app.status.as_deref(), Some("db: start already in progress"));
 }
 
 #[test]
-fn a_move_is_refused_while_the_same_tunnel_is_starting() {
+fn a_move_is_refused_if_the_same_tunnel_starts_while_it_is_typed() {
     let mut app = prod_with_a_stopped_db();
-    assert!(keys(&mut app, "s").is_some());
     keys(&mut app, "e3");
+    starts_while_the_dialog_is_open(&mut app);
     assert_eq!(keys(&mut app, "\n"), None);
     assert_eq!(app.status.as_deref(), Some("db: start already in progress"));
 }
