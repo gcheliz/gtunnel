@@ -394,7 +394,7 @@ because it holds nothing.
 
 ## 20. Restarts belong to launchd and systemd, and readiness is a file
 
-**Status:** Accepted, 2026-10-28, amended 2026-10-28 (the supervisor stops a job that spends its restart budget, #229)
+**Status:** Accepted, 2026-10-28, amended 2026-10-28 (the supervisor stops a job that spends its restart budget, #229), amended 2026-10-30 (a network outage is waited out, never counted, #370)
 
 A tunnel's supervisor runs gcloud once and exits with gcloud's status. Restarting it is the
 service manager's job, with fixed settings, and gtunnel does not speak `sd_notify` (#209).
@@ -407,7 +407,7 @@ service manager's job, with fixed settings, and gtunnel does not speak `sd_notif
 | Question | Answer |
 |---|---|
 | A failure that restarting cannot fix | Expired credentials exit 0 on macOS and 78 on Linux, the one status each manager leaves alone, and write `run/<label>.auth` (#193) |
-| A transient failure, such as a dropped network or VPN | Retried until it recovers, within the restart budget of the amendment below; 5 s never reaches systemd's default start limit of 5 starts in 10 s |
+| A transient failure, such as a dropped network or VPN | A network or timeout exit is retried until the network returns, with a growing wait and no limit (the network amendment below). Any other fast failure is retried within the restart budget of the amendment below; 5 s never reaches systemd's default start limit of 5 starts in 10 s |
 | When the tunnel is ready | `run/<label>.ready`, written once gcloud logs that it is listening; `start` waits for it and `list` reads it on both platforms |
 
 `Type=notify` was not adopted. It would show readiness only to someone reading raw
@@ -438,6 +438,29 @@ settings under `[restart]`, their defaults and ranges are in
 
 The cost: a tunnel that needs longer than `min_uptime` to come up and keeps failing is
 judged fast-failing, so `min_uptime` must stay above gcloud's normal startup.
+
+### Amendment: a network outage is waited out, never counted
+
+With the laptop awake and the network gone for about six minutes, every tunnel used to end
+up stopped for good: gcloud died fast on each start and spent the restart budget, and in
+parallel the watchdog's probes all failed on one pass and every breaker climbed its ladder to
+a stop. Both stops are permanent, and nothing restarted the jobs when the network came back.
+An outage says nothing about a tunnel, so neither the supervisor nor the watchdog counts it.
+
+| Question | Answer |
+|---|---|
+| A supervisor exit whose newest classified line is `Network` or `Timeout` | Spends none of the restart budget and never writes `run/<label>.crash`. It waits 10 s, doubling to 300 s (the `[restart]` backoff settings), then exits with gcloud's status so the service manager starts it again |
+| Where the count lives | `run/<label>.netfails`, beside the restart history. A run that lived `min_uptime` starts it over; `start` and `delete` remove it |
+| A login or key failure printed in the same run | The stop-class line wins: the marker, the exit and the single failure that parks are unchanged (#193) |
+| What the watchdog does first | One bounded connect to `tunnel.cloudproxy.app:443` per pass. If it fails, every tunnel is `Unknown` for that pass: no breaker moves and no lifecycle event is emitted |
+| A service manager that errors or times out | `Unknown`, not `Stopped`. A manager that answers "not loaded" is still `Stopped` |
+| A tunnel that was just started | Running, no ready file yet, and the supervisor spawned gcloud less than `start_deadline` ago is `Unknown`, not wedged |
+| A failure stored before the laptop slept | The breaker keeps the time of its last failure; one older than two watch intervals is forgotten before the next is counted. Older breaker files load with no time |
+
+The cost: a captive portal accepts the connection to IAP and fails later, so the gate reads
+it as reachable and the tunnels are judged as usual. A permanent fault that prints a network
+line, such as a wrong hostname behind a DNS error, is retried every 5 minutes instead of
+being parked.
 
 ## 21. An instance's zone is looked up, not asked for
 

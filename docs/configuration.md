@@ -367,6 +367,8 @@ exit the service manager leaves alone (0 on macOS, 78 on Linux). The tunnel stay
 until `gtunnel start`, which clears the marker and the count. A run that lasts `min_uptime`
 or longer clears the count, so a laptop that sleeps and wakes never adds up to a stop.
 
+A run that dies of the network does not count at all: the supervisor waits, using `base_backoff` and `max_backoff`, and starts again however long the outage lasts. See [What a network outage does](troubleshooting.md#what-a-network-outage-does).
+
 | Key under `[restart]` | Default | Range |
 |---|---|---|
 | `max_restarts` | `5` | whole number, `0` to 4294967295; `0` turns the budget off |

@@ -12,6 +12,7 @@ Contents:
 - [Failed to parse .../config.toml](#failed-to-parse-configtoml)
 - [Connections drop after an hour](#connections-drop-after-an-hour)
 - [Restarts after the laptop wakes](#restarts-after-the-laptop-wakes)
+- [What a network outage does](#what-a-network-outage-does)
 - [no zone for account](#no-zone-for-account)
 - [Could not list projects](#could-not-list-projects)
 - [IAP firewall](#iap-firewall)
@@ -422,6 +423,30 @@ Local forwarding listening on 127.0.0.1 port 8443.
 | One restart after each wake | Expected. The crash-loop state in the [health table](usage.md#the-tui) needs three restarts inside two minutes |
 | A count that rises while the machine stays awake | Not the wake case. Read the log with `gtunnel logs <name>` and look for the cause |
 | `Unable to reconnect within [900000] ms` | The network stayed down for gcloud's 15 minute window. The restart is the same one; see [Limits](architecture.md#limits) |
+
+## What a network outage does
+
+With the machine awake and the network gone (a flight, a VPN flap, a captive portal), watched
+tunnels are kept, not stopped. They come back by themselves when the network does.
+
+| Layer | During the outage | When the network returns |
+|---|---|---|
+| Watchdog | Each pass first connects to `tunnel.cloudproxy.app:443`. If that fails, no tunnel is judged and no breaker moves | The next pass judges tunnels as usual |
+| Supervisor | gcloud exits on a network or timeout line. The job waits 10 s, then 20, 40, up to 5 minutes, and starts again. None of it counts toward the restart budget | The first start that lives past `min_uptime` clears the wait |
+| Notifications | The watchdog sends no "unhealthy" or "stopped" notification for the outage | A tunnel that stays down afterwards is reported as before |
+
+`gtunnel list` may show a tunnel as down or unhealthy while the wait runs. A tunnel is back
+within about 5 minutes of the network returning, the longest wait, and sooner when the
+outage was short.
+
+| You see | Meaning |
+|---|---|
+| `gtunnel watch --verbose` prints `the network is unreachable: no tunnel is judged this pass` | The gate is closed. The check is the same connect gcloud needs: `nc -zv tunnel.cloudproxy.app 443` |
+| The log shows `Could not resolve host` or `No route to host` over and over | The supervisor is retrying, as intended |
+| The network is up, `nc` connects, and a tunnel still does not come back | Not an outage. Read `gtunnel logs <name>`; a login problem still stops the job at once (see [What a token or API failure means](#what-a-token-or-api-failure-means)) |
+| A captive portal is open | The connect succeeds, so the gate reads the network as up and tunnels are judged normally |
+
+The design is in [decision 20](decisions.md#20-restarts-belong-to-launchd-and-systemd-and-readiness-is-a-file).
 
 ## `no zone for account`
 

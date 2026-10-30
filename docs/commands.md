@@ -739,6 +739,21 @@ Nothing, the first time: one failed check is a slow moment, two in a row is a pr
 A tunnel stopped on a spent [restart budget](configuration.md#the-restart-budget) is skipped:
 restarting it would undo that decision with a fresh count.
 
+### When it cannot tell
+
+Some passes say nothing about a tunnel, and the watchdog neither counts them nor clears
+anything on them. The verbose line reads `Unknown -> Nothing`.
+
+| Case | Why it is unknown |
+|---|---|
+| The network is down | Each pass first connects to `tunnel.cloudproxy.app:443`, once, waiting 3s. If that fails every tunnel is unknown, because every probe would fail for the same reason. `-v` prints `the network is unreachable: no tunnel is judged this pass` |
+| The service manager did not answer | `launchctl` or `systemctl` errored or timed out. Answering "not loaded" is still a stop |
+| A tunnel was just started | Running, no ready file yet, and its supervisor spawned gcloud less than `start_deadline` ago |
+
+A failure counted more than two intervals ago is forgotten before the next one is counted, so
+a failure from before the laptop slept does not pair with the first one after it. What an
+outage does end to end is in [Troubleshooting](troubleshooting.md#what-a-network-outage-does).
+
 ### The agent
 
 `watch install` writes one job for the machine: `com.gtunnel.watchdog` on macOS,
