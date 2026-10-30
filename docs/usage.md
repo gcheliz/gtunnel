@@ -456,7 +456,9 @@ Error: gtunnel needs a logged-in Google account for 'prod'. Run `gcloud auth log
 
 Every command except `update` prints a one-line hint when a cached check found a newer
 version, naming the command for how gtunnel was installed: `brew upgrade gtunnel` for
-Homebrew, `gtunnel update` for a downloaded binary. [update](commands.md#update) has the
+Homebrew, `gtunnel update` for a downloaded binary. A Homebrew install is told only once the
+tap formula offers the version, so the hint never precedes what `brew upgrade` can do; if the
+formula cannot be read it says `brew update && brew upgrade gtunnel`. [update](commands.md#update) has the
 check itself. On a Homebrew install:
 
 ```console,ignore
@@ -592,7 +594,7 @@ When a newer release is cached, the header's closing rule carries it at its righ
 | Question | Answer |
 |---|---|
 | Where | the rule under the header; the rule above the footer when the header is hidden (under 16 rows) or is the one-line form |
-| What it says | `↑ v<latest> · <command>`: `brew upgrade gtunnel` for a Homebrew install, `gtunnel update` otherwise |
+| What it says | `↑ v<latest> · <command>`: `brew upgrade gtunnel` for a Homebrew install once the tap has the version (`brew update && brew upgrade gtunnel` when the tap cannot be read), `gtunnel update` otherwise |
 | Where it comes from | the background `update --check` (see [update](commands.md#update)); the TUI starts one when the cache is missing or older than `update_check_interval` (6 hours by default), and re-reads the cache every minute |
 | When the check fails | the same place says `update check failed` in the muted colour, only while no update is showing, until a check succeeds. Silence then means "not known", not "up to date" |
 | Waits on the network | never; it shows what an earlier check already learned, so the first run after a release shows nothing until a check finishes |

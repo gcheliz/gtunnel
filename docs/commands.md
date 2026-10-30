@@ -1007,7 +1007,11 @@ Run `gtunnel update` to install.
 ```
 
 A format sample from a downloaded binary; versions differ per run. A Homebrew install names
-`brew upgrade gtunnel` instead. On the latest release the second line is
+`brew upgrade gtunnel` instead, and only once the Homebrew tap offers the new version: a Homebrew
+install reads the version from the tap formula, not from the release, because brew cannot
+upgrade to a release the formula does not name yet. Until the tap catches up the check says the
+release exists and brew will offer it later, and the hint stays silent. If the formula cannot be
+read, the command is `brew update && brew upgrade gtunnel`. On the latest release the second line is
 `gtunnel v<version> is already the latest version.`
 
 Every other command prints a one-line hint when a cached check found a newer version: see
