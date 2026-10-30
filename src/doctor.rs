@@ -1626,7 +1626,7 @@ async fn apply_fix(
         // The binary that runs the watchdog is this one: a path baked from
         // `cargo run` or a moved binary would install a job that cannot start
         Finding::WatchdogMissing => {
-            crate::daemon::install_watchdog(&std::env::current_exe()?).await
+            crate::daemon::install_watchdog(&crate::update::exe_path()?).await
         }
         _ => Ok(()),
     }

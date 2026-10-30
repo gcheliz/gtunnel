@@ -125,6 +125,9 @@ tunnels. A service whose binary no longer exists is rewritten to name the runnin
 gtunnel prints `gtunnel: reinstalled N services to match this version`. `gtunnel restart <name>`
 does the same for one tunnel.
 
+The binary a service names is the stable path to it, not the versioned Homebrew Cellar directory
+that `brew upgrade` deletes, and a `gtunnel_run` started by the MCP server uses the same path.
+
 ```console,ignore
 $ rm ~/.cargo/bin/gtunnel
 $ hash -r

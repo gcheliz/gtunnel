@@ -145,18 +145,87 @@ fn upgrade_hint(method: &InstallMethod) -> Option<String> {
     }
 }
 
-fn detect_install_method() -> InstallMethod {
-    let exe = std::env::current_exe().unwrap_or_default();
-    detect_install_method_from_path(&exe)
+fn detect_install_method() -> Result<InstallMethod> {
+    Ok(detect_install_method_from_path(&exe_path()?))
 }
 
+// Homebrew is decided by where the file really lives, not by the name it was
+// started under: on an Intel Mac brew's entry point is a symlink at
+// /usr/local/bin/gtunnel into /usr/local/Cellar, so the unresolved path says
+// nothing. The Binary variant carries the canonical file for the same reason:
+// the swap and the `.old` backup must land on it, or an update replaces the
+// symlink and the next `brew link` fails with "already exists"
 fn detect_install_method_from_path(exe: &Path) -> InstallMethod {
-    let path = exe.to_string_lossy();
-    if path.contains("/Cellar/") || path.contains("/homebrew/") {
+    let real = std::fs::canonicalize(exe).unwrap_or_else(|_| exe.to_path_buf());
+    if real.to_string_lossy().contains("/Cellar/gtunnel/") {
         InstallMethod::Homebrew
     } else {
-        InstallMethod::Binary(exe.to_path_buf())
+        InstallMethod::Binary(real)
     }
+}
+
+/// The path a service, a watchdog or a spawned child should run this binary by.
+///
+/// `current_exe()` is not one answer: macOS returns the path the process was
+/// started by, and Linux returns `/proc/self/exe`, which is resolved and gains
+/// a ` (deleted)` suffix once an update has replaced the file. Written into a
+/// unit as it stands, that is a program that cannot start. So the marker is
+/// stripped, and a stable path that reaches the same file wins over a versioned
+/// Cellar path that `brew upgrade` is about to delete.
+pub fn exe_path() -> Result<PathBuf> {
+    let exe = absolute_exe(std::env::current_exe().context("Cannot find the gtunnel binary")?)?;
+    Ok(stable_path(&exe, &stable_candidates()))
+}
+
+// A relative path would resolve against whatever directory the unit or the
+// child starts in, so it is refused here rather than baked into a plist
+fn absolute_exe(raw: PathBuf) -> Result<PathBuf> {
+    let exe = strip_deleted(&raw);
+    if !exe.is_absolute() {
+        anyhow::bail!("{} is not an absolute path to gtunnel", exe.display());
+    }
+    Ok(exe)
+}
+
+fn strip_deleted(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    match text.strip_suffix(" (deleted)") {
+        Some(stripped) => PathBuf::from(stripped),
+        None => path.to_path_buf(),
+    }
+}
+
+// Most stable first: `opt/gtunnel` survives every upgrade, `bin` is a link
+// brew rewrites, a PATH entry is whatever the shell found
+fn stable_candidates() -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    if let Some(prefix) = std::env::var_os("HOMEBREW_PREFIX") {
+        found.push(PathBuf::from(prefix).join("opt/gtunnel/bin/gtunnel"));
+    }
+    for prefix in ["/opt/homebrew", "/usr/local", "/home/linuxbrew/.linuxbrew"] {
+        found.push(PathBuf::from(prefix).join("opt/gtunnel/bin/gtunnel"));
+    }
+    for prefix in ["/opt/homebrew", "/usr/local"] {
+        found.push(PathBuf::from(prefix).join("bin/gtunnel"));
+    }
+    if let Some(path) = std::env::var_os("PATH") {
+        found.extend(std::env::split_paths(&path).map(|dir| dir.join("gtunnel")));
+    }
+    found.retain(|p| p.is_absolute());
+    found
+}
+
+// Only a candidate that is the same file qualifies: another gtunnel earlier on
+// PATH must not be adopted just because it is there
+fn stable_path(exe: &Path, candidates: &[PathBuf]) -> PathBuf {
+    let Ok(real) = std::fs::canonicalize(exe) else {
+        return exe.to_path_buf();
+    };
+    candidates
+        .iter()
+        .find(|c| std::fs::canonicalize(c).is_ok_and(|r| r == real))
+        .cloned()
+        .unwrap_or_else(|| exe.to_path_buf())
 }
 
 #[allow(clippy::print_stdout, clippy::print_stderr)]
@@ -187,7 +256,7 @@ pub async fn cmd_update(check_only: bool, rollback: bool) -> Result<()> {
         return Ok(());
     }
     eprintln!("Update available: v{current} -> v{latest}");
-    let method = detect_install_method();
+    let method = detect_install_method()?;
     if check_only {
         eprintln!("\nRun `{}` to install.", install_command(&method));
         return Ok(());
@@ -241,7 +310,7 @@ pub fn available_update() -> Option<UpdateNotice> {
     notice_for(
         env!("CARGO_PKG_VERSION"),
         &cache.latest_version,
-        &detect_install_method(),
+        &detect_install_method().ok()?,
     )
 }
 
@@ -565,7 +634,7 @@ fn rollback_binary(exe_path: &Path) -> Result<()> {
 
 #[allow(clippy::print_stderr)]
 fn cmd_rollback() -> Result<()> {
-    match detect_install_method() {
+    match detect_install_method()? {
         InstallMethod::Homebrew => {
             anyhow::bail!("gtunnel was installed with Homebrew, which keeps no previous binary here. Run:\n  brew upgrade gtunnel")
         }
@@ -811,6 +880,102 @@ mod tests {
         ));
         let hint = upgrade_hint(&InstallMethod::Homebrew).expect("homebrew carries a hint");
         assert!(hint.contains("brew upgrade gtunnel"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_intel_homebrew_symlink_into_the_cellar_is_detected_as_homebrew() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("Cellar/gtunnel/0.2.65/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("gtunnel"), "binary").unwrap();
+        let link_dir = dir.path().join("bin");
+        std::fs::create_dir_all(&link_dir).unwrap();
+        let link = link_dir.join("gtunnel");
+        std::os::unix::fs::symlink(bin.join("gtunnel"), &link).unwrap();
+
+        assert!(matches!(
+            detect_install_method_from_path(&link),
+            InstallMethod::Homebrew
+        ));
+    }
+
+    #[test]
+    fn a_trailing_deleted_marker_is_stripped_from_the_path() {
+        assert_eq!(
+            strip_deleted(Path::new("/usr/local/bin/gtunnel (deleted)")),
+            PathBuf::from("/usr/local/bin/gtunnel")
+        );
+        assert_eq!(
+            strip_deleted(Path::new("/usr/local/bin/gtunnel")),
+            PathBuf::from("/usr/local/bin/gtunnel")
+        );
+    }
+
+    #[test]
+    fn a_relative_path_is_an_error_not_a_definition() {
+        let err = absolute_exe(PathBuf::from("target/debug/gtunnel")).expect_err("relative");
+        assert!(
+            format!("{err:#}").contains("not an absolute path"),
+            "{err:#}"
+        );
+        let stripped = absolute_exe(PathBuf::from("/usr/bin/gtunnel (deleted)")).unwrap();
+        assert_eq!(stripped, PathBuf::from("/usr/bin/gtunnel"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_install_is_updated_through_its_target_and_the_symlink_survives() {
+        let dir = tempfile::tempdir().unwrap();
+        let real_dir = dir.path().join("real");
+        let link_dir = dir.path().join("bin");
+        std::fs::create_dir_all(&real_dir).unwrap();
+        std::fs::create_dir_all(&link_dir).unwrap();
+        let real = stub(&real_dir, "gtunnel", "echo gtunnel 1.0.0");
+        let link = link_dir.join("gtunnel");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let new_bin = stub(dir.path(), "staged", "echo gtunnel 2.0.0");
+
+        let InstallMethod::Binary(target) = detect_install_method_from_path(&link) else {
+            panic!("a user symlink is not a package manager's");
+        };
+        install_staged(&new_bin, &target, "2.0.0", SMOKE).unwrap();
+
+        let meta = std::fs::symlink_metadata(&link).unwrap();
+        assert!(meta.file_type().is_symlink(), "the symlink was replaced");
+        assert_eq!(std::fs::read_link(&link).unwrap(), real);
+        assert!(std::fs::read_to_string(&real).unwrap().contains("2.0.0"));
+        assert_eq!(
+            backup_path(&target),
+            std::fs::canonicalize(&real_dir)
+                .unwrap()
+                .join("gtunnel.old"),
+            "the backup sits beside the file, not beside the symlink"
+        );
+        assert!(!link_dir.join("gtunnel.old").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_linuxbrew_cellar_path_is_rewritten_to_the_opt_path_that_reaches_the_same_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let version = dir.path().join("Cellar/gtunnel/0.2.65");
+        std::fs::create_dir_all(version.join("bin")).unwrap();
+        std::fs::write(version.join("bin/gtunnel"), "binary").unwrap();
+        let opt = dir.path().join("opt");
+        std::fs::create_dir_all(&opt).unwrap();
+        std::os::unix::fs::symlink(&version, opt.join("gtunnel")).unwrap();
+        let stable = opt.join("gtunnel/bin/gtunnel");
+        let versioned = version.join("bin/gtunnel");
+        let other = dir.path().join("elsewhere/gtunnel");
+        std::fs::create_dir_all(other.parent().unwrap()).unwrap();
+        std::fs::write(&other, "different").unwrap();
+
+        let chosen = stable_path(&versioned, &[other.clone(), stable.clone()]);
+        assert_eq!(chosen, stable);
+
+        // A candidate that is a different file is never preferred
+        assert_eq!(stable_path(&versioned, &[other]), versioned);
     }
 
     #[test]

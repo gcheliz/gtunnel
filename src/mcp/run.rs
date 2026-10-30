@@ -197,7 +197,7 @@ pub async fn launch(account: &str, req: &RunRequest) -> anyhow::Result<Value> {
     let state = crate::state::TunnelState::load()?;
     crate::ephemeral::check_run_name(&state, account, &req.name)?;
 
-    let exe = std::env::current_exe().map_err(|e| anyhow!("Cannot find gtunnel: {e}"))?;
+    let exe = crate::update::exe_path()?;
     let log_path = run_log_path(account, &req.name)?;
     if let Some(logs) = log_path.parent() {
         std::fs::create_dir_all(logs)
