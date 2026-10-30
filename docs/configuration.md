@@ -439,6 +439,31 @@ precedence are under [Settings the environment can override](#settings-the-envir
 | `GTUNNEL_TEST_GCP_ENDPOINT` | | nothing | none | Debug builds only, for tests: points every Google API at one base URL, such as a wiremock server. A release build does not read it, and CI checks the name is absent from the release binary |
 | `PATH` | | nothing: it is the shell's, shared with every other program | | Where `gcloud` is found at startup |
 
+### Variables a service takes from your shell
+
+launchd and `systemd --user` start a tunnel with an almost empty environment, so gtunnel
+copies these from the shell into the service definition when it writes it. Without them the
+login check, which runs in your shell, passes while the supervised gcloud looks at another
+gcloud home, no proxy or another CA, and every tunnel fails as `auth expired` or with a TLS
+error.
+
+| Variable | For |
+|---|---|
+| `CLOUDSDK_CONFIG` | A gcloud home other than `~/.config/gcloud` |
+| `CLOUDSDK_PYTHON`, `CLOUDSDK_PYTHON_SITEPACKAGES` | The Python gcloud runs on |
+| `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` and `https_proxy`, `http_proxy`, `no_proxy` | A proxy, and the hosts that skip it |
+| `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE` | A corporate CA bundle |
+
+A variable that is unset or blank is not written. The values are read when the definition is
+written, so changing one in the shell has no effect until the definition is rewritten: the next
+gtunnel command does it and restarts a running tunnel, or `gtunnel restart <name>` does it now.
+`gtunnel doctor` names a variable your shell sets that differs from the one in a tunnel's
+definition; it never prints the value, because a proxy URL can carry a password. A variable
+your shell lacks is not reported.
+
+The values are stored in clear text in the service file, under `~/Library/LaunchAgents` or
+`~/.config/systemd/user`. A proxy URL with a password in it is written there too.
+
 **`GTUNNEL_CONFIG_DIR` does not move the service label.** The label is still
 `com.gtunnel.<account>.<name>`, so give a throwaway configuration an account name of its own,
 or `install` restarts the live job that shares the label.

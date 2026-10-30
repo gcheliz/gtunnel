@@ -850,6 +850,11 @@ account ci:
 installs a missing watchdog ([Leftovers](troubleshooting.md#leftovers)). A finding it cannot
 fix, such as a missing firewall rule, comes with the exact command.
 
+A gcloud, proxy or CA variable your shell sets whose value differs from the one in a tunnel's
+service is reported per account, by name only, and never fixed for you; `gtunnel restart
+<name>` writes the shell's value. The list is under
+[Variables a service takes from your shell](configuration.md#variables-a-service-takes-from-your-shell).
+
 A reserved account name (`run` or `run-*`, see `account add`) is reported the same way and is
 never fixed for you: renaming an account means adding one and moving its tunnels.
 
