@@ -77,6 +77,13 @@ A gated tunnel, `expose --private`, also turns on IAP for its backend service, s
 signs in with Google before a request reaches the relay. `list` and the TUI show its mode
 as `gated` rather than `public`.
 
+Every backend service is created with a `timeoutSec` of 3600 (`expose.backend_timeout`, see
+[configuration](configuration.md)), a 30 second connection-draining timeout and request logging
+stated as off. The load balancer's own default is 30 seconds, which for a websocket is the
+longest it may stay idle, so without the longer value hot reload and server-sent events
+reconnect in a loop and a slow upload fails with a 502 or 504. GCP closes every websocket at
+24 hours regardless.
+
 The tunnel process runs:
 
 ```

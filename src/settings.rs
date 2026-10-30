@@ -136,6 +136,16 @@ pub fn default_gcp_lock_deadline() -> String {
     shown(GCP_LOCK_DEADLINE)
 }
 
+/// How long the load balancer lets a backend stay silent before it closes the
+/// connection. Its own default is 30 s, which cuts every websocket and
+/// server-sent stream and fails any request slower than that; an hour covers
+/// them, and GCP closes a websocket at 24 h whatever this says.
+pub const EXPOSE_BACKEND_TIMEOUT: Duration = Duration::from_secs(3600);
+
+pub fn default_expose_backend_timeout() -> String {
+    shown(EXPOSE_BACKEND_TIMEOUT)
+}
+
 pub fn default_gcp_fingerprint_attempts() -> i64 {
     GCP_FINGERPRINT_ATTEMPTS
 }
@@ -274,6 +284,11 @@ const GCP_FINGERPRINT_ATTEMPTS_KEY: Key = Key {
     var: "GTUNNEL_GCP_FINGERPRINT_ATTEMPTS",
     legacy: None,
 };
+const EXPOSE_BACKEND_TIMEOUT_KEY: Key = Key {
+    name: "expose.backend_timeout",
+    var: "GTUNNEL_EXPOSE_BACKEND_TIMEOUT",
+    legacy: None,
+};
 const EDITOR_KEY: Key = Key {
     name: "editor",
     var: "GTUNNEL_EDITOR",
@@ -305,6 +320,8 @@ pub struct Settings {
     pub gcp_poll_interval: Duration,
     pub gcp_lock_deadline: Duration,
     pub gcp_fingerprint_attempts: u32,
+    /// Whole seconds, because the backend service's `timeoutSec` is an integer.
+    pub expose_backend_timeout: Duration,
     /// `GTUNNEL_EDITOR`, which outranks `VISUAL` and `EDITOR` like any
     /// variable outranks the file.
     pub editor_env: Option<String>,
@@ -660,6 +677,14 @@ pub fn resolve(config: &Config, env: EnvFn) -> Result<Resolved> {
         |n| n.to_string(),
         &mut overrides,
     )?;
+    let expose_backend_timeout = plain_key(
+        env,
+        &EXPOSE_BACKEND_TIMEOUT_KEY,
+        &config.expose.backend_timeout,
+        parse_whole_seconds,
+        shown,
+        &mut overrides,
+    )?;
     let editor_file = Some(config.editor.trim().to_string()).filter(|e| !e.is_empty());
     let editor_env = var(env, EDITOR_KEY.var);
     if let Some(chosen) = &editor_env
@@ -693,6 +718,7 @@ pub fn resolve(config: &Config, env: EnvFn) -> Result<Resolved> {
             gcp_poll_interval,
             gcp_lock_deadline,
             gcp_fingerprint_attempts,
+            expose_backend_timeout,
             editor_env,
             editor_file,
         },
@@ -1299,6 +1325,35 @@ mod tests {
         assert_eq!(s.gcp_poll_interval, Duration::from_secs(2));
         assert_eq!(s.gcp_lock_deadline, Duration::from_secs(5));
         assert_eq!(s.gcp_fingerprint_attempts, 5);
+    }
+
+    #[test]
+    fn the_backend_timeout_resolves_variable_over_file_over_default() {
+        let s = settings_of("", &[]);
+        assert_eq!(s.expose_backend_timeout, Duration::from_secs(3600));
+
+        let file = "[expose]\nbackend_timeout = \"2h\"\n";
+        let s = settings_of(file, &[]);
+        assert_eq!(s.expose_backend_timeout, Duration::from_secs(7200));
+
+        let r = resolve_with(file, &[("GTUNNEL_EXPOSE_BACKEND_TIMEOUT", "10m")]).expect("resolves");
+        assert_eq!(r.settings.expose_backend_timeout, Duration::from_secs(600));
+        let seen: Vec<(&str, &str)> = r.overrides.iter().map(|o| (o.key, o.variable)).collect();
+        assert_eq!(
+            seen,
+            vec![("expose.backend_timeout", "GTUNNEL_EXPOSE_BACKEND_TIMEOUT")]
+        );
+    }
+
+    #[test]
+    fn a_backend_timeout_the_load_balancer_would_refuse_is_named_by_key() {
+        for bad_value in ["0s", "soon", "1500ms"] {
+            let err = resolve_with("", &[("GTUNNEL_EXPOSE_BACKEND_TIMEOUT", bad_value)])
+                .expect_err(bad_value);
+            let (code, text) = exit_and_text(&err);
+            assert_eq!(code, 2, "{bad_value}");
+            assert!(text.contains("GTUNNEL_EXPOSE_BACKEND_TIMEOUT"), "{text}");
+        }
     }
 
     #[test]

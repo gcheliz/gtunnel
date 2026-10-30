@@ -192,7 +192,7 @@ pub async fn add_route(
                     "projects/{project}/global/healthChecks/{}",
                     names.health_check
                 ),
-                &compute::BackendSettings::new(target.private),
+                &compute::BackendSettings::configured(target.private),
                 &names.owner(),
             )
             .await?;
@@ -205,7 +205,7 @@ pub async fn add_route(
                 client,
                 project,
                 &target.backend,
-                &compute::BackendSettings::new(target.private),
+                &compute::BackendSettings::configured(target.private),
                 &existing,
             )
             .await?;
