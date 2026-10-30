@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.3.15](https://github.com/gcheliz/gtunnel/compare/v0.3.14...v0.3.15) - 2026-10-30
+
+### Fixed
+
+- *(tunnel)* bound the ssh handshake with ConnectTimeout ([#421](https://github.com/gcheliz/gtunnel/pull/421))
+
 ## [0.3.14](https://github.com/gcheliz/gtunnel/compare/v0.3.13...v0.3.14) - 2026-10-30
 
 ### Fixed
