@@ -4,6 +4,7 @@ pub mod completions;
 pub mod expose;
 pub mod maint;
 pub mod relocate;
+pub mod resume;
 pub mod supervise;
 pub mod watch;
 

@@ -13,6 +13,7 @@ use std::time::SystemTime;
 
 use crate::breaker::persist::{self, Row};
 use crate::breaker::{Action, Observation, Reason};
+use crate::commands::resume;
 use crate::daemon;
 use crate::lifecycle::{self, Cause, Edge, State};
 use crate::probe::{self, Holder};
@@ -394,6 +395,13 @@ pub async fn one_pass(verbose: bool) -> Result<()> {
         println!("the network is unreachable: no tunnel is judged this pass");
     }
 
+    // Before the visits: a tunnel brought back here is a start in flight when
+    // its turn comes, not a stopped one. Offline, a token fetch fails for the
+    // wrong reason, so it waits for a pass that can reach the network.
+    if network_up {
+        resume_logins(&state, verbose).await;
+    }
+
     let mut edges = Vec::new();
     for tunnel in watched {
         if let Err(err) = visit(
@@ -412,6 +420,18 @@ pub async fn one_pass(verbose: bool) -> Result<()> {
         }
     }
 
+    // Tunnels that stopped on an expired login are one fact per account
+    let parked = crate::config::config_dir()
+        .map(|dir| resume::parking(&state, &dir, None).resumable)
+        .unwrap_or_default();
+    let (edges, expired) = resume::fold_login_expired(edges, &parked);
+    if !expired.is_empty() {
+        let cfg = crate::config::load_config()
+            .map(|c| c.notifications)
+            .unwrap_or_default();
+        // The desktop notifier holds the master switch, as it does for `announce`
+        resume::announce_login_expired(&crate::notify::Desktop, &expired, &cfg);
+    }
     // One notification for the whole pass: a wake from sleep finds every
     // tunnel changed at once, and that is one alert, not one per tunnel
     lifecycle::announce(&edges);
@@ -420,6 +440,23 @@ pub async fn one_pass(verbose: bool) -> Result<()> {
     let _ = lifecycle::write_heartbeat();
     persist::save(&rows, &live)?;
     Ok(())
+}
+
+/// Bring back what a renewed login can: one token fetch per account that has a
+/// tunnel stopped on an expired login, and nothing at all when none has.
+async fn resume_logins(state: &TunnelState, verbose: bool) {
+    let (Ok(dir), Ok(config)) = (crate::config::config_dir(), crate::config::load_config()) else {
+        return;
+    };
+    let outcome = resume::pass(state, &dir, &resume::Live { config }).await;
+    if verbose {
+        for line in resume::report(&outcome, &[]) {
+            println!("{line}");
+        }
+    }
+    for (id, why) in &outcome.failed {
+        eprintln!("{id}: could not resume after login: {why}");
+    }
 }
 
 /// Look at one tunnel, feed the breaker, and carry out what it decided.

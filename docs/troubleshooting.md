@@ -126,6 +126,32 @@ entirely — it appears when the tarball came from the releases page in a browse
 xattr -d com.apple.quarantine /usr/local/bin/gtunnel
 ```
 
+## Tunnels stopped on an expired login
+
+An expired login stops every tunnel of the account, and each shows `auth expired`. After
+`gcloud auth login` they come back by themselves when the [watchdog](commands.md#watch) is
+installed: each pass asks gcloud for one token per account that has a tunnel stopped on an
+expired login (one fetch, however many tunnels wait). If it answers, the markers are cleared
+and the tunnels start. If it does not, nothing changes and the next pass asks again.
+
+| Stopped on | Comes back after a new login |
+|---|---|
+| `login-expired` (`Reauthentication required`) | Yes |
+| `impersonation-denied`, `key-invalid`, `configuration-missing` | No: a login does not change them, so they wait for `gtunnel start <name>` once fixed |
+
+Without the watchdog, or to not wait for a pass:
+
+```console,ignore
+$ gtunnel start --auth-expired
+started dev.db
+started dev.kubernetes
+left dev.cache stopped: impersonation-denied needs fixing first, a new login does not help
+```
+
+`--account <name>` limits it to one account; without it every account is tried. The command
+exits 1 when a login still does not work or a start failed. The watchdog says it once per
+account, `dev: login expired, 4 tunnels stopped`, instead of one notification per tunnel.
+
 ## What the log says, and what it means
 
 gtunnel annotates these lines in `gtunnel logs <name>` and in the TUI's log pane. A log is
@@ -136,7 +162,7 @@ emptied when its tunnel starts, so a line in it was written by the process runni
 | `4003` | IAP cannot reach the target port | Allow `35.235.240.0/20` to that port, see below |
 | `4033` | Not authorized to tunnel through IAP | Grant `roles/iap.tunnelResourceAccessor` |
 | A public URL answers `503` (nothing in the log) | The tunnel's backend, host rule, named port or DNS record is missing | `gtunnel restart <name>` re-creates them, see [the log](commands.md#start-stop-restart-autostart-logs-list-delete) |
-| `Reauthentication required` | gcloud credentials expired. The supervisor stops the job instead of restarting it every few seconds, and `list` keeps showing `auth expired` until the next start | `gcloud auth login`, then `gtunnel start <name>`. An account with a `credential_file` is not told to log in: its hint names the key file |
+| `Reauthentication required` | gcloud credentials expired. The supervisor stops the job instead of restarting it every few seconds, and `list` shows `auth expired`. The watchdog notices the new login and starts the tunnel again within one `watch.interval`, see [Tunnels stopped on an expired login](#tunnels-stopped-on-an-expired-login) | `gcloud auth login`. Without the watchdog, `gtunnel start --auth-expired`, or `gtunnel start <name>` for one. An account with a `credential_file` is not told to log in: its hint names the key file |
 | `Failed to impersonate` | The signed-in identity may not impersonate the account's service account. The supervisor stops the job on the first failure and `list` shows `[credentials refused]` | Grant `roles/iam.serviceAccountTokenCreator` on that service account, or remove `impersonate_service_account`, then `gtunnel start <name>` |
 | `Invalid JWT` | gcloud rejected the service-account key. Same stop and `[credentials refused]` | Replace the key (or the account's `credential_file`), then `gtunnel start <name>` |
 | `The configuration [...] does not exist` | The account's `gcloud_configuration` was renamed or deleted. Same stop and `[credentials refused]` | `gcloud config configurations list`, correct `gcloud_configuration` on the account, then `gtunnel start <name>` |

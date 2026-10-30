@@ -186,6 +186,8 @@ One diagram for both platforms: the shape is the same and only the manager diffe
 
 A restart cannot renew a login, so a supervisor that sees gcloud die of `Reauthentication required` (or of a denied impersonation, an invalid key or a missing configuration) stops the loop and leaves `run/<label>.auth` behind, holding the failure's name (`login-expired`, `impersonation-denied`, ...), which keeps `list` on `auth expired` or `credentials refused` after the log goes quiet. It exits 0 on macOS, where `KeepAlive` restarts every non-zero exit, and 78 on Linux, which the unit lists in `RestartPreventExitStatus`. `gtunnel start`, and the supervisor itself, clear the marker.
 
+Nothing in the supervisor notices the login being renewed, so the watchdog does. Once per pass, for each account with at least one `login-expired` marker, it fetches a token for that account (one fetch per account, bounded like every gcloud call, and only when the network gate says IAP is reachable). A token that works clears each of the account's `login-expired` markers and starts those tunnels; one that fails changes nothing. The other stopping failures are never resumed, because a new login does not change them. `gtunnel start --auth-expired` and the MCP `gtunnel_start_tunnel` with `auth_expired: true` run the same step on demand. The diagram's `Stays down` box ends at `gtunnel start`, which remains true; the watchdog is a second way out of it.
+
 The two auto-start mechanisms are not symmetric, and the asymmetry is deliberate. On macOS
 the flag *is* the file: launchd loads everything in `~/Library/LaunchAgents` at login, and a
 `KeepAlive` job runs the moment it is loaded, so a definition left there would start whether
