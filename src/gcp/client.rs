@@ -4,6 +4,13 @@ use serde::Serialize;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
+/// A token and how long it has left, when gcloud said.
+#[derive(Debug, Clone)]
+pub struct IssuedToken {
+    pub token: String,
+    pub valid_for: Option<Duration>,
+}
+
 use crate::config::Account;
 
 // Where the token comes from. Tests use a fixed string; everything else shells
@@ -13,6 +20,10 @@ pub enum TokenSource {
     Gcloud(Box<Account>),
     #[cfg(test)]
     Static(String),
+    /// Hands out one token per fetch, so a test can tell which request carried
+    /// which and how many times the client went back for another
+    #[cfg(test)]
+    Sequence(std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<IssuedToken>>>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,13 +188,53 @@ impl Operation {
     }
 }
 
+struct Reply {
+    status: reqwest::StatusCode,
+    retry_after: Option<Duration>,
+    text: String,
+}
+
+// A token held for reuse. It is reusable while it is younger than the
+// `gcp.token_ttl` cap and, when gcloud said when it dies, until a margin
+// before that: a request that starts with two minutes left can be refused
+// halfway through a long command.
+struct HeldToken {
+    token: String,
+    fetched: Instant,
+    valid_for: Option<Duration>,
+}
+
+// Five minutes covers the longest single call (`gcp.http_timeout`) plus the
+// poll interval, with room, so a token is never handed out to expire in flight
+const EXPIRY_MARGIN: Duration = Duration::from_secs(5 * 60);
+
+impl HeldToken {
+    fn usable(&self, ttl: Duration) -> bool {
+        let age = self.fetched.elapsed();
+        if age >= ttl {
+            return false;
+        }
+        match self.valid_for {
+            Some(left) => age + EXPIRY_MARGIN < left,
+            None => true,
+        }
+    }
+}
+
+// The statuses Google's client guidance says to retry with backoff
+fn is_transient(status: u16) -> bool {
+    matches!(status, 429 | 500 | 502 | 503 | 504)
+}
+
 pub struct GcpClient {
     http: reqwest::Client,
     source: TokenSource,
     pub endpoints: Endpoints,
-    cached: Mutex<Option<(String, Instant)>>,
+    cached: Mutex<Option<HeldToken>>,
     // Read once per client, from `gcp.*`: a client lives for one command, so
-    // a value edited in the file applies to the next one
+    // a value edited in the file applies to the next one. `token_ttl` caps
+    // how long a token is reused; the token's own expiry, when gcloud
+    // reports it, can only shorten that.
     token_ttl: Duration,
     poll_interval: Duration,
     operation_timeout: Duration,
@@ -229,18 +280,80 @@ impl GcpClient {
         match &self.source {
             #[cfg(test)]
             TokenSource::Static(t) => Ok(t.clone()),
-            TokenSource::Gcloud(acct) => {
+            _ => {
                 let mut cached = self.cached.lock().await;
-                if let Some((token, at)) = cached.as_ref()
-                    && at.elapsed() < self.token_ttl
+                if let Some(held) = cached.as_ref()
+                    && held.usable(self.token_ttl)
                 {
-                    return Ok(token.clone());
+                    return Ok(held.token.clone());
                 }
-                let token = super::gcloud::print_access_token(acct).await?;
-                *cached = Some((token.clone(), Instant::now()));
-                Ok(token)
+                let issued = self.fetch_token().await?;
+                let held = HeldToken {
+                    token: issued.token.clone(),
+                    fetched: Instant::now(),
+                    valid_for: issued.valid_for,
+                };
+                *cached = Some(held);
+                Ok(issued.token)
             }
         }
+    }
+
+    async fn fetch_token(&self) -> Result<IssuedToken> {
+        match &self.source {
+            TokenSource::Gcloud(acct) => super::gcloud::access_token(acct).await,
+            #[cfg(test)]
+            TokenSource::Static(t) => Ok(IssuedToken {
+                token: t.clone(),
+                valid_for: None,
+            }),
+            #[cfg(test)]
+            TokenSource::Sequence(queue) => Ok(queue
+                .lock()
+                .expect("token queue")
+                .pop_front()
+                .expect("a token queued")),
+        }
+    }
+
+    // A 401 means the token we hold is not the one the API wants, whatever
+    // the clock said, so the next request must not reuse it
+    async fn evict_token(&self, rejected: &str) {
+        let mut cached = self.cached.lock().await;
+        // Another request may already have replaced it; only drop the one
+        // that was refused
+        if cached.as_ref().is_some_and(|held| held.token == rejected) {
+            *cached = None;
+        }
+    }
+
+    // One attempt: the request and the whole body. A body that fails to
+    // arrive is a transport error like any other, not an empty answer, which
+    // is how a cut DELETE response used to read as "deleted".
+    async fn attempt(
+        &self,
+        method: &reqwest::Method,
+        url: &str,
+        token: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<Reply, reqwest::Error> {
+        let mut req = self.http.request(method.clone(), url).bearer_auth(token);
+        if let Some(body) = body {
+            req = req.json(body);
+        }
+        let resp = req.send().await?;
+        let status = resp.status();
+        let retry_after = resp
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(super::retry::parse_retry_after);
+        let text = resp.text().await?;
+        Ok(Reply {
+            status,
+            retry_after,
+            text,
+        })
     }
 
     async fn send(
@@ -249,17 +362,43 @@ impl GcpClient {
         url: &str,
         body: Option<serde_json::Value>,
     ) -> Result<String> {
-        let token = self.token().await?;
-        let mut req = self.http.request(method.clone(), url).bearer_auth(token);
-        if let Some(body) = &body {
-            req = req.json(body);
-        }
-        let resp = req
-            .send()
-            .await
-            .with_context(|| format!("{method} {url} failed"))?;
-        let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
+        // Repeating these cannot do more than doing them once. A POST or a
+        // PATCH may have been applied before the answer was lost, so only a
+        // failure to connect, which means nothing was sent, is repeated.
+        let idempotent = matches!(
+            method,
+            reqwest::Method::GET | reqwest::Method::DELETE | reqwest::Method::HEAD
+        );
+        let mut token = self.token().await?;
+        let mut refreshed = false;
+        let mut attempt = 1;
+        let reply = loop {
+            match self.attempt(&method, url, &token, body.as_ref()).await {
+                Err(e) => {
+                    if attempt < super::retry::ATTEMPTS && (idempotent || e.is_connect()) {
+                        tokio::time::sleep(super::retry::delay(attempt, None)).await;
+                        attempt += 1;
+                        continue;
+                    }
+                    return Err(anyhow::Error::new(e).context(format!("{method} {url} failed")));
+                }
+                Ok(reply) if reply.status.as_u16() == 401 && !refreshed => {
+                    refreshed = true;
+                    self.evict_token(&token).await;
+                    token = self.token().await?;
+                }
+                Ok(reply)
+                    if idempotent
+                        && attempt < super::retry::ATTEMPTS
+                        && is_transient(reply.status.as_u16()) =>
+                {
+                    tokio::time::sleep(super::retry::delay(attempt, reply.retry_after)).await;
+                    attempt += 1;
+                }
+                Ok(reply) => break reply,
+            }
+        };
+        let Reply { status, text, .. } = reply;
 
         if status.is_success() {
             return Ok(text);
@@ -760,6 +899,285 @@ mod tests {
                 .is_empty(),
             "a finished operation needs no poll"
         );
+    }
+
+    fn status(code: u16, message: &str) -> ResponseTemplate {
+        ResponseTemplate::new(code).set_body_json(serde_json::json!({
+            "error": {"code": code, "message": message}
+        }))
+    }
+
+    fn thing() -> ResponseTemplate {
+        ResponseTemplate::new(200).set_body_json(serde_json::json!({"name": "gt-dev-relay"}))
+    }
+
+    async fn requests_to(server: &MockServer) -> usize {
+        server.received_requests().await.expect("requests").len()
+    }
+
+    #[tokio::test]
+    async fn a_get_that_meets_a_503_then_a_200_succeeds() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(status(503, "backend unavailable"))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .respond_with(thing())
+            .mount(&server)
+            .await;
+
+        let got: Thing = client(&server)
+            .get(&format!("{}/thing", server.uri()))
+            .await
+            .expect("the second attempt should win");
+        assert_eq!(got.name, "gt-dev-relay");
+        assert_eq!(requests_to(&server).await, 2);
+    }
+
+    #[tokio::test]
+    async fn a_get_that_meets_a_503_four_times_fails_with_the_gcp_message() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(status(503, "backend unavailable").insert_header("retry-after", "0"))
+            .mount(&server)
+            .await;
+
+        let err = client(&server)
+            .get::<Thing>(&format!("{}/thing", server.uri()))
+            .await
+            .expect_err("four failures are a failure");
+        let text = format!("{err:#}");
+        assert!(text.contains("backend unavailable"), "got: {text}");
+        assert!(text.contains("503"), "got: {text}");
+        assert_eq!(requests_to(&server).await, 4, "four attempts, no more");
+    }
+
+    #[tokio::test]
+    async fn a_429_and_a_500_are_retried_and_a_403_is_not() {
+        for (code, retried) in [
+            (429u16, true),
+            (500, true),
+            (502, true),
+            (504, true),
+            (403, false),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .respond_with(status(code, "no"))
+                .up_to_n_times(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .respond_with(thing())
+                .mount(&server)
+                .await;
+
+            let out = client(&server)
+                .get::<Thing>(&format!("{}/thing", server.uri()))
+                .await;
+            assert_eq!(out.is_ok(), retried, "status {code}: {out:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_post_that_meets_a_503_is_not_sent_twice() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(status(503, "backend unavailable"))
+            .mount(&server)
+            .await;
+
+        let out = client(&server)
+            .post::<_, Thing>(
+                &format!("{}/thing", server.uri()),
+                &serde_json::json!({"a": 1}),
+            )
+            .await;
+        assert!(out.is_err());
+        assert_eq!(
+            requests_to(&server).await,
+            1,
+            "a create that GCP may have accepted must not be repeated"
+        );
+    }
+
+    fn tokens(list: &[(&str, Option<u64>)]) -> TokenSource {
+        TokenSource::Sequence(std::sync::Arc::new(std::sync::Mutex::new(
+            list.iter()
+                .map(|(token, secs)| IssuedToken {
+                    token: (*token).to_string(),
+                    valid_for: secs.map(Duration::from_secs),
+                })
+                .collect(),
+        )))
+    }
+
+    #[tokio::test]
+    async fn a_401_evicts_the_token_and_the_retry_carries_a_new_one() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(header("authorization", "Bearer old"))
+            .respond_with(status(401, "invalid credentials"))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(header("authorization", "Bearer new"))
+            .respond_with(thing())
+            .mount(&server)
+            .await;
+
+        let client = GcpClient::new(
+            tokens(&[("old", Some(3000)), ("new", Some(3000))]),
+            Endpoints::single(&server.uri()),
+        );
+        let got: Thing = client
+            .get(&format!("{}/thing", server.uri()))
+            .await
+            .expect("the fresh token should be accepted");
+        assert_eq!(got.name, "gt-dev-relay");
+        assert_eq!(requests_to(&server).await, 2);
+    }
+
+    #[tokio::test]
+    async fn a_401_is_retried_once_not_forever() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(status(401, "invalid credentials"))
+            .mount(&server)
+            .await;
+
+        let client = GcpClient::new(
+            tokens(&[("a", Some(3000)), ("b", Some(3000)), ("c", Some(3000))]),
+            Endpoints::single(&server.uri()),
+        );
+        let err = client
+            .get::<Thing>(&format!("{}/thing", server.uri()))
+            .await
+            .expect_err("a second 401 is final");
+        assert!(format!("{err:#}").contains("401"), "got: {err:#}");
+        assert_eq!(requests_to(&server).await, 2);
+    }
+
+    async fn two_gets_carry(source: TokenSource) -> Vec<String> {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(thing())
+            .mount(&server)
+            .await;
+        let client = GcpClient::new(source, Endpoints::single(&server.uri()));
+        let url = format!("{}/thing", server.uri());
+        client.get::<Thing>(&url).await.expect("first");
+        client.get::<Thing>(&url).await.expect("second");
+        server
+            .received_requests()
+            .await
+            .expect("requests")
+            .iter()
+            .map(|r| {
+                r.headers
+                    .get("authorization")
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_token_two_minutes_from_expiry_is_not_reused() {
+        let got = two_gets_carry(tokens(&[("soon", Some(120)), ("later", Some(3000))])).await;
+        assert_eq!(got, vec!["Bearer soon", "Bearer later"]);
+    }
+
+    #[tokio::test]
+    async fn a_token_with_time_left_is_reused() {
+        let got = two_gets_carry(tokens(&[("fine", Some(1800)), ("unused", Some(3000))])).await;
+        assert_eq!(got, vec!["Bearer fine", "Bearer fine"]);
+    }
+
+    // The two cases below need a connection that breaks, which a mock server
+    // cannot do, so a bare listener plays the part: each entry is what one
+    // accepted connection is sent before it is closed, and "" is a reset
+    async fn scripted(replies: Vec<&'static str>) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let base = format!("http://{}", listener.local_addr().expect("addr"));
+        tokio::spawn(async move {
+            for reply in replies {
+                let (mut socket, _) = listener.accept().await.expect("accept");
+                let mut buf = [0u8; 4096];
+                let _ = socket.read(&mut buf).await;
+                if !reply.is_empty() {
+                    let _ = socket.write_all(reply.as_bytes()).await;
+                }
+            }
+        });
+        base
+    }
+
+    const DONE_OPERATION: &str = "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+        content-length: 33\r\nconnection: close\r\n\r\n{\"name\":\"op-1\",\"status\":\"DONE\"}  ";
+
+    #[tokio::test]
+    async fn a_poll_that_sees_one_connection_reset_still_completes() {
+        let base = scripted(vec!["", DONE_OPERATION]).await;
+        let client = GcpClient::new(
+            TokenSource::Static("tok".to_string()),
+            Endpoints::single(&base),
+        );
+        let op = Operation {
+            name: Some("op-1".to_string()),
+            status: Some("PENDING".to_string()),
+            self_link: Some(format!("{base}/operations/op-1")),
+            error: None,
+            done: None,
+        };
+        client
+            .wait_operation(&op)
+            .await
+            .expect("one reset must not abandon a running operation");
+    }
+
+    // 40 bytes promised, 10 sent: the body read fails after a 200
+    const CUT_BODY: &str = "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+        content-length: 40\r\nconnection: close\r\n\r\n{\"name\":\"o";
+
+    #[tokio::test]
+    async fn a_delete_whose_body_is_cut_is_not_read_as_deleted() {
+        let base = scripted(vec![CUT_BODY, DONE_OPERATION]).await;
+        let client = GcpClient::new(
+            TokenSource::Static("tok".to_string()),
+            Endpoints::single(&base),
+        );
+        let op = client
+            .delete(&format!("{base}/thing"))
+            .await
+            .expect("the retry reads the whole body");
+        assert_eq!(
+            op.and_then(|o| o.name).as_deref(),
+            Some("op-1"),
+            "the cut answer must not have become Ok(None)"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_post_whose_body_is_cut_is_an_error_and_not_an_empty_success() {
+        let base = scripted(vec![CUT_BODY]).await;
+        let client = GcpClient::new(
+            TokenSource::Static("tok".to_string()),
+            Endpoints::single(&base),
+        );
+        let out = client
+            .post::<_, ()>(&format!("{base}/thing"), &serde_json::json!({}))
+            .await;
+        // A unit type accepts an empty body, which is what a swallowed read
+        // error used to look like
+        assert!(out.is_err(), "got: {out:?}");
     }
 
     #[test]
