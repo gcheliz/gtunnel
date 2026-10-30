@@ -154,7 +154,7 @@ no flag, and the instance is checked in the same call.
 | One instance | Saves its zone |
 | None | Exit 3, `Instance '<name>' not found in project '<project>'` |
 | Several, in different zones | Exit 2, naming the zones and asking for `--zone` |
-| Cannot run (permission, network) | Without a terminal: the account's default zone with a warning, or with none exit 2 asking for `--zone` |
+| Cannot run (permission, network) | Without a terminal: the account's default zone with one warning, or with none an error asking for `--zone`: exit 4 when GCP refuses the credentials (401, 403), exit 2 otherwise (network) |
 
 On a terminal, the last three, and a lookup that cannot run, ask for the zone instead of failing: the prompt lists the
 zones when there are several, starts from the account default (or blank), and accepts a

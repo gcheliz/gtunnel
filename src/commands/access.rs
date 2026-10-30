@@ -202,10 +202,24 @@ async fn instance_zone(
     warnings: &mut Vec<String>,
 ) -> Result<String> {
     let client = GcpClient::for_account(acct);
-    let found = resolve_instance_zone(&client, acct, flag, instance, can_ask).await?;
+    instance_zone_with(&client, acct, flag, instance, can_ask, warnings).await
+}
+
+async fn instance_zone_with(
+    client: &GcpClient,
+    acct: &Account,
+    flag: Option<&str>,
+    instance: &str,
+    can_ask: bool,
+    warnings: &mut Vec<String>,
+) -> Result<String> {
+    let found = resolve_instance_zone(client, acct, flag, instance, can_ask).await?;
+    // A lookup that fell back to the default already failed against the same
+    // API the existence check would ask, so checking would warn a second time
+    let fell_back = found.warning.is_some();
     warnings.extend(found.warning);
-    if !found.verified {
-        warnings.extend(verify_instance_with_client(&client, acct, &found.zone, instance).await?);
+    if !found.verified && !fell_back {
+        warnings.extend(verify_instance_with_client(client, acct, &found.zone, instance).await?);
     }
     Ok(found.zone)
 }
@@ -1666,6 +1680,42 @@ mod tests {
             "Instance 'missing-instance' not found in zone 'europe-west1-b' of project 'proj-1'"
         ));
         assert!(msg.contains("Run `gtunnel zones` to check available zones"));
+    }
+
+    #[tokio::test]
+    async fn a_lookup_that_fell_back_to_the_default_warns_once() {
+        // The existence check asks the same API the failed lookup did, so it
+        // would only repeat the same refusal as a second warning
+        use crate::gcp::{Endpoints, GcpClient, TokenSource};
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+        let client = GcpClient::new(
+            TokenSource::Static("tok".to_string()),
+            Endpoints::single(&server.uri()),
+        );
+        let acct = Account {
+            name: "dev".to_string(),
+            gcloud_configuration: "dev".to_string(),
+            project: "proj-1".to_string(),
+            default_zone: "europe-west1-b".to_string(),
+            impersonate_service_account: None,
+            credential_file: None,
+            expose: None,
+        };
+        let mut warnings = Vec::new();
+        let zone = instance_zone_with(&client, &acct, None, "bastion", false, &mut warnings)
+            .await
+            .expect("falls back to the default zone");
+        assert_eq!(zone, "europe-west1-b");
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("using the account's default zone"));
+        let asked = server.received_requests().await.unwrap_or_default();
+        assert_eq!(asked.len(), 1, "only the lookup asks the API");
     }
 
     #[test]
