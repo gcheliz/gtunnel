@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.48](https://github.com/gcheliz/gtunnel/compare/v0.2.47...v0.2.48) - 2026-10-30
+
+### Fixed
+
+- validate TUI port edits, parse named launchd exit codes, read spaced gcloud flags ([#327](https://github.com/gcheliz/gtunnel/pull/327))
+
 ## [0.2.47](https://github.com/gcheliz/gtunnel/compare/v0.2.46...v0.2.47) - 2026-10-30
 
 ### Fixed
