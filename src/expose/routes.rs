@@ -192,21 +192,24 @@ pub async fn add_route(
                     "projects/{project}/global/healthChecks/{}",
                     names.health_check
                 ),
-                target.private,
+                &compute::BackendSettings::new(target.private),
                 &names.owner(),
             )
             .await?;
             client.wait_operation(&op).await?;
         }
-        // A backend that predates the tunnel's current --private setting would
-        // otherwise keep serving under the old access rule
-        Some(existing) if existing.iap_enabled != target.private => {
-            let op =
-                compute::set_backend_service_iap(client, project, &target.backend, target.private)
-                    .await?;
-            client.wait_operation(&op).await?;
+        // A backend made by an older gtunnel keeps its old settings until
+        // something converges it, and its access rule is the one that matters
+        Some(existing) => {
+            compute::reconcile_backend_service(
+                client,
+                project,
+                &target.backend,
+                &compute::BackendSettings::new(target.private),
+                &existing,
+            )
+            .await?;
         }
-        Some(_) => {}
     }
 
     let backend_url = format!(
@@ -589,7 +592,9 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "name": "gt-dev-api",
                 "portName": "gt-api",
-                "iap": {"enabled": false}
+                "iap": {"enabled": false},
+                "timeoutSec": 3600,
+                "connectionDraining": {"drainingTimeoutSec": 30}
             })))
             .mount(&server)
             .await;
@@ -604,5 +609,65 @@ mod tests {
             .expect("add route");
 
         assert_eq!(count(&server, "PATCH", "/backendServices").await, 0);
+    }
+
+    // A backend made before the load balancer settings were owned has no
+    // timeoutSec; ensure_route has to give it one, once
+    #[tokio::test]
+    async fn ensure_route_patches_a_backend_without_timeout_and_then_leaves_it_alone() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_regex(r".*/backendServices/gt-dev-api"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "name": "gt-dev-api",
+                "portName": "gt-api",
+                "iap": {"enabled": false}
+            })))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path_regex(r".*/backendServices/gt-dev-api"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "name": "gt-dev-api",
+                "portName": "gt-api",
+                "iap": {"enabled": false},
+                "timeoutSec": 3600,
+                "connectionDraining": {"drainingTimeoutSec": 30}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(done_op()))
+            .mount(&server)
+            .await;
+        Mock::given(method("PATCH"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(done_op()))
+            .mount(&server)
+            .await;
+        base_mocks(&server).await;
+
+        ensure_route(&client(&server), &account(), &tunnel())
+            .await
+            .expect("first call");
+        assert_eq!(count(&server, "PATCH", "/backendServices/").await, 1);
+        let patch = server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .find(|r| r.method.as_str() == "PATCH")
+            .expect("patch");
+        let body: serde_json::Value = serde_json::from_slice(&patch.body).expect("json");
+        assert_eq!(body["timeoutSec"], 3600);
+
+        ensure_route(&client(&server), &account(), &tunnel())
+            .await
+            .expect("second call");
+        assert_eq!(
+            count(&server, "PATCH", "/backendServices/").await,
+            1,
+            "a converged backend must not be patched again"
+        );
     }
 }
