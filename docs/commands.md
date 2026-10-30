@@ -908,6 +908,24 @@ themselves after verifying the published SHA-256, by renaming a new file into pl
 rewriting the running one; a Homebrew install is pointed at
 `brew upgrade gtunnel`.
 
+Before the swap the new binary runs `--version` (10 s limit) and must report the release it was
+downloaded for, so a build that cannot start on this machine is refused and the installed one is
+left as it was. A download over 64 MiB is refused. The replaced binary is kept as `gtunnel.old`
+beside the installed one.
+
+| Flag | Effect |
+|---|---|
+| `--check` | Report whether a newer release exists; install nothing |
+| `--rollback` | Rename `gtunnel.old` over the installed binary. Needs no network. Refused when there is no backup, and cannot be combined with `--check` |
+
+```console,ignore
+$ gtunnel update --rollback
+Restored the previous version at /usr/local/bin/gtunnel
+```
+
+The backup is spent by a rollback, so a second one is refused; the next `update` writes a new
+one. A Homebrew install keeps no backup here and is pointed at `brew upgrade gtunnel`.
+
 ## mcp
 
 ```console
