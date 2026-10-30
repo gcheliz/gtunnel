@@ -296,6 +296,9 @@ pub struct Correlator {
     backend: Option<Backend>,
     last_stopping: Option<(Instant, crate::failure::Failure)>,
     last_busy: Option<Instant>,
+    /// The newest line of any class, so a supervisor can tell an exit the
+    /// network caused from one that merely printed a network line earlier
+    last_classified: Option<(Instant, crate::failure::Failure)>,
     auth_exit_window: Duration,
 }
 
@@ -315,6 +318,7 @@ impl Correlator {
             backend: None,
             last_stopping: None,
             last_busy: None,
+            last_classified: None,
             auth_exit_window: crate::settings::LOGS_AUTH_EXIT_WINDOW,
         }
     }
@@ -397,11 +401,30 @@ impl Correlator {
             .is_some_and(|at| now.saturating_duration_since(at) <= self.auth_exit_window)
     }
 
+    /// `Network` or `Timeout` when the newest classified line, within the same
+    /// window as `stopping_failure`, was one of them. A restart can mend either,
+    /// so the supervisor waits and retries instead of spending its budget.
+    ///
+    /// The newest line decides, not any line: a quota or API error printed after
+    /// a lookup failure means this exit was the quota, which a retry does not
+    /// fix. A stop-class line is the caller's to check first; this does not hide
+    /// it.
+    pub fn outage_failure(&self, now: Instant) -> Option<crate::failure::Failure> {
+        use crate::failure::Failure;
+        self.last_classified
+            .filter(|(at, _)| now.saturating_duration_since(*at) <= self.auth_exit_window)
+            .map(|(_, failure)| failure)
+            .filter(|f| matches!(f, Failure::Network | Failure::Timeout))
+    }
+
     /// One line in, the formatted lines it produces out.
     pub fn feed(&mut self, raw: &str, now: Instant) -> Vec<String> {
         let mut out = self.tick(now);
-        if let Some(failure) = crate::failure::Failure::from_line(raw).filter(|f| f.is_stopping()) {
-            self.last_stopping = Some((now, failure));
+        if let Some(failure) = crate::failure::Failure::from_line(raw) {
+            self.last_classified = Some((now, failure));
+            if failure.is_stopping() {
+                self.last_stopping = Some((now, failure));
+            }
         }
         if crate::failure::Failure::from_line(raw) == Some(crate::failure::Failure::ListenerBusy) {
             self.last_busy = Some(now);
@@ -1193,5 +1216,40 @@ INFO: [0] Received WebSocket Close message [9: 9].
 
         assert!(output.contains("Traceback"));
         assert!(output.contains("ValueError: invalid literal for int()"));
+    }
+
+    // A restart can mend these, so they are the exits a supervisor waits out
+    // instead of counting against the budget
+    #[test]
+    fn the_last_classified_line_decides_whether_an_exit_was_the_network() {
+        let t0 = Instant::now();
+        let mut c = Correlator::new(LogLevel::Info);
+        assert_eq!(c.outage_failure(t0), None);
+        c.feed(
+            "curl: (6) Could not resolve host: oauth2.googleapis.com",
+            t0,
+        );
+        assert_eq!(c.outage_failure(t0), Some(Failure::Network));
+        c.feed("ERROR: connect to host timed out", t0);
+        assert_eq!(c.outage_failure(t0), Some(Failure::Timeout));
+        // Newer and not a network line: that is what this exit was
+        c.feed("ERROR: Quota exceeded for quota metric", t0);
+        assert_eq!(c.outage_failure(t0), None);
+        // An old line is not this exit
+        c.feed("No route to host", t0);
+        assert_eq!(
+            c.outage_failure(t0 + crate::settings::LOGS_AUTH_EXIT_WINDOW + Duration::from_secs(1)),
+            None
+        );
+    }
+
+    #[test]
+    fn a_network_line_after_a_login_line_leaves_the_login_as_the_stopping_reason() {
+        let t0 = Instant::now();
+        let mut c = Correlator::new(LogLevel::Info);
+        c.feed("ERROR: Reauthentication required.", t0);
+        c.feed("Could not resolve host: oauth2.googleapis.com", t0);
+        assert_eq!(c.outage_failure(t0), Some(Failure::Network));
+        assert_eq!(c.stopping_failure(t0), Some(Failure::LoginExpired));
     }
 }

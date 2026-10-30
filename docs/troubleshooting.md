@@ -12,6 +12,7 @@ Contents:
 - [Failed to parse .../config.toml](#failed-to-parse-configtoml)
 - [Connections drop after an hour](#connections-drop-after-an-hour)
 - [Restarts after the laptop wakes](#restarts-after-the-laptop-wakes)
+- [What a network outage does](#what-a-network-outage-does)
 - [no zone for account](#no-zone-for-account)
 - [Could not list projects](#could-not-list-projects)
 - [IAP firewall](#iap-firewall)
@@ -125,6 +126,32 @@ entirely — it appears when the tarball came from the releases page in a browse
 xattr -d com.apple.quarantine /usr/local/bin/gtunnel
 ```
 
+## Tunnels stopped on an expired login
+
+An expired login stops every tunnel of the account, and each shows `auth expired`. After
+`gcloud auth login` they come back by themselves when the [watchdog](commands.md#watch) is
+installed: each pass asks gcloud for one token per account that has a tunnel stopped on an
+expired login (one fetch, however many tunnels wait). If it answers, the markers are cleared
+and the tunnels start. If it does not, nothing changes and the next pass asks again.
+
+| Stopped on | Comes back after a new login |
+|---|---|
+| `login-expired` (`Reauthentication required`) | Yes |
+| `impersonation-denied`, `key-invalid`, `configuration-missing` | No: a login does not change them, so they wait for `gtunnel start <name>` once fixed |
+
+Without the watchdog, or to not wait for a pass:
+
+```console,ignore
+$ gtunnel start --auth-expired
+started dev.db
+started dev.kubernetes
+left dev.cache stopped: impersonation-denied needs fixing first, a new login does not help
+```
+
+`--account <name>` limits it to one account; without it every account is tried. The command
+exits 1 when a login still does not work or a start failed. The watchdog says it once per
+account, `dev: login expired, 4 tunnels stopped`, instead of one notification per tunnel.
+
 ## What the log says, and what it means
 
 gtunnel annotates these lines in `gtunnel logs <name>` and in the TUI's log pane. A log is
@@ -135,12 +162,16 @@ emptied when its tunnel starts, so a line in it was written by the process runni
 | `4003` | IAP cannot reach the target port | Allow `35.235.240.0/20` to that port, see below |
 | `4033` | Not authorized to tunnel through IAP | Grant `roles/iap.tunnelResourceAccessor` |
 | A public URL answers `503` (nothing in the log) | The tunnel's backend, host rule, named port or DNS record is missing | `gtunnel restart <name>` re-creates them, see [the log](commands.md#start-stop-restart-autostart-logs-list-delete) |
-| `Reauthentication required` | gcloud credentials expired. The supervisor stops the job instead of restarting it every few seconds, and `list` keeps showing `auth expired` until the next start | `gcloud auth login`, then `gtunnel start <name>`. An account with a `credential_file` is not told to log in: its hint names the key file |
+| `Reauthentication required` | gcloud credentials expired. The supervisor stops the job instead of restarting it every few seconds, and `list` shows `auth expired`. The watchdog notices the new login and starts the tunnel again within one `watch.interval`, see [Tunnels stopped on an expired login](#tunnels-stopped-on-an-expired-login) | `gcloud auth login`. Without the watchdog, `gtunnel start --auth-expired`, or `gtunnel start <name>` for one. An account with a `credential_file` is not told to log in: its hint names the key file |
 | `Failed to impersonate` | The signed-in identity may not impersonate the account's service account. The supervisor stops the job on the first failure and `list` shows `[credentials refused]` | Grant `roles/iam.serviceAccountTokenCreator` on that service account, or remove `impersonate_service_account`, then `gtunnel start <name>` |
 | `Invalid JWT` | gcloud rejected the service-account key. Same stop and `[credentials refused]` | Replace the key (or the account's `credential_file`), then `gtunnel start <name>` |
 | `The configuration [...] does not exist` | The account's `gcloud_configuration` was renamed or deleted. Same stop and `[credentials refused]` | `gcloud config configurations list`, correct `gcloud_configuration` on the account, then `gtunnel start <name>` |
 | `list` shows `[restart budget spent: ...]` | gcloud died more than `max_restarts` times, each before `min_uptime`, for a reason gtunnel does not recognise. The supervisor stopped the job, and the log says why | Read the log, fix the cause, then `gtunnel start <name>`. To tune or disable the budget see [The restart budget](configuration.md#the-restart-budget) |
 | A tunnel keeps restarting and never shows `[restart budget spent: ...]` | Its definition has no `--crash-marker` | Run any gtunnel command: it reinstalls the definition and prints `gtunnel: reinstalled ...` on stderr. If it prints `could not reinstall`, the reason follows; fix it and run a command again |
+| `gtunnel: services were written by gtunnel X; this is Y` | Two gtunnel versions are on the machine (a second install on `PATH`, or a downgrade), and the older one will not rewrite what the newer one wrote | Run the newer one, or upgrade this one; `command -v gtunnel` shows which runs. Printed once per version |
+| `gtunnel: <name> was rewritten but not restarted, it has N open connections` | The upgrade changed the service definition and a client was connected, so the running tunnel was not cut | `gtunnel restart <name>` when it is idle; until then it runs on the old definition |
+| `gtunnel: reinstalled <label> but could not restart it: ...` | The definition was rewritten and the job did not start again, so the tunnel is down. `run/<label>.restart-pending` records it | Run any gtunnel command to retry, or `gtunnel restart <name>` now. Fix the reason first if it names a missing binary or a service manager that is not running |
+| `watch status` says installed, and the watchdog log shows nothing every interval | The watchdog definition names a binary that no longer exists (a versioned path after an upgrade) | Run any gtunnel command: it rewrites the watchdog and prints `gtunnel: reinstalled com.gtunnel.watchdog` (`gtunnel-watchdog` on Linux). `gtunnel watch install` does the same by hand |
 | `4004` | IAP asked gcloud to reauthenticate; gcloud resumes the session on its own | Nothing, unless it repeats: then check the account's credentials with `gtunnel doctor` |
 | `Unable to reconnect within` | gcloud gave up reconnecting to IAP after 15 minutes and the clients on the tunnel were cut | Restart the tunnel; see [Limits](architecture.md#limits) |
 | `Address already in use` | Another process holds the local port | `gtunnel doctor`, or set `--local-port` |
@@ -162,8 +193,8 @@ exit code and the advice. Only an expired login is told to log in.
 | Key invalid | `Invalid JWT` | `auth` (4) | Replace the key file |
 | Permission denied | a 403 with no reason | `auth` (4) | Check the account's IAM roles in the project; `gtunnel doctor` |
 | Service disabled | a 403 with `SERVICE_DISABLED` | `usage` (2) | `gcloud services enable <api> --project=<project>`: the message names the API |
-| Quota or rate limited | a 429, `RATE_LIMIT_EXCEEDED`, `RESOURCE_EXHAUSTED` | `unavailable` (6) | Wait and retry |
-| Network | `Could not resolve host`, `Network is unreachable`, a 502 to 504 | `unavailable` (6) | Check the connection and retry |
+| Quota or rate limited | a 429, `RATE_LIMIT_EXCEEDED`, `RESOURCE_EXHAUSTED` | `unavailable` (6) | Wait and retry. gtunnel has already retried reads and deletes 4 times over a few seconds, so this is a sustained limit |
+| Network | `Could not resolve host`, `Network is unreachable`, a 502 to 504 | `unavailable` (6) | Check the connection and retry. A reset, a 500, 502, 503, 504 or 429 on a read or a delete is retried 4 times first, with a growing, jittered wait that honours `Retry-After`; a create or update is repeated only when the connection was never made |
 | Timeout | `timed out after` | `unavailable` (6) | Retry; do not log in again |
 | Not found | a 404 | `not_found` (3) | Check the name, project and zone |
 
@@ -422,6 +453,30 @@ Local forwarding listening on 127.0.0.1 port 8443.
 | One restart after each wake | Expected. The crash-loop state in the [health table](usage.md#the-tui) needs three restarts inside two minutes |
 | A count that rises while the machine stays awake | Not the wake case. Read the log with `gtunnel logs <name>` and look for the cause |
 | `Unable to reconnect within [900000] ms` | The network stayed down for gcloud's 15 minute window. The restart is the same one; see [Limits](architecture.md#limits) |
+
+## What a network outage does
+
+With the machine awake and the network gone (a flight, a VPN flap, a captive portal), watched
+tunnels are kept, not stopped. They come back by themselves when the network does.
+
+| Layer | During the outage | When the network returns |
+|---|---|---|
+| Watchdog | Each pass first connects to `tunnel.cloudproxy.app:443`. If that fails, no tunnel is judged and no breaker moves | The next pass judges tunnels as usual |
+| Supervisor | gcloud exits on a network or timeout line. The job waits 10 s, then 20, 40, up to 5 minutes, and starts again. None of it counts toward the restart budget | The first start that lives past `min_uptime` clears the wait |
+| Notifications | The watchdog sends no "unhealthy" or "stopped" notification for the outage | A tunnel that stays down afterwards is reported as before |
+
+`gtunnel list` may show a tunnel as down or unhealthy while the wait runs. A tunnel is back
+within about 5 minutes of the network returning, the longest wait, and sooner when the
+outage was short.
+
+| You see | Meaning |
+|---|---|
+| `gtunnel watch --verbose` prints `the network is unreachable: no tunnel is judged this pass` | The gate is closed. The check is the same connect gcloud needs: `nc -zv tunnel.cloudproxy.app 443` |
+| The log shows `Could not resolve host` or `No route to host` over and over | The supervisor is retrying, as intended |
+| The network is up, `nc` connects, and a tunnel still does not come back | Not an outage. Read `gtunnel logs <name>`; a login problem still stops the job at once (see [What a token or API failure means](#what-a-token-or-api-failure-means)) |
+| A captive portal is open | The connect succeeds, so the gate reads the network as up and tunnels are judged normally |
+
+The design is in [decision 20](decisions.md#20-restarts-belong-to-launchd-and-systemd-and-readiness-is-a-file).
 
 ## `no zone for account`
 

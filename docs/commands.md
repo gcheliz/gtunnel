@@ -313,7 +313,10 @@ the same place, and `gtunnel_get_status` reports its `health` as `auth_expired`.
 for a denied impersonation, an invalid key or a missing gcloud configuration carries
 `[credentials refused]` and `credentials_refused`: the log names which, and
 [troubleshooting](troubleshooting.md#what-a-token-or-api-failure-means) says what to do. Both
-clear on the next `gtunnel start`.
+clear on the next `gtunnel start`. An expired login is also cleared by the watchdog once
+`gcloud auth login` works again, and `gtunnel start --auth-expired` starts every tunnel
+stopped that way (see [Start](#start-stop-restart-autostart-logs-list-delete)); a refused
+credential is never resumed, because a new login does not mend it.
 
 A stopped tunnel whose supervisor spent its [restart budget](configuration.md#the-restart-budget)
 carries `[restart budget spent: exit status: 1]`, the last thing gcloud died of, and the TUI
@@ -422,6 +425,17 @@ $ gtunnel start db
   Logs: gtunnel logs db
 $ echo $?
 1
+```
+
+`start --auth-expired` takes the place of the name and starts every tunnel stopped on an
+expired login, for the account given with `--account` or for all of them. It asks gcloud for
+one token per account first and starts nothing for an account whose login still fails. It
+never starts a tunnel stopped on a refused credential: it names it and says why.
+
+```console,ignore
+$ gtunnel start --auth-expired
+started dev.db
+dev: login still not usable, 2 waiting. Run `gcloud auth login`
 ```
 
 `add -s` and `restart` start the tunnel the same way, so a tunnel `add -s` could not start is
@@ -757,6 +771,21 @@ Nothing, the first time: one failed check is a slow moment, two in a row is a pr
 
 A tunnel stopped on a spent [restart budget](configuration.md#the-restart-budget) is skipped:
 restarting it would undo that decision with a fresh count.
+
+### When it cannot tell
+
+Some passes say nothing about a tunnel, and the watchdog neither counts them nor clears
+anything on them. The verbose line reads `Unknown -> Nothing`.
+
+| Case | Why it is unknown |
+|---|---|
+| The network is down | Each pass first connects to `tunnel.cloudproxy.app:443`, once, waiting 3s. If that fails every tunnel is unknown, because every probe would fail for the same reason. `-v` prints `the network is unreachable: no tunnel is judged this pass` |
+| The service manager did not answer | `launchctl` or `systemctl` errored or timed out. Answering "not loaded" is still a stop |
+| A tunnel was just started | Running, no ready file yet, and its supervisor spawned gcloud less than `start_deadline` ago |
+
+A failure counted more than two intervals ago is forgotten before the next one is counted, so
+a failure from before the laptop slept does not pair with the first one after it. What an
+outage does end to end is in [Troubleshooting](troubleshooting.md#what-a-network-outage-does).
 
 ### The agent
 

@@ -4,9 +4,11 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::time::{Duration, SystemTime};
 use tokio::process::Command;
 
 use crate::config::Account;
+use crate::gcp::client::IssuedToken;
 
 // A gcloud named configuration, as `gcloud config configurations list` reports it
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -138,6 +140,58 @@ pub async fn print_access_token(acct: &Account) -> Result<String> {
         .await
         .map_err(|e| token_failure(acct, &e, is_interactive()))?;
     Ok(stdout.trim().to_string())
+}
+
+// The token and how long gcloud says it has left. gcloud hands back a cached
+// token with whatever life it has remaining, so the client cannot assume a
+// fresh one lives 45 minutes: it asks for the expiry and reuses to that.
+// `--format=json` is requested, and the reader accepts the shapes gcloud's
+// token commands print (`token`/`token_expiry`, and `config-helper`'s nested
+// `credential`), and a bare token for a gcloud that ignores the format, which
+// then has no expiry and falls back to the `gcp.token_ttl` cap.
+pub async fn access_token(acct: &Account) -> Result<IssuedToken> {
+    let mut args = vec![
+        "auth".to_string(),
+        "print-access-token".to_string(),
+        "--format=json".to_string(),
+    ];
+    args.extend(crate::tunnel::gcloud_common(
+        acct,
+        crate::loglevel::current(),
+    )?);
+    let stdout = run_gcloud(&args)
+        .await
+        .map_err(|e| token_failure(acct, &e, is_interactive()))?;
+    parse_token_output(&stdout, SystemTime::now()).map_err(|e| {
+        GtunnelError::gcloud(format!("gcloud printed no usable access token: {e:#}")).into()
+    })
+}
+
+pub(crate) fn parse_token_output(stdout: &str, now: SystemTime) -> Result<IssuedToken> {
+    let text = stdout.trim();
+    if text.is_empty() {
+        bail!("empty output");
+    }
+    if !text.starts_with('{') {
+        return Ok(IssuedToken {
+            token: text.to_string(),
+            valid_for: None,
+        });
+    }
+    let value: serde_json::Value = serde_json::from_str(text).context("not JSON")?;
+    let credential = value.get("credential").unwrap_or(&value);
+    let field = |keys: &[&str]| {
+        keys.iter()
+            .find_map(|k| credential.get(k)?.as_str())
+            .map(str::to_string)
+    };
+    let token = field(&["token", "access_token"]).context("no token field")?;
+    let valid_for = field(&["token_expiry", "expiry"])
+        .and_then(|stamp| humantime::parse_rfc3339(&stamp).ok())
+        // An expiry already past is zero, not "unknown": the client must
+        // fetch again, not trust it
+        .map(|at| at.duration_since(now).unwrap_or(Duration::ZERO));
+    Ok(IssuedToken { token, valid_for })
 }
 
 // A token that cannot be minted is named by what failed, not blamed on the
@@ -322,6 +376,47 @@ where
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    fn at(stamp: &str) -> SystemTime {
+        humantime::parse_rfc3339(stamp).expect("stamp")
+    }
+
+    #[test]
+    fn a_json_token_carries_the_time_it_has_left() {
+        let out = r#"{"token":"ya29.abc","token_expiry":"2026-10-30T12:10:00Z"}"#;
+        let got = parse_token_output(out, at("2026-10-30T12:00:00Z")).expect("parse");
+        assert_eq!(got.token, "ya29.abc");
+        assert_eq!(got.valid_for, Some(Duration::from_secs(600)));
+    }
+
+    #[test]
+    fn the_config_helper_shape_is_read_too() {
+        let out = r#"{"configuration":{},"credential":{"access_token":"ya29.def",
+            "token_expiry":"2026-10-30T12:01:00.500Z"}}"#;
+        let got = parse_token_output(out, at("2026-10-30T12:00:00Z")).expect("parse");
+        assert_eq!(got.token, "ya29.def");
+        assert_eq!(got.valid_for, Some(Duration::from_millis(60_500)));
+    }
+
+    #[test]
+    fn a_token_already_past_its_expiry_has_no_time_left() {
+        let out = r#"{"token":"t","token_expiry":"2026-10-30T11:00:00Z"}"#;
+        let got = parse_token_output(out, at("2026-10-30T12:00:00Z")).expect("parse");
+        assert_eq!(got.valid_for, Some(Duration::ZERO));
+    }
+
+    #[test]
+    fn a_bare_token_has_an_unknown_expiry_and_is_trimmed() {
+        let got = parse_token_output("ya29.xyz\n", SystemTime::now()).expect("parse");
+        assert_eq!(got.token, "ya29.xyz");
+        assert_eq!(got.valid_for, None);
+    }
+
+    #[test]
+    fn output_with_no_token_in_it_is_an_error() {
+        assert!(parse_token_output("", SystemTime::now()).is_err());
+        assert!(parse_token_output(r#"{"expiry":"x"}"#, SystemTime::now()).is_err());
+    }
 
     // A nonexistent configuration ensures print_access_token cannot succeed
     // against a live developer config during unit tests

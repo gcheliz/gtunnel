@@ -239,7 +239,14 @@ pub async fn run(args: Cli) -> Result<()> {
             )
             .await
         }
-        Some(Commands::Start { name }) => commands::access::cmd_start(account, &name).await,
+        Some(Commands::Start {
+            auth_expired: true, ..
+        }) => commands::resume::cmd_start_auth_expired(account).await,
+        Some(Commands::Start {
+            name: Some(name), ..
+        }) => commands::access::cmd_start(account, &name).await,
+        // clap requires one or the other
+        Some(Commands::Start { name: None, .. }) => Ok(()),
         Some(Commands::Stop { name }) => commands::access::cmd_stop(account, &name).await,
         Some(Commands::Restart { name }) => commands::access::cmd_restart(account, &name).await,
         Some(Commands::Autostart { name, on, off }) => {

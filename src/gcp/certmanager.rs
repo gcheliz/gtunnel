@@ -70,13 +70,26 @@ pub async fn ensure_dns_authorization(
     Ok(raw.into())
 }
 
-pub async fn delete_dns_authorization(client: &GcpClient, project: &str, name: &str) -> Result<()> {
-    let url = format!("{}/dnsAuthorizations/{name}", parent(client, project));
-    match client.delete(&url).await {
-        Ok(_) => Ok(()),
+// Certificate Manager answers a delete with a long-running operation. Dropping
+// it let the teardown go on to the next resource while this one was still
+// being deleted, and the next was refused for a resource still in use. An
+// already-missing resource is the end state asked for, not an error.
+async fn delete_and_wait(client: &GcpClient, url: &str) -> Result<()> {
+    match client.delete(url).await {
+        Ok(Some(op)) => {
+            client
+                .wait_operation_at(&op, &client.endpoints.certmanager)
+                .await
+        }
+        Ok(None) => Ok(()),
         Err(e) if is_not_found(&e) => Ok(()),
         Err(e) => Err(e),
     }
+}
+
+pub async fn delete_dns_authorization(client: &GcpClient, project: &str, name: &str) -> Result<()> {
+    let url = format!("{}/dnsAuthorizations/{name}", parent(client, project));
+    delete_and_wait(client, &url).await
 }
 
 pub async fn ensure_certificate(
@@ -122,11 +135,7 @@ pub async fn certificate_state(client: &GcpClient, project: &str, name: &str) ->
 
 pub async fn delete_certificate(client: &GcpClient, project: &str, name: &str) -> Result<()> {
     let url = format!("{}/certificates/{name}", parent(client, project));
-    match client.delete(&url).await {
-        Ok(_) => Ok(()),
-        Err(e) if is_not_found(&e) => Ok(()),
-        Err(e) => Err(e),
-    }
+    delete_and_wait(client, &url).await
 }
 
 pub async fn ensure_certificate_map(client: &GcpClient, project: &str, name: &str) -> Result<()> {
@@ -147,11 +156,7 @@ pub async fn ensure_certificate_map(client: &GcpClient, project: &str, name: &st
 
 pub async fn delete_certificate_map(client: &GcpClient, project: &str, name: &str) -> Result<()> {
     let url = format!("{}/certificateMaps/{name}", parent(client, project));
-    match client.delete(&url).await {
-        Ok(_) => Ok(()),
-        Err(e) if is_not_found(&e) => Ok(()),
-        Err(e) => Err(e),
-    }
+    delete_and_wait(client, &url).await
 }
 
 pub async fn ensure_certificate_map_entry(
@@ -191,11 +196,7 @@ pub async fn delete_certificate_map_entry(
         "{}/certificateMaps/{map}/certificateMapEntries/{entry}",
         parent(client, project)
     );
-    match client.delete(&url).await {
-        Ok(_) => Ok(()),
-        Err(e) if is_not_found(&e) => Ok(()),
-        Err(e) => Err(e),
-    }
+    delete_and_wait(client, &url).await
 }
 
 #[cfg(test)]
@@ -270,5 +271,81 @@ mod tests {
             .await
             .expect("state");
         assert_eq!(state, "MISSING");
+    }
+
+    // The deletes are sequenced by the caller (entry, map, certificate,
+    // authorisation): each one has to be finished before the next starts, or
+    // the next is refused for a resource still in use
+    #[tokio::test]
+    async fn every_certificate_manager_delete_waits_for_its_operation() {
+        type Delete = for<'a> fn(
+            &'a GcpClient,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<()>> + 'a>,
+        >;
+        let cases: Vec<(&str, &str, Delete)> = vec![
+            ("dnsAuthorizations/a", "dns authorization", |c| {
+                Box::pin(delete_dns_authorization(c, "p", "a"))
+            }),
+            ("certificates/a", "certificate", |c| {
+                Box::pin(delete_certificate(c, "p", "a"))
+            }),
+            ("certificateMaps/a", "certificate map", |c| {
+                Box::pin(delete_certificate_map(c, "p", "a"))
+            }),
+            (
+                "certificateMaps/m/certificateMapEntries/a",
+                "certificate map entry",
+                |c| Box::pin(delete_certificate_map_entry(c, "p", "m", "a")),
+            ),
+        ];
+        for (resource, what, delete) in cases {
+            let server = MockServer::start().await;
+            let op = "/projects/p/locations/global/operations/op-1";
+            Mock::given(method("DELETE"))
+                .and(path(format!("/projects/p/locations/global/{resource}")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "name": op.trim_start_matches('/'),
+                    "done": false
+                })))
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path(op))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "name": op.trim_start_matches('/'),
+                    "done": true
+                })))
+                .mount(&server)
+                .await;
+
+            delete(&client(&server)).await.expect(what);
+            let seen: Vec<String> = server
+                .received_requests()
+                .await
+                .expect("requests")
+                .iter()
+                .map(|r| format!("{} {}", r.method, r.url.path()))
+                .collect();
+            assert_eq!(
+                seen.last().map(String::as_str),
+                Some(format!("GET {op}").as_str()),
+                "the {what} delete returned before its operation was polled: {seen:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_delete_of_something_already_gone_needs_no_operation() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                "error": {"code": 404, "message": "not found"}
+            })))
+            .mount(&server)
+            .await;
+        delete_certificate(&client(&server), "p", "a")
+            .await
+            .expect("already gone");
     }
 }

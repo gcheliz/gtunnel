@@ -276,7 +276,7 @@ into it: it falls back to the file with the environment, then the file alone, th
 
 | Key | What to know |
 |---|---|
-| `token_ttl` | how long an access token is reused; Google issues them for an hour, so a value past `1h` gets 401s until it lapses |
+| `token_ttl` | an upper bound on how long an access token is reused, not the usual lifetime: gtunnel asks gcloud when each token expires and stops reusing it 5 minutes before, so a token with 20 minutes left is dropped after 15 whatever this says. Raising it past `1h` changes nothing. It still decides when gcloud reports no expiry. A `401` evicts the token and the request is tried once more with a fresh one |
 | `lock_deadline`, `fingerprint_attempts` | under `[gcp]` for want of a section of their own: the wait for a lock another gtunnel holds on a file, and the redos of a URL map or named port change after a concurrent edit |
 | `backend_timeout` | under `[expose]`, not to be confused with an account's `expose` relay table: the backend service timeout of every tunnel `expose` creates, and of the existing ones at `relay up`, `expose`, `start` and `restart`. For a websocket it is the longest the connection may sit idle, for a request the longest it may take. Whole seconds; GCP closes every websocket at 24h whatever it says |
 | `list_probe_timeout` | one probe of a running tunnel's local port, in `list` and the MCP list and status tools; the TUI's probes keep a fixed 2 seconds. `list` probes all tunnels at once, so it waits one probe however many run. Longer helps a slow far end and slows `list` when a tunnel is silent. Not `watch.probe_timeout` (3s), the watchdog's wait |
@@ -375,6 +375,9 @@ One failure is kept out of the count: `remote port forwarding failed`, which mea
 still holds a dead session's listener. A restart is the cure, so the supervisor waits a fixed
 15 seconds and starts again, for up to 5 minutes from the first one, and only then counts it.
 Neither number is configurable.
+When one run prints both a busy line and a network line, the newer line decides: the network wait if the network line is newer, the 15 second streak if the busy line is.
+
+A run that dies of the network does not count at all: the supervisor waits, using `base_backoff` and `max_backoff`, and starts again however long the outage lasts. See [What a network outage does](troubleshooting.md#what-a-network-outage-does).
 
 | Key under `[restart]` | Default | Range |
 |---|---|---|
@@ -406,11 +409,17 @@ the new binary writes, and rewrites each that differs, such as one without `--cr
 
 | Case | Result |
 |---|---|
-| A running tunnel | restarted to read the new definition, which drops its connections for a moment |
+| A running tunnel | rewritten, then restarted to read the new definition, which drops its connections for a moment |
+| A running tunnel with a client connected | rewritten and left running on the old definition; the line names it, and `gtunnel restart <name>` restarts it when it is idle. Connections are counted on the tunnel's local port, so an expose tunnel is always restarted |
+| A tunnel in error | rewritten and reloaded, because launchd keeps the definition it loaded however often the file changes |
 | A stopped tunnel | stays stopped, its log untouched |
+| The watchdog | its definition is compared and rewritten the same way when it is installed, and reloaded; a missing binary counts as out of date, and the interval does not (it is `watch.interval` of the installing shell). Never restarted separately: installing it is the reload |
+| A restart that fails | the pass writes `run/<label>.restart-pending` before the write and removes it once the job has started again, so the next command finishes the restart even though the file is current. The line names the label and `gtunnel restart <name>` |
 | Reporting | one line on stderr names what was reinstalled; a failure names the service and the reason without changing the exit status |
 | Skipped | a tunnel whose service was never installed, a definition that already matches, any run with `GTUNNEL_CONFIG_DIR` set; so a second run does nothing |
+| Two commands at once | the pass takes `refresh.lock` in the config directory and never waits for it, so a command that finds it held skips the refresh and each tunnel is restarted at most once |
 | Out of date means | the argument list differs in shape, or the binary no longer exists. The values of `--log-level` and `GTUNNEL_*` come from the calling shell and are ignored, so exporting `GTUNNEL_LOG_LEVEL` for one command restarts nothing |
+| Which way a difference points | each definition carries `GTUNNEL_DEFINITION_VERSION=<version>` in its environment, ignored when shapes are compared. A definition stamped newer than the running binary is left alone and reported once, `services were written by gtunnel X; this is Y`, because rewriting it would make the newer one rewrite it back. One with no stamp, or an unreadable one, is stamped: a quiet write with no restart when its shape was already current. An older stamp on a current shape is left as it is, so an upgrade alone rewrites nothing |
 
 ## Environment
 
@@ -437,7 +446,7 @@ precedence are under [Settings the environment can override](#settings-the-envir
 | `GTUNNEL_LOGS_KEEP_SIZE` | | `logs.keep_size` | `2MiB` | What a trim keeps. Must be below the maximum: both keys are named when it is not |
 | `GTUNNEL_LOGS_LINES_PER_MINUTE` | | `logs.lines_per_minute` | `60` | Connection lines the supervisor writes per tunnel per minute; the rest are counted into one line. For a noisy client, or lines you want to see |
 | `GTUNNEL_LOGS_AUTH_EXIT_WINDOW` | | `logs.auth_exit_window` | `30s` | How long before gcloud exits a credential-failure line still explains the exit, so a login expiry is not read as a crash. Read by the supervisor |
-| `GTUNNEL_GCP_TOKEN_TTL` | | `gcp.token_ttl` | `45m` | How long an access token is reused before gcloud is asked for another, inside the hour Google issues them for. For `401` from a Google API after a long session. Read by every command that calls a Google API, as are the next three |
+| `GTUNNEL_GCP_TOKEN_TTL` | | `gcp.token_ttl` | `45m` | The most a token is reused before gcloud is asked for another; the token's own expiry, less 5 minutes, can only shorten it. Read by every command that calls a Google API, as are the next three |
 | `GTUNNEL_GCP_OPERATION_TIMEOUT` | | `gcp.operation_timeout` | `10m` | How long a compute or DNS operation is waited on before it is reported as not finished; for `did not finish within` errors |
 | `GTUNNEL_GCP_HTTP_TIMEOUT` | | `gcp.http_timeout` | `30s` | The limit on one API request; for a slow network or VPN |
 | `GTUNNEL_GCP_POLL_INTERVAL` | | `gcp.poll_interval` | `2s` | The pause between looks at a running operation; for API quota, or a wait that feels padded |

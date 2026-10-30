@@ -70,6 +70,20 @@ pub const FORWARDED_ENV_VARS: [&str; 12] = [
     "CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE",
 ];
 
+/// The environment entry that says which gtunnel wrote a definition.
+///
+/// The refresh cannot tell an older definition from a newer one by reading its
+/// arguments: a downgrade, or a second install on `PATH`, looks exactly like
+/// an upgrade to a binary that treats every difference as "mine is right", and
+/// two versions then rewrite and restart every tunnel back and forth. The
+/// stamp gives the comparison a direction. It lives in the environment, where
+/// the refresh already ignores `GTUNNEL_*` entries when it compares shapes, so
+/// a version bump alone never makes a definition stale.
+pub const DEFINITION_VERSION_VAR: &str = "GTUNNEL_DEFINITION_VERSION";
+
+/// The version this binary stamps into what it writes
+pub const DEFINITION_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 // A daemon does not inherit an interactive shell's PATH, so gcloud's directory
 // is written into the unit. Without it the daemon dies at startup every time.
 fn daemon_env_with(
@@ -90,6 +104,10 @@ fn daemon_env_with(
         // without this a line is held until 4 KiB have accumulated or the
         // process exits, and a working tunnel reads as a silent one.
         ("PYTHONUNBUFFERED".to_string(), "1".to_string()),
+        (
+            DEFINITION_VERSION_VAR.to_string(),
+            DEFINITION_VERSION.to_string(),
+        ),
     ];
     for name in RESTART_VARS.into_iter().chain(FORWARDED_ENV_VARS) {
         if let Some(value) = get(name).filter(|v| !v.trim().is_empty()) {
@@ -164,6 +182,12 @@ pub fn remove_auth_marker_in(config_dir: &std::path::Path, label: &str) {
     let _ = std::fs::remove_file(auth_marker_in(config_dir, label));
 }
 
+/// The file a supervisor writes once its tunnel is listening. Named here so
+/// the watchdog reads the one the installer chose.
+pub fn ready_file_in(config_dir: &std::path::Path, label: &str) -> PathBuf {
+    config_dir.join("run").join(format!("{label}.ready"))
+}
+
 /// Where a supervisor records that it stopped because its tunnel spent the
 /// restart budget. Same directory and label as the auth marker, so one sweep
 /// of `run/` finds both; the file holds the last exit reason for `list`.
@@ -189,12 +213,20 @@ pub fn busy_beside(marker: &std::path::Path) -> PathBuf {
     marker.with_extension("busy")
 }
 
+/// How many runs in a row died of the network, beside the history. Kept apart
+/// from it because these exits never spend the budget: an hour offline is a
+/// long count here and an empty history there.
+pub fn net_failures_beside(marker: &std::path::Path) -> PathBuf {
+    marker.with_extension("netfails")
+}
+
 /// Forget a spent budget: the marker that says why the job is down and the
 /// count that produced it. `start` and `delete` both want exactly this.
 pub fn clear_crash_state(marker: &std::path::Path) {
     let _ = std::fs::remove_file(marker);
     let _ = std::fs::remove_file(restart_history_beside(marker));
     let _ = std::fs::remove_file(busy_beside(marker));
+    let _ = std::fs::remove_file(net_failures_beside(marker));
 }
 
 /// Whether this tunnel's supervisor stopped on purpose for a spent budget.
@@ -312,9 +344,7 @@ fn service_spec_with(
         args.push(local_port.to_string());
         args.push("--ready-file".to_string());
         args.push(
-            crate::config::config_dir()?
-                .join("run")
-                .join(format!("{label}.ready"))
+            ready_file_in(&crate::config::config_dir()?, &label)
                 .to_string_lossy()
                 .to_string(),
         );
@@ -356,6 +386,45 @@ pub fn installed_service_text(label: &str) -> Option<String> {
     std::fs::read_to_string(path).ok()
 }
 
+/// The text of the watchdog's definition as installed, or `None` when it was
+/// never installed. A unit watchdog is two files and the interval lives in the
+/// timer, so both are read and joined: the refresh compares the whole of what
+/// `watch install` wrote.
+pub fn installed_watchdog_text() -> Option<String> {
+    let label = watchdog_label();
+    #[cfg(target_os = "macos")]
+    return installed_service_text(label);
+    #[cfg(not(target_os = "macos"))]
+    {
+        let service = installed_service_text(&format!("{label}.service"))?;
+        let timer = installed_service_text(&format!("{label}.timer")).unwrap_or_default();
+        Some(format!("{service}\n{timer}"))
+    }
+}
+
+/// What `watch install` would write for `program`, in the shape
+/// [`installed_watchdog_text`] reads back.
+pub fn render_watchdog(program: &std::path::Path) -> Result<String> {
+    let log = watchdog_log()?;
+    let interval = watch_interval_secs();
+    #[cfg(target_os = "macos")]
+    return Ok(launchd::render_watchdog_plist(program, &log, interval));
+    #[cfg(not(target_os = "macos"))]
+    {
+        let (service, timer) = systemd::render_watchdog_units(program, &log, interval);
+        Ok(format!("{service}\n{timer}"))
+    }
+}
+
+/// Where a refresh records that it rewrote a definition and has not yet
+/// restarted the job. Beside the other run markers, keyed by the same label,
+/// so one sweep of `run/` finds all of them.
+pub fn restart_pending_in(config_dir: &std::path::Path, label: &str) -> PathBuf {
+    config_dir
+        .join("run")
+        .join(format!("{label}.restart-pending"))
+}
+
 /// Whether `path` is inside `dir`, compared by component so `/tmp/cfg-ab` is
 /// not inside `/tmp/cfg-a`. A `..` anywhere refuses: it would pass the prefix
 /// test and then resolve somewhere else.
@@ -375,16 +444,84 @@ pub fn platform_label(account: &str, name: &str) -> String {
 #[allow(unused_imports)]
 #[cfg(target_os = "macos")]
 pub use launchd::{
-    install, install_watchdog, restart, runtime_info, set_auto_start, start, status, stop,
-    uninstall, uninstall_watchdog, watchdog_installed, watchdog_log, write_definition,
+    install, install_watchdog, restart, runtime_info, set_auto_start, start, status,
+    status_checked, stop, uninstall, uninstall_watchdog, watchdog_installed, watchdog_log,
+    write_definition,
 };
 
 #[allow(unused_imports)]
 #[cfg(not(target_os = "macos"))]
 pub use systemd::{
-    install, install_watchdog, restart, runtime_info, set_auto_start, start, status, stop,
-    uninstall, uninstall_watchdog, watchdog_installed, watchdog_log, write_definition,
+    install, install_watchdog, restart, runtime_info, set_auto_start, start, status,
+    status_checked, stop, uninstall, uninstall_watchdog, watchdog_installed, watchdog_log,
+    write_definition,
 };
+
+/// Read the answer of a service manager call, telling "the manager said no"
+/// from "the manager never answered".
+///
+/// A failed exit is `launchctl print` or `systemctl show` reporting that the
+/// job is not loaded, and that is a real status. A spawn error or a timeout
+/// is no answer at all, and `None` is how the watchdog avoids reading a slow
+/// or wedged manager as a tunnel that stopped.
+pub(crate) fn checked_status(
+    out: Result<std::process::Output>,
+    parse: impl Fn(&str) -> crate::state::TunnelStatus,
+) -> Option<crate::state::TunnelStatus> {
+    let out = out.ok()?;
+    if out.status.success() {
+        Some(parse(&String::from_utf8_lossy(&out.stdout)))
+    } else {
+        Some(crate::state::TunnelStatus::Stopped)
+    }
+}
+
+#[cfg(test)]
+mod checked_status_tests {
+    use super::checked_status;
+    use crate::state::TunnelStatus;
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::{ExitStatus, Output};
+
+    fn output(code: i32, stdout: &str) -> Output {
+        Output {
+            status: ExitStatus::from_raw(code << 8),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: Vec::new(),
+        }
+    }
+
+    fn parse(_: &str) -> TunnelStatus {
+        TunnelStatus::Running
+    }
+
+    // `launchctl print` timing out says nothing about the job. Reading it as
+    // Stopped reset the breaker and announced a stop that never happened.
+    #[test]
+    fn a_service_manager_call_that_errored_or_timed_out_is_not_a_status() {
+        let timed_out = Err(anyhow::anyhow!("launchctl print timed out after 5s"));
+        assert_eq!(checked_status(timed_out, parse), None);
+        let missing_binary = Err(anyhow::anyhow!("Failed to run launchctl"));
+        assert_eq!(checked_status(missing_binary, parse), None);
+    }
+
+    // The manager answering "not loaded" is an answer: the job is stopped
+    #[test]
+    fn a_service_the_manager_does_not_know_is_stopped() {
+        assert_eq!(
+            checked_status(Ok(output(113, "")), parse),
+            Some(TunnelStatus::Stopped)
+        );
+    }
+
+    #[test]
+    fn a_service_the_manager_describes_is_read_by_the_parser() {
+        assert_eq!(
+            checked_status(Ok(output(0, "state = running")), parse),
+            Some(TunnelStatus::Running)
+        );
+    }
+}
 
 // A tunnel that starts gets a clean log. Truncated in place rather than removed
 // and rewritten, so a process still holding the file open in append mode keeps
@@ -596,6 +733,25 @@ pub fn remove_log(path: &std::path::Path) -> Result<()> {
 #[allow(clippy::print_stdout, clippy::print_stderr)]
 mod tests {
     use std::io::Write;
+
+    #[test]
+    fn starting_a_tunnel_forgets_the_budget_the_network_count_and_the_busy_streak() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let marker = dir.path().join("com.gtunnel.dev.db.crash");
+        let files = [
+            marker.clone(),
+            super::restart_history_beside(&marker),
+            super::net_failures_beside(&marker),
+            super::busy_beside(&marker),
+        ];
+        for f in &files {
+            std::fs::write(f, "1\n").expect("write");
+        }
+        super::clear_crash_state(&marker);
+        for f in &files {
+            assert!(!f.exists(), "{} survived", f.display());
+        }
+    }
 
     fn append(path: &std::path::Path, bytes: &[u8]) {
         let mut file = std::fs::OpenOptions::new()

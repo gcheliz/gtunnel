@@ -13,6 +13,7 @@ use std::time::SystemTime;
 
 use crate::breaker::persist::{self, Row};
 use crate::breaker::{Action, Observation, Reason};
+use crate::commands::resume;
 use crate::daemon;
 use crate::lifecycle::{self, Cause, Edge, State};
 use crate::probe::{self, Holder};
@@ -43,6 +44,95 @@ fn observe(status: TunnelStatus, probe_ok: bool, gained_error: bool) -> Observat
     } else {
         Reason::ProbeRefused
     })
+}
+
+/// How old a counted failure may be and still pair with a new one: two passes.
+///
+/// A run of two failures is two consecutive passes. A longer gap is a sleep, a
+/// closed lid or a skipped round, and the failure before it says nothing about
+/// the tunnel now.
+fn stale_after(interval: std::time::Duration) -> std::time::Duration {
+    interval * 2
+}
+
+/// What a pass concludes about one tunnel, given everything it could and could
+/// not find out.
+///
+/// The order is the point. A service manager that did not answer, a network
+/// that is down and a tunnel still inside its start grace are all "could not
+/// tell", and each beats the probe: a refused connection is only evidence
+/// against the tunnel when the machine could have reached IAP, the manager
+/// said the job runs, and gcloud has had its deadline to listen. A probe that
+/// answers is an answer whatever the grace says.
+fn judge(
+    status: Option<TunnelStatus>,
+    probe_ok: bool,
+    gained_error: bool,
+    network_up: bool,
+    starting: bool,
+) -> Observation {
+    let Some(status) = status else {
+        return Observation::Unknown;
+    };
+    if !network_up {
+        return Observation::Unknown;
+    }
+    if starting && status == TunnelStatus::Running && !probe_ok {
+        return Observation::Unknown;
+    }
+    observe(status, probe_ok, gained_error)
+}
+
+/// Whether a tunnel with no ready file is simply not up yet.
+///
+/// `group_age` is how long ago the supervisor spawned gcloud, read from the
+/// mtime of its `.pgid` file, which is written at spawn and removed at exit. A
+/// ready file means the listener came up once, so a refusal after that is real
+/// and gets no grace. No `.pgid` means a supervisor that never recorded one,
+/// and then nothing says the start is recent.
+fn still_starting(
+    ready_exists: bool,
+    group_age: Option<std::time::Duration>,
+    grace: std::time::Duration,
+) -> bool {
+    !ready_exists && group_age.is_some_and(|age| age < grace)
+}
+
+/// The lifecycle state this pass reports, or `None` when it saw nothing.
+///
+/// An unknown pass reports no state at all. Before this, a service manager
+/// that timed out read as `Stopped`, and the ledger announced "stopped
+/// unexpectedly" for a tunnel that never stopped.
+fn edge_state(
+    obs: Observation,
+    status: Option<TunnelStatus>,
+    probe_ok: bool,
+    failures: u32,
+    degraded_after: u32,
+) -> Option<State> {
+    if obs == Observation::Unknown {
+        return None;
+    }
+    let status = status?;
+    lifecycle::observe(
+        status,
+        (status == TunnelStatus::Running).then_some(probe_ok),
+        failures,
+        degraded_after,
+    )
+}
+
+/// Read from the world: is this tunnel inside its start grace right now.
+fn starting_now(label: &str, grace: std::time::Duration) -> bool {
+    let Ok(dir) = crate::config::config_dir() else {
+        return false;
+    };
+    let ready = daemon::ready_file_in(&dir, label);
+    let age = std::fs::metadata(crate::commands::supervise::group_file_beside(&ready))
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|spawned| SystemTime::now().duration_since(spawned).ok());
+    still_starting(ready.exists(), age, grace)
 }
 
 /// Where in the log this pass starts reading: the offset the last pass
@@ -187,13 +277,14 @@ fn key(tunnel: &PersistentTunnel) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Seen {
     parked: bool,
-    status: TunnelStatus,
+    /// `None` is a service manager that did not answer
+    status: Option<TunnelStatus>,
 }
 
 async fn look(label: &str) -> Seen {
     Seen {
         parked: crate::config::config_dir().is_ok_and(|dir| parked(&dir, label)),
-        status: daemon::status(label).await,
+        status: daemon::status_checked(label).await,
     }
 }
 
@@ -217,6 +308,11 @@ fn hold_decision(
     row.breaker = before.clone();
     false
 }
+
+/// How long the network gate waits for IAP before calling the network down.
+/// Short, because a pass runs every thirty seconds and an offline machine
+/// would otherwise spend the whole interval waiting on it.
+const NETWORK_GATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// How long a pass waits for another one to finish before skipping the round.
 /// A pass is seconds long and runs every thirty, so a held lock is a pass in
@@ -293,6 +389,19 @@ pub async fn one_pass(verbose: bool) -> Result<()> {
     };
     let live: Vec<String> = watched.iter().map(|t| key(t)).collect();
 
+    // Asked once, before any tunnel: offline, every probe fails together
+    let network_up = watched.is_empty() || probe::network_reachable(NETWORK_GATE_TIMEOUT).await;
+    if verbose && !network_up {
+        println!("the network is unreachable: no tunnel is judged this pass");
+    }
+
+    // Before the visits: a tunnel brought back here is a start in flight when
+    // its turn comes, not a stopped one. Offline, a token fetch fails for the
+    // wrong reason, so it waits for a pass that can reach the network.
+    if network_up {
+        resume_logins(&state, verbose).await;
+    }
+
     let mut edges = Vec::new();
     for tunnel in watched {
         if let Err(err) = visit(
@@ -300,6 +409,7 @@ pub async fn one_pass(verbose: bool) -> Result<()> {
             &settings,
             &mut rows,
             SystemTime::now(),
+            network_up,
             verbose,
             &mut edges,
         )
@@ -310,6 +420,18 @@ pub async fn one_pass(verbose: bool) -> Result<()> {
         }
     }
 
+    // Tunnels that stopped on an expired login are one fact per account
+    let parked = crate::config::config_dir()
+        .map(|dir| resume::parking(&state, &dir, None).resumable)
+        .unwrap_or_default();
+    let (edges, expired) = resume::fold_login_expired(edges, &parked);
+    if !expired.is_empty() {
+        let cfg = crate::config::load_config()
+            .map(|c| c.notifications)
+            .unwrap_or_default();
+        // The desktop notifier holds the master switch, as it does for `announce`
+        resume::announce_login_expired(&crate::notify::Desktop, &expired, &cfg);
+    }
     // One notification for the whole pass: a wake from sleep finds every
     // tunnel changed at once, and that is one alert, not one per tunnel
     lifecycle::announce(&edges);
@@ -320,12 +442,30 @@ pub async fn one_pass(verbose: bool) -> Result<()> {
     Ok(())
 }
 
+/// Bring back what a renewed login can: one token fetch per account that has a
+/// tunnel stopped on an expired login, and nothing at all when none has.
+async fn resume_logins(state: &TunnelState, verbose: bool) {
+    let (Ok(dir), Ok(config)) = (crate::config::config_dir(), crate::config::load_config()) else {
+        return;
+    };
+    let outcome = resume::pass(state, &dir, &resume::Live { config }).await;
+    if verbose {
+        for line in resume::report(&outcome, &[]) {
+            println!("{line}");
+        }
+    }
+    for (id, why) in &outcome.failed {
+        eprintln!("{id}: could not resume after login: {why}");
+    }
+}
+
 /// Look at one tunnel, feed the breaker, and carry out what it decided.
 async fn visit(
     tunnel: &PersistentTunnel,
     settings: &Settings,
     rows: &mut persist::BreakerFile,
     now: SystemTime,
+    network_up: bool,
     verbose: bool,
     edges: &mut Vec<Edge>,
 ) -> Result<()> {
@@ -341,7 +481,7 @@ async fn visit(
         return Ok(());
     }
     let sighted = SystemTime::now();
-    let status = daemon::status(&label).await;
+    let status = daemon::status_checked(&label).await;
     let observed = Seen {
         parked: false,
         status,
@@ -359,21 +499,26 @@ async fn visit(
         daemon::read_from(&log_path, unread_from(len, row.log_len)).contains(DESCRIPTOR_ERROR);
     row.log_len = len;
 
-    let obs = observe(status, probe_ok, gained);
+    let starting = status == Some(TunnelStatus::Running)
+        && !probe_ok
+        && starting_now(&label, settings.start_deadline);
+    let obs = judge(status, probe_ok, gained, network_up, starting);
     let reason = match obs {
         Observation::Failed(reason) => Some(reason),
         _ => None,
     };
     // Kept so a decision the service manager refuses can be undone
     let before = row.breaker.clone();
-    let action = row.breaker.observe(obs, now);
+    let action = row
+        .breaker
+        .observe(obs, now, stale_after(settings.watch_interval));
     if verbose {
         println!("{}: {obs:?} -> {action:?}", key(tunnel));
     }
-    let healthy = (status == TunnelStatus::Running).then_some(probe_ok);
-    let seen = lifecycle::observe(
+    let seen = edge_state(
+        obs,
         status,
-        healthy,
+        probe_ok,
         consecutive_failures(&row.breaker, settings.watch_degraded_after),
         settings.watch_degraded_after,
     );
@@ -550,6 +695,14 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_failure_goes_stale_after_two_watch_passes() {
+        assert_eq!(
+            stale_after(std::time::Duration::from_secs(30)),
+            std::time::Duration::from_secs(60)
+        );
+    }
+
     // The degraded verdict reads the breaker's own counter through its
     // serialised form, so a renamed field would quietly read as zero failures
     // and the watchdog would never call anything degraded
@@ -559,14 +712,14 @@ mod tests {
         assert_eq!(consecutive_failures(&breaker, 2), 0);
         let now = SystemTime::UNIX_EPOCH;
         let fail = Observation::Failed(Reason::ProbeRefused);
-        breaker.observe(fail, now);
+        breaker.observe(fail, now, std::time::Duration::MAX);
         assert_eq!(consecutive_failures(&breaker, 2), 1);
-        breaker.observe(fail, now);
+        breaker.observe(fail, now, std::time::Duration::MAX);
         assert!(
             consecutive_failures(&breaker, 2) >= 2,
             "a tripped breaker has zeroed its counter and is still failing"
         );
-        breaker.observe(Observation::NotRunning, now);
+        breaker.observe(Observation::NotRunning, now, std::time::Duration::MAX);
         assert_eq!(consecutive_failures(&breaker, 2), 0);
     }
 
@@ -810,7 +963,10 @@ mod tests {
     }
 
     fn seen(parked: bool, status: TunnelStatus) -> Seen {
-        Seen { parked, status }
+        Seen {
+            parked,
+            status: Some(status),
+        }
     }
 
     // A row whose breaker has already moved on a failure, and the one it
@@ -821,6 +977,7 @@ mod tests {
         after.observe(
             Observation::Failed(Reason::ProbeRefused),
             SystemTime::UNIX_EPOCH,
+            std::time::Duration::MAX,
         );
         assert_ne!(before, after, "the failure moved the breaker");
         let row = Row {
@@ -859,6 +1016,134 @@ mod tests {
         let same = seen(false, TunnelStatus::Running);
         assert!(hold_decision(&mut row, &before, same, same));
         assert_eq!(row.breaker, kept, "nothing is undone");
+    }
+
+    fn secs(n: u64) -> std::time::Duration {
+        std::time::Duration::from_secs(n)
+    }
+
+    // Offline, every probe fails on the same pass and every breaker would
+    // climb its ladder together. With the gate down the whole pass reads as
+    // unknown, and a breaker that has been fed it is exactly as it was.
+    #[test]
+    fn a_pass_where_every_tunnel_fails_and_the_gate_is_down_leaves_every_breaker_unchanged() {
+        let fail = Observation::Failed(Reason::ProbeRefused);
+        let mut one_failure = crate::breaker::Breaker::default();
+        one_failure.observe(fail, SystemTime::UNIX_EPOCH, secs(60));
+        let mut tripped = one_failure.clone();
+        tripped.observe(fail, SystemTime::UNIX_EPOCH, secs(60));
+        let mut rows = [crate::breaker::Breaker::default(), one_failure, tripped];
+        let before = rows.clone();
+        for pass in 1..=20 {
+            for breaker in &mut rows {
+                let obs = judge(Some(TunnelStatus::Running), false, false, false, false);
+                let at = SystemTime::UNIX_EPOCH + secs(pass * 30);
+                assert_eq!(breaker.observe(obs, at, secs(60)), Action::Nothing);
+            }
+        }
+        assert_eq!(rows, before);
+    }
+
+    #[test]
+    fn a_closed_gate_makes_every_status_unknown_not_just_the_running_ones() {
+        for status in [
+            TunnelStatus::Running,
+            TunnelStatus::Stopped,
+            TunnelStatus::Error,
+        ] {
+            assert_eq!(
+                judge(Some(status), false, true, false, false),
+                Observation::Unknown,
+                "{status:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_open_gate_judges_as_before() {
+        assert_eq!(
+            judge(Some(TunnelStatus::Running), true, false, true, false),
+            Observation::Pass
+        );
+        assert_eq!(
+            judge(Some(TunnelStatus::Running), false, false, true, false),
+            Observation::Failed(Reason::ProbeRefused)
+        );
+        assert_eq!(
+            judge(Some(TunnelStatus::Stopped), false, false, true, false),
+            Observation::NotRunning
+        );
+    }
+
+    // `launchctl print` timing out used to read as Stopped: the breaker was
+    // reset and a "stopped unexpectedly" notification went out for a tunnel
+    // that was running the whole time
+    #[test]
+    fn a_launchctl_timeout_yields_unknown_and_no_stopped_unexpectedly_event() {
+        let obs = judge(None, false, false, true, false);
+        assert_eq!(obs, Observation::Unknown);
+        assert_eq!(
+            edge_state(obs, None, false, 0, 2),
+            None,
+            "nothing was seen, so nothing changed"
+        );
+        // The stopped reading that the timeout used to produce would have been
+        // an edge, which is the whole bug
+        assert_eq!(
+            edge_state(
+                Observation::NotRunning,
+                Some(TunnelStatus::Stopped),
+                false,
+                0,
+                2
+            ),
+            Some(State::Stopped)
+        );
+    }
+
+    #[test]
+    fn an_unknown_pass_announces_nothing_even_when_the_status_is_known() {
+        assert_eq!(
+            edge_state(
+                Observation::Unknown,
+                Some(TunnelStatus::Running),
+                false,
+                9,
+                2
+            ),
+            None
+        );
+    }
+
+    // A restarted gcloud takes longer than one pass to listen. Until its
+    // grace is spent that is a tunnel on its way up, not a wedged one
+    #[test]
+    fn a_tunnel_still_inside_its_start_grace_is_unknown_not_failed() {
+        assert_eq!(
+            judge(Some(TunnelStatus::Running), false, false, true, true),
+            Observation::Unknown
+        );
+        assert_eq!(
+            judge(Some(TunnelStatus::Running), true, false, true, true),
+            Observation::Pass,
+            "a probe that answers is an answer, grace or not"
+        );
+    }
+
+    #[test]
+    fn a_start_grace_needs_a_spawn_inside_the_deadline_and_no_ready_file() {
+        let deadline = secs(30);
+        assert!(still_starting(false, Some(secs(5)), deadline));
+        assert!(!still_starting(false, Some(secs(30)), deadline));
+        assert!(!still_starting(false, Some(secs(600)), deadline));
+        assert!(
+            !still_starting(true, Some(secs(5)), deadline),
+            "a ready file means it listened once, so a refusal now is real"
+        );
+        assert!(
+            !still_starting(false, None, deadline),
+            "no recorded spawn, no grace: judged as it always was"
+        );
     }
 
     // Two passes at once would each save the whole breaker file and the last

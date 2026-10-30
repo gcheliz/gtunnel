@@ -29,6 +29,11 @@ pub enum Observation {
     /// The service is not running, so there is nothing to judge. A person who
     /// ran `gtunnel stop` outranks the breaker.
     NotRunning,
+    /// The check could not tell. The network is down, the service manager
+    /// timed out, or the tunnel was started a moment ago and is not listening
+    /// yet. None of those is a verdict on the tunnel, so the breaker must not
+    /// count it as a failure and must not read it as a pass either.
+    Unknown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,12 +76,21 @@ pub struct Breaker {
     passes: u8,
     attempt: u8,
     next_attempt: Option<SystemTime>,
+    /// When the failure count last grew. Without it a failure stored before
+    /// the laptop slept is still counted after it wakes, and pairs with the
+    /// first refused probe of the new session to trip a healthy tunnel.
+    /// Absent in files written before it existed, which load as `None`.
+    last_failure: Option<SystemTime>,
 }
 
 impl Breaker {
     /// Feed it one check and learn what to do. `now` is a parameter so the
     /// whole schedule is testable without waiting for it.
-    pub fn observe(&mut self, obs: Observation, now: SystemTime) -> Action {
+    ///
+    /// `stale_after` is how old a counted failure may be and still pair with
+    /// a new one. The watchdog passes twice its pass interval: a run of two
+    /// is two consecutive passes, and anything older is a gap, not a run.
+    pub fn observe(&mut self, obs: Observation, now: SystemTime, stale_after: Duration) -> Action {
         // Before anything else: a tunnel that is not running is not a tunnel
         // with a problem. This is also the only way out of `Stopped` - the
         // breaker the watchdog just stopped sees `NotRunning` on its next
@@ -85,19 +99,22 @@ impl Breaker {
             *self = Self::default();
             return Action::Nothing;
         }
-        if self.state == State::Stopped {
+        // Changes nothing, not even to forget a stale failure: what the
+        // pass could not see is not evidence of anything
+        if obs == Observation::Unknown || self.state == State::Stopped {
             return Action::Nothing;
         }
 
         match obs {
             Observation::Pass => self.pass(),
-            Observation::Failed(reason) => self.failure(reason, now),
-            Observation::NotRunning => unreachable!("handled above"),
+            Observation::Failed(reason) => self.failure(reason, now, stale_after),
+            Observation::NotRunning | Observation::Unknown => unreachable!("handled above"),
         }
     }
 
     fn pass(&mut self) -> Action {
         self.failures = 0;
+        self.last_failure = None;
         if self.state == State::Closed {
             return Action::Nothing;
         }
@@ -111,11 +128,22 @@ impl Breaker {
         Action::Nothing
     }
 
-    fn failure(&mut self, reason: Reason, now: SystemTime) -> Action {
+    fn failure(&mut self, reason: Reason, now: SystemTime, stale_after: Duration) -> Action {
         self.passes = 0;
         match self.state {
             State::Closed => {
+                // A clock that stepped backwards reads as fresh, not stale:
+                // forgetting a failure is the lenient mistake, but only an
+                // elapsed time that is known to be long may make it
+                if self
+                    .last_failure
+                    .and_then(|then| now.duration_since(then).ok())
+                    .is_some_and(|age| age > stale_after)
+                {
+                    self.failures = 0;
+                }
                 self.failures += 1;
+                self.last_failure = Some(now);
                 if self.failures >= RUN {
                     self.trip(1, now);
                 }
@@ -283,8 +311,16 @@ mod persist_tests {
     fn armed() -> Breaker {
         let mut breaker = Breaker::default();
         let now = SystemTime::UNIX_EPOCH;
-        breaker.observe(Observation::Failed(Reason::ProbeRefused), now);
-        breaker.observe(Observation::Failed(Reason::DescriptorsExhausted), now);
+        breaker.observe(
+            Observation::Failed(Reason::ProbeRefused),
+            now,
+            std::time::Duration::MAX,
+        );
+        breaker.observe(
+            Observation::Failed(Reason::DescriptorsExhausted),
+            now,
+            std::time::Duration::MAX,
+        );
         breaker
     }
 
@@ -459,7 +495,11 @@ mod tests {
     fn one_failed_probe_is_not_a_wedged_tunnel() {
         let mut breaker = Breaker::default();
         assert_eq!(
-            breaker.observe(Observation::Failed(Reason::ProbeRefused), epoch()),
+            breaker.observe(
+                Observation::Failed(Reason::ProbeRefused),
+                epoch(),
+                std::time::Duration::MAX
+            ),
             Action::Nothing
         );
     }
@@ -469,7 +509,11 @@ mod tests {
         let mut breaker = Breaker::default();
         for _ in 0..2 {
             assert_eq!(
-                breaker.observe(Observation::Failed(Reason::ProbeRefused), epoch()),
+                breaker.observe(
+                    Observation::Failed(Reason::ProbeRefused),
+                    epoch(),
+                    std::time::Duration::MAX
+                ),
                 Action::Nothing,
                 "tripping schedules the restart, it does not perform it"
             );
@@ -477,7 +521,8 @@ mod tests {
         assert_eq!(
             breaker.observe(
                 Observation::Failed(Reason::ProbeRefused),
-                epoch() + secs(10)
+                epoch() + secs(10),
+                std::time::Duration::MAX
             ),
             Action::Restart
         );
@@ -487,13 +532,18 @@ mod tests {
     fn a_restart_does_not_happen_before_its_backoff_has_elapsed() {
         let mut breaker = Breaker::default();
         for _ in 0..2 {
-            breaker.observe(Observation::Failed(Reason::ProbeRefused), epoch());
+            breaker.observe(
+                Observation::Failed(Reason::ProbeRefused),
+                epoch(),
+                std::time::Duration::MAX,
+            );
         }
         for early in [0, 1, 9] {
             assert_eq!(
                 breaker.observe(
                     Observation::Failed(Reason::ProbeRefused),
-                    epoch() + secs(early)
+                    epoch() + secs(early),
+                    std::time::Duration::MAX
                 ),
                 Action::Nothing,
                 "{early}s into a 10s backoff"
@@ -507,27 +557,43 @@ mod tests {
     fn each_attempt_waits_twice_as_long_as_the_one_before() {
         let mut breaker = Breaker::default();
         for _ in 0..2 {
-            breaker.observe(Observation::Failed(Reason::ProbeRefused), epoch());
+            breaker.observe(
+                Observation::Failed(Reason::ProbeRefused),
+                epoch(),
+                std::time::Duration::MAX,
+            );
         }
         let mut now = epoch();
         for wait in [10u64, 20, 40, 80] {
             let too_early = now + secs(wait - 1);
             assert_eq!(
-                breaker.observe(Observation::Failed(Reason::ProbeRefused), too_early),
+                breaker.observe(
+                    Observation::Failed(Reason::ProbeRefused),
+                    too_early,
+                    std::time::Duration::MAX
+                ),
                 Action::Nothing,
                 "a restart {wait}s out must not happen at {}s",
                 wait - 1
             );
             now += secs(wait);
             assert_eq!(
-                breaker.observe(Observation::Failed(Reason::ProbeRefused), now),
+                breaker.observe(
+                    Observation::Failed(Reason::ProbeRefused),
+                    now,
+                    std::time::Duration::MAX
+                ),
                 Action::Restart,
                 "the restart due after {wait}s"
             );
             // The restart lands in HalfOpen; the failure that follows raises
             // the attempt and schedules the next one - except after the last,
             // where there is no next one to schedule
-            breaker.observe(Observation::Failed(Reason::ProbeRefused), now);
+            breaker.observe(
+                Observation::Failed(Reason::ProbeRefused),
+                now,
+                std::time::Duration::MAX,
+            );
         }
     }
 
@@ -535,26 +601,43 @@ mod tests {
     fn two_consecutive_passes_close_it_and_forget_the_attempts() {
         let mut breaker = Breaker::default();
         for _ in 0..2 {
-            breaker.observe(Observation::Failed(Reason::ProbeRefused), epoch());
+            breaker.observe(
+                Observation::Failed(Reason::ProbeRefused),
+                epoch(),
+                std::time::Duration::MAX,
+            );
         }
         breaker.observe(
             Observation::Failed(Reason::ProbeRefused),
             epoch() + secs(10),
+            std::time::Duration::MAX,
         );
         for _ in 0..2 {
             assert_eq!(
-                breaker.observe(Observation::Pass, epoch() + secs(10)),
+                breaker.observe(
+                    Observation::Pass,
+                    epoch() + secs(10),
+                    std::time::Duration::MAX
+                ),
                 Action::Nothing
             );
         }
         // Closed and forgetful: the next trip waits 10s again, not 20s
         let mut now = epoch() + secs(100);
         for _ in 0..2 {
-            breaker.observe(Observation::Failed(Reason::ProbeRefused), now);
+            breaker.observe(
+                Observation::Failed(Reason::ProbeRefused),
+                now,
+                std::time::Duration::MAX,
+            );
         }
         now += secs(10);
         assert_eq!(
-            breaker.observe(Observation::Failed(Reason::ProbeRefused), now),
+            breaker.observe(
+                Observation::Failed(Reason::ProbeRefused),
+                now,
+                std::time::Duration::MAX
+            ),
             Action::Restart,
             "a closed breaker starts its backoff over"
         );
@@ -568,19 +651,30 @@ mod tests {
         let mut breaker = Breaker::default();
         let mut now = epoch();
         for _ in 0..2 {
-            breaker.observe(Observation::Failed(Reason::DescriptorsExhausted), now);
+            breaker.observe(
+                Observation::Failed(Reason::DescriptorsExhausted),
+                now,
+                std::time::Duration::MAX,
+            );
         }
         let mut restarts = 0;
         let mut verdict = Action::Nothing;
         for wait in [10u64, 20, 40, 80] {
             now += secs(wait);
-            if breaker.observe(Observation::Failed(Reason::DescriptorsExhausted), now)
-                == Action::Restart
+            if breaker.observe(
+                Observation::Failed(Reason::DescriptorsExhausted),
+                now,
+                std::time::Duration::MAX,
+            ) == Action::Restart
             {
                 restarts += 1;
             }
             // Still wedged the moment it comes back
-            verdict = breaker.observe(Observation::Failed(Reason::DescriptorsExhausted), now);
+            verdict = breaker.observe(
+                Observation::Failed(Reason::DescriptorsExhausted),
+                now,
+                std::time::Duration::MAX,
+            );
         }
         assert_eq!(restarts, MAX_ATTEMPTS, "four chances, then the truth");
         assert_eq!(
@@ -600,13 +694,21 @@ mod tests {
         let mut breaker = Breaker::default();
         let now = epoch() + secs(86_400);
         for _ in 0..RUN {
-            breaker.observe(Observation::Failed(Reason::ProbeRefused), now);
+            breaker.observe(
+                Observation::Failed(Reason::ProbeRefused),
+                now,
+                std::time::Duration::MAX,
+            );
         }
 
         // The clock jumps back an hour; the restart was due ten seconds out
         let stepped = now - secs(3_600);
         assert_eq!(
-            breaker.observe(Observation::Failed(Reason::ProbeRefused), stepped),
+            breaker.observe(
+                Observation::Failed(Reason::ProbeRefused),
+                stepped,
+                std::time::Duration::MAX
+            ),
             Action::Restart,
             "a restart due further ahead than one backoff is a stepped clock, not a wait"
         );
@@ -619,10 +721,18 @@ mod tests {
         let mut breaker = Breaker::default();
         let now = epoch();
         for _ in 0..RUN {
-            breaker.observe(Observation::Failed(Reason::ProbeRefused), now);
+            breaker.observe(
+                Observation::Failed(Reason::ProbeRefused),
+                now,
+                std::time::Duration::MAX,
+            );
         }
         assert_eq!(
-            breaker.observe(Observation::Failed(Reason::ProbeRefused), now + secs(1)),
+            breaker.observe(
+                Observation::Failed(Reason::ProbeRefused),
+                now + secs(1),
+                std::time::Duration::MAX
+            ),
             Action::Nothing,
             "one second into a ten-second backoff is still waiting"
         );
@@ -635,10 +745,17 @@ mod tests {
         for _ in 0..20 {
             now += secs(3_600);
             assert_eq!(
-                breaker.observe(Observation::Failed(Reason::ProbeRefused), now),
+                breaker.observe(
+                    Observation::Failed(Reason::ProbeRefused),
+                    now,
+                    std::time::Duration::MAX
+                ),
                 Action::Nothing
             );
-            assert_eq!(breaker.observe(Observation::Pass, now), Action::Nothing);
+            assert_eq!(
+                breaker.observe(Observation::Pass, now, std::time::Duration::MAX),
+                Action::Nothing
+            );
         }
     }
 
@@ -647,12 +764,24 @@ mod tests {
     #[test]
     fn a_tunnel_a_person_stopped_is_not_a_tunnel_to_restart() {
         let mut armed = Breaker::default();
-        armed.observe(Observation::Failed(Reason::ProbeRefused), epoch());
-        armed.observe(Observation::Failed(Reason::ProbeRefused), epoch());
+        armed.observe(
+            Observation::Failed(Reason::ProbeRefused),
+            epoch(),
+            std::time::Duration::MAX,
+        );
+        armed.observe(
+            Observation::Failed(Reason::ProbeRefused),
+            epoch(),
+            std::time::Duration::MAX,
+        );
 
         for mut breaker in [Breaker::default(), armed, stopped()] {
             assert_eq!(
-                breaker.observe(Observation::NotRunning, epoch() + secs(10)),
+                breaker.observe(
+                    Observation::NotRunning,
+                    epoch() + secs(10),
+                    std::time::Duration::MAX
+                ),
                 Action::Nothing
             );
             // Clean afterwards: one failure on the way back up is still just
@@ -660,7 +789,8 @@ mod tests {
             assert_eq!(
                 breaker.observe(
                     Observation::Failed(Reason::ProbeRefused),
-                    epoch() + secs(20)
+                    epoch() + secs(20),
+                    std::time::Duration::MAX
                 ),
                 Action::Nothing
             );
@@ -672,15 +802,105 @@ mod tests {
         let mut breaker = Breaker::default();
         let mut now = epoch();
         for _ in 0..2 {
-            breaker.observe(Observation::Failed(Reason::ProbeRefused), now);
+            breaker.observe(
+                Observation::Failed(Reason::ProbeRefused),
+                now,
+                std::time::Duration::MAX,
+            );
         }
         let mut verdict = Action::Nothing;
         for wait in [10u64, 20, 40, 80] {
             now += secs(wait);
-            breaker.observe(Observation::Failed(Reason::ProbeRefused), now);
-            verdict = breaker.observe(Observation::Failed(Reason::ProbeRefused), now);
+            breaker.observe(
+                Observation::Failed(Reason::ProbeRefused),
+                now,
+                std::time::Duration::MAX,
+            );
+            verdict = breaker.observe(
+                Observation::Failed(Reason::ProbeRefused),
+                now,
+                std::time::Duration::MAX,
+            );
         }
         assert_eq!(verdict, Action::StopAndReport(Reason::ProbeRefused));
         breaker
+    }
+
+    // Offline, every probe fails on the same pass. The watchdog calls that
+    // pass `Unknown`, and a breaker that moved on it would climb the ladder
+    // to a stop for a fault that is not the tunnel's.
+    #[test]
+    fn a_pass_the_network_gate_vetoed_leaves_every_breaker_unchanged() {
+        let fail = Observation::Failed(Reason::ProbeRefused);
+        let mut one_failure = Breaker::default();
+        one_failure.observe(fail, epoch(), Duration::MAX);
+        let mut tripped = one_failure.clone();
+        tripped.observe(fail, epoch(), Duration::MAX);
+        let mut half_open = tripped.clone();
+        half_open.observe(fail, epoch() + secs(10), Duration::MAX);
+        for start in [
+            Breaker::default(),
+            one_failure,
+            tripped,
+            half_open,
+            stopped(),
+        ] {
+            let mut breaker = start.clone();
+            for pass in 1..=20 {
+                assert_eq!(
+                    breaker.observe(Observation::Unknown, epoch() + secs(pass * 30), secs(60)),
+                    Action::Nothing
+                );
+            }
+            assert_eq!(breaker, start, "an unknown pass changed the breaker");
+        }
+    }
+
+    // A failure stored before the laptop slept is not the first half of a
+    // trip after it wakes: the pair has to be one run, not two moments
+    #[test]
+    fn a_stored_failure_older_than_two_intervals_does_not_count_toward_a_trip() {
+        let stale_after = secs(60);
+        let fail = Observation::Failed(Reason::ProbeRefused);
+        let mut breaker = Breaker::default();
+        breaker.observe(fail, epoch(), stale_after);
+        let woke = epoch() + secs(3600);
+        assert_eq!(breaker.observe(fail, woke, stale_after), Action::Nothing);
+        assert_eq!(
+            breaker.observe(fail, woke + secs(30), stale_after),
+            Action::Nothing,
+            "the stale failure was forgotten, so the woken one is only the first of a pair"
+        );
+        assert_eq!(
+            breaker.observe(fail, woke + secs(60), stale_after),
+            Action::Restart,
+            "a fresh pair still trips it"
+        );
+    }
+
+    #[test]
+    fn a_failure_within_two_intervals_still_counts() {
+        let stale_after = secs(60);
+        let fail = Observation::Failed(Reason::ProbeRefused);
+        let mut breaker = Breaker::default();
+        breaker.observe(fail, epoch(), stale_after);
+        assert_eq!(
+            breaker.observe(fail, epoch() + secs(30), stale_after),
+            Action::Nothing,
+            "the second of a pair trips it, and the restart waits for its backoff"
+        );
+        assert_eq!(
+            breaker.observe(fail, epoch() + secs(40), stale_after),
+            Action::Restart
+        );
+    }
+
+    // A breaker file written by v0.2.62 has no `last_failure`
+    #[test]
+    fn a_breaker_written_before_failures_were_timed_still_loads() {
+        let old = "state = \"closed\"\nfailures = 1\npasses = 0\nattempt = 0\n";
+        let breaker: Breaker = toml::from_str(old).expect("an old file loads");
+        assert_eq!(breaker.failures, 1);
+        assert_eq!(breaker.last_failure, None);
     }
 }
