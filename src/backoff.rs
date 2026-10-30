@@ -10,7 +10,7 @@
 //! doubling, so a lone tunnel's worst case is what it always was.
 //!
 //! The draw is a parameter of every `_at` function, so a test fixes it and
-//! asserts exact values; the functions without the suffix draw it.
+//! asserts exact values; callers pass [`draw`], or use [`spread`], which does.
 
 use rand::RngExt;
 use std::time::Duration;
@@ -34,15 +34,12 @@ pub fn ceiling(attempt: u32, base: Duration, cap: Duration) -> Duration {
 }
 
 /// A wait drawn from `[0, ceiling]`, with `unit` the draw in `[0, 1]`.
+///
+/// The one retry wait in gtunnel: the supervisor's budget and network waits
+/// and the watchdog's breaker all come here, so none of them keeps a doubling
+/// of its own.
 pub fn backoff_at(attempt: u32, base: Duration, cap: Duration, unit: f64) -> Duration {
     ceiling(attempt, base, cap).mul_f64(clamp_unit(unit))
-}
-
-/// The one retry wait in gtunnel: the supervisor's budget and network waits and
-/// the watchdog's breaker all come here, so none of them keeps a doubling of
-/// its own.
-pub fn backoff(attempt: u32, base: Duration, cap: Duration) -> Duration {
-    backoff_at(attempt, base, cap, draw())
 }
 
 /// A wait drawn from `[0, max]`, with `unit` the draw in `[0, 1]`.
@@ -55,8 +52,22 @@ pub fn spread(max: Duration) -> Duration {
 }
 
 /// One uniform draw in `[0, 1)`.
+///
+/// A debug build lets `GTUNNEL_TEST_JITTER` pin it, because a test that drives
+/// the real binary cannot hand the supervisor a seed, and a wait that may be
+/// anywhere from zero to ten seconds cannot be asserted on. A release build
+/// has no such name in it, for the reason `Endpoints::from_env` gives.
 pub fn draw() -> f64 {
+    #[cfg(debug_assertions)]
+    if let Some(pinned) = pinned(&|name| std::env::var(name).ok()) {
+        return pinned;
+    }
     rand::rng().random::<f64>()
+}
+
+#[cfg(debug_assertions)]
+fn pinned(env: &dyn Fn(&str) -> Option<String>) -> Option<f64> {
+    env("GTUNNEL_TEST_JITTER")?.trim().parse().ok()
 }
 
 // A NaN would make `mul_f64` panic, and a panic here takes the supervisor or
@@ -78,7 +89,9 @@ mod tests {
 
     #[test]
     fn a_thousand_draws_fall_within_the_cap_and_are_not_all_equal() {
-        let draws: Vec<Duration> = (0..1000).map(|_| backoff(20, BASE, CAP)).collect();
+        let draws: Vec<Duration> = (0..1000)
+            .map(|_| backoff_at(20, BASE, CAP, draw()))
+            .collect();
         assert!(draws.iter().all(|d| *d <= CAP), "a draw exceeded the cap");
         let first = draws[0];
         assert!(draws.iter().any(|d| *d != first), "no spread at all");
@@ -115,6 +128,16 @@ mod tests {
         assert_eq!(backoff_at(3, BASE, CAP, 7.0), Duration::from_secs(40));
         assert_eq!(backoff_at(3, BASE, CAP, -1.0), Duration::ZERO);
         assert_eq!(backoff_at(3, BASE, CAP, f64::NAN), Duration::from_secs(40));
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_debug_build_pins_the_draw_from_the_environment_and_ignores_junk() {
+        let with = |v: &'static str| move |_: &str| Some(v.to_string());
+        assert_eq!(pinned(&with("0")), Some(0.0));
+        assert_eq!(pinned(&with(" 1 ")), Some(1.0));
+        assert_eq!(pinned(&with("soon")), None);
+        assert_eq!(pinned(&|_| None), None);
     }
 
     #[test]

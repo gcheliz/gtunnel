@@ -462,11 +462,11 @@ tunnels are kept, not stopped. They come back by themselves when the network doe
 | Layer | During the outage | When the network returns |
 |---|---|---|
 | Watchdog | Each pass first connects to `tunnel.cloudproxy.app:443`. If that fails, no tunnel is judged and no breaker moves | The next pass judges tunnels as usual |
-| Supervisor | gcloud exits on a network or timeout line. The job waits 10 s, then 20, 40, up to 5 minutes, and starts again. None of it counts toward the restart budget | The first start that lives past `min_uptime` clears the wait |
+| Supervisor | gcloud exits on a network or timeout line. The job waits a random time from zero up to 10 s, then up to 20, 40, and up to 5 minutes, and starts again. None of it counts toward the restart budget | The first start that lives past `min_uptime` clears the wait |
 | Notifications | The watchdog sends no "unhealthy" or "stopped" notification for the outage | A tunnel that stays down afterwards is reported as before |
 
 `gtunnel list` may show a tunnel as down or unhealthy while the wait runs. A tunnel is back
-within about 5 minutes of the network returning, the longest wait, and sooner when the
+within 5 minutes of the network returning at the latest, and sooner when the
 outage was short.
 
 | You see | Meaning |
