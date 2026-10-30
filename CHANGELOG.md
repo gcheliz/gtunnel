@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.55](https://github.com/gcheliz/gtunnel/compare/v0.2.54...v0.2.55) - 2026-10-30
+
+### Fixed
+
+- *(zone)* warn once when the zone lookup falls back to the default ([#343](https://github.com/gcheliz/gtunnel/pull/343))
+
 ## [0.2.54](https://github.com/gcheliz/gtunnel/compare/v0.2.53...v0.2.54) - 2026-10-30
 
 ### Added
