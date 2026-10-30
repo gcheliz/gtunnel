@@ -2331,6 +2331,11 @@ fn below_121_columns_the_list_stacks_above_the_other_panes() {
         .position(|r| r.contains(" running \u{b7} "))
         .unwrap();
     assert!(summary_y > list_y, "the summary must sit below the list");
+    assert_eq!(
+        summary_y,
+        bottom_border_row(&rows),
+        "the summary is the list's bottom border"
+    );
     assert!(
         !rows.iter().any(|r| r.contains("DETAILS")),
         "no Details pane"
@@ -2396,6 +2401,11 @@ fn from_100_to_120_columns_the_list_shows_every_url_uncut() {
         assert!(
             summary_y > list_y,
             "{width}: the summary sits below the list"
+        );
+        assert_eq!(
+            summary_y,
+            bottom_border_row(&rows),
+            "{width}: on the list's bottom border"
         );
         let text = rows.join("\n");
         for wanted in [
@@ -3792,32 +3802,29 @@ const SPARK_GLYPHS: [char; 8] = [
 #[test]
 fn the_stacked_list_is_sized_to_its_entries_and_capped_at_forty_percent() {
     // 7 entries want 11 rows; 40 percent of 18 is 7
-    assert_eq!(ui::stacked_heights(18, 7, true), (7, 1, 10));
+    assert_eq!(ui::stacked_heights(18, 7), (7, 11));
     // 2 entries want 6 and the cap of 40 percent of 40 is 16: the list keeps 6
-    assert_eq!(ui::stacked_heights(40, 2, true), (6, 1, 33));
+    assert_eq!(ui::stacked_heights(40, 2), (6, 34));
     // the cap is a share of the height, not a count
-    assert_eq!(ui::stacked_heights(40, 30, true).0, 16);
+    assert_eq!(ui::stacked_heights(40, 30).0, 16);
     // an empty list still has room to say it is empty
-    assert_eq!(ui::stacked_heights(40, 0, false), (6, 0, 34));
+    assert_eq!(ui::stacked_heights(40, 0), (6, 34));
 }
 
 #[test]
 fn a_short_work_area_keeps_the_list_floor_and_gives_the_rest_away() {
     // 40 percent of 10 is 4: under LIST_MIN_ROWS, so the floor wins
-    assert_eq!(ui::stacked_heights(10, 7, true), (6, 1, 3));
+    assert_eq!(ui::stacked_heights(10, 7), (6, 4));
     // a work area under the floor gives it all to the list
-    assert_eq!(ui::stacked_heights(4, 7, true), (4, 0, 0));
+    assert_eq!(ui::stacked_heights(4, 7), (4, 0));
 }
 
 #[test]
 fn the_stacked_heights_always_add_up_to_the_work_area() {
     for total in 0..80u16 {
         for entries in [0usize, 1, 2, 3, 7, 20, 500] {
-            for selected in [false, true] {
-                let (list, summary, rest) = ui::stacked_heights(total, entries, selected);
-                assert_eq!(list + summary + rest, total, "{total} {entries} {selected}");
-                assert!(summary <= 1);
-            }
+            let (list, rest) = ui::stacked_heights(total, entries);
+            assert_eq!(list + rest, total, "{total} {entries}");
         }
     }
 }
@@ -3991,6 +3998,92 @@ fn at_100x30_the_list_scrolls_and_logs_and_metrics_sit_side_by_side() {
     assert!(all.contains('\u{25bc}'), "{all}");
 }
 
+// The summary is the list's bottom title, so it is framed by the pane it
+// describes and costs no row. The border row is the one that holds `╰` and `╯`.
+fn bottom_border_row(rows: &[String]) -> usize {
+    rows.iter()
+        .position(|r| r.starts_with('\u{2570}') && r.contains('\u{256f}'))
+        .unwrap_or_else(|| panic!("no bottom border\n{}", joined(rows)))
+}
+
+#[test]
+fn the_stacked_summary_sits_on_the_lists_bottom_border_and_logs_is_directly_under() {
+    for (width, height) in [(80u16, 24u16), (100, 30)] {
+        let rows = demo_text(width, height);
+        let all = joined(&rows);
+        let border = bottom_border_row(&rows);
+        let cells: Vec<char> = rows[border].chars().collect();
+        assert!(
+            rows[border].contains(" db  running \u{b7} localhost:15432"),
+            "{width}x{height}: {all}"
+        );
+        // framed: the corners hold the line, with a cell of air after the left
+        assert_eq!(cells[0], '\u{2570}');
+        assert_eq!(cells[1], ' ', "{width}x{height}: air after the corner");
+        assert_eq!(cells[width as usize - 1], '\u{256f}', "{width}x{height}");
+        // no other row carries it, and Logs starts on the very next row
+        let holders = rows
+            .iter()
+            .filter(|r| r.contains(" running \u{b7} "))
+            .count();
+        assert_eq!(holders, 1, "{width}x{height}: {all}");
+        assert!(
+            rows[border + 1].starts_with('\u{256d}') && rows[border + 2].contains("LOGS"),
+            "{width}x{height}: Logs' frame is under the list's\n{all}"
+        );
+    }
+}
+
+#[test]
+fn the_stacked_summary_keeps_clear_of_both_corners_and_the_scrollbar_at_80_columns() {
+    let app = App::new_demo();
+    for width in 30..=120u16 {
+        let buffer = screen(&app, width, 24);
+        let rows = text_of(&buffer);
+        let border = bottom_border_row(&rows);
+        let cells = row_chars(&buffer, border as u16);
+        let last = width as usize - 1;
+        assert_eq!(cells[0], '\u{2570}', "{width}");
+        assert_eq!(cells[last], '\u{256f}', "{width}: right corner");
+        // the cell before the right corner is air or rule, never a letter
+        assert!(
+            matches!(cells[last - 1], ' ' | '\u{2500}'),
+            "{width}: {:?}",
+            cells[last - 1]
+        );
+        // the scrollbar's arrow is on the border column in the rows above
+        assert_ne!(cells[last - 1], '\u{25bc}', "{width}");
+        for y in 0..border {
+            let c = buffer[(last as u16, y as u16)].symbol();
+            assert_ne!(
+                c, "\u{256f}",
+                "{width}: the corner is only on the border row"
+            );
+        }
+    }
+    // whole parts drop: at 80 columns the line ends on a part, not mid-word
+    let line = &text_of(&screen(&app, 80, 24))[bottom_border_row(&text_of(&screen(&app, 80, 24)))];
+    assert!(line.contains("localhost:15432"), "{line}");
+    assert!(
+        !line.contains("auto-start") || line.contains("auto-start on"),
+        "{line}"
+    );
+}
+
+#[test]
+fn with_nothing_selected_the_stacked_list_has_a_plain_bottom_border() {
+    let mut app = App::new_demo();
+    app.entries.clear();
+    let rows = text_of(&screen(&app, 80, 24));
+    let border = bottom_border_row(&rows);
+    let inside: String = rows[border].chars().skip(1).take(78).collect();
+    assert!(
+        inside.chars().all(|c| c == '\u{2500}'),
+        "{:?}",
+        rows[border]
+    );
+}
+
 #[test]
 fn at_70x20_metrics_is_a_strip_under_logs_and_the_chart_is_kept() {
     let rows = demo_text(70, 20);
@@ -4009,10 +4102,13 @@ fn at_70x20_metrics_is_a_strip_under_logs_and_the_chart_is_kept() {
         strip.chars().any(|c| SPARK_GLYPHS.contains(&c)),
         "{strip:?}"
     );
+    // 70 columns leave the border 66 cells: the target part is the one dropped
+    let border = &rows[bottom_border_row(&rows)];
     assert!(
-        all.contains("localhost:15432 \u{2192}"),
-        "the summary\n{all}"
+        border.contains("db  running \u{b7} localhost:15432"),
+        "{all}"
     );
+    assert!(!border.contains('\u{2192}'), "whole parts drop\n{all}");
     // two entries are visible, so the list is more than a row
     assert!(all.contains("redis"), "{all}");
 }

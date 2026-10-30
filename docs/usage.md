@@ -484,8 +484,8 @@ something else claims the title.
 
 From 121 columns the list sits left of Details, Logs and Metrics. Narrower, the panes stack: the
 list is as tall as its entries, up to 40% of the height, and shows a scrollbar on its right
-border when rows are hidden. Details folds into one line under it (status, url, target, uptime,
-auto-start), and Logs and Metrics sit side by side below, so the chart is on screen at 80 columns.
+border when rows are hidden. Details folds into one line on the list's bottom border (status, url,
+target, uptime, auto-start), which costs no row, and Logs and Metrics sit side by side below, so the chart is on screen at 80 columns.
 Under 80 columns Logs takes the width and Metrics becomes one row of figures with the chart beside
 them.
 
