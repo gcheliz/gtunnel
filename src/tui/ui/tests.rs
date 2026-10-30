@@ -2950,7 +2950,12 @@ fn tunnels_on_disk(names: &[(&str, &str)]) -> crate::config::testing::TempConfig
             ..access(name, 15500 + i as u16)
         })
         .collect();
-    crate::state::TunnelState { tunnels }.save().expect("saved");
+    crate::state::TunnelState {
+        tunnels,
+        ..Default::default()
+    }
+    .save()
+    .expect("saved");
     dir
 }
 

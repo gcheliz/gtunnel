@@ -216,6 +216,10 @@ puts IAP in front of the load balancer, so a visitor must sign in with Google. T
 sign-in only holds if the relay's own port range is closed to everything but the load
 balancer: see [The relay's firewall is yours to close](#the-relays-firewall-is-yours-to-close).
 
+The name and the relay port are claimed in `tunnels.toml` before the route is built, so two
+exposes at once cannot pick the same port. A failed route gives the claim back; one left by
+a killed command is cleared by `gtunnel doctor --fix` after ten minutes.
+
 Without a relay the command stops before changing anything:
 
 ```
@@ -586,7 +590,7 @@ Installed tunnels still use the old value: db. Restart to apply: `gtunnel restar
 ```
 
 A changed `--zone` needs no restart: the zone is not in a service file. `remove` refuses while
-the account holds tunnels, and names both ways out:
+the account holds tunnels, or an `expose` still in flight, and names both ways out:
 
 ```
 $ gtunnel account remove dev

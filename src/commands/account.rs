@@ -290,7 +290,9 @@ pub fn account_select(name: &str) -> Result<()> {
 // question a script cannot have settled by passing a flag.
 #[allow(clippy::print_stdout, clippy::print_stderr)]
 pub fn cmd_account_remove(name: &str, assume_yes: bool) -> Result<()> {
-    refuse_if_held(name)?;
+    // Before the prompt, so a held account is refused without asking; the
+    // locked check in `account_remove` is the one that decides
+    refuse_if_held(&crate::state::TunnelState::load()?, name)?;
     if !confirm(&format!("Remove account '{name}'?"), assume_yes)? {
         println!("Cancelled");
         return Ok(());
@@ -300,16 +302,27 @@ pub fn cmd_account_remove(name: &str, assume_yes: bool) -> Result<()> {
     Ok(())
 }
 
-// Asks nothing: a caller that reaches it has already had the answer
+// Asks nothing: a caller that reaches it has already had the answer. The check
+// and the write share the tunnels lock, which `add` takes to save: a tunnel
+// saved first is seen here, one saved after waits until the account is gone and
+// then fails on it. Lock order is tunnels, then config, and nothing takes them
+// the other way round.
 pub fn account_remove(name: &str) -> Result<()> {
-    refuse_if_held(name)?;
-    update_config(|config| config.remove_account(name))?;
+    crate::state::TunnelState::with_lock(|state| {
+        refuse_if_held(state, name)?;
+        update_config(|config| config.remove_account(name))
+    })?;
     Ok(())
 }
 
-fn refuse_if_held(name: &str) -> Result<()> {
-    let state = crate::state::TunnelState::load()?;
-    let held = state.tunnels_for_account(name).len();
+// A reservation is an `expose` in flight on the account, so it holds it too
+fn refuse_if_held(state: &crate::state::TunnelState, name: &str) -> Result<()> {
+    let held = state.tunnels_for_account(name).len()
+        + state
+            .reservations
+            .iter()
+            .filter(|r| r.tunnel.account_name == name)
+            .count();
     if held > 0 {
         bail!(
             "Account '{name}' still has {held} tunnel(s). Delete them with `gtunnel delete`, \
@@ -639,6 +652,53 @@ mod tests {
         assert!(err.contains("delete"), "{err}");
         let config = load_config().expect("loads");
         assert!(config.get_account(Some("dev")).is_ok(), "the account stays");
+    }
+
+    // The unlocked check this replaced passed before the add saved, then the
+    // account went, and the new tunnel named an account no command could reach
+    #[test]
+    fn an_add_holding_the_state_lock_is_seen_by_the_account_remove() {
+        let _dir = TempConfigDir::new();
+        save_accounts(&["dev", "prod"]);
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            TunnelState::update(|state| {
+                locked_tx.send(()).expect("signal");
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                state.add(tunnel("db", "dev"))
+            })
+            .expect("add saves");
+        });
+        locked_rx.recv().expect("writer holds the lock");
+
+        let err = account_remove("dev").unwrap_err().to_string();
+        writer.join().expect("writer");
+        assert!(err.contains("1 tunnel(s)"), "{err}");
+        assert!(load_config().unwrap().get_account(Some("dev")).is_ok());
+    }
+
+    #[test]
+    fn an_expose_in_flight_holds_its_account() {
+        let _dir = TempConfigDir::new();
+        save_accounts(&["dev", "prod"]);
+        TunnelState::update(|state| {
+            state
+                .reserve_relay_port("web", "dev", &Default::default(), 0, |port| {
+                    PersistentTunnel {
+                        spec: TunnelSpec::Expose {
+                            local_target: "3000".to_string(),
+                            domain: "example.com".to_string(),
+                            hostname: "web.example.com".to_string(),
+                            relay_port: port,
+                            private: false,
+                        },
+                        ..tunnel("web", "dev")
+                    }
+                })
+                .map(|_| ())
+        })
+        .expect("reserved");
+        assert!(account_remove("dev").is_err());
     }
 
     #[test]

@@ -217,6 +217,10 @@ An agent drives gtunnel through the same binary a person uses: `gtunnel mcp` spe
 
 ## Files
 
+`tunnels.toml` also holds `[[reservations]]`: an `expose` that has claimed its name and relay port
+and is still building its route. It is not a tunnel, so nothing lists it, and `doctor --fix`
+removes one older than ten minutes.
+
 Keys, defaults and the traps of editing `config.toml` and `tunnels.toml` are in
 [configuration.md](configuration.md); this table is the inventory of the directory.
 
