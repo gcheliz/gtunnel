@@ -92,7 +92,7 @@ impl Breaker {
     /// is two consecutive passes, and anything older is a gap, not a run.
     pub fn observe(&mut self, obs: Observation, now: SystemTime, stale_after: Duration) -> Action {
         // Before anything else: a tunnel that is not running is not a tunnel
-        // with a problem. This is also the only way out of `Stopped` - the
+        // with a problem. This is also how `Stopped` normally ends - the
         // breaker the watchdog just stopped sees `NotRunning` on its next
         // pass and goes quiet, clean for whenever a person starts it again.
         if obs == Observation::NotRunning {
@@ -101,8 +101,17 @@ impl Breaker {
         }
         // Changes nothing, not even to forget a stale failure: what the
         // pass could not see is not evidence of anything
-        if obs == Observation::Unknown || self.state == State::Stopped {
+        if obs == Observation::Unknown {
             return Action::Nothing;
+        }
+        // `Stopped` is written when the watchdog stops a tunnel, and the
+        // `NotRunning` above is how it normally ends. A person who starts the
+        // tunnel again before the next pass skips that step, and a tunnel
+        // found running is the proof: no one but a person brings it back. The
+        // breaker starts over rather than staying deaf to a tunnel that was
+        // never watched again.
+        if self.state == State::Stopped {
+            *self = Self::default();
         }
 
         match obs {
@@ -738,24 +747,47 @@ mod tests {
         );
     }
 
+    // Stopped is the watchdog's own verdict. While the pass cannot tell, it
+    // holds, however long that lasts
     #[test]
-    fn a_stopped_breaker_never_acts_again() {
+    fn a_stopped_breaker_holds_while_a_pass_cannot_tell() {
         let mut breaker = stopped();
         let mut now = epoch() + secs(1_000);
         for _ in 0..20 {
             now += secs(3_600);
             assert_eq!(
-                breaker.observe(
-                    Observation::Failed(Reason::ProbeRefused),
-                    now,
-                    std::time::Duration::MAX
-                ),
+                breaker.observe(Observation::Unknown, now, std::time::Duration::MAX),
                 Action::Nothing
             );
+        }
+        assert_eq!(breaker, stopped(), "an unknown pass changes nothing");
+    }
+
+    // The watchdog stops a wedged tunnel, the person starts it again before the
+    // next pass, and the pass finds it running. `NotRunning` never comes, so
+    // the breaker stayed `Stopped` and the tunnel was never watched again
+    #[test]
+    fn a_stopped_breaker_closes_when_a_person_has_started_the_tunnel_again() {
+        for running in [Observation::Pass, Observation::Failed(Reason::ProbeRefused)] {
+            let mut breaker = stopped();
+            let first = breaker.observe(running, epoch() + secs(10), std::time::Duration::MAX);
             assert_eq!(
-                breaker.observe(Observation::Pass, now, std::time::Duration::MAX),
-                Action::Nothing
+                first,
+                Action::Nothing,
+                "{running:?} reads the person's start"
             );
+            assert_ne!(breaker, stopped(), "{running:?} must leave Stopped");
+
+            // Watched again: a later wedge is counted, trips, and is restarted
+            let fail = Observation::Failed(Reason::ProbeRefused);
+            let mut now = epoch() + secs(20);
+            let mut restarted = false;
+            for _ in 0..4 {
+                now += secs(30);
+                restarted |=
+                    breaker.observe(fail, now, std::time::Duration::MAX) == Action::Restart;
+            }
+            assert!(restarted, "after {running:?} a later wedge counts again");
         }
     }
 
