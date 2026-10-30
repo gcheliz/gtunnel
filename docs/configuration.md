@@ -276,7 +276,7 @@ into it: it falls back to the file with the environment, then the file alone, th
 
 | Key | What to know |
 |---|---|
-| `token_ttl` | how long an access token is reused; Google issues them for an hour, so a value past `1h` gets 401s until it lapses |
+| `token_ttl` | an upper bound on how long an access token is reused, not the usual lifetime: gtunnel asks gcloud when each token expires and stops reusing it 5 minutes before, so a token with 20 minutes left is dropped after 15 whatever this says. Raising it past `1h` changes nothing. It still decides when gcloud reports no expiry. A `401` evicts the token and the request is tried once more with a fresh one |
 | `lock_deadline`, `fingerprint_attempts` | under `[gcp]` for want of a section of their own: the wait for a lock another gtunnel holds on a file, and the redos of a URL map or named port change after a concurrent edit |
 | `backend_timeout` | under `[expose]`, not to be confused with an account's `expose` relay table: the backend service timeout of every tunnel `expose` creates, and of the existing ones at `relay up`, `expose`, `start` and `restart`. For a websocket it is the longest the connection may sit idle, for a request the longest it may take. Whole seconds; GCP closes every websocket at 24h whatever it says |
 | `list_probe_timeout` | one probe of a running tunnel's local port, in `list` and the MCP list and status tools; the TUI's probes keep a fixed 2 seconds. `list` probes all tunnels at once, so it waits one probe however many run. Longer helps a slow far end and slows `list` when a tunnel is silent. Not `watch.probe_timeout` (3s), the watchdog's wait |
@@ -438,7 +438,7 @@ precedence are under [Settings the environment can override](#settings-the-envir
 | `GTUNNEL_LOGS_KEEP_SIZE` | | `logs.keep_size` | `2MiB` | What a trim keeps. Must be below the maximum: both keys are named when it is not |
 | `GTUNNEL_LOGS_LINES_PER_MINUTE` | | `logs.lines_per_minute` | `60` | Connection lines the supervisor writes per tunnel per minute; the rest are counted into one line. For a noisy client, or lines you want to see |
 | `GTUNNEL_LOGS_AUTH_EXIT_WINDOW` | | `logs.auth_exit_window` | `30s` | How long before gcloud exits a credential-failure line still explains the exit, so a login expiry is not read as a crash. Read by the supervisor |
-| `GTUNNEL_GCP_TOKEN_TTL` | | `gcp.token_ttl` | `45m` | How long an access token is reused before gcloud is asked for another, inside the hour Google issues them for. For `401` from a Google API after a long session. Read by every command that calls a Google API, as are the next three |
+| `GTUNNEL_GCP_TOKEN_TTL` | | `gcp.token_ttl` | `45m` | The most a token is reused before gcloud is asked for another; the token's own expiry, less 5 minutes, can only shorten it. Read by every command that calls a Google API, as are the next three |
 | `GTUNNEL_GCP_OPERATION_TIMEOUT` | | `gcp.operation_timeout` | `10m` | How long a compute or DNS operation is waited on before it is reported as not finished; for `did not finish within` errors |
 | `GTUNNEL_GCP_HTTP_TIMEOUT` | | `gcp.http_timeout` | `30s` | The limit on one API request; for a slow network or VPN |
 | `GTUNNEL_GCP_POLL_INTERVAL` | | `gcp.poll_interval` | `2s` | The pause between looks at a running operation; for API quota, or a wait that feels padded |
