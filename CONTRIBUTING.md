@@ -235,6 +235,10 @@ computes the version, and the workflow tests the merge, commits the bump (`Cargo
 `Cargo.lock`, a `CHANGELOG.md` entry), tags it, builds and publishes. There is no release pull
 request. Why it works this way: [decision 14](docs/decisions.md#14-releases-are-computed-and-published-automatically).
 
+Every GitHub API call in the train goes through [`gh-retry.sh`](.github/scripts/gh-retry.sh), which
+reruns it up to three times, after 5s and 15s, only on an HTTP 5xx, a reset connection or a
+timeout; a 4xx fails at once.
+
 Below 1.0 every bump is one step smaller than semver after 1.0:
 
 | Prefix | Version | Changelog |

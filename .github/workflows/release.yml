@@ -148,6 +148,11 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Only the retry helper the step sources, at the commit being released
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: bump
@@ -159,6 +164,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # Every gh call below retries a transient 5xx; see the helper
+          . .github/scripts/gh-retry.sh
           # A dry run computes the same version a real train would, so it drafts
           # under a name of its own: the real draft is what the tag run publishes,
           # and a dry run from a branch must never replace it.
@@ -168,16 +175,18 @@ jobs:
           # A train whose CI failed leaves its draft behind; the next one replaces
           # it. A published release of this tag means the version was already
           # shipped, and nothing here may touch it.
-          if state=$(gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json isDraft -q .isDraft 2>/dev/null); then
-            if [ "${state}" != "true" ]; then
-              echo "::error::${TAG} is already published; refusing to draft it again"
-              exit 1
-            fi
-            gh release delete "${TAG}" --repo "${GITHUB_REPOSITORY}" --yes
+          # Only "release not found" reads as no release; any other failure of
+          # the view fails the step rather than pass for an absent release.
+          state=$(release_state "${TAG}")
+          if [ "${state}" = "published" ]; then
+            echo "::error::${TAG} is already published; refusing to draft it again"
+            exit 1
           fi
-          gh release create "${TAG}" \
+          if [ "${state}" = "draft" ]; then
+            release_delete "${TAG}" --repo "${GITHUB_REPOSITORY}" --yes
+          fi
+          release_create_draft "${TAG}" \
             --repo "${GITHUB_REPOSITORY}" \
-            --draft \
             --title "${TAG}" \
             --notes-file bump/notes.md \
             --target "${GITHUB_SHA}"
@@ -229,8 +238,10 @@ jobs:
           cp bump/docs/usage.md docs/usage.md
           cp bump/site/index.html site/index.html
 
-          # The commit is the token owner's, as a push from their laptop would be
-          if ! user=$(GH_TOKEN="${RELEASE_TOKEN}" gh api user -q '"\(.id)+\(.login) \(.login)"'); then
+          # The commit is the token owner's, as a push from their laptop would be.
+          # A 401 fails at once; only a transient 5xx is retried.
+          . .github/scripts/gh-retry.sh
+          if ! user=$(GH_TOKEN="${RELEASE_TOKEN}" retry gh api user -q '"\(.id)+\(.login) \(.login)"'); then
             echo "::error::RELEASE_TOKEN was refused; it may be expired or revoked"
             exit 1
           fi
@@ -405,13 +416,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if state=$(gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json isDraft -q .isDraft 2>/dev/null); then
-            if [ "${state}" != "true" ]; then
-              echo "::error::${TAG} is already published; its assets are not replaced"
-              exit 1
-            fi
-            gh release upload "${TAG}" assets/* --repo "${GITHUB_REPOSITORY}" --clobber
-            gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false --latest
+          # Every gh call below retries a transient 5xx; upload --clobber and
+          # edit are idempotent, so a rerun after a lost answer is harmless
+          . .github/scripts/gh-retry.sh
+          state=$(release_state "${TAG}")
+          if [ "${state}" = "published" ]; then
+            echo "::error::${TAG} is already published; its assets are not replaced"
+            exit 1
+          fi
+          if [ "${state}" = "draft" ]; then
+            retry gh release upload "${TAG}" assets/* --repo "${GITHUB_REPOSITORY}" --clobber
+            retry gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false --latest
           else
             # Only the train opens a draft, so a tag without one did not come from
             # a merge. Nothing is created from it. To finish a release by hand,
@@ -461,6 +476,7 @@ jobs:
           fi
 
           python3 -I .github/scripts/bump-tap-formula.py "${TAG}" assets tap/Formula/gtunnel.rb
+          . .github/scripts/gh-retry.sh
           cd tap
           if git diff --quiet; then
             echo "The tap already points at ${TAG}."
@@ -468,7 +484,7 @@ jobs:
           fi
 
           # The commit is the token owner's, as a push from their laptop would be
-          if ! user=$(GH_TOKEN="${TAP_TOKEN}" gh api user -q '"\(.id)+\(.login) \(.login)"'); then
+          if ! user=$(GH_TOKEN="${TAP_TOKEN}" retry gh api user -q '"\(.id)+\(.login) \(.login)"'); then
             echo "::error::HOMEBREW_TAP_TOKEN was refused; it may be expired or revoked"
             exit 1
           fi
