@@ -482,6 +482,7 @@ pub fn stop_args(domain: &str, label: &str) -> Vec<String> {
 }
 
 pub async fn start(label: &str) -> Result<()> {
+    crate::daemon::note_asked(label);
     let path = plist_path(label)?;
     let (load, run) = start_args(&domain_target(), label, &path.to_string_lossy());
     // Already loaded is the common case and bootstrap says so; kickstart decides

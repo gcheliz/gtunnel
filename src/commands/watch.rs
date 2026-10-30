@@ -468,6 +468,9 @@ trait Manager {
     /// supervisor parked it. The service manager cannot say: a tunnel a person
     /// stopped and one the watchdog stopped are the same stopped tunnel.
     fn overruled(&self, since: SystemTime) -> bool;
+    /// A random pause before a restart, so a pass that finds several tunnels
+    /// down does not send their stops and starts back to back.
+    async fn settle(&self);
     /// Writes the row where a pass that dies can still be read by the next.
     fn remember(&self, row: &Row) -> Result<()>;
 }
@@ -485,6 +488,10 @@ impl Manager for Live<'_> {
 
     async fn start(&self) -> Result<()> {
         daemon::start(self.label).await
+    }
+
+    async fn settle(&self) {
+        tokio::time::sleep(crate::backoff::spread(crate::backoff::RESTART_SPREAD)).await;
     }
 
     fn overruled(&self, since: SystemTime) -> bool {
@@ -523,6 +530,10 @@ enum Restarted {
 /// stop and cleared after the start, so a pass that dies in the window leaves
 /// the next one something to read; see [`recover`].
 async fn restart(manager: &impl Manager, row: &mut Row, since: SystemTime) -> Result<Restarted> {
+    // Before the entry is written and the stop is sent: the pause must not
+    // lengthen the time the tunnel is down. A person acting during it is
+    // still caught, because `overruled` reads from `since`, not from here.
+    manager.settle().await;
     row.restarting = Some(since);
     if let Err(err) = manager.remember(row) {
         row.restarting = None;
@@ -575,10 +586,19 @@ async fn recover(
     };
     let (recovery, started) = if status == TunnelStatus::Running {
         (Recovery::Cleared, Ok(()))
-    } else if manager.overruled(since) {
-        (Recovery::Dropped, Ok(()))
     } else {
-        (Recovery::Started, manager.start().await)
+        // Asked before the pause as well as after it: a person's choice costs
+        // no wait, and one made during the wait is still read
+        let mut overruled = manager.overruled(since);
+        if !overruled {
+            manager.settle().await;
+            overruled = manager.overruled(since);
+        }
+        if overruled {
+            (Recovery::Dropped, Ok(()))
+        } else {
+            (Recovery::Started, manager.start().await)
+        }
     };
     row.restarting = None;
     let _ = manager.remember(row);
@@ -1410,6 +1430,10 @@ mod tests {
             Ok(())
         }
 
+        async fn settle(&self) {
+            self.calls.borrow_mut().push("settle");
+        }
+
         fn overruled(&self, since: SystemTime) -> bool {
             let since = since
                 .duration_since(SystemTime::UNIX_EPOCH)
@@ -1439,7 +1463,11 @@ mod tests {
         let done = restart(&fake, &mut row, SystemTime::now()).await.unwrap();
 
         assert_eq!(done, Restarted::Overruled);
-        assert_eq!(fake.calls(), ["stop"], "the start must not be sent");
+        assert_eq!(
+            fake.calls(),
+            ["settle", "stop"],
+            "the start must not be sent"
+        );
         assert_eq!(row.restarting, None, "nothing is left in flight");
     }
 
@@ -1454,7 +1482,11 @@ mod tests {
             Restarted::Done
         );
 
-        assert_eq!(fake.calls(), ["stop", "start"]);
+        assert_eq!(
+            fake.calls(),
+            ["settle", "stop", "start"],
+            "the pause comes before the stop, so the tunnel is not down for it"
+        );
         assert_eq!(
             *fake.remembered.borrow(),
             [Some(since), None],
@@ -1474,7 +1506,7 @@ mod tests {
             restart(&fake, &mut row, SystemTime::now()).await.unwrap(),
             Restarted::Overruled
         );
-        assert_eq!(fake.calls(), ["stop"]);
+        assert_eq!(fake.calls(), ["settle", "stop"]);
     }
 
     // The pass died after the stop. The service manager says Stopped, the
@@ -1491,7 +1523,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(first, Recovery::Started);
-        assert_eq!(fake.calls(), ["start"]);
+        assert_eq!(fake.calls(), ["settle", "start"]);
         assert_eq!(row.restarting, None, "cleared by the start");
 
         let again = recover(&fake, &mut row, Some(TunnelStatus::Stopped))
@@ -1502,7 +1534,7 @@ mod tests {
             Recovery::NotNeeded,
             "a stopped tunnel is stopped now"
         );
-        assert_eq!(fake.calls(), ["start"], "once");
+        assert_eq!(fake.calls(), ["settle", "start"], "once");
     }
 
     #[tokio::test]
