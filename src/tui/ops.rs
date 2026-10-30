@@ -153,17 +153,42 @@ fn external_as_tunnel(account: &str, external: &ExternalTunnel, name: String) ->
 pub async fn load_instances(account: &str) -> Result<Vec<super::app::InstanceChoice>> {
     let (_, acct) = resolve(Some(account))?;
     let client = GcpClient::for_account(&acct);
-    let mut out: Vec<super::app::InstanceChoice> =
-        crate::gcp::compute::list_instances(&client, &acct.project)
-            .await?
-            .into_iter()
-            .map(|i| super::app::InstanceChoice {
+    let instances = crate::gcp::compute::list_instances(&client, &acct.project).await?;
+    // A denied firewall list costs the ranking, not the picker
+    let firewalls = crate::gcp::compute::list_firewalls(&client, &acct.project)
+        .await
+        .ok();
+    Ok(rank_choices(instances, firewalls.as_deref()))
+}
+
+// What the picker shows of each instance: whether it starts hidden, and
+// whether a project firewall rule lets IAP reach it. Instances IAP reaches
+// come first, so the likely target is not buried among cluster nodes; the
+// rest keep name order. `None` is a firewall list that could not be read:
+// nothing is marked and nothing is reordered.
+fn rank_choices(
+    instances: Vec<crate::gcp::compute::Instance>,
+    firewalls: Option<&[crate::gcp::compute::Firewall]>,
+) -> Vec<super::app::InstanceChoice> {
+    let mut out: Vec<super::app::InstanceChoice> = instances
+        .into_iter()
+        .map(|i| {
+            let iap = match (firewalls, i.network.as_deref()) {
+                (Some(rules), Some(network)) => {
+                    crate::gcp::compute::firewall_admits_iap(rules, network, &i.tags)
+                }
+                _ => false,
+            };
+            super::app::InstanceChoice {
+                hidden: i.status != "RUNNING" || i.labels.contains_key("goog-gke-node"),
+                iap,
                 name: i.name,
                 zone: i.zone,
-            })
-            .collect();
-    out.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(out)
+            }
+        })
+        .collect();
+    out.sort_by(|a, b| b.iap.cmp(&a.iap).then_with(|| a.name.cmp(&b.name)));
+    out
 }
 
 // Every project the account can see, for the edit dialog's picker. The account
@@ -1105,6 +1130,81 @@ mod tests {
             .health;
             assert_eq!(from_health, expected, "{what}: the health probe");
             assert_eq!(from_metrics, Some(from_health), "{what}: the metrics probe");
+        }
+    }
+
+    fn instance(
+        name: &str,
+        status: &str,
+        network: &str,
+        gke: bool,
+    ) -> crate::gcp::compute::Instance {
+        crate::gcp::compute::Instance {
+            name: name.to_string(),
+            zone: "europe-west1-b".to_string(),
+            status: status.to_string(),
+            network: Some(network.to_string()),
+            tags: Vec::new(),
+            internal_ip: None,
+            labels: gke
+                .then(|| ("goog-gke-node".to_string(), String::new()))
+                .into_iter()
+                .collect(),
+        }
+    }
+
+    fn iap_rule(network: &str) -> crate::gcp::compute::Firewall {
+        crate::gcp::compute::Firewall {
+            name: "allow-iap".to_string(),
+            network: format!("https://x/projects/p/global/networks/{network}"),
+            direction: "INGRESS".to_string(),
+            source_ranges: vec!["35.235.240.0/20".to_string()],
+            allowed: vec![crate::gcp::compute::FirewallAllow {
+                ip_protocol: "tcp".to_string(),
+                ports: vec!["22".to_string()],
+            }],
+            target_tags: Vec::new(),
+            disabled: false,
+        }
+    }
+
+    #[test]
+    fn the_picker_ranks_iap_reachable_instances_first_then_by_name() {
+        let instances = vec![
+            instance("alpha", "RUNNING", "other", false),
+            instance("zulu", "RUNNING", "default", false),
+            instance("mike", "RUNNING", "default", false),
+        ];
+        let got = rank_choices(instances, Some(&[iap_rule("default")]));
+        let order: Vec<_> = got.iter().map(|c| (c.name.as_str(), c.iap)).collect();
+        assert_eq!(order, [("mike", true), ("zulu", true), ("alpha", false)]);
+    }
+
+    #[test]
+    fn stopped_instances_and_gke_nodes_are_flagged_hidden() {
+        let instances = vec![
+            instance("running", "RUNNING", "default", false),
+            instance("stopped", "TERMINATED", "default", false),
+            instance("node", "RUNNING", "default", true),
+        ];
+        let got = rank_choices(instances, None);
+        let hidden: Vec<_> = got.iter().map(|c| (c.name.as_str(), c.hidden)).collect();
+        assert_eq!(
+            hidden,
+            [("node", true), ("running", false), ("stopped", true)]
+        );
+    }
+
+    #[test]
+    fn a_failed_firewall_list_ranks_nothing_and_marks_nothing() {
+        let instances = vec![
+            instance("b", "RUNNING", "default", false),
+            instance("a", "RUNNING", "default", false),
+        ];
+        for rules in [None, Some(&[][..])] {
+            let got = rank_choices(instances.clone(), rules);
+            assert!(got.iter().all(|c| !c.iap));
+            assert_eq!(got[0].name, "a");
         }
     }
 }

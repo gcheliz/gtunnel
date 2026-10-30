@@ -594,6 +594,11 @@ pub struct HelpExtent {
 pub struct InstanceChoice {
     pub name: String,
     pub zone: String,
+    // Not offered until Tab: stopped, or a GKE node, which is never the
+    // target of a tunnel by hand
+    pub hidden: bool,
+    // A firewall rule of the project's VPC lets IAP reach it, so it sorts first
+    pub iap: bool,
 }
 
 // A project the picker offers, as list_projects reports it
@@ -796,6 +801,8 @@ pub struct App {
     pub last_draft: Option<(NewTunnel, InputMode)>,
     pub instances: Vec<InstanceChoice>,
     pub instance_selected: usize,
+    // Tab in the instance step; closed again whenever the dialog opens
+    pub show_all_instances: bool,
     // The projects the account being edited can see, and the cursor in them
     pub projects_list: Vec<ProjectChoice>,
     pub project_selected: usize,
@@ -924,6 +931,7 @@ impl App {
             last_draft: None,
             instances: Vec::new(),
             instance_selected: 0,
+            show_all_instances: false,
             projects_list: Vec::new(),
             project_selected: 0,
             configurations_list: Vec::new(),
@@ -2406,6 +2414,7 @@ impl App {
                         self.want_instances = true;
                         self.list_loading = Some("instances");
                         self.instance_selected = 0;
+                        self.show_all_instances = false;
                         InputMode::AddInstance
                     }
                     TunnelMode::Public => InputMode::AddLocalTarget,
@@ -2539,13 +2548,36 @@ impl App {
         Some(name)
     }
 
-    // The picker filters as you type, so a long instance list stays usable
+    // The picker filters as you type, so a long instance list stays usable.
+    // The filter reads the zone too, since two instances often share a name
+    // stem and differ only there. A filter that matches no shown row searches
+    // the hidden ones as well: a typed name is the person asking for that
+    // instance, and the Enter arm would otherwise give it the default zone.
     pub fn filtered_instances(&self) -> Vec<&InstanceChoice> {
         let needle = self.input.to_lowercase();
-        self.instances
+        let matches = |i: &&InstanceChoice| {
+            needle.is_empty()
+                || i.name.to_lowercase().contains(&needle)
+                || i.zone.to_lowercase().contains(&needle)
+        };
+        // A hidden row whose name is the whole filter is shown as well: with a
+        // stopped `bastion` and a running `bastion-2`, typing `bastion` must
+        // not leave Enter on the wrong one, and it goes first for the same reason
+        let mut shown: Vec<&InstanceChoice> = self
+            .instances
             .iter()
-            .filter(|i| needle.is_empty() || i.name.to_lowercase().contains(&needle))
-            .collect()
+            .filter(|i| self.show_all_instances || !i.hidden || i.name.to_lowercase() == needle)
+            .filter(matches)
+            .collect();
+        shown.sort_by_key(|i| i.name.to_lowercase() != needle);
+        if shown.is_empty() && !needle.is_empty() {
+            return self.instances.iter().filter(matches).collect();
+        }
+        shown
+    }
+
+    pub fn hidden_instances(&self) -> usize {
+        self.instances.iter().filter(|i| i.hidden).count()
     }
 
     fn pick_instance(&mut self, code: KeyCode) -> Option<Op> {
@@ -2564,6 +2596,10 @@ impl App {
                 self.instance_selected = (self.instance_selected + 1).min(last);
             }
             KeyCode::Up => self.instance_selected = self.instance_selected.saturating_sub(1),
+            KeyCode::Tab => {
+                self.show_all_instances = !self.show_all_instances;
+                self.instance_selected = 0;
+            }
             KeyCode::Enter => {
                 let chosen = self
                     .filtered_instances()

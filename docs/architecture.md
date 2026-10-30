@@ -9,7 +9,9 @@ resource gtunnel touches.
 
 A local port forwarded to a port inside the VPC. Nothing is created in GCP: IAP already
 accepts the connection, and the only requirement is a firewall rule that lets IAP's range
-reach the target port.
+reach the target port. The TUI's instance picker reads the project's VPC firewall rules once
+to mark the instances such a rule reaches (`iap`) and lists them first; it hides stopped
+instances and GKE nodes until `Tab`.
 
 Both inward paths, in one picture: the upper one is access mode, the lower one is the jump
 tunnel described in the next section.

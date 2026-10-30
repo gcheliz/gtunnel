@@ -959,6 +959,8 @@ fn a_filter_that_matches_none_of_the_listed_instances_accepts_what_was_typed() {
     app.instances = vec![InstanceChoice {
         name: "my-instance".to_string(),
         zone: "europe-west4-a".to_string(),
+        hidden: false,
+        iap: false,
     }];
     keys(&mut app, "cache\nbastion\n");
     assert_eq!(app.input_mode, InputMode::AddJumpHost);
@@ -1034,6 +1036,8 @@ fn adding_an_access_tunnel_walks_the_prompts_and_creates_it() {
     app.instances = vec![InstanceChoice {
         name: "bastion".to_string(),
         zone: "europe-west1-b".to_string(),
+        hidden: false,
+        iap: false,
     }];
 
     // a, mode 1, name, instance, host (empty: the instance itself), ports
@@ -1156,6 +1160,8 @@ pub(super) fn submitted_access_draft() -> App {
     app.instances = vec![InstanceChoice {
         name: "bastion".to_string(),
         zone: "europe-west1-b".to_string(),
+        hidden: false,
+        iap: false,
     }];
     keys(&mut app, "a1cache\n\n\n5432\n\n");
     assert_eq!(app.input_mode, InputMode::Normal);
@@ -2868,4 +2874,89 @@ fn the_pending_verbs_take_their_own_spelling() {
     assert_eq!(gerund("rename"), "renaming");
     assert_eq!(gerund("move"), "moving");
     assert_eq!(gerund("edit"), "editing");
+}
+
+fn choice(name: &str, zone: &str, hidden: bool, iap: bool) -> InstanceChoice {
+    InstanceChoice {
+        name: name.to_string(),
+        zone: zone.to_string(),
+        hidden,
+        iap,
+    }
+}
+
+fn at_the_instance_step() -> App {
+    let mut app = at_the_name_prompt();
+    app.default_zone = "europe-west1-b".to_string();
+    keys(&mut app, "cache\n");
+    assert_eq!(app.input_mode, InputMode::AddInstance);
+    app.instances = vec![
+        choice("bastion", "europe-west1-b", false, true),
+        choice("old-vm", "us-central1-a", true, false),
+        choice("gke-node-1", "europe-west4-a", true, false),
+    ];
+    app
+}
+
+fn names(app: &App) -> Vec<String> {
+    app.filtered_instances()
+        .iter()
+        .map(|i| i.name.clone())
+        .collect()
+}
+
+#[test]
+fn stopped_instances_and_gke_nodes_are_hidden_until_tab_shows_them() {
+    let mut app = at_the_instance_step();
+    assert_eq!(names(&app), ["bastion"]);
+    app.handle_key(key(KeyCode::Tab));
+    assert_eq!(names(&app), ["bastion", "old-vm", "gke-node-1"]);
+    app.handle_key(key(KeyCode::Tab));
+    assert_eq!(names(&app), ["bastion"]);
+}
+
+#[test]
+fn the_exact_name_of_a_hidden_instance_selects_it_with_its_own_zone() {
+    let mut app = at_the_instance_step();
+    keys(&mut app, "old-vm\n");
+    assert_eq!(app.input_mode, InputMode::AddJumpHost);
+    assert_eq!(app.draft.instance, "old-vm");
+    assert_eq!(app.draft.zone, "us-central1-a");
+}
+
+#[test]
+fn a_hidden_instance_named_exactly_wins_over_a_shown_one_that_contains_its_name() {
+    let mut app = at_the_instance_step();
+    app.instances
+        .push(choice("old-vm-2", "europe-west1-b", false, true));
+    app.instances.sort_by_key(|i| !i.iap);
+    keys(&mut app, "old-vm\n");
+    assert_eq!(app.draft.instance, "old-vm");
+    assert_eq!(app.draft.zone, "us-central1-a");
+}
+
+#[test]
+fn a_filter_that_matches_a_shown_row_does_not_pull_in_hidden_ones() {
+    let mut app = at_the_instance_step();
+    keys(&mut app, "b");
+    assert_eq!(names(&app), ["bastion"]);
+}
+
+#[test]
+fn the_instance_filter_matches_the_zone_as_well_as_the_name() {
+    let mut app = at_the_instance_step();
+    app.instances
+        .push(choice("cache-1", "us-central1-a", false, false));
+    keys(&mut app, "us-central");
+    assert_eq!(names(&app), ["cache-1"]);
+}
+
+#[test]
+fn opening_the_dialog_again_hides_what_the_last_one_showed() {
+    let mut app = at_the_instance_step();
+    app.handle_key(key(KeyCode::Tab));
+    assert!(app.show_all_instances);
+    app.handle_key(key(KeyCode::Esc));
+    keys(&mut app, "a1cache\n");
+    assert!(!app.show_all_instances, "the new dialog inherited the view");
 }

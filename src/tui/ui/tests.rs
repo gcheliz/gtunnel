@@ -2702,6 +2702,8 @@ fn app_with_many_instances(selected: usize) -> App {
         .map(|i| InstanceChoice {
             name: format!("instance-{i:02}"),
             zone: "europe-west1-b".to_string(),
+            hidden: false,
+            iap: false,
         })
         .collect();
     app.input_mode = InputMode::AddInstance;
@@ -2745,6 +2747,8 @@ fn app_with_a_long_instance(selected: usize) -> App {
                 format!("short-instance-{i:02}")
             },
             zone: "europe-west1-b".to_string(),
+            hidden: false,
+            iap: false,
         })
         .collect();
     app.input_mode = InputMode::AddInstance;
@@ -3026,6 +3030,8 @@ fn dialog_cases() -> Vec<(&'static str, App, Vec<&'static str>)> {
             .map(|i| InstanceChoice {
                 name: format!("sample-instance-{i:02}"),
                 zone: "europe-west1-b".to_string(),
+                hidden: false,
+                iap: false,
             })
             .collect();
         app.domains = (0..6).map(|i| format!("svc{i}.example.test")).collect();
@@ -3673,4 +3679,43 @@ mod run_stop_time {
             let _ = super::render_to_string(&app, w, 30);
         }
     }
+}
+
+#[test]
+fn the_instance_picker_marks_iap_rows_and_counts_what_it_hides() {
+    let mut app = app_with_two();
+    app.instances = vec![
+        InstanceChoice {
+            name: "bastion".to_string(),
+            zone: "europe-west1-b".to_string(),
+            hidden: false,
+            iap: true,
+        },
+        InstanceChoice {
+            name: "cache-1".to_string(),
+            zone: "europe-west1-b".to_string(),
+            hidden: false,
+            iap: false,
+        },
+        InstanceChoice {
+            name: "gke-node-1".to_string(),
+            zone: "europe-west1-b".to_string(),
+            hidden: true,
+            iap: false,
+        },
+    ];
+    app.input_mode = InputMode::AddInstance;
+    let rendered = render_to_string(&app, 120, 40);
+    let marked = lines_with(&app, 120, 40, "iap");
+    assert_eq!(marked.len(), 1, "{marked:?}");
+    assert!(marked[0].contains("bastion"), "{}", marked[0]);
+    // The description wraps, so each half is looked for on its own
+    assert!(rendered.contains("1 hidden (stopped"), "no hidden count");
+    assert!(rendered.contains("Tab shows all"), "no hint for Tab");
+    assert!(!rendered.contains("gke-node-1"), "a hidden row is drawn");
+
+    app.show_all_instances = true;
+    let rendered = render_to_string(&app, 120, 40);
+    assert!(rendered.contains("gke-node-1"), "Tab did not show it");
+    assert!(rendered.contains("Tab hides"), "no hint to hide again");
 }
