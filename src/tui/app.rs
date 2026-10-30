@@ -601,6 +601,92 @@ pub struct HelpExtent {
     pub view: usize,
 }
 
+/// What the last draw of the Logs pane measured. Only a draw knows how many
+/// lines fit, so the measure comes back through a `Cell`, as `HelpExtent` does.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LogExtent {
+    /// The furthest back the view goes: the oldest line sits at the top.
+    pub max_back: usize,
+    /// Whole lines in a screenful, less one so the eye keeps a line to land on.
+    pub page: usize,
+}
+
+/// How far back from the newest line the Logs pane is scrolled.
+///
+/// Counted in log lines newer than the last one shown, not in rows: a line that
+/// wraps is one step, and "3 newer" is a number the reader can check against
+/// the file. Zero is following, which is also what a pane that was never
+/// touched does, so a tunnel that starts logging is read from its newest line
+/// without a key.
+#[derive(Debug, Default)]
+pub struct LogScroll {
+    back: usize,
+    pub extent: Cell<LogExtent>,
+}
+
+/// A wheel notch moves the pane this many lines, the rate terminals give a
+/// text view, so the wheel is neither a crawl nor a page.
+pub const WHEEL_LOG_LINES: usize = 3;
+
+impl LogScroll {
+    /// Lines hidden below the view, never more than the pane can scroll.
+    pub fn back(&self) -> usize {
+        self.back.min(self.extent.get().max_back)
+    }
+
+    pub fn follow(&mut self) {
+        self.back = 0;
+    }
+
+    /// Toward older lines, clamped so the view cannot leave the file.
+    pub fn older(&mut self, lines: usize) {
+        self.back = (self.back() + lines).min(self.extent.get().max_back);
+    }
+
+    pub fn newer(&mut self, lines: usize) {
+        self.back = self.back().saturating_sub(lines);
+    }
+
+    pub fn page_older(&mut self) {
+        self.older(self.extent.get().page.max(1));
+    }
+
+    pub fn page_newer(&mut self) {
+        self.newer(self.extent.get().page.max(1));
+    }
+
+    /// `n` lines were appended. A view that follows stays on the newest line
+    /// by itself; one scrolled back would slide under the reader as the count
+    /// of newer lines grew, so it moves by the same `n` and holds still.
+    pub fn arrived(&mut self, n: usize) {
+        if self.back > 0 {
+            self.back += n;
+        }
+    }
+}
+
+/// How many lines `new` has that `old` did not. The pane is read as the file's
+/// last lines, wholesale, so an arrival is found by the longest run of `old`'s
+/// tail that `new` starts with. `None` is no overlap at all, a file that was
+/// cleared or rotated, where holding a position means nothing.
+pub fn lines_arrived(old: &[String], new: &[String]) -> Option<usize> {
+    if old.is_empty() {
+        return Some(new.len());
+    }
+    (0..old.len()).find_map(|skipped| {
+        let kept = &old[skipped..];
+        new.starts_with(kept).then(|| new.len() - kept.len())
+    })
+}
+
+/// Where the last draw put the two panes the wheel acts on, so a pointer
+/// position can be answered with the pane under it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PaneRects {
+    pub list: ratatui::layout::Rect,
+    pub logs: ratatui::layout::Rect,
+}
+
 // An instance the picker offers, as list_instances reports it
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstanceChoice {
@@ -782,6 +868,11 @@ pub struct App {
     // after every move up and the list slides under the cursor.
     pub list_offset: Cell<usize>,
     pub logs: Vec<String>,
+    // Where the Logs pane is scrolled to. Changed only through `set_logs` and
+    // `clear_logs`, so a new tunnel's log always opens on its newest line
+    pub log_scroll: LogScroll,
+    // Where the last draw put the list and Logs, for the mouse wheel
+    pub pane_rects: Cell<PaneRects>,
     pub status: Option<String>,
     // The last operation failed, so the status line says so in red
     pub status_error: bool,
@@ -928,6 +1019,8 @@ impl App {
             selected: 0,
             list_offset: Cell::new(0),
             logs: Vec::new(),
+            log_scroll: LogScroll::default(),
+            pane_rects: Cell::new(PaneRects::default()),
             status: None,
             status_error: false,
             input_mode: InputMode::Normal,
@@ -1226,6 +1319,55 @@ impl App {
         self.status_error = true;
     }
 
+    /// Empties the pane and goes back to following it. Every caller is a
+    /// change of what the pane shows, and a position in the old log means
+    /// nothing in the new one.
+    pub fn clear_logs(&mut self) {
+        self.logs.clear();
+        self.log_scroll.follow();
+    }
+
+    /// Replaces the pane's lines with a fresh read of the file. Lines that
+    /// arrived while the view is scrolled back are counted so the view holds
+    /// still; a read that shares nothing with the last one is a file that was
+    /// cleared or rotated, and the pane follows it.
+    pub fn set_logs(&mut self, lines: Vec<String>) {
+        match lines_arrived(&self.logs, &lines) {
+            Some(n) => self.log_scroll.arrived(n),
+            None => self.log_scroll.follow(),
+        }
+        self.logs = lines;
+    }
+
+    /// The wheel scrolls the pane under the pointer, and nothing else is read
+    /// from the mouse. The list moves its selection a row a notch, because the
+    /// list already scrolls only with the selection and a second way to move
+    /// the window would leave the cursor off screen; Logs moves
+    /// `WHEEL_LOG_LINES` a notch. Only the plain list screen listens: a page
+    /// or a dialog is not a pane the wheel was aimed at.
+    pub fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
+        use crossterm::event::MouseEventKind;
+        if self.input_mode != InputMode::Normal {
+            return;
+        }
+        let up = match mouse.kind {
+            MouseEventKind::ScrollUp => true,
+            MouseEventKind::ScrollDown => false,
+            _ => return,
+        };
+        let at = ratatui::layout::Position::new(mouse.column, mouse.row);
+        let rects = self.pane_rects.get();
+        if rects.logs.contains(at) {
+            if up {
+                self.log_scroll.older(WHEEL_LOG_LINES);
+            } else {
+                self.log_scroll.newer(WHEEL_LOG_LINES);
+            }
+        } else if rects.list.contains(at) {
+            self.move_selection(if up { -1 } else { 1 });
+        }
+    }
+
     fn move_selection(&mut self, delta: isize) {
         if self.entries.is_empty() {
             return;
@@ -1242,7 +1384,7 @@ impl App {
         // selected: the loop refetches on a change of name, so nothing refilled
         // it and the tunnel read as silent until the log timer came round.
         if self.selected != before {
-            self.logs.clear();
+            self.clear_logs();
         }
     }
 
@@ -1327,7 +1469,7 @@ impl App {
         self.loaded = false;
         self.load_failed = false;
         self.list_offset.set(0);
-        self.logs.clear();
+        self.clear_logs();
         // The demo has no runtime behind it, so a refresh would leave the
         // screen empty: it swaps in the next account's synthetic data instead
         if self.demo {
@@ -1586,13 +1728,20 @@ impl App {
             KeyCode::Char('e') => self.open_edit(),
             KeyCode::Char('L') => return self.clear_log_op(),
             KeyCode::Char('C') => self.open_config(),
+            // The Logs pane's own paging. `PgUp` goes back because the newest
+            // line is at the bottom, and `End` or `G` come home, the pair the
+            // keymap page already uses for "the end"
+            KeyCode::PageUp => self.log_scroll.page_older(),
+            KeyCode::PageDown => self.log_scroll.page_newer(),
+            KeyCode::End | KeyCode::Char('G') => self.log_scroll.follow(),
             _ => {}
         }
         None
     }
 
-    // The page scrolls with the list's own keys and with the paging keys, and
-    // only here: `PgUp`, `g` and `G` are not bound anywhere else. The position
+    // The keymap page scrolls with the list's own keys and with the paging
+    // keys. The same keys page the Logs pane from the list, where nothing
+    // else uses them, and `g` stays the page's alone. The position
     // is clamped to the last draw's measure before the move and after it, so a
     // press at either end is a no-op and the first press back always moves.
     fn scrolled(&self, from: usize, code: KeyCode) -> usize {
@@ -1846,7 +1995,7 @@ impl App {
             self.loaded = false;
             self.load_failed = false;
             self.list_offset.set(0);
-            self.logs.clear();
+            self.clear_logs();
         }
         self.relays = config
             .accounts
@@ -1940,7 +2089,7 @@ impl App {
                 let name = entry.name().to_string();
                 // The panel follows the file, so it empties with it instead of
                 // showing lines until the next reload
-                self.logs.clear();
+                self.clear_logs();
                 self.spinner.start(&format!("clear log {name}"));
                 Some(Op::ClearLog(name))
             }
@@ -3211,7 +3360,8 @@ pub fn edit_in_terminal(path: &Path) -> anyhow::Result<()> {
     struct Handoff;
     impl Handoff {
         fn leave() -> Self {
-            ratatui::restore();
+            // The editor must not be sent mouse reports it never asked for
+            super::leave_terminal();
             Handoff
         }
     }
@@ -3220,6 +3370,7 @@ pub fn edit_in_terminal(path: &Path) -> anyhow::Result<()> {
             use crossterm::{execute, terminal};
             let _ = terminal::enable_raw_mode();
             let _ = execute!(std::io::stdout(), terminal::EnterAlternateScreen);
+            let _ = execute!(std::io::stdout(), crossterm::event::EnableMouseCapture);
         }
     }
 

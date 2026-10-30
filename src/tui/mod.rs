@@ -25,6 +25,9 @@ const TICK: Duration = Duration::from_millis(120);
 // What the event loop reacts to; everything slow arrives as a message
 enum Msg {
     Key(crossterm::event::KeyEvent),
+    // Only the wheel is sent on: a move or a click has no meaning here, and
+    // terminals report every motion while capture is on
+    Mouse(crossterm::event::MouseEvent),
     Instances(Vec<app::InstanceChoice>),
     InstancesFailed(String),
     // The leading string is the account the list was fetched for
@@ -127,10 +130,38 @@ pub async fn run_tui(initial_account: Option<&str>) -> Result<()> {
     let mut timers = Timers::due();
     schedule(&mut app, &mut timers, &tx);
 
-    let mut terminal = ratatui::init();
+    let mut terminal = enter_terminal();
     let result = event_loop(&mut terminal, &mut app, &tx, &mut rx).await;
-    ratatui::restore();
+    leave_terminal();
     result
+}
+
+/// Takes the terminal: raw mode, the alternate screen, and the mouse.
+///
+/// Capture is on so the wheel can scroll a pane, which has a cost the keymap
+/// page states: the terminal stops selecting text on a plain drag, and Shift
+/// brings that back. It is released in `leave_terminal`, on the panic path
+/// below, and by every hand-off to another program, because a shell left
+/// printing escape codes for every mouse move is worse than a missing wheel.
+pub fn enter_terminal() -> ratatui::DefaultTerminal {
+    let terminal = ratatui::init();
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture);
+    // `init` hooks panics to restore the screen but knows nothing of the
+    // mouse. This hook runs first and then hands on to that one, so the order
+    // on a panic is: mouse off, screen restored, message printed.
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
+        previous(info);
+    }));
+    terminal
+}
+
+/// Gives the terminal back as it was found. The mouse goes first, so no event
+/// reaches a shell that has not asked for it.
+pub fn leave_terminal() {
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
+    ratatui::restore();
 }
 
 pub async fn run_demo() -> Result<()> {
@@ -139,9 +170,9 @@ pub async fn run_demo() -> Result<()> {
     spawn_input(tx.clone(), app.input_gate.clone());
     spawn_ticker(tx.clone());
 
-    let mut terminal = ratatui::init();
+    let mut terminal = enter_terminal();
     let result = demo_loop(&mut terminal, &mut app, &mut rx).await;
-    ratatui::restore();
+    leave_terminal();
     result
 }
 
@@ -182,6 +213,7 @@ async fn demo_loop(
                     break;
                 }
             }
+            Msg::Mouse(mouse) => app.handle_mouse(mouse),
             Msg::Tick => {
                 app.force_refresh = false;
                 // A list being waited on draws a spinner frame too, so it must advance
@@ -216,6 +248,17 @@ fn spawn_input(tx: mpsc::UnboundedSender<Msg>, gate: std::sync::Arc<app::InputGa
                     if key.kind == crossterm::event::KeyEventKind::Press =>
                 {
                     if tx.send(Msg::Key(key)).is_err() {
+                        return;
+                    }
+                }
+                Ok(crossterm::event::Event::Mouse(mouse))
+                    if matches!(
+                        mouse.kind,
+                        crossterm::event::MouseEventKind::ScrollUp
+                            | crossterm::event::MouseEventKind::ScrollDown
+                    ) =>
+                {
+                    if tx.send(Msg::Mouse(mouse)).is_err() {
                         return;
                     }
                 }
@@ -359,6 +402,7 @@ async fn event_loop(
 
     while let Some(msg) = next_message(rx, &mut stop).await {
         match msg {
+            Msg::Mouse(mouse) => app.handle_mouse(mouse),
             Msg::Key(key) => {
                 if let Some(op) = app.handle_key(key) {
                     let account = app.account.clone();
@@ -473,7 +517,7 @@ async fn event_loop(
             }
             Msg::Logs(name, lines) => {
                 if app.selected_entry().map(|e| e.name().to_string()) == Some(name) {
-                    app.logs = lines;
+                    app.set_logs(lines);
                 }
             }
             Msg::Instances(instances) => app.instances_arrived(instances),
@@ -1092,12 +1136,12 @@ async fn next_message(rx: &mut mpsc::UnboundedReceiver<Msg>, stop: &mut Stop) ->
 
 #[cfg(unix)]
 fn suspend(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
-    ratatui::restore();
+    leave_terminal();
     // SAFETY: raising SIGTSTP on our own process group is what Ctrl+Z does
     unsafe {
         libc::raise(libc::SIGTSTP);
     }
-    *terminal = ratatui::init();
+    *terminal = enter_terminal();
     terminal.clear()?;
     Ok(())
 }

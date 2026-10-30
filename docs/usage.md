@@ -472,8 +472,29 @@ so the shell gets a working terminal back.
 |---|---|
 | Tunnel | `s` start, `S` stop (a run too, and a tunnel that keeps crashing: launchd would start it again), `R` restart, `A` toggle auto-start (`s`, `R` and `A` are refused on a run), `h` health check now |
 | The list | `a` add, `e` edit, `d` delete (refused on a run), `m` import an ephemeral run as managed, `j` `k` or the arrows move the selection |
-| This tunnel's URL and log | `c` copy the URL, `l` copy the log to clipboard, `o` open it, `L` clear the log, `r` refresh the list, metrics and health |
+| This tunnel's URL and log | `c` copy the URL, `l` copy the log to clipboard, `o` open it, `L` clear the log, `r` refresh the list, metrics and health, `PgUp` `PgDn` scroll the log back and forward a page, `End` or `G` follow the newest line again |
 | The program | `;` cycle accounts (the relay and its domains change with the account), `:` the accounts page, `?` the keymap, `C` the config page, `q` quit (it waits for a running operation to finish, and a second `q` quits at once), `Esc` close a page or cancel a prompt, `PgUp` `PgDn` and `g` `G` scroll the keymap page, `Ctrl+Z` suspend, `Ctrl+C` quit from anywhere, with the same wait |
+
+### Small terminals and the mouse
+
+From 121 columns the list sits left of Details, Logs and Metrics. Narrower, the panes stack: the
+list is as tall as its entries, up to 40% of the height, and shows a scrollbar on its right
+border when rows are hidden. Details folds into one line under it (status, url, target, uptime,
+auto-start), and Logs and Metrics sit side by side below, so the chart is on screen at 80 columns.
+Under 80 columns Logs takes the width and Metrics becomes one row of figures with the chart beside
+them.
+
+| Where | What it does |
+|---|---|
+| `PgUp` `PgDn` | scroll the log a page back and forward, in every layout. The title reads `LOGS: DB  ↓ 3 newer` while scrolled back, and a new line does not move the view |
+| `End` or `G` | follow the newest line again. Moving to another tunnel does the same |
+| Mouse wheel over TUNNELS | moves the selection, as `j` and `k` do |
+| Mouse wheel over LOGS | scrolls the log three lines a notch |
+
+The mouse is captured so the wheel can scroll a pane, which stops the terminal selecting text on a
+plain drag. Hold `Shift` while dragging to select, as before (`Option` in some macOS terminals).
+Other mouse events are ignored, and capture is released on exit, on a panic, on `Ctrl+Z` and
+while an editor has the terminal.
 
 The Metrics pane shows the tunnel's health as a symbol. A failed probe is named by what
 the log says, so the fix is on screen instead of in the log:

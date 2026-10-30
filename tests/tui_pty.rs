@@ -136,6 +136,13 @@ impl Screen {
         }
     }
 
+    /// The 1-based screen row of the first row holding `needle`, as an SGR mouse
+    /// report counts, once it is there.
+    fn row_of(&self, needle: &str) -> usize {
+        self.wait_for(needle);
+        row_with(relock(&self.parser).screen(), needle).expect("the text was just on screen")
+    }
+
     fn resize(&self, rows: u16, cols: u16) {
         // The parser first: the app redraws the moment the pty changes size, and
         // bytes laid out for the new size must not be parsed at the old one
@@ -309,4 +316,112 @@ fn q_exits_zero_and_restores_the_terminal() {
     s.wait_until("the main screen with the cursor shown", |screen| {
         !screen.alternate_screen() && !screen.hide_cursor()
     });
+}
+
+/// The 1-based row of the first screen row holding `needle`, as the SGR mouse
+/// report counts it. Takes the parsed screen so a `wait_until` predicate can
+/// call it under the lock.
+fn row_with(screen: &vt100::Screen, needle: &str) -> Option<usize> {
+    screen
+        .rows(0, screen.size().1.get())
+        .position(|r| r.contains(needle))
+        .map(|i| i + 1)
+}
+
+/// An SGR (1006) mouse report. `64` is the wheel turning up, `65` down; the
+/// column and row are 1-based, as a terminal writes them.
+fn wheel(s: &mut Screen, button: u8, column: usize, row: usize) {
+    s.press(&format!("\x1b[<{button};{column};{row}M"));
+}
+
+/// 80x24 is where the stacked layout starts to hide lines, and the one the
+/// issue names: the demo's log for `db` is longer than the pane there.
+fn at_80x24() -> Screen {
+    let mut s = Screen::demo();
+    s.wait_for("TUNNELS (7)");
+    s.resize(24, 80);
+    s.wait_until("a redraw at 80 columns", |screen| {
+        screen.rows(0, 80).any(|r| r.contains("LOGS: DB"))
+    });
+    // a Logs pane scrolled by nothing says nothing about newer lines
+    s.press("\x1b[5~");
+    s.wait_for("newer");
+    s.press("\x1b[F");
+    s.wait_gone("newer");
+    s
+}
+
+#[test]
+fn page_up_scrolls_logs_back_and_end_follows_the_newest_line_again() {
+    let mut s = at_80x24();
+    s.press("\x1b[5~");
+    s.wait_until("the Logs title to count newer lines", |screen| {
+        screen.contents().contains("\u{2193}") && screen.contents().contains("newer")
+    });
+    s.press("\x1b[6~");
+    s.wait_gone("newer");
+    s.press("\x1b[5~");
+    s.wait_for("newer");
+    // `G` is the other way home
+    s.press("G");
+    s.wait_gone("newer");
+}
+
+#[test]
+fn the_wheel_over_logs_scrolls_it_and_over_the_list_moves_the_selection() {
+    let mut s = at_80x24();
+    let logs_row = s.row_of("LOGS: DB");
+    // two rows under the title is inside the pane
+    wheel(&mut s, 64, 10, logs_row + 2);
+    s.wait_for("newer");
+    wheel(&mut s, 65, 10, logs_row + 2);
+    wheel(&mut s, 65, 10, logs_row + 2);
+    s.wait_gone("newer");
+
+    // the list: a notch down moves the selection like `j`
+    let list_row = s.row_of("NAME");
+    wheel(&mut s, 65, 10, list_row + 1);
+    s.wait_until("redis to be the selected row", |screen| {
+        selected_name(screen) == "redis"
+    });
+    wheel(&mut s, 64, 10, list_row + 1);
+    s.wait_until("db to be the selected row", |screen| {
+        selected_name(screen) == "db"
+    });
+}
+
+#[test]
+fn the_list_draws_a_scrollbar_at_80x24_with_the_demos_seven_tunnels() {
+    let s = at_80x24();
+    s.wait_until("the list scrollbar on the right border", |screen| {
+        let column: String = (3..11)
+            .filter_map(|y| screen.cell(y, 79).map(|c| c.contents().to_string()))
+            .collect();
+        column.contains('\u{25b2}') && column.contains('\u{25bc}')
+    });
+}
+
+#[test]
+fn the_mouse_is_captured_while_the_tui_runs_and_released_on_quit() {
+    let mut s = Screen::demo();
+    s.wait_for("TUNNELS (7)");
+    wait_raw(&s, b"\x1b[?1000h", "enable-mouse-capture");
+    wait_raw(&s, b"\x1b[?1006h", "enable-sgr-mouse");
+    assert!(
+        !s.raw_contains(b"\x1b[?1000l"),
+        "capture was released while the TUI still runs"
+    );
+    s.press("q");
+    let status = s.wait_exit();
+    assert!(status.success(), "exit status {status:?}");
+    wait_raw(&s, b"\x1b[?1000l", "disable-mouse-capture");
+    wait_raw(&s, b"\x1b[?1006l", "disable-sgr-mouse");
+    wait_raw(&s, b"\x1b[?1049l", "leave-alternate-screen");
+    // The mouse goes before the screen does, so no report reaches a shell
+    let raw = relock(&s.raw).clone();
+    let at = |seq: &[u8]| raw.windows(seq.len()).rposition(|w| w == seq).unwrap();
+    assert!(
+        at(b"\x1b[?1000l") < at(b"\x1b[?1049l"),
+        "capture released before the alternate screen is left"
+    );
 }

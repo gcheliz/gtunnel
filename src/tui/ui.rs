@@ -1,13 +1,15 @@
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Sparkline, Wrap,
+    Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
+    ScrollbarOrientation, ScrollbarState, Sparkline, Wrap,
 };
 use ratatui::Frame;
 
 use super::app::{
-    App, ConfigFile, ConfigView, HelpExtent, InputMode, TunnelEntry, TunnelKind, TunnelMode,
+    App, ConfigFile, ConfigView, HelpExtent, InputMode, LogExtent, PaneRects, TunnelEntry,
+    TunnelKind, TunnelMode,
 };
 use super::theme;
 use crate::probe::{HealthStatus, LB_WINDOW_MINUTES};
@@ -576,6 +578,19 @@ pub const KEYMAP: &[KeyDoc] = &[
         None,
         "refresh the list, metrics and health",
         Group::UrlAndLog,
+    ), // Bound in the list only: the keymap page has its own `PgUp` and `G`, which
+    // are the next two rows' near twins and scroll the page instead
+    doc(
+        "PgUp",
+        Some("logs"),
+        "scroll the log back; PgDn forward",
+        Group::UrlAndLog,
+    ),
+    doc(
+        "End/G",
+        None,
+        "follow the newest log line again",
+        Group::UrlAndLog,
     ),
     doc(";", Some("account"), "cycle accounts", Group::Program),
     // `:` is the shift of `;`, so the key that cycles accounts and the key
@@ -678,30 +693,43 @@ impl Action {
 // of that trap: `s`/`S` and `r`/`R` are never on screen together, because a
 // tunnel cannot be both running and stopped. `a`/`A` is the exception, since
 // `a add` is a program action and `A auto` a contextual one.
+//
+// `PgUp logs` sits last but for `L clear log`, so it is the second thing a
+// narrow footer gives up. It does not outrank `c copy` and `o open`: those act
+// on the row and this one pages a pane that already shows its newest lines, and
+// the keymap page lists it for the width where the footer cannot.
 const ACTIONS_RUNNING: &[Action] = &[
     Action::of("S"),
     Action::of("R"),
     Action::of("c"),
     Action::of("o"),
+    Action::of("PgUp"),
     Action::of("L"),
 ];
 
 // A run started with `gtunnel run`: it has no service to stop, restart or log
 // to, so the footer offers what does work on it, led by the key that gives
 // it one
-const ACTIONS_EPHEMERAL: &[Action] = &[Action::of("m"), Action::of("c"), Action::of("o")];
+const ACTIONS_EPHEMERAL: &[Action] = &[
+    Action::of("m"),
+    Action::of("c"),
+    Action::of("o"),
+    Action::of("PgUp"),
+];
 
 const ACTIONS_STOPPED: &[Action] = &[
     Action::of("s"),
     Action::of("e"),
     Action::of("d"),
     Action::of("A"),
+    Action::of("PgUp"),
 ];
 
 const ACTIONS_ERROR: &[Action] = &[
     Action::of("R").lead(),
     Action::of("e"),
     Action::of("d"),
+    Action::of("PgUp"),
     Action::of("L"),
 ];
 
@@ -760,6 +788,13 @@ pub fn footer_most() -> usize {
 /// is just a border, and upper case does the work that breaking the line used
 /// to: it says "this is a heading" without competing with the values below it.
 fn pane(f: &mut Frame, area: Rect, title: &str, border: Option<Style>) -> Rect {
+    pane_noted(f, area, title, "", border)
+}
+
+/// `pane` with a note after the title, kept in the case it was written in. The
+/// title is upper case because it is a heading; `newer` is a count of lines and
+/// reads as one only in lower case, as the footer's words do.
+fn pane_noted(f: &mut Frame, area: Rect, title: &str, note: &str, border: Option<Style>) -> Rect {
     let mut block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded);
@@ -782,15 +817,19 @@ fn pane(f: &mut Frame, area: Rect, title: &str, border: Option<Style>) -> Rect {
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Min(0)])
         .split(padded);
-    f.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            title.to_uppercase(),
-            Style::default()
-                .fg(theme::MUTED)
-                .add_modifier(Modifier::BOLD),
-        ))),
-        rows[0],
-    );
+    let mut heading = vec![Span::styled(
+        title.to_uppercase(),
+        Style::default()
+            .fg(theme::MUTED)
+            .add_modifier(Modifier::BOLD),
+    )];
+    if !note.is_empty() {
+        heading.push(Span::styled(
+            format!("  {note}"),
+            Style::default().fg(theme::WARN),
+        ));
+    }
+    f.render_widget(Paragraph::new(Line::from(heading)), rows[0]);
     rows[1]
 }
 
@@ -818,10 +857,121 @@ pub(crate) fn status_style(status: TunnelStatus, health: HealthStatus) -> Style 
 /// and a list loses a row more cheaply than a url.
 const STACK_BELOW: u16 = 121;
 /// The fewest rows a stacked list gets: its border, its title, its header and
-/// two entries.
-const LIST_MIN_ROWS: u16 = 5;
+/// two entries. It was five, which held one: a list that shows a single row
+/// cannot show that there is a next one.
+const LIST_MIN_ROWS: u16 = 6;
+
+/// What the list wants when stacked: its border, its title and its header, then
+/// a row for every entry.
+const LIST_CHROME: u16 = 4;
+/// The share of the work area the stacked list may take, in percent. Past it
+/// the list scrolls: the panes under it are what the list is for.
+const LIST_MAX_PERCENT: u16 = 40;
+/// The stacked width from which Logs and Metrics sit side by side. Under it
+/// Metrics would be a column too narrow to hold its figures, so it becomes a
+/// strip and Logs keeps the width.
+pub const BESIDE_FROM: u16 = 80;
+/// Logs' share of the width when Metrics sits beside it, in percent.
+const LOGS_PERCENT: u16 = 60;
+
+/// How a stacked work area is cut: the list, the one-line summary of the
+/// selected tunnel, and what is left for Logs and Metrics.
+///
+/// The list is sized to its entries so a short list does not hold rows empty,
+/// but never above `LIST_MAX_PERCENT` of the height or below `LIST_MIN_ROWS`;
+/// past the cap it scrolls. The summary is one row and only exists with a
+/// selection and a row to spare.
+pub fn stacked_heights(total: u16, entries: usize, selected: bool) -> (u16, u16, u16) {
+    let wanted = u16::try_from(entries.max(1))
+        .unwrap_or(u16::MAX)
+        .saturating_add(LIST_CHROME);
+    let cap = total * LIST_MAX_PERCENT / 100;
+    let list = wanted.min(cap).max(LIST_MIN_ROWS).min(total);
+    let summary = u16::from(selected && total > list);
+    (list, summary, total - list - summary)
+}
+
+/// Where Logs and Metrics go in the rows under the summary, and whether
+/// Metrics is the one-line strip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Bottom {
+    pub logs: Rect,
+    pub metrics: Rect,
+    pub strip: bool,
+}
+
+/// Cuts the area under the summary. From `BESIDE_FROM` columns Logs is the
+/// left 60 percent and Metrics the rest, both the full height. Narrower, Logs
+/// takes the width and Metrics is one row under it: the figures and the chart
+/// in the row that is left, because a chart dropped to make room is the one
+/// thing the pane exists to show.
+pub fn bottom_split(area: Rect) -> Bottom {
+    if area.width >= BESIDE_FROM {
+        let logs_width = area.width * LOGS_PERCENT / 100;
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(logs_width), Constraint::Min(0)])
+            .split(area);
+        return Bottom {
+            logs: cols[0],
+            metrics: cols[1],
+            strip: false,
+        };
+    }
+    let strip = area.height.min(1);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(strip)])
+        .split(area);
+    Bottom {
+        logs: rows[0],
+        metrics: rows[1],
+        strip: true,
+    }
+}
+
+fn render_stacked(f: &mut Frame, app: &App, area: Rect) {
+    let entry = app.selected_entry();
+    let (list, summary, rest) = stacked_heights(area.height, app.entries.len(), entry.is_some());
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(list),
+            Constraint::Length(summary),
+            Constraint::Length(rest),
+        ])
+        .split(area);
+    render_tunnels(f, app, rows[0]);
+    let Some(entry) = entry else {
+        // Nothing selected, so nothing to summarise or measure
+        render_logs(f, app, rows[2]);
+        return;
+    };
+    if summary > 0 {
+        f.render_widget(
+            Paragraph::new(summary_line(entry, rows[1].width as usize)),
+            rows[1],
+        );
+    }
+    let bottom = bottom_split(rows[2]);
+    if bottom.logs.height >= LOGS_STACKED_MIN {
+        render_logs(f, app, bottom.logs);
+    }
+    if bottom.strip {
+        render_metrics_strip(f, app, bottom.metrics);
+    } else {
+        render_metrics(f, app, bottom.metrics, true);
+    }
+}
+
+/// A Logs pane shorter than this is a frame around nothing, and the rows go
+/// to the figures under it instead.
+const LOGS_STACKED_MIN: u16 = 3;
 
 pub fn render(f: &mut Frame, app: &App) {
+    // Rewritten by the panes that are drawn, so a pane that is not never answers
+    // a wheel event from where it used to be
+    app.pane_rects.set(PaneRects::default());
     // A terminal short enough that the header would cost the list its last row
     // keeps the list: the header says what the app is, the list is the app
     let header_height = if f.area().height >= 16 {
@@ -876,25 +1026,16 @@ pub fn render(f: &mut Frame, app: &App) {
     // Side by side, the list at 80 columns is 32 cells wide and the url is the
     // first thing it loses. Below `STACK_BELOW` the list takes the full width
     // above the other panes instead, trading rows for the columns it needs.
-    let (list_area, right_area) = if f.area().width < STACK_BELOW {
-        let total = main[1].height;
-        let list_height = (total * 40 / 100).max(LIST_MIN_ROWS).min(total);
-        let rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(list_height), Constraint::Min(0)])
-            .split(main[1]);
-        (rows[0], rows[1])
+    if f.area().width < STACK_BELOW {
+        render_stacked(f, app, main[1]);
     } else {
         let cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(46), Constraint::Percentage(54)])
             .split(main[1]);
-        (cols[0], cols[1])
-    };
-
-    render_tunnels(f, app, list_area);
-
-    render_right(f, app, right_area);
+        render_tunnels(f, app, cols[0]);
+        render_right(f, app, cols[1]);
+    }
 
     render_help_bar(f, main[3], app);
 
@@ -989,6 +1130,10 @@ const PENDING_GLYPH: char = '\u{25d0}';
 fn render_tunnels(f: &mut Frame, app: &App, area: Rect) {
     let title = format!("Tunnels ({})", app.entries.len());
     let inner = pane(f, area, &title, None);
+    app.pane_rects.set(PaneRects {
+        list: area,
+        ..app.pane_rects.get()
+    });
     if inner.height == 0 {
         return;
     }
@@ -1145,6 +1290,117 @@ fn render_tunnels(f: &mut Frame, app: &App, area: Rect) {
         .with_offset(offset)
         .with_selected(Some(selected));
     f.render_stateful_widget(List::new(items), parts[1], &mut state);
+
+    // Rows the pane cannot show are said on its border, where the eye already
+    // is when it counts rows. Nothing is drawn when every entry is on screen,
+    // so a list that fits shows no scrollbar to ask about
+    if app.entries.len() > height {
+        // Positions are the offsets the window can take, so the thumb reaches
+        // the end exactly when the last entry is the last row
+        let last_offset = app.entries.len() - height;
+        let mut bar = ScrollbarState::new(last_offset + 1)
+            .position(offset)
+            .viewport_content_length(1);
+        f.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight),
+            area.inner(Margin {
+                vertical: 1,
+                horizontal: 0,
+            }),
+            &mut bar,
+        );
+    }
+}
+
+/// Cuts spans to `width` cells and marks the cut with `…`, so a line that
+/// does not fit loses its tail and says so, and never a half of a word with no
+/// sign that the rest was there.
+fn clip_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
+    let total: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+    if total <= width {
+        return spans;
+    }
+    let room = width.saturating_sub(1);
+    let mut out = Vec::new();
+    let mut used = 0;
+    for span in spans {
+        let cells = span.content.chars().count();
+        if used + cells <= room {
+            used += cells;
+            out.push(span);
+            continue;
+        }
+        let head: String = span.content.chars().take(room - used).collect();
+        out.push(Span::styled(head, span.style));
+        break;
+    }
+    if width > 0 {
+        out.push(Span::styled("\u{2026}", Style::default().fg(theme::MUTED)));
+    }
+    out
+}
+
+/// The selected tunnel in one row, for the stacked layout where Details has
+/// no room: its status, where it listens, where it goes, how long it has been
+/// up and whether it comes back at login.
+///
+/// Ordered by what a narrow terminal can afford to lose, and cut a whole part
+/// at a time from the end, as the footer sheds whole actions. The name, the
+/// status and the url, which the reader needs to act on the row, come first;
+/// the auto-start flag, which the list's tag and the keymap already cover,
+/// comes last. Only a line that cannot hold even the first part is clipped, with
+/// `…`, because a half of a url with no sign it is half would read as a whole one.
+fn summary_line(entry: &TunnelEntry, width: usize) -> Line<'static> {
+    let muted = Style::default().fg(theme::MUTED);
+    let word = match entry.status {
+        TunnelStatus::Running => "running",
+        TunnelStatus::Stopped => "stopped",
+        TunnelStatus::Error => "error",
+    };
+    let status = status_style(entry.status, entry.health);
+    let sep = || Span::styled(" \u{b7} ", muted);
+    let mut parts: Vec<Vec<Span<'static>>> = vec![vec![
+        Span::raw(" "),
+        Span::styled(entry.status.symbol(), status),
+        Span::raw(" "),
+        value(entry.display_name()),
+        Span::raw("  "),
+        Span::styled(word, status),
+        sep(),
+        Span::raw(entry.url()),
+    ]];
+    if entry.kind != TunnelKind::External {
+        parts.push(vec![
+            Span::styled(" \u{2192} ", muted),
+            Span::raw(entry.tunnel.display_target()),
+        ]);
+    }
+    if let (TunnelStatus::Running, Some(up)) =
+        (entry.status, entry.metrics.as_ref().and_then(|m| m.uptime))
+    {
+        parts.push(vec![sep(), Span::raw(format!("up {}", format_uptime(up)))]);
+    }
+    if entry.kind == TunnelKind::Managed {
+        parts.push(vec![
+            sep(),
+            Span::raw(if entry.tunnel.auto_start {
+                "auto-start on"
+            } else {
+                "auto-start off"
+            }),
+        ]);
+    }
+    let cells = |parts: &[Vec<Span<'static>>]| -> usize {
+        parts
+            .iter()
+            .flatten()
+            .map(|s| s.content.chars().count())
+            .sum()
+    };
+    while parts.len() > 1 && cells(&parts) + MARGIN > width {
+        parts.pop();
+    }
+    Line::from(clip_spans(parts.concat(), width))
 }
 
 /// Rows of border and title around the metrics figures, and the two the chart
@@ -1207,7 +1463,7 @@ fn render_right(f: &mut Frame, app: &App, area: Rect) {
     }
     render_logs(f, app, right[1]);
     if metrics > 0 {
-        render_metrics(f, app, right[2]);
+        render_metrics(f, app, right[2], false);
     }
 }
 
@@ -1488,17 +1744,36 @@ fn render_logs(f: &mut Frame, app: &App, area: Rect) {
     let entry = app.selected_entry();
     let title = logs_title(entry.as_ref().map(|e| e.name()), activity.as_deref());
 
-    let mut lines: Vec<Line> = Vec::new();
-    for line in app.logs.iter().rev().take(LOG_LINES).collect::<Vec<_>>() {
-        lines.push(Line::raw(line.clone()));
-    }
-    lines.reverse();
-    // A hint belongs under the line that caused it, where it reads as an answer
+    // The pane is read as the lines up to the one at its bottom edge. Following
+    // that is the newest; scrolled back it is `back` lines earlier. The log is
+    // never cut to the view, only what is drawn is: the title counts what is
+    // below the edge
+    let all = &app.logs[app.logs.len().saturating_sub(LOG_LINES)..];
+    let border_style = if app.status_error {
+        Some(Style::default().fg(theme::BAD))
+    } else if flash.is_some() {
+        Some(Style::default().fg(theme::ACCENT))
+    } else {
+        None
+    };
+    let width_of = |area: Rect| pane_text_width(area.width) as u16;
+    // The rows each line takes with its hint, so a page is counted in what is
+    // on screen and not in lines of unknown length
+    let rows_of: Vec<u16> = all
+        .iter()
+        .map(|line| log_line_rows(line, width_of(area)))
+        .collect();
+    let height = area.height.saturating_sub(3);
+    let extent = log_extent(&rows_of, height);
+    app.log_scroll.extent.set(extent);
+    let back = app.log_scroll.back();
+    let shown = &all[..all.len() - back];
+
     let mut annotated: Vec<Line> = Vec::new();
-    for line in lines {
-        let text = line.to_string();
-        annotated.push(line);
-        if let Some(hint) = diagnose_log_line(&text) {
+    for line in shown {
+        annotated.push(Line::raw(line.clone()));
+        // A hint belongs under the line that caused it, where it reads as an answer
+        if let Some(hint) = diagnose_log_line(line) {
             annotated.push(Line::styled(
                 format!("  {hint}"),
                 Style::default().fg(theme::WARN),
@@ -1515,17 +1790,15 @@ fn render_logs(f: &mut Frame, app: &App, area: Rect) {
         ));
     }
 
-    // The pane shows the newest lines, so it scrolls past everything that wraps
-    // above them; without this a Paragraph renders from its first line and the
-    // line the user is waiting for is the one cut off the bottom
-    let border_style = if app.status_error {
-        Some(Style::default().fg(theme::BAD))
-    } else if flash.is_some() {
-        Some(Style::default().fg(theme::ACCENT))
+    let note = if back > 0 {
+        format!("\u{2193} {back} newer")
     } else {
-        None
+        String::new()
     };
-    let inner = pane(f, area, &title, border_style);
+    let inner = pane_noted(f, area, &title, &note, border_style);
+    // The pane shows the lines up to the view's edge, so it scrolls past
+    // everything that wraps above them; without this a Paragraph renders from
+    // its first line and the line the reader is waiting for is cut off the bottom
     let rows = wrapped_rows(&annotated, inner.width);
     let scroll = rows.saturating_sub(inner.height);
     f.render_widget(
@@ -1534,6 +1807,76 @@ fn render_logs(f: &mut Frame, app: &App, area: Rect) {
             .scroll((scroll, 0)),
         inner,
     );
+    app.pane_rects.set(PaneRects {
+        logs: area,
+        ..app.pane_rects.get()
+    });
+
+    // On the border, only when there is somewhere to go: lines above the
+    // first one drawn, or below the last
+    let above = all.len() - back - lines_fitting_from_end(&rows_of[..all.len() - back], height);
+    if above > 0 || back > 0 {
+        let positions = extent.max_back + 1;
+        let mut state = ScrollbarState::new(positions)
+            .position(extent.max_back - back)
+            .viewport_content_length(1);
+        f.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight),
+            area.inner(Margin {
+                vertical: 1,
+                horizontal: 0,
+            }),
+            &mut state,
+        );
+    }
+}
+
+/// The rows a log line takes in a pane `width` cells wide, with the hint
+/// `diagnose_log_line` hangs under it.
+fn log_line_rows(line: &str, width: u16) -> u16 {
+    let mut rows = wrapped_rows(&[Line::raw(line.to_string())], width);
+    if let Some(hint) = diagnose_log_line(line) {
+        rows += wrapped_rows(&[Line::raw(format!("  {hint}"))], width);
+    }
+    rows
+}
+
+/// How many of the last lines fit in `height` rows. At least one, so a line
+/// taller than the pane is still the one that is shown.
+fn lines_fitting_from_end(rows: &[u16], height: u16) -> usize {
+    let mut used = 0u16;
+    let mut count = 0;
+    for r in rows.iter().rev() {
+        if used.saturating_add(*r) > height {
+            break;
+        }
+        used += r;
+        count += 1;
+    }
+    count.max(usize::from(!rows.is_empty()))
+}
+
+/// What the Logs pane can scroll, from the row counts of its lines and the
+/// rows it has. `max_back` is how far the view can go before the first line is
+/// at its top edge; a page is a screenful less one line, so the eye keeps a
+/// line it has already read.
+pub fn log_extent(rows: &[u16], height: u16) -> LogExtent {
+    let mut used = 0u16;
+    let mut top = 0;
+    for r in rows {
+        if used.saturating_add(*r) > height {
+            break;
+        }
+        used += r;
+        top += 1;
+    }
+    let top = top.max(usize::from(!rows.is_empty()));
+    LogExtent {
+        max_back: rows.len() - top,
+        page: lines_fitting_from_end(rows, height)
+            .saturating_sub(1)
+            .max(1),
+    }
 }
 
 /// The newest `width` samples. A `Sparkline` draws one cell per sample and
@@ -1699,7 +2042,23 @@ fn metrics_lines(entry: &TunnelEntry, width: usize) -> Vec<Line<'static>> {
     lines
 }
 
-fn render_metrics(f: &mut Frame, app: &App, area: Rect) {
+/// The rows the figures and the chart each get out of a Metrics body.
+///
+/// Side by side the pane is sized to its figures, so they come first and the
+/// chart takes what the layout left over. In the stacked layout the pane is
+/// the height it is given, and the chart is the part that cannot be dropped:
+/// it keeps the rows left after the figures, never fewer than one, and the
+/// figures are cut from their end, where the least urgent one sits.
+pub fn metrics_split(body: u16, figures: u16, chart_first: bool) -> (u16, u16) {
+    if !chart_first {
+        let figures = figures.min(body);
+        return (figures, body - figures);
+    }
+    let chart = body.saturating_sub(figures).max(body.min(1));
+    (body - chart, chart)
+}
+
+fn render_metrics(f: &mut Frame, app: &App, area: Rect, chart_first: bool) {
     let inner = pane(f, area, "Metrics", None);
 
     let Some(entry) = app.selected_entry() else {
@@ -1707,27 +2066,90 @@ fn render_metrics(f: &mut Frame, app: &App, area: Rect) {
     };
     let lines = metrics_lines(entry, inner.width as usize);
 
+    let (figures, _) = metrics_split(inner.height, wrapped_rows(&lines, inner.width), chart_first);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(wrapped_rows(&lines, inner.width)),
-            Constraint::Min(0),
-        ])
+        .constraints([Constraint::Length(figures), Constraint::Min(0)])
         .split(inner);
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), chunks[0]);
 
     if !entry.history.is_empty() {
-        let samples = app.selected_sparkline();
-        let (drawn, top) = chart_scale(sparkline_slice(&samples, chunks[1].width));
-        f.render_widget(
-            Sparkline::default()
-                .data(&drawn)
-                .max(top)
-                .style(Style::default().fg(theme::ACCENT)),
-            chunks[1],
+        render_chart(f, app, chunks[1]);
+    }
+}
+
+fn render_chart(f: &mut Frame, app: &App, area: Rect) {
+    let samples = app.selected_sparkline();
+    let (drawn, top) = chart_scale(sparkline_slice(&samples, area.width));
+    f.render_widget(
+        Sparkline::default()
+            .data(&drawn)
+            .max(top)
+            .style(Style::default().fg(theme::ACCENT)),
+        area,
+    );
+}
+
+/// The peak as the strip prints it: milliseconds without the unit, which the
+/// latency beside it has already said.
+fn strip_peak(entry: &TunnelEntry) -> String {
+    if entry.history.is_empty() {
+        return "-".to_string();
+    }
+    let text = format_latency(std::time::Duration::from_micros(entry.history.peak()));
+    text.trim_end_matches(" ms").to_string()
+}
+
+/// Metrics for a terminal with no row to spare, in one line: the figures
+/// worth a glance, then the chart in whatever width they leave. Nothing about
+/// it is a pane, because a frame would cost the two rows the line is made of.
+fn metrics_strip(entry: &TunnelEntry) -> (Line<'static>, usize) {
+    let metrics = entry.metrics.clone().unwrap_or_default();
+    let latency = match metrics.latency {
+        Some(rtt) => format_latency(rtt),
+        None => "-".to_string(),
+    };
+    let line = Line::from(vec![
+        Span::raw(" "),
+        value(latency),
+        inline("  peak"),
+        value(strip_peak(entry)),
+        inline("  active"),
+        value(metrics.active_connections.to_string()),
+        Span::raw("  "),
+        health_span(entry),
+        Span::raw("  "),
+    ]);
+    let used = line.to_string().chars().count();
+    (line, used)
+}
+
+fn render_metrics_strip(f: &mut Frame, app: &App, area: Rect) {
+    let Some(entry) = app.selected_entry() else {
+        return;
+    };
+    if area.height == 0 {
+        return;
+    }
+    let (line, used) = metrics_strip(entry);
+    f.render_widget(Paragraph::new(line), area);
+    let chart = (area.width as usize).saturating_sub(used + MARGIN);
+    if chart >= STRIP_CHART_MIN && !entry.history.is_empty() {
+        render_chart(
+            f,
+            app,
+            Rect {
+                x: area.x + used as u16,
+                width: chart as u16,
+                height: 1,
+                ..area
+            },
         );
     }
 }
+
+/// A chart narrower than this is a few bars that read as noise.
+const STRIP_CHART_MIN: usize = 8;
 
 // Milliseconds, with a decimal while the figure is small enough that rounding
 // to a whole one would report a real measurement as nothing
@@ -1964,6 +2386,10 @@ const HELP_GAP: usize = 4;
 
 const CASE_NOTE: &str = "Case is load-bearing in three places: s/S start and stop, a/A add and auto-start, r/R refresh and restart. The footer never pairs s/S or r/R; only a/A, in two groups - this page is where it has to be stated.";
 
+/// Mouse capture is the price of the wheel, and the terminal's own selection is
+/// what it costs, so the page that lists the keys says how to get it back.
+const MOUSE_NOTE: &str = "The mouse wheel scrolls the list or the log under the pointer. With the mouse in use the terminal stops selecting text on a drag: hold Shift while dragging to select, as before.";
+
 /// How many keys are bound, counting `up/k` as the two keys it is. Counted
 /// from the table, because a figure typed into a sentence is wrong by the next
 /// key.
@@ -2011,8 +2437,8 @@ fn help_stack(groups: &[Group]) -> Vec<Line<'static>> {
     rows
 }
 
-fn help_note(width: usize) -> Vec<Line<'static>> {
-    wrap_words(CASE_NOTE, width)
+fn help_note(width: usize, note: &str) -> Vec<Line<'static>> {
+    wrap_words(note, width)
         .into_iter()
         .map(|row| Line::styled(row, Style::default().fg(theme::LABEL)))
         .collect()
@@ -2179,18 +2605,22 @@ pub fn help_page(width: usize, height: usize, scroll: usize) -> HelpPage {
         let mut left = help_stack(&[Group::Tunnel, Group::List]);
         left.push(Line::raw(""));
         left.extend(help_paths(column));
+        left.push(Line::raw(""));
+        left.extend(help_note(column, MOUSE_NOTE));
         let mut right = help_stack(&[Group::UrlAndLog, Group::Program]);
         right.push(Line::raw(""));
-        right.extend(help_note(column));
+        right.extend(help_note(column, CASE_NOTE));
         help_columns(left, right, column)
     } else {
         let mut rows = help_stack(&[Group::Tunnel, Group::List]);
         rows.push(Line::raw(""));
         rows.extend(help_paths(width));
         rows.push(Line::raw(""));
+        rows.extend(help_note(width, MOUSE_NOTE));
+        rows.push(Line::raw(""));
         rows.extend(help_stack(&[Group::UrlAndLog, Group::Program]));
         rows.push(Line::raw(""));
-        rows.extend(help_note(width));
+        rows.extend(help_note(width, CASE_NOTE));
         rows
     };
     let footer = help_footer(width);

@@ -355,7 +355,7 @@ impl App {
         };
         // The other account's rows are other tunnels, so nothing carries over
         self.demo_logs = DemoLogs::default();
-        self.logs.clear();
+        self.clear_logs();
         self.has_relay = !staging;
         self.domains = if staging {
             Vec::new()
@@ -376,6 +376,7 @@ impl App {
         if key == self.demo_logs.shown {
             return;
         }
+        self.log_scroll.follow();
         self.logs = match (&key, self.entries.get(self.selected)) {
             (Some(key), Some(entry)) => {
                 if !self.demo_logs.cache.contains_key(key) {
@@ -447,7 +448,8 @@ impl App {
         lines.push(line);
         let excess = lines.len().saturating_sub(super::ui::LOG_LINES);
         lines.drain(..excess);
-        self.logs = lines.clone();
+        let fresh = lines.clone();
+        self.set_logs(fresh);
     }
 
     /// What the runtime's reload would show once an op had landed. The demo has
