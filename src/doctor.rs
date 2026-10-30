@@ -61,6 +61,12 @@ pub enum Finding {
         problem: CredentialFileProblem,
     },
     NumpyMissing,
+    // The tunnel's own log carries gcloud's NumPy warning, so this tunnel was
+    // started by a gcloud whose Python has no NumPy: the probe above asks
+    // the gcloud on PATH, and a service can run another
+    NumpyWarned {
+        tunnel: String,
+    },
     StaleState {
         tunnel: String,
     },
@@ -250,11 +256,13 @@ impl Finding {
                      --credential-file <absolute path>`, or `--credential-file \"\"` to clear it"
                 ),
             },
-            Finding::NumpyMissing => {
-                "gcloud's Python is missing numpy, which makes IAP tunnels slow. Run \
-                 `gcloud components reinstall`"
-                    .to_string()
-            }
+            Finding::NumpyMissing => format!(
+                "gcloud's Python is missing numpy, which makes IAP tunnels slow. {NUMPY_ADVICE}"
+            ),
+            Finding::NumpyWarned { tunnel } => format!(
+                "Tunnel '{tunnel}': gcloud warned that it runs without NumPy, which slows large \
+                 transfers over IAP. {NUMPY_ADVICE}, then `gtunnel restart {tunnel}`"
+            ),
             Finding::StaleState { tunnel } => {
                 format!("Tunnel '{tunnel}' is in tunnels.toml but has no service installed")
             }
@@ -396,6 +404,23 @@ impl Finding {
 // at is whatever ceiling its unit was installed with, and an old unit's is 256.
 pub fn out_of_descriptors(log: &str) -> bool {
     log.contains("Too many open files")
+}
+
+// Google's own fix (IAP TCP forwarding, "Increasing the TCP upload
+// bandwidth"). gcloud bundles a Python of its own, so the system's NumPy does
+// not count, and the variable lets that Python see packages installed for it.
+// Both halves are needed: the install alone leaves gcloud ignoring it. The
+// variable is one the service definition already carries, so a restart picks
+// it up.
+const NUMPY_ADVICE: &str = "Install numpy into gcloud's Python: \
+    `$(gcloud info --format=\"value(basic.python_location)\") -m pip install numpy`, and set \
+    `CLOUDSDK_PYTHON_SITEPACKAGES=1`";
+
+pub fn numpy_warned(tunnel: &str, log: &str) -> Option<Finding> {
+    log.contains(crate::failure::NUMPY_WARNING)
+        .then(|| Finding::NumpyWarned {
+            tunnel: tunnel.to_string(),
+        })
 }
 
 pub fn descriptors_exhausted(tunnel: &str, log: &str, holders: &[Holder]) -> Option<Finding> {
@@ -1105,6 +1130,7 @@ async fn account_findings(_cfg: &Config, state: &TunnelState, acct: &Account) ->
                 std::env::var(name).ok()
             }));
         }
+        findings.extend(numpy_warned(&tunnel.name, &log));
         // The lsof listing is only asked for once the log has earned it
         if !out_of_descriptors(&log) {
             continue;
@@ -2363,6 +2389,9 @@ mod tests {
                 problem: CredentialFileProblem::UnknownType("authorized_user".to_string()),
             },
             Finding::NumpyMissing,
+            Finding::NumpyWarned {
+                tunnel: "db".to_string(),
+            },
             Finding::StaleState {
                 tunnel: "db".to_string(),
             },
@@ -2421,6 +2450,47 @@ mod tests {
             .describe();
         assert!(unknown.contains("k8s"), "{unknown}");
         assert!(!unknown.contains("my-client"), "{unknown}");
+    }
+
+    // gcloud prints this once per tunnel start, ahead of the first connection,
+    // as a WARNING block that spans two lines
+    const NUMPY_WARNING_LOG: &str = "Testing if tunnel connection works.\n\
+        WARNING: \n\
+        To increase the performance of the tunnel, consider installing NumPy. For instructions,\n\
+        please see https://cloud.google.com/iap/docs/using-tcp-forwarding#increasing_the_tcp_upload_bandwidth\n\
+        Listening on port [15432].\n";
+
+    #[test]
+    fn doctor_reports_a_tunnel_whose_log_carries_gclouds_numpy_warning() {
+        assert_eq!(
+            numpy_warned("k8s", "Listening on port [15432].\n"),
+            None,
+            "an ordinary log is not a finding"
+        );
+        let finding = numpy_warned("k8s", NUMPY_WARNING_LOG).expect("a finding");
+        assert_eq!(
+            finding,
+            Finding::NumpyWarned {
+                tunnel: "k8s".to_string()
+            }
+        );
+        let text = finding.describe();
+        assert!(text.contains("'k8s'"), "{text}");
+        assert!(text.contains("-m pip install numpy"), "{text}");
+        assert!(text.contains("CLOUDSDK_PYTHON_SITEPACKAGES=1"), "{text}");
+        assert!(text.contains("gtunnel restart k8s"), "{text}");
+        assert!(!finding.fixable());
+    }
+
+    #[test]
+    fn the_numpy_log_hint_and_the_doctor_finding_read_the_same_line() {
+        let hint = crate::tunnel::diagnose_log_line(
+            "WARNING: To increase the performance of the tunnel, consider installing NumPy. For instructions,",
+            false,
+        )
+        .expect("a hint");
+        assert!(hint.contains("gtunnel doctor"), "{hint}");
+        assert!(NUMPY_WARNING_LOG.contains(crate::failure::NUMPY_WARNING));
     }
 
     #[test]

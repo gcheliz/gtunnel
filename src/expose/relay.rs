@@ -21,6 +21,7 @@ pub struct RelayUpOptions {
     pub zone: String,
     pub network: String,
     pub managed_zone: String,
+    pub machine_type: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -29,6 +30,30 @@ pub struct RelayStatus {
     pub ip: Option<String>,
     pub certs: Vec<(String, String)>,
     pub forwarding_rule: bool,
+    pub machine_type: Option<String>,
+}
+
+// A relay is created at one size and left there. A resize needs a stop, and a
+// stop drops every exposed URL until the instance is back, so `relay up`
+// reports the difference and leaves the choice, and the downtime, to the
+// person. None when the relay did not say what it is: no ground to call it wrong.
+pub fn machine_type_mismatch(
+    have: Option<&str>,
+    want: &str,
+    project: &str,
+    zone: &str,
+    vm: &str,
+) -> Option<String> {
+    let have = have?;
+    if have == want {
+        return None;
+    }
+    Some(format!(
+        "relay instance {vm} is {have} but relay.machine_type is {want}; it is left as it is, \
+         because changing the type needs a stop. Run `gtunnel relay down`, then `gtunnel relay \
+         up`, or stop the instance and run: gcloud compute instances set-machine-type {vm} \
+         --machine-type={want} --zone={zone} --project={project}"
+    ))
 }
 
 // One line per step, so `relay up` shows what it created and what it found
@@ -39,6 +64,11 @@ fn step(created: bool, what: &str) {
     } else {
         println!("  · {what} (exists)");
     }
+}
+
+#[allow(clippy::print_stdout, clippy::print_stderr)]
+fn step_note(note: &str) {
+    println!("  ! {note}");
 }
 
 // Like `step`, for a resource that is converged and not only created: a
@@ -247,12 +277,22 @@ pub async fn relay_up(
                 &names.relay_vm,
                 network,
                 RELAY_TAG,
+                &opts.machine_type,
             )
             .await?;
             client.wait_operation(&op).await?;
             Reconciled::Created
         }
         Some(vm) => {
+            if let Some(note) = machine_type_mismatch(
+                vm.machine_type.as_deref(),
+                &opts.machine_type,
+                project,
+                zone,
+                &names.relay_vm,
+            ) {
+                step_note(&note);
+            }
             let change = compute::reconcile_relay_instance(client, project, zone, vm).await?;
             // A stopped VM runs the new script at its next boot anyway, and
             // ssh to it would only fail
@@ -456,9 +496,10 @@ pub async fn relay_status(client: &GcpClient, acct: &Account) -> Result<RelaySta
         return Ok(RelayStatus::default());
     };
 
-    let vm = compute::get_instance(client, project, &expose.relay_zone, &names.relay_vm)
-        .await?
-        .map(|i| i.status);
+    let instance =
+        compute::get_instance(client, project, &expose.relay_zone, &names.relay_vm).await?;
+    let machine_type = instance.as_ref().and_then(|i| i.machine_type.clone());
+    let vm = instance.map(|i| i.status);
     let ip = compute::get_global_address(client, project, &names.address).await?;
     let forwarding_rule =
         compute::get_global_forwarding_rule(client, project, &names.forwarding_rule).await?;
@@ -476,6 +517,7 @@ pub async fn relay_status(client: &GcpClient, acct: &Account) -> Result<RelaySta
         ip,
         certs,
         forwarding_rule,
+        machine_type,
     })
 }
 
@@ -811,6 +853,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "name": "gt-dev-relay",
                 "status": "RUNNING",
+                "machineType": "zones/europe-west1-b/machineTypes/e2-micro",
                 "metadata": {
                     "fingerprint": "fp-meta",
                     "items": [{
@@ -868,6 +911,7 @@ mod tests {
             zone: "europe-west1-b".to_string(),
             network: "default".to_string(),
             managed_zone: "example".to_string(),
+            machine_type: "e2-micro".to_string(),
         }
     }
 
@@ -889,6 +933,7 @@ mod tests {
             zone: "europe-west1-b".to_string(),
             network: "default".to_string(),
             managed_zone: "example".to_string(),
+            machine_type: "e2-micro".to_string(),
         };
         let cfg = relay_up(&client(&server), &account(), &opts)
             .await
@@ -1029,5 +1074,94 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("api"), "{message}");
         assert_eq!(requests(&server, "DELETE", "/").await, 0);
+    }
+
+    // The relay of a running tunnel is not ours to stop: a resize needs a stop,
+    // and a stop drops every exposed URL until the instance is back
+    async fn relay_of_type(machine_type: &str) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_regex(r".*/instances/.*"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "name": "gt-dev-relay",
+                "status": "RUNNING",
+                "machineType": format!(
+                    "https://example.test/compute/v1/projects/p/zones/europe-west1-b/machineTypes/{machine_type}"
+                ),
+                "metadata": {
+                    "fingerprint": "fp-meta",
+                    "items": [{
+                        "key": "startup-script",
+                        "value": compute::RELAY_STARTUP_SCRIPT
+                    }]
+                }
+            })))
+            .mount(&server)
+            .await;
+        relay_mocks(&server).await;
+        server
+    }
+
+    #[tokio::test]
+    async fn relay_up_does_not_resize_a_relay_whose_machine_type_differs() {
+        let server = relay_of_type("e2-small").await;
+        relay_up(&client(&server), &account(), &options())
+            .await
+            .expect("relay up");
+
+        for needle in ["/stop", "/setMachineType", "/start", "/delete"] {
+            assert_eq!(
+                requests(&server, "POST", needle).await,
+                0,
+                "POST {needle} was sent to resize a running relay"
+            );
+        }
+        assert_eq!(requests(&server, "POST", "/instances").await, 0);
+        assert_eq!(requests(&server, "PATCH", "/instances").await, 0);
+    }
+
+    #[test]
+    fn a_relay_of_another_machine_type_is_reported_with_the_commands_that_fix_it() {
+        let note = machine_type_mismatch(
+            Some("e2-small"),
+            "e2-micro",
+            "example-dev-1a2b",
+            "europe-west1-b",
+            "gt-dev-relay",
+        )
+        .expect("a mismatch is reported");
+        assert!(note.contains("e2-small"), "{note}");
+        assert!(note.contains("relay.machine_type"), "{note}");
+        assert!(note.contains("e2-micro"), "{note}");
+        assert!(note.contains("gtunnel relay down"), "{note}");
+        assert!(note.contains("gtunnel relay up"), "{note}");
+        assert!(
+            note.contains(
+                "gcloud compute instances set-machine-type gt-dev-relay --machine-type=e2-micro \
+                 --zone=europe-west1-b --project=example-dev-1a2b"
+            ),
+            "{note}"
+        );
+        assert!(note.contains("stop"), "{note}");
+    }
+
+    #[test]
+    fn a_relay_of_the_wanted_or_an_unknown_machine_type_is_not_reported() {
+        let same = machine_type_mismatch(Some("e2-micro"), "e2-micro", "p", "z", "vm");
+        assert_eq!(same, None);
+        // A relay that did not say what it is gives no ground to call it wrong
+        assert_eq!(
+            machine_type_mismatch(None, "e2-micro", "p", "z", "vm"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn relay_status_reports_the_machine_type_the_relay_runs() {
+        let server = relay_of_type("e2-small").await;
+        let status = relay_status(&client(&server), &account())
+            .await
+            .expect("status");
+        assert_eq!(status.machine_type.as_deref(), Some("e2-small"));
     }
 }

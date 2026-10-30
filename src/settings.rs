@@ -154,6 +154,12 @@ const KIB: u64 = 1024;
 const MIB: u64 = KIB * 1024;
 const GIB: u64 = MIB * 1024;
 
+/// The relay's machine type when nothing says otherwise: the shared-core size
+/// the relay has always been created with, so an existing config is unchanged.
+pub fn default_relay_machine_type() -> String {
+    "e2-micro".to_string()
+}
+
 pub fn default_logs_max_size() -> String {
     show_size(LOGS_MAX_SIZE)
 }
@@ -289,6 +295,11 @@ const EXPOSE_BACKEND_TIMEOUT_KEY: Key = Key {
     var: "GTUNNEL_EXPOSE_BACKEND_TIMEOUT",
     legacy: None,
 };
+const RELAY_MACHINE_TYPE_KEY: Key = Key {
+    name: "relay.machine_type",
+    var: "GTUNNEL_RELAY_MACHINE_TYPE",
+    legacy: None,
+};
 const EDITOR_KEY: Key = Key {
     name: "editor",
     var: "GTUNNEL_EDITOR",
@@ -322,6 +333,9 @@ pub struct Settings {
     pub gcp_fingerprint_attempts: u32,
     /// Whole seconds, because the backend service's `timeoutSec` is an integer.
     pub expose_backend_timeout: Duration,
+    /// What `relay up` creates the instance as. Read only at creation: a
+    /// relay that exists keeps its type, because a resize needs a stop.
+    pub relay_machine_type: String,
     /// `GTUNNEL_EDITOR`, which outranks `VISUAL` and `EDITOR` like any
     /// variable outranks the file.
     pub editor_env: Option<String>,
@@ -487,6 +501,23 @@ fn parse_count(source: &str, raw: &str) -> Result<u32> {
             format!("'{raw}' is not a whole number from 1 to {}", u32::MAX),
         )),
     }
+}
+
+/// A machine type is spliced into a URL path, so it is checked against what
+/// GCP names them with, and nothing else gets through: `e2-micro`,
+/// `n2-standard-2`, and a custom `e2-custom-2-4096`.
+fn parse_machine_type(source: &str, raw: &str) -> Result<String> {
+    let ok = !raw.is_empty()
+        && raw
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+    if !ok {
+        return Err(bad(
+            source,
+            format!("'{raw}' is not a machine type like e2-micro or e2-small (a-z, 0-9 and -)"),
+        ));
+    }
+    Ok(raw.to_string())
 }
 
 /// A key with one variable and no older spelling: the file's value is always
@@ -685,6 +716,24 @@ pub fn resolve(config: &Config, env: EnvFn) -> Result<Resolved> {
         shown,
         &mut overrides,
     )?;
+    let relay_machine_type = {
+        let file = parse_machine_type(RELAY_MACHINE_TYPE_KEY.name, &config.relay.machine_type)?;
+        match var(env, RELAY_MACHINE_TYPE_KEY.var) {
+            None => file,
+            Some(raw) => {
+                let effective = parse_machine_type(RELAY_MACHINE_TYPE_KEY.var, &raw)?;
+                if effective != file {
+                    overrides.push(Override {
+                        key: RELAY_MACHINE_TYPE_KEY.name,
+                        variable: RELAY_MACHINE_TYPE_KEY.var,
+                        file: file.clone(),
+                        effective: effective.clone(),
+                    });
+                }
+                effective
+            }
+        }
+    };
     let editor_file = Some(config.editor.trim().to_string()).filter(|e| !e.is_empty());
     let editor_env = var(env, EDITOR_KEY.var);
     if let Some(chosen) = &editor_env
@@ -719,6 +768,7 @@ pub fn resolve(config: &Config, env: EnvFn) -> Result<Resolved> {
             gcp_lock_deadline,
             gcp_fingerprint_attempts,
             expose_backend_timeout,
+            relay_machine_type,
             editor_env,
             editor_file,
         },
@@ -1449,6 +1499,56 @@ mod tests {
             let (code, msg) = exit_and_text(&err);
             assert_eq!(code, 2, "{msg}");
             assert!(msg.contains(key), "{msg}");
+        }
+    }
+
+    #[test]
+    fn the_relay_machine_type_defaults_to_e2_micro() {
+        assert_eq!(settings_of("", &[]).relay_machine_type, "e2-micro");
+    }
+
+    #[test]
+    fn the_file_sets_the_relay_machine_type() {
+        let s = settings_of("[relay]\nmachine_type = \"e2-small\"\n", &[]);
+        assert_eq!(s.relay_machine_type, "e2-small");
+    }
+
+    #[test]
+    fn a_variable_beats_the_relay_machine_type_in_the_file_and_doctor_can_name_it() {
+        let r = resolve_with(
+            "[relay]\nmachine_type = \"e2-small\"\n",
+            &[("GTUNNEL_RELAY_MACHINE_TYPE", "e2-medium")],
+        )
+        .expect("resolves");
+        assert_eq!(r.settings.relay_machine_type, "e2-medium");
+        assert_eq!(
+            r.overrides,
+            vec![Override {
+                key: "relay.machine_type",
+                variable: "GTUNNEL_RELAY_MACHINE_TYPE",
+                file: "e2-small".to_string(),
+                effective: "e2-medium".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_bad_relay_machine_type_is_a_usage_error_naming_its_source() {
+        for value in ["E2-Micro", "e2 micro", "e2_micro", "e2-micro/../x"] {
+            let err = resolve_with("", &[("GTUNNEL_RELAY_MACHINE_TYPE", value)]).expect_err(value);
+            let (code, text) = exit_and_text(&err);
+            assert_eq!(code, 2, "{value}: {text}");
+            assert!(
+                text.contains("GTUNNEL_RELAY_MACHINE_TYPE"),
+                "{value}: {text}"
+            );
+        }
+        for value in ["", "E2-Micro", "e2_micro", "e2 micro"] {
+            let file = format!("[relay]\nmachine_type = \"{value}\"\n");
+            let err = resolve_with(&file, &[]).expect_err(value);
+            let (code, text) = exit_and_text(&err);
+            assert_eq!(code, 2, "{value:?}: {text}");
+            assert!(text.contains("relay.machine_type"), "{value:?}: {text}");
         }
     }
 }

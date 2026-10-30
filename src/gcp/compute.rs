@@ -27,6 +27,9 @@ pub struct Instance {
     // sent with every other key as it was read
     pub metadata: Vec<(String, String)>,
     pub metadata_fingerprint: Option<String>,
+    // The short name (`e2-micro`), not the URL the API returns, so it compares
+    // with the setting. None when the API did not say.
+    pub machine_type: Option<String>,
 }
 
 impl Instance {
@@ -53,6 +56,8 @@ struct RawInstance {
     network_interfaces: Vec<RawNic>,
     #[serde(default)]
     metadata: RawMetadata,
+    #[serde(default, rename = "machineType")]
+    machine_type: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -109,6 +114,10 @@ impl RawInstance {
                 .map(|i| (i.key, i.value))
                 .collect(),
             metadata_fingerprint: self.metadata.fingerprint,
+            machine_type: self
+                .machine_type
+                .as_deref()
+                .map(|u| last_segment(u).to_string()),
         }
     }
 }
@@ -251,6 +260,7 @@ pub async fn insert_relay_instance(
     name: &str,
     network: &str,
     tag: &str,
+    machine_type: &str,
 ) -> Result<Operation> {
     let url = format!(
         "{}/projects/{project}/zones/{zone}/instances",
@@ -258,7 +268,7 @@ pub async fn insert_relay_instance(
     );
     let body = json!({
         "name": name,
-        "machineType": format!("zones/{zone}/machineTypes/e2-micro"),
+        "machineType": format!("zones/{zone}/machineTypes/{machine_type}"),
         "disks": [{
             "boot": true,
             "autoDelete": true,
@@ -1839,6 +1849,7 @@ mod tests {
             labels: Default::default(),
             metadata,
             metadata_fingerprint: Some("fp-meta".to_string()),
+            machine_type: None,
         }
     }
 
@@ -2127,5 +2138,68 @@ mod tests {
             .expect("backends");
         let names: Vec<&str> = backends.iter().map(|b| b.name.as_str()).collect();
         assert_eq!(names, vec!["gt-a-early", "gt-a-late"]);
+    }
+
+    async fn relay_instance_body(machine_type: &str) -> serde_json::Value {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(done_op()))
+            .mount(&server)
+            .await;
+        insert_relay_instance(
+            &client(&server),
+            "p",
+            "europe-west1-b",
+            "gt-dev-relay",
+            "default",
+            "gt-relay",
+            machine_type,
+        )
+        .await
+        .expect("insert");
+        let posts = sent(&server, "POST").await;
+        assert_eq!(posts.len(), 1);
+        serde_json::from_slice(&posts[0].body).expect("json body")
+    }
+
+    #[tokio::test]
+    async fn the_relay_instance_body_carries_the_configured_machine_type() {
+        let body = relay_instance_body("e2-small").await;
+        assert_eq!(
+            body["machineType"],
+            "zones/europe-west1-b/machineTypes/e2-small"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_default_relay_machine_type_is_still_e2_micro() {
+        let default = crate::settings::default_relay_machine_type();
+        assert_eq!(default, "e2-micro");
+        let body = relay_instance_body(&default).await;
+        assert_eq!(
+            body["machineType"],
+            "zones/europe-west1-b/machineTypes/e2-micro"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_instance_reads_the_machine_type_as_its_last_segment() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "name": "gt-dev-relay",
+                "status": "RUNNING",
+                "machineType":
+                    "https://www.googleapis.com/compute/v1/projects/p/zones/europe-west1-b/machineTypes/e2-small"
+            })))
+            .mount(&server)
+            .await;
+
+        let got = get_instance(&client(&server), "p", "europe-west1-b", "gt-dev-relay")
+            .await
+            .expect("call")
+            .expect("instance");
+
+        assert_eq!(got.machine_type.as_deref(), Some("e2-small"));
     }
 }
