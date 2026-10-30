@@ -529,11 +529,11 @@ impl ServiceHost for Live {
     fn watchdog_render(&self) -> Option<String> {
         // The binary that runs the watchdog is this one, as `watch install`
         // writes it
-        let program = std::env::current_exe().ok()?;
+        let program = crate::update::exe_path().ok()?;
         super::render_watchdog(&program).ok()
     }
     async fn watchdog_install(&self) -> Result<()> {
-        super::install_watchdog(&std::env::current_exe()?).await
+        super::install_watchdog(&crate::update::exe_path()?).await
     }
     fn version(&self) -> &str {
         super::DEFINITION_VERSION
