@@ -853,7 +853,7 @@ Nothing here is gtunnel's to remove
 
 Removes every local trace: services, config, state, logs. It never deletes anything in GCP.
 
-A `gtunnel run` still alive is stopped first, and the config is removed only after the run has exited, so no run is left holding a port with no record to find it by. If the runs cannot be listed, `reset` stops before it changes anything; if one does not stop within 10s, the config is kept and `reset` says which run to stop.
+A `gtunnel run` still alive is stopped first, and the config is removed only after the run has exited, so no run is left holding a port with no record to find it by. If the runs cannot be listed, `reset` stops before it changes anything; if one does not stop within 10s, the config is kept and `reset` says which run to stop. A run that cannot be inspected counts as still running, never as stopped, and an exited run that has not been reaped counts as stopped. Nothing writes into the config after it is removed: `reset` prints no update hint, and a stopping run does not recreate its record directory.
 
 ```console
 $ gtunnel reset
