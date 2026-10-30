@@ -418,7 +418,9 @@ fn a_run_killed_outright_is_stopped_and_forgotten_by_the_next_list() {
     assert_eq!(record["owner_pid"], h.pid(n), "the record names its owner");
 
     h.kill_hard(n);
-    // Nothing ran at exit, so gcloud is still up and the record is still there
+    // Nothing ran at exit, so gcloud is still up and the record is still there.
+    // Linux ends gcloud with its owner (PR_SET_PDEATHSIG) and leaves its child
+    #[cfg(not(target_os = "linux"))]
     assert!(alive(h.pids()[0].0), "gcloud outlives its owner");
 
     let (code, err) = h.run(&["list"]);

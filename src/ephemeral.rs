@@ -1058,6 +1058,7 @@ async fn reap_with(
 /// has gone, its pid may belong to a stranger.
 async fn stop_orphan(record: &EphemeralRecord) {
     if !record.terminate() {
+        stop_leaderless_group(record).await;
         return;
     }
     if !record.wait_for_exit(REAP_GRACE).await
@@ -1072,6 +1073,31 @@ async fn stop_orphan(record: &EphemeralRecord) {
         && crate::proc::group_alive(pid)
     {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        crate::proc::signal_group(pid, libc::SIGKILL);
+    }
+}
+
+/// A leader that is already gone (on Linux it dies with its owner) can leave
+/// its own children holding the port. While any of them lives the kernel will
+/// not hand the group id out as a pid, so a group with members and no process
+/// of that pid is still this run's; a pid that is taken may be a stranger's.
+async fn stop_leaderless_group(record: &EphemeralRecord) {
+    let Some(pid) = signalable(record.pid) else {
+        return;
+    };
+    if record.pid_start.is_none() {
+        return;
+    }
+    // SAFETY: signal 0 sends nothing, and `signalable` rejected 0 and negative
+    // values, so this asks about one process and never a group.
+    let pid_free = unsafe { libc::kill(pid, 0) } != 0
+        && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+    if !pid_free || !crate::proc::group_alive(pid) {
+        return;
+    }
+    crate::proc::signal_group(pid, libc::SIGTERM);
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    if crate::proc::group_alive(pid) {
         crate::proc::signal_group(pid, libc::SIGKILL);
     }
 }
