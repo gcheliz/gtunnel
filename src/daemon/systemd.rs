@@ -140,6 +140,36 @@ WantedBy=timers.target
     (service, timer)
 }
 
+/// One `Environment=` line. A value is written as it is unless systemd would
+/// read it differently: `%` starts a specifier, so it is doubled (a proxy URL
+/// with an encoded password has one), and whitespace, a quote or a backslash
+/// needs the whole assignment quoted, or a `CLOUDSDK_CONFIG` under a path
+/// with a space ends at the space.
+fn env_line(key: &str, value: &str) -> String {
+    let value = value.replace('%', "%%");
+    if value.contains(|c: char| c.is_whitespace() || c == '"' || c == '\\') {
+        let inner = format!("{key}={value}")
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"");
+        format!("Environment=\"{inner}\"\n")
+    } else {
+        format!("Environment={key}={value}\n")
+    }
+}
+
+/// The inverse of [`env_line`] for one variable
+pub fn unit_env_value(text: &str, name: &str) -> Option<String> {
+    text.lines().find_map(|line| {
+        let rest = line.strip_prefix("Environment=")?;
+        let assignment = match rest.strip_prefix('"').and_then(|r| r.strip_suffix('"')) {
+            Some(inner) => inner.replace("\\\"", "\"").replace("\\\\", "\\"),
+            None => rest.to_string(),
+        };
+        let value = assignment.strip_prefix(name)?.strip_prefix('=')?;
+        Some(value.replace("%%", "%"))
+    })
+}
+
 pub fn render_unit(spec: &ServiceSpec) -> String {
     let mut exec = quote(&spec.program.to_string_lossy());
     for arg in &spec.args {
@@ -147,11 +177,7 @@ pub fn render_unit(spec: &ServiceSpec) -> String {
         exec.push_str(&quote(arg));
     }
 
-    let env: String = spec
-        .env
-        .iter()
-        .map(|(k, v)| format!("Environment={k}={v}\n"))
-        .collect();
+    let env: String = spec.env.iter().map(|(k, v)| env_line(k, v)).collect();
 
     let log = spec.log_path.display();
 
