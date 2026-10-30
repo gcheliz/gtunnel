@@ -221,12 +221,14 @@ to both rather than making you set two:
 
 | gtunnel level | gcloud `--verbosity` | ssh `-o LogLevel` | What you get |
 |---|---|---|---|
-| `quiet` | `warning` | `ERROR` | Failures only, plus gcloud's own `Listening on port` line |
+| `quiet` | `warning` | `INFO` | Failures, including a jump target that refuses a connection, plus gcloud's own `Listening on port` line |
 | `info` (default) | `info` | `DEBUG` | The listener or forward coming up, and one line per client connecting |
 | `debug` | `debug` | `DEBUG3` | The above plus gcloud's and ssh's own internals, for a tunnel that will not carry traffic |
 
 `info` maps to ssh `DEBUG` because ssh's forward-up and per-connection lines are `debug()` calls.
-`quiet` maps to `ERROR`, not `QUIET`, because `QUIET` hides the failures.
+`quiet` maps to `INFO`, not `QUIET` or `ERROR`: `QUIET` hides the failures, and `ERROR` hides the
+`channel N: open failed: connect failed: Connection refused` line that a jump tunnel writes when its
+target refuses, which is also what marks the row unhealthy.
 
 `quiet` is not silence: an Access tunnel still writes gcloud's `Listening on port [N].` and
 `Testing if tunnel connection works.` at every start, which `--verbosity` does not govern.
@@ -271,7 +273,7 @@ The level sets how fast a log grows:
 
 | Level | Per ssh handshake | Per client connection |
 |---|---|---|
-| `quiet` | almost nothing; a failure only | nothing |
+| `quiet` | a few lines; failures included | nothing |
 | `info` (default) | around 90 lines | a line or two |
 | `debug` | substantially more, gcloud's and ssh's internals included | several |
 
