@@ -512,12 +512,21 @@ impl GcpClient {
         parse_json(&text, url)
     }
 
+    // `None` is an answer with no operation in it (an empty body, or `{}`),
+    // which means there is nothing to wait for. A body that is there but is
+    // not an operation is an error: reading it as "nothing to wait for" is how
+    // a teardown moved on while a delete was still running.
     pub async fn delete(&self, url: &str) -> Result<Option<Operation>> {
         let text = self.send(reqwest::Method::DELETE, url, None).await?;
         if text.trim().is_empty() {
             return Ok(None);
         }
-        Ok(serde_json::from_str(&text).ok())
+        let op: Operation = parse_json(&text, url)?;
+        let names_nothing = op.name.is_none() && op.self_link.is_none();
+        if names_nothing && op.error.is_none() && !op.is_done() {
+            return Ok(None);
+        }
+        Ok(Some(op))
     }
 
     // Block until a long-running operation finishes, or report why it failed.
@@ -1163,6 +1172,24 @@ mod tests {
             Some("op-1"),
             "the cut answer must not have become Ok(None)"
         );
+    }
+
+    #[tokio::test]
+    async fn a_delete_answer_that_is_not_an_operation_is_an_error_and_an_empty_one_is_not() {
+        for (body, expect) in [("", "none"), ("{}", "none"), ("<html>", "error")] {
+            let server = MockServer::start().await;
+            Mock::given(method("DELETE"))
+                .respond_with(ResponseTemplate::new(200).set_body_string(body))
+                .mount(&server)
+                .await;
+            let out = client(&server)
+                .delete(&format!("{}/thing", server.uri()))
+                .await;
+            match expect {
+                "none" => assert!(matches!(out, Ok(None)), "{body:?}: {out:?}"),
+                _ => assert!(out.is_err(), "{body:?}: {out:?}"),
+            }
+        }
     }
 
     #[tokio::test]
