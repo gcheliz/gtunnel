@@ -87,11 +87,12 @@ fn destination_verdict<T>(
     match found {
         Ok(Some(_)) => Ok(()),
         // The zone is the source tunnel's; a move cannot say otherwise
-        Ok(None) => bail!(
+        Ok(None) => Err(GtunnelError::not_found(format!(
             "Instance '{instance}' not found in zone '{zone}' of project '{project}' \
              (account '{account}'); nothing was changed. If it lives in another zone, \
              `gtunnel delete` the tunnel and `gtunnel add` it on '{account}'"
-        ),
+        ))
+        .into()),
         Err(e) => Err(e.context(format!(
             "Could not check instance '{instance}' on account '{account}'; nothing was changed"
         ))),
@@ -1077,6 +1078,17 @@ mod tests {
         assert!(msg.contains("europe-west1-b"), "{msg}");
         assert!(msg.contains("delete") && msg.contains("add"), "{msg}");
         assert!(destination_verdict(Ok(Some(())), "prod", "p", "z", "bastion").is_ok());
+    }
+
+    #[test]
+    fn an_instance_missing_in_the_destination_exits_as_not_found() {
+        // A script must tell a destination without the instance from a crash
+        let err = destination_verdict::<()>(Ok(None), "prod", "p", "europe-west1-b", "bastion")
+            .unwrap_err();
+        assert_eq!(
+            crate::error::kind_of(&err),
+            crate::error::ErrorKind::NotFound
+        );
     }
 
     #[test]
