@@ -179,8 +179,18 @@ pub enum Commands {
     #[command(about = "Start a stopped tunnel")]
     Start {
         // Tunnel name
-        #[arg(help = "Tunnel name", add = clap_complete::engine::ArgValueCompleter::new(crate::commands::completions::tunnel_names))]
-        name: String,
+        #[arg(
+            help = "Tunnel name",
+            add = clap_complete::engine::ArgValueCompleter::new(crate::commands::completions::tunnel_names),
+            required_unless_present = "auth_expired",
+            conflicts_with = "auth_expired"
+        )]
+        name: Option<String>,
+        #[arg(
+            long,
+            help = "Start every tunnel stopped on an expired login, once the login works again (all accounts, or the one named by --account)"
+        )]
+        auth_expired: bool,
     },
 
     // Stop a running tunnel
@@ -451,6 +461,11 @@ impl Commands {
     // and a login prompt would swallow that; `init` has no account yet.
     pub fn needs_gcp_auth(&self) -> bool {
         match self {
+            // It asks gcloud for a token itself and says what it found; a
+            // login prompt in front would answer the question for it
+            Commands::Start {
+                auth_expired: true, ..
+            } => false,
             Commands::Init
             | Commands::Account { .. }
             | Commands::Reset { .. }
@@ -698,6 +713,29 @@ mod tests {
 
     fn parse(args: &[&str]) -> Cli {
         Cli::try_parse_from(args).expect("should parse")
+    }
+
+    #[test]
+    fn start_takes_a_name_or_auth_expired_and_never_both_or_neither() {
+        assert!(Cli::try_parse_from(["gtunnel", "start", "db"]).is_ok());
+        assert!(Cli::try_parse_from(["gtunnel", "start", "--auth-expired"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["gtunnel", "--account", "dev", "start", "--auth-expired"]).is_ok()
+        );
+        assert!(Cli::try_parse_from(["gtunnel", "start", "db", "--auth-expired"]).is_err());
+        assert!(Cli::try_parse_from(["gtunnel", "start"]).is_err());
+    }
+
+    #[test]
+    fn resuming_after_a_login_does_not_demand_a_login_first() {
+        let resume = parse(&["gtunnel", "start", "--auth-expired"]);
+        let command = resume.command.expect("a command");
+        assert!(
+            !command.needs_gcp_auth(),
+            "its whole job is to find out whether the login works"
+        );
+        let plain = parse(&["gtunnel", "start", "db"]);
+        assert!(plain.command.expect("a command").needs_gcp_auth());
     }
 
     // A unit written before the port and ready-file flags existed must still

@@ -464,10 +464,26 @@ fn text_tools_declare_no_output_schema() {
 }
 
 #[test]
+fn mcp_start_with_neither_a_name_nor_auth_expired_is_invalid_params() {
+    let h = Harness::new();
+    let req = r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"gtunnel_start_tunnel","arguments":{}}}"#;
+    let (stdout, stderr, success) = h.run_mcp_pipe(&format!("{req}\n"));
+    assert!(success, "stderr: {stderr}");
+    let line = stdout.lines().next().expect("response line");
+    let resp: serde_json::Value = serde_json::from_str(line).expect("valid json response");
+    assert_eq!(resp["error"]["code"], -32602);
+    assert!(resp["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("auth_expired"));
+}
+
+#[test]
 fn mcp_stdio_tool_call_missing_required_param_returns_invalid_params() {
     let h = Harness::new();
-    // gtunnel_start_tunnel requires "name"
-    let req = r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"gtunnel_start_tunnel","arguments":{}}}"#;
+    // gtunnel_stop_tunnel requires "name"; start does not, since
+    // `auth_expired` takes its place
+    let req = r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"gtunnel_stop_tunnel","arguments":{}}}"#;
     let (stdout, stderr, success) = h.run_mcp_pipe(&format!("{req}\n"));
     assert!(success, "stderr: {stderr}");
 
