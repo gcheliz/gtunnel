@@ -349,6 +349,45 @@ pub fn installed_service_text(label: &str) -> Option<String> {
     std::fs::read_to_string(path).ok()
 }
 
+/// The text of the watchdog's definition as installed, or `None` when it was
+/// never installed. A unit watchdog is two files and the interval lives in the
+/// timer, so both are read and joined: the refresh compares the whole of what
+/// `watch install` wrote.
+pub fn installed_watchdog_text() -> Option<String> {
+    let label = watchdog_label();
+    #[cfg(target_os = "macos")]
+    return installed_service_text(label);
+    #[cfg(not(target_os = "macos"))]
+    {
+        let service = installed_service_text(&format!("{label}.service"))?;
+        let timer = installed_service_text(&format!("{label}.timer")).unwrap_or_default();
+        Some(format!("{service}\n{timer}"))
+    }
+}
+
+/// What `watch install` would write for `program`, in the shape
+/// [`installed_watchdog_text`] reads back.
+pub fn render_watchdog(program: &std::path::Path) -> Result<String> {
+    let log = watchdog_log()?;
+    let interval = watch_interval_secs();
+    #[cfg(target_os = "macos")]
+    return Ok(launchd::render_watchdog_plist(program, &log, interval));
+    #[cfg(not(target_os = "macos"))]
+    {
+        let (service, timer) = systemd::render_watchdog_units(program, &log, interval);
+        Ok(format!("{service}\n{timer}"))
+    }
+}
+
+/// Where a refresh records that it rewrote a definition and has not yet
+/// restarted the job. Beside the other run markers, keyed by the same label,
+/// so one sweep of `run/` finds all of them.
+pub fn restart_pending_in(config_dir: &std::path::Path, label: &str) -> PathBuf {
+    config_dir
+        .join("run")
+        .join(format!("{label}.restart-pending"))
+}
+
 /// Whether `path` is inside `dir`, compared by component so `/tmp/cfg-ab` is
 /// not inside `/tmp/cfg-a`. A `..` anywhere refuses: it would pass the prefix
 /// test and then resolve somewhere else.

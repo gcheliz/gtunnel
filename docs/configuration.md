@@ -399,6 +399,8 @@ the new binary writes, and rewrites each that differs, such as one without `--cr
 |---|---|
 | A running tunnel | restarted to read the new definition, which drops its connections for a moment |
 | A stopped tunnel | stays stopped, its log untouched |
+| The watchdog | its definition is compared and rewritten the same way when it is installed, and reloaded; a missing binary counts as out of date, and the interval does not (it is `watch.interval` of the installing shell). Never restarted separately: installing it is the reload |
+| A restart that fails | the pass writes `run/<label>.restart-pending` before the write and removes it once the job has started again, so the next command finishes the restart even though the file is current. The line names the label and `gtunnel restart <name>` |
 | Reporting | one line on stderr names what was reinstalled; a failure names the service and the reason without changing the exit status |
 | Skipped | a tunnel whose service was never installed, a definition that already matches, any run with `GTUNNEL_CONFIG_DIR` set; so a second run does nothing |
 | Out of date means | the argument list differs in shape, or the binary no longer exists. The values of `--log-level` and `GTUNNEL_*` come from the calling shell and are ignored, so exporting `GTUNNEL_LOG_LEVEL` for one command restarts nothing |

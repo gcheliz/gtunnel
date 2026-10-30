@@ -9,7 +9,7 @@
 //! process. The comparison is of structure, not of every byte: see
 //! [`is_stale`].
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::state::{PersistentTunnel, TunnelState, TunnelStatus};
 
@@ -31,6 +31,18 @@ pub trait ServiceHost {
     async fn write(&self, spec: &ServiceSpec) -> Result<()>;
     async fn status(&self, label: &str) -> TunnelStatus;
     async fn restart(&self, label: &str) -> Result<()>;
+    /// Whether an earlier pass wrote this label's definition and never saw the
+    /// restart through
+    fn restart_pending(&self, label: &str) -> bool;
+    fn set_restart_pending(&self, label: &str) -> Result<()>;
+    fn clear_restart_pending(&self, label: &str);
+    /// The watchdog's installed text, or `None` when it was never installed
+    fn watchdog_installed_text(&self) -> Option<String>;
+    /// What `watch install` would write now, or `None` when this binary cannot
+    /// say which program it is
+    fn watchdog_render(&self) -> Option<String>;
+    /// Rewrites the watchdog's definition and reloads it
+    async fn watchdog_install(&self) -> Result<()>;
 }
 
 /// What one pass did: the labels brought up to date, and the ones that could
@@ -39,6 +51,9 @@ pub trait ServiceHost {
 pub struct Outcome {
     pub reinstalled: Vec<String>,
     pub failed: Vec<(String, String)>,
+    /// Definitions written whose job did not restart: the label, the tunnel
+    /// name the retry command takes, and the reason
+    pub restart_failed: Vec<(String, String, String)>,
 }
 
 /// Rewrites each installed definition that differs from the current render.
@@ -51,38 +66,84 @@ pub async fn refresh(host: &impl ServiceHost, tunnels: &[PersistentTunnel]) -> O
         // Read before the spec is built: building one looks for gcloud, and
         // most tunnels on most runs are not behind
         let Some(installed) = host.installed_text(&label) else {
+            // A marker left by a tunnel that was deleted must not restart the
+            // next one that takes the name
+            host.clear_restart_pending(&label);
             continue;
         };
+        let pending = host.restart_pending(&label);
         // A tunnel whose spec cannot be built (no gcloud, a missing
         // credential file) could not be started either, and that failure has
         // its own message at the command that needs it. Reporting it here
         // would print on every command until it was fixed.
-        let Ok(mut spec) = host.spec_for(t) else {
-            continue;
-        };
-        // The shell that happens to run this is not the user's word on the
-        // proxy: only add, start and restart take its values
-        super::keep_installed_forwarded(&mut spec, &installed);
-        if !is_stale(&installed, &host.render(&spec), |p| host.program_exists(p)) {
+        let stale = host.spec_for(t).ok().and_then(|mut spec| {
+            // The shell that happens to run this is not the user's word on the
+            // proxy: only add, start and restart take its values
+            super::keep_installed_forwarded(&mut spec, &installed);
+            is_stale(&installed, &host.render(&spec), |p| host.program_exists(p)).then_some(spec)
+        });
+        if stale.is_none() && !pending {
             continue;
         }
-        // Read before the write: a running job is the only one to reload, and
-        // the answer must not depend on a file the write is about to change
-        let running = host.status(&label).await == TunnelStatus::Running;
-        let result = async {
-            host.write(&spec).await?;
-            if running {
-                host.restart(&label).await?;
+        // "The file differs" is the only record of work to do, and a write
+        // that succeeded erases it. So the restart is recorded first, and
+        // cleared only once the job has started again: a later pass retries a
+        // pending label even though its file is current.
+        let mut restart = pending;
+        if let Some(spec) = &stale {
+            // Read before the write: a running job is the only one to reload,
+            // and the answer must not depend on a file the write is about to
+            // change
+            let running = host.status(&label).await == TunnelStatus::Running;
+            restart |= running;
+            let written = async {
+                if running {
+                    host.set_restart_pending(&label)?;
+                }
+                host.write(spec).await
             }
-            Ok::<(), anyhow::Error>(())
+            .await;
+            if let Err(e) = written {
+                // Nothing changed, so there is nothing to finish later
+                if !pending {
+                    host.clear_restart_pending(&label);
+                }
+                out.failed.push((label, format!("{e:#}")));
+                continue;
+            }
         }
-        .await;
-        match result {
-            Ok(()) => out.reinstalled.push(label),
-            Err(e) => out.failed.push((label, format!("{e:#}"))),
+        if restart {
+            if let Err(e) = host.restart(&label).await {
+                out.restart_failed
+                    .push((label, t.name.clone(), format!("{e:#}")));
+                continue;
+            }
+            host.clear_restart_pending(&label);
         }
+        out.reinstalled.push(label);
     }
+    refresh_watchdog(host, &mut out).await;
     out
+}
+
+/// The watchdog is one job for the machine and has its own definition, so it
+/// is judged like a tunnel's but is never restarted: installing it is the
+/// reload. Not installed means not the user's choice to have one yet.
+async fn refresh_watchdog(host: &impl ServiceHost, out: &mut Outcome) {
+    let Some(installed) = host.watchdog_installed_text() else {
+        return;
+    };
+    let Some(rendered) = host.watchdog_render() else {
+        return;
+    };
+    if !is_stale(&installed, &rendered, |p| host.program_exists(p)) {
+        return;
+    }
+    let label = super::watchdog_label().to_string();
+    match host.watchdog_install().await {
+        Ok(()) => out.reinstalled.push(label),
+        Err(e) => out.failed.push((label, format!("{e:#}"))),
+    }
 }
 
 /// The tokens of a definition that an upgrade can change, with what the
@@ -95,7 +156,9 @@ pub async fn refresh(host: &impl ServiceHost, tunnels: &[PersistentTunnel]) -> O
 /// restart every running tunnel, and the next plain command would do it back.
 /// So their values are masked, the `GTUNNEL_*` entries are dropped (their
 /// absence is as legitimate as their presence), and the program path is
-/// masked too, because a moved binary is judged separately. The forwarded
+/// masked too, because a moved binary is judged separately. The watchdog's
+/// interval is masked for the same reason as the level: it is `watch.interval`
+/// of the installing shell. The forwarded
 /// gcloud, proxy and CA variables are dropped the same way: the shell that
 /// runs a command is not the one that set the tunnel up, so a different proxy
 /// there must not rewrite and restart every running tunnel. A new value is
@@ -123,8 +186,12 @@ fn shape(text: &str) -> Vec<String> {
         if t.starts_with("Environment=GTUNNEL_") {
             continue;
         }
-        let tok = if prev == "--log-level" {
+        let tok = if prev == "--log-level" || prev == "<key>StartInterval</key>" {
             "*".to_string()
+        } else if t.starts_with("OnBootSec=") || t.starts_with("OnUnitActiveSec=") {
+            // The watchdog's interval is `watch.interval`, read from the
+            // shell that installs it
+            format!("{}*", &t[..t.find('=').unwrap_or(0) + 1])
         } else if t.starts_with("--verbosity=") {
             "--verbosity=*".to_string()
         } else if let Some(i) = t.find("LogLevel=") {
@@ -228,6 +295,14 @@ pub fn report(outcome: &Outcome) -> Vec<String> {
     for (label, reason) in &outcome.failed {
         lines.push(format!("gtunnel: could not reinstall {label}: {reason}"));
     }
+    // The definition is current, so the next pass finishes this by itself; the
+    // command is for the person who would rather not wait for a next command
+    for (label, name, reason) in &outcome.restart_failed {
+        lines.push(format!(
+            "gtunnel: reinstalled {label} but could not restart it: {reason}; \
+             `gtunnel restart {name}` retries it"
+        ));
+    }
     lines
 }
 
@@ -271,6 +346,43 @@ impl ServiceHost for Live {
     }
     async fn restart(&self, label: &str) -> Result<()> {
         super::restart(label).await
+    }
+    fn restart_pending(&self, label: &str) -> bool {
+        self.pending_path(label).is_some_and(|p| p.exists())
+    }
+    fn set_restart_pending(&self, label: &str) -> Result<()> {
+        let path = self
+            .pending_path(label)
+            .context("Could not find the run directory")?;
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)
+                .with_context(|| format!("Failed to create {}", dir.display()))?;
+        }
+        crate::fsutil::write_atomic(&path, "")
+    }
+    fn clear_restart_pending(&self, label: &str) {
+        if let Some(path) = self.pending_path(label) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+    fn watchdog_installed_text(&self) -> Option<String> {
+        super::installed_watchdog_text()
+    }
+    fn watchdog_render(&self) -> Option<String> {
+        // The binary that runs the watchdog is this one, as `watch install`
+        // writes it
+        let program = std::env::current_exe().ok()?;
+        super::render_watchdog(&program).ok()
+    }
+    async fn watchdog_install(&self) -> Result<()> {
+        super::install_watchdog(&std::env::current_exe()?).await
+    }
+}
+
+impl Live {
+    fn pending_path(&self, label: &str) -> Option<std::path::PathBuf> {
+        let dir = crate::config::config_dir().ok()?;
+        Some(super::restart_pending_in(&dir, label))
     }
 }
 
@@ -344,6 +456,14 @@ mod tests {
         // Set to render real unit text, carrying the level this shell has
         real_render: Option<String>,
         env: Vec<(String, String)>,
+        // Labels whose next `restart` fails, once each
+        fail_restart_once: RefCell<Vec<String>>,
+        pending: RefCell<std::collections::HashSet<String>>,
+        // The watchdog as installed, and as this binary would write it
+        watchdog: RefCell<Option<String>>,
+        watchdog_now: String,
+        // Program paths that no longer exist
+        gone: Vec<String>,
         written: RefCell<Vec<ServiceSpec>>,
         calls: RefCell<Vec<String>>,
     }
@@ -395,8 +515,8 @@ mod tests {
                 None => current(spec),
             }
         }
-        fn program_exists(&self, _: &str) -> bool {
-            true
+        fn program_exists(&self, path: &str) -> bool {
+            !self.gone.iter().any(|g| g == path)
         }
         async fn write(&self, spec: &ServiceSpec) -> Result<()> {
             self.calls
@@ -420,12 +540,178 @@ mod tests {
         }
         async fn restart(&self, label: &str) -> Result<()> {
             self.calls.borrow_mut().push(format!("restart {label}"));
+            let mut failing = self.fail_restart_once.borrow_mut();
+            if let Some(i) = failing.iter().position(|l| l == label) {
+                failing.remove(i);
+                anyhow::bail!("launchctl bootstrap failed: Input/output error");
+            }
+            Ok(())
+        }
+        fn restart_pending(&self, label: &str) -> bool {
+            self.pending.borrow().contains(label)
+        }
+        fn set_restart_pending(&self, label: &str) -> Result<()> {
+            self.calls.borrow_mut().push(format!("pending {label}"));
+            self.pending.borrow_mut().insert(label.to_string());
+            Ok(())
+        }
+        fn clear_restart_pending(&self, label: &str) {
+            self.pending.borrow_mut().remove(label);
+        }
+        fn watchdog_installed_text(&self) -> Option<String> {
+            self.watchdog.borrow().clone()
+        }
+        fn watchdog_render(&self) -> Option<String> {
+            Some(self.watchdog_now.clone()).filter(|t| !t.is_empty())
+        }
+        async fn watchdog_install(&self) -> Result<()> {
+            self.calls.borrow_mut().push("watchdog install".to_string());
+            *self.watchdog.borrow_mut() = Some(self.watchdog_now.clone());
             Ok(())
         }
     }
 
     const LABEL: &str = "com.gtunnel.dev.k8s";
     const OLD: &str = "com.gtunnel.dev.k8s __supervise";
+
+    // The watchdog's text as an old binary wrote it and as this one does: a
+    // flag the old one lacked, and a binary that is a unit's `ExecStart=`
+    const WATCHDOG_OLD: &str = "ExecStart=/opt/gtunnel watch\n";
+    const WATCHDOG_NOW: &str = "ExecStart=/opt/gtunnel watch --once\n";
+
+    fn with_watchdog(installed: &str) -> Fake {
+        Fake {
+            watchdog: RefCell::new(Some(installed.to_string())),
+            watchdog_now: WATCHDOG_NOW.to_string(),
+            ..Fake::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_watchdog_definition_with_an_old_shape_is_rewritten_and_reloaded() {
+        let host = with_watchdog(WATCHDOG_OLD);
+        let out = refresh(&host, &[]).await;
+        assert_eq!(out.reinstalled, vec![crate::daemon::watchdog_label()]);
+        assert_eq!(*host.calls.borrow(), vec!["watchdog install".to_string()]);
+        assert_eq!(
+            host.watchdog_installed_text().as_deref(),
+            Some(WATCHDOG_NOW)
+        );
+        assert!(report(&out)[0].contains(crate::daemon::watchdog_label()));
+    }
+
+    #[tokio::test]
+    async fn a_watchdog_whose_program_is_missing_is_rewritten() {
+        let mut host = with_watchdog("ExecStart=/gone/gtunnel watch --once\n");
+        host.gone.push("/gone/gtunnel".to_string());
+        let out = refresh(&host, &[]).await;
+        assert_eq!(out.reinstalled.len(), 1, "{out:?}");
+        assert_eq!(*host.calls.borrow(), vec!["watchdog install".to_string()]);
+    }
+
+    #[test]
+    fn a_watchdog_interval_from_another_shell_is_not_a_difference() {
+        let program = std::path::Path::new("/opt/gtunnel");
+        let log = std::path::Path::new("/tmp/watchdog.log");
+        let (service, timer) = super::super::systemd::render_watchdog_units(program, log, 30);
+        let (service_b, timer_b) = super::super::systemd::render_watchdog_units(program, log, 90);
+        assert_ne!(timer, timer_b);
+        assert!(!is_stale(
+            &format!("{service}\n{timer}"),
+            &format!("{service_b}\n{timer_b}"),
+            |_| true
+        ));
+        let plist = super::super::launchd::render_watchdog_plist(program, log, 30);
+        let plist_b = super::super::launchd::render_watchdog_plist(program, log, 90);
+        assert_ne!(plist, plist_b);
+        assert!(!is_stale(&plist, &plist_b, |_| true));
+        // but a flag does count, and so does a missing binary
+        let old = plist.replace("<string>--once</string>", "");
+        assert!(is_stale(&old, &plist, |_| true));
+        assert!(is_stale(&plist, &plist, |_| false));
+    }
+
+    #[tokio::test]
+    async fn a_current_watchdog_and_one_never_installed_are_left_alone() {
+        let current = with_watchdog(WATCHDOG_NOW);
+        assert_eq!(refresh(&current, &[]).await, Outcome::default());
+        let absent = Fake {
+            watchdog_now: WATCHDOG_NOW.to_string(),
+            ..Fake::default()
+        };
+        assert_eq!(refresh(&absent, &[]).await, Outcome::default());
+        assert!(current.calls.borrow().is_empty() && absent.calls.borrow().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_restart_that_fails_leaves_a_marker_and_the_next_pass_finishes_it() {
+        let host = Fake::with(LABEL, OLD, TunnelStatus::Running);
+        host.fail_restart_once.borrow_mut().push(LABEL.to_string());
+        let first = refresh(&host, &[tunnel("k8s")]).await;
+        // The file is current and the job is not: the marker is the record
+        assert!(first.reinstalled.is_empty(), "{first:?}");
+        assert_eq!(first.restart_failed.len(), 1, "{first:?}");
+        assert!(host.restart_pending(LABEL));
+        let calls = host.calls.borrow().clone();
+        let marked = calls
+            .iter()
+            .position(|c| c.starts_with("pending "))
+            .unwrap();
+        let wrote = calls.iter().position(|c| c.starts_with("write ")).unwrap();
+        assert!(
+            marked < wrote,
+            "the marker is recorded before the write: {calls:?}"
+        );
+        host.calls.borrow_mut().clear();
+
+        let second = refresh(&host, &[tunnel("k8s")]).await;
+        assert_eq!(second.reinstalled, vec![LABEL.to_string()], "{second:?}");
+        assert!(!host.restart_pending(LABEL));
+        let calls = host.calls.borrow().clone();
+        assert_eq!(calls, vec![format!("restart {LABEL}")], "no second write");
+    }
+
+    #[tokio::test]
+    async fn a_failed_restart_is_reported_with_the_command_that_retries_it() {
+        let host = Fake::with(LABEL, OLD, TunnelStatus::Running);
+        host.fail_restart_once.borrow_mut().push(LABEL.to_string());
+        let lines = report(&refresh(&host, &[tunnel("k8s")]).await);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains(LABEL), "{lines:?}");
+        assert!(lines[0].contains("gtunnel restart k8s"), "{lines:?}");
+        assert!(lines[0].contains("Input/output error"), "{lines:?}");
+    }
+
+    #[tokio::test]
+    async fn a_failed_write_leaves_no_marker_behind() {
+        let mut host = Fake::with(LABEL, OLD, TunnelStatus::Running);
+        host.fail_write.push(LABEL.to_string());
+        refresh(&host, &[tunnel("k8s")]).await;
+        assert!(!host.restart_pending(LABEL));
+    }
+
+    #[tokio::test]
+    async fn a_second_pass_with_nothing_pending_calls_no_service_manager() {
+        let mut host = Fake::with(LABEL, OLD, TunnelStatus::Running);
+        host.watchdog = RefCell::new(Some(WATCHDOG_OLD.to_string()));
+        host.watchdog_now = WATCHDOG_NOW.to_string();
+        let first = refresh(&host, &[tunnel("k8s")]).await;
+        assert_eq!(first.reinstalled.len(), 2, "tunnel and watchdog: {first:?}");
+        assert!(!host.restart_pending(LABEL));
+        host.calls.borrow_mut().clear();
+        let again = refresh(&host, &[tunnel("k8s")]).await;
+        assert_eq!(again, Outcome::default());
+        assert!(host.calls.borrow().is_empty(), "{:?}", host.calls);
+    }
+
+    #[tokio::test]
+    async fn a_marker_for_a_tunnel_that_is_not_installed_is_dropped() {
+        let host = Fake::default();
+        host.pending.borrow_mut().insert(LABEL.to_string());
+        refresh(&host, &[tunnel("k8s")]).await;
+        assert!(!host.restart_pending(LABEL));
+        assert!(host.calls.borrow().is_empty());
+    }
 
     #[tokio::test]
     async fn a_definition_that_differs_is_rewritten_and_reported_once() {
@@ -771,6 +1057,7 @@ mod tests {
         let out = Outcome {
             reinstalled: vec!["com.gtunnel.dev.a".into(), "com.gtunnel.dev.b".into()],
             failed: vec![],
+            ..Outcome::default()
         };
         let lines = report(&out);
         assert_eq!(lines.len(), 1);
