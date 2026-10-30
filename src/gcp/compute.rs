@@ -919,6 +919,62 @@ pub async fn reconcile_backend_service(
     Ok(Reconciled::Updated)
 }
 
+// A backend service that sends traffic to one instance group, read apart from
+// `BackendService` because only the relay teardown needs the group link and
+// the list there answers a different question: who still holds this group
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupHolder {
+    pub name: String,
+    pub description: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RawHolder {
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    backends: Vec<RawBackendRef>,
+}
+
+#[derive(Deserialize)]
+struct RawBackendRef {
+    #[serde(default)]
+    group: String,
+}
+
+#[derive(Deserialize)]
+struct RawHolderList {
+    #[serde(default)]
+    items: Vec<RawHolder>,
+}
+
+// TODO: page this through get_all once list calls paginate (#375)
+// Matched on the path tail: the link is a full URL whose host is the API
+// endpoint, which differs between production and the test fake
+pub async fn backend_services_on_group(
+    client: &GcpClient,
+    project: &str,
+    zone: &str,
+    group: &str,
+) -> Result<Vec<GroupHolder>> {
+    let url = format!(
+        "{}/projects/{project}/global/backendServices",
+        client.endpoints.compute
+    );
+    let raw: RawHolderList = client.get(&url).await?;
+    let tail = format!("/zones/{zone}/instanceGroups/{group}");
+    Ok(raw
+        .items
+        .into_iter()
+        .filter(|b| b.backends.iter().any(|r| r.group.ends_with(&tail)))
+        .map(|b| GroupHolder {
+            name: b.name,
+            description: b.description,
+        })
+        .collect())
+}
+
 pub async fn delete_backend_service(
     client: &GcpClient,
     project: &str,

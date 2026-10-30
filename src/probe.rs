@@ -229,6 +229,32 @@ pub async fn probe_tunnel(addr: &str, timeout: Duration, log_path: &Path) -> Opt
     }
 }
 
+/// Where every IAP tunnel ends up: gcloud opens a websocket here, so a host
+/// that cannot reach it cannot run any tunnel.
+pub const IAP_ENDPOINT: &str = "tunnel.cloudproxy.app:443";
+
+/// Whether this machine can reach IAP at all, asked once per watchdog pass
+/// before any tunnel is judged.
+///
+/// Offline, every tunnel's probe fails on the same pass and the breaker reads
+/// that as a hundred wedged tunnels. One bounded connect tells the two apart:
+/// the cost is a TCP handshake, and it answers the only question that matters
+/// before a restart, which is whether a restart could possibly help. A captive
+/// portal or a failing TLS handshake still connects, so the gate calls that
+/// reachable and the tunnels are judged as usual.
+pub async fn network_reachable(timeout: Duration) -> bool {
+    reachable(IAP_ENDPOINT, timeout).await
+}
+
+/// `network_reachable` with the address a parameter, so a test dials a
+/// listener of its own and never the real network.
+async fn reachable(addr: &str, timeout: Duration) -> bool {
+    matches!(
+        tokio::time::timeout(timeout, tokio::net::TcpStream::connect(addr)).await,
+        Ok(Ok(_))
+    )
+}
+
 /// How long a silent close waits for the log before it is read. Long enough
 /// for the supervisor's pipe to flush a line written as the socket closed,
 /// short enough that a health pass over many tunnels does not feel it.
@@ -1693,5 +1719,36 @@ LISTEN 0      128    127.0.0.1:15432     0.0.0.0:*
                 );
             }
         }
+    }
+
+    // The gate decides whether a whole pass judges anything, so it is tested
+    // against a listener on loopback and never against the real endpoint
+    #[tokio::test]
+    async fn an_endpoint_that_accepts_is_reachable() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr").to_string();
+        assert!(reachable(&addr, Duration::from_secs(2)).await);
+    }
+
+    #[tokio::test]
+    async fn an_endpoint_that_refuses_is_not_reachable() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr").to_string();
+        drop(listener);
+        assert!(!reachable(&addr, Duration::from_secs(2)).await);
+    }
+
+    #[tokio::test]
+    async fn a_name_that_does_not_resolve_is_not_reachable() {
+        assert!(!reachable("gate.invalid:443", Duration::from_secs(2)).await);
+    }
+
+    #[test]
+    fn the_gate_dials_the_iap_endpoint_on_the_tls_port() {
+        assert_eq!(IAP_ENDPOINT, "tunnel.cloudproxy.app:443");
     }
 }

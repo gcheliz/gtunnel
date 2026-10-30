@@ -3,6 +3,43 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.3.8](https://github.com/gcheliz/gtunnel/compare/v0.3.7...v0.3.8) - 2026-10-30
+
+### Fixed
+
+- *(watch)* bring tunnels back after a new login ([#409](https://github.com/gcheliz/gtunnel/pull/409))
+
+## [0.3.7](https://github.com/gcheliz/gtunnel/compare/v0.3.6...v0.3.7) - 2026-10-30
+
+### Fixed
+
+- *(watch)* ride out a network outage instead of stopping every tunnel ([#406](https://github.com/gcheliz/gtunnel/pull/406))
+
+## [0.3.6](https://github.com/gcheliz/gtunnel/compare/v0.3.5...v0.3.6) - 2026-10-30
+
+### Fixed
+
+- *(gcp)* retry transient errors and reuse a token only until it expires ([#405](https://github.com/gcheliz/gtunnel/pull/405))
+
+## [0.3.5](https://github.com/gcheliz/gtunnel/compare/v0.3.4...v0.3.5) - 2026-10-30
+
+### Fixed
+
+- *(daemon)* refresh the watchdog too, retry a failed restart, and lock and version the refresh ([#404](https://github.com/gcheliz/gtunnel/pull/404))
+
+## [0.3.4](https://github.com/gcheliz/gtunnel/compare/v0.3.3...v0.3.4) - 2026-10-30
+
+### Fixed
+
+- *(relay)* tear down an orphaned backend service on relay down ([#403](https://github.com/gcheliz/gtunnel/pull/403))
+
+## [0.3.3](https://github.com/gcheliz/gtunnel/compare/v0.3.2...v0.3.3) - 2026-10-30
+
+### Fixed
+
+- *(relay)* keep a private tunnel's relay port unreachable from the VPC ([#402](https://github.com/gcheliz/gtunnel/pull/402))
+- *(relay)* give the backend service a long timeout for websockets and long requests ([#401](https://github.com/gcheliz/gtunnel/pull/401))
+
 ## [0.3.2](https://github.com/gcheliz/gtunnel/compare/v0.3.1...v0.3.2) - 2026-10-30
 
 ### Fixed

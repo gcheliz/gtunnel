@@ -206,20 +206,26 @@ pub fn all_tools() -> Vec<ToolDefinition> {
             title: "Start tunnel".to_string(),
             annotations: ToolAnnotations::new(false,false,true,true),
             output_schema: None,
-            description: "Start a persistent tunnel daemon".to_string(),
+            description: "Start a persistent tunnel daemon, or with auth_expired every tunnel \
+                          stopped on an expired login once the login works again"
+                .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "name": {
                         "type": "string",
-                        "description": "Tunnel name to start"
+                        "description": "Tunnel name to start (omit when auth_expired is true)"
                     },
                     "account": {
                         "type": "string",
-                        "description": "Optional GCP account name"
+                        "description": "Optional GCP account name; with auth_expired, omitted means every account"
+                    },
+                    "auth_expired": {
+                        "type": "boolean",
+                        "description": "Start every tunnel parked on an expired login instead of one by name"
                     }
                 },
-                "required": ["name"]
+                "required": []
             }),
         },
         ToolDefinition {
@@ -741,9 +747,16 @@ pub async fn execute_tool(
             Ok(ToolCallResult::json(&rows, json!({ "tunnels": rows })))
         }
         "gtunnel_start_tunnel" => {
-            let tunnel_name = get_str("name")
-                .ok_or_else(|| JsonRpcError::new(INVALID_PARAMS, "Missing 'name'"))?;
             let account = get_str("account");
+            let tunnel_name = match start_target(get_str("name"), get_bool("auth_expired"))? {
+                StartTarget::AuthExpired => {
+                    return Ok(match resume_auth_expired(account).await {
+                        Ok(text) => ToolCallResult::text(text),
+                        Err(e) => ToolCallResult::failure(&e),
+                    });
+                }
+                StartTarget::Named(name) => name,
+            };
             // A failed tool is a result the model can read and act on, not a
             // protocol fault: `{e:#}` keeps the whole cause chain
             Ok(match start_tunnel(account, tunnel_name).await {
@@ -1093,6 +1106,53 @@ pub fn read_resource(uri: &str) -> Result<ResourceReadResult, JsonRpcError> {
     }
 }
 
+/// What `gtunnel_start_tunnel` was asked to start.
+#[derive(Debug, PartialEq, Eq)]
+enum StartTarget<'a> {
+    Named(&'a str),
+    AuthExpired,
+}
+
+/// A name and `auth_expired` are two different requests, and answering one
+/// while ignoring the other would start the wrong thing.
+fn start_target(name: Option<&str>, auth_expired: bool) -> Result<StartTarget<'_>, JsonRpcError> {
+    match (name, auth_expired) {
+        (Some(name), false) => Ok(StartTarget::Named(name)),
+        (None, true) => Ok(StartTarget::AuthExpired),
+        (Some(_), true) => Err(JsonRpcError::new(
+            INVALID_PARAMS,
+            "Give either 'name' or 'auth_expired', not both",
+        )),
+        (None, false) => Err(JsonRpcError::new(
+            INVALID_PARAMS,
+            "Missing 'name' (or set 'auth_expired')",
+        )),
+    }
+}
+
+/// The tool half of `gtunnel start --auth-expired`: the same resume, and its
+/// report as the tool's text. A tunnel that did not come back is an error the
+/// model can read.
+async fn resume_auth_expired(account: Option<&str>) -> anyhow::Result<String> {
+    use crate::commands::resume;
+    let dir = crate::config::config_dir()?;
+    let config = crate::config::load_config()?;
+    if let Some(name) = account {
+        config.get_account(Some(name))?;
+    }
+    let found = resume::parking(&crate::state::TunnelState::load()?, &dir, account);
+    if found.resumable.is_empty() && found.left_alone.is_empty() {
+        return Ok("No tunnel is stopped on an expired login".to_string());
+    }
+    let outcome = resume::resume(&dir, found.resumable, &resume::Live { config }).await;
+    let text = resume::report(&outcome, &found.left_alone).join("\n");
+    if outcome.failed.is_empty() && outcome.still_expired.is_empty() {
+        Ok(text)
+    } else {
+        anyhow::bail!("{text}")
+    }
+}
+
 #[cfg(test)]
 mod schema_tests {
     use super::*;
@@ -1186,6 +1246,31 @@ mod schema_tests {
 mod expose_tests {
     use super::*;
     use crate::commands::expose::Exposed;
+
+    #[test]
+    fn start_tunnel_wants_a_name_or_auth_expired_and_not_both() {
+        assert_eq!(
+            start_target(Some("db"), false).unwrap(),
+            StartTarget::Named("db")
+        );
+        assert_eq!(start_target(None, true).unwrap(), StartTarget::AuthExpired);
+        assert_eq!(start_target(None, false).unwrap_err().code, INVALID_PARAMS);
+        assert_eq!(
+            start_target(Some("db"), true).unwrap_err().code,
+            INVALID_PARAMS
+        );
+    }
+
+    #[test]
+    fn the_start_tool_advertises_auth_expired_and_no_longer_requires_a_name() {
+        let tool = all_tools()
+            .into_iter()
+            .find(|t| t.name == "gtunnel_start_tunnel")
+            .expect("the tool exists");
+        let props = &tool.input_schema["properties"];
+        assert_eq!(props["auth_expired"]["type"], "boolean");
+        assert_eq!(tool.input_schema["required"], json!([]));
+    }
 
     fn args(value: Value) -> serde_json::Map<String, Value> {
         let mut map = value.as_object().cloned().unwrap();

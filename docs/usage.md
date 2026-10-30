@@ -92,7 +92,7 @@ Specify the release version and substitute your machine's file: `gtunnel-macos-a
 `gtunnel-macos-intel`, `gtunnel-linux-amd64` or `gtunnel-linux-arm64`.
 
 ```text
-VERSION="v0.3.2"
+VERSION="v0.3.8"
 F="gtunnel-macos-arm64-${VERSION}.tar.gz"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F.sha256"
@@ -104,7 +104,7 @@ so they run on any glibc.
 
 ```console
 $ gtunnel --version
-gtunnel 0.3.2
+gtunnel 0.3.8
 
 ```
 
@@ -461,7 +461,7 @@ check itself. On a Homebrew install:
 
 ```console,ignore
 $ gtunnel list
-gtunnel v9.9.9 is available (current: v0.3.2). Run `brew upgrade gtunnel`.
+gtunnel v9.9.9 is available (current: v0.3.8). Run `brew upgrade gtunnel`.
 ```
 
 ## The TUI
@@ -515,7 +515,7 @@ the log says, so the fix is on screen instead of in the log:
 |---|---|---|---|
 | healthy | `✓` | the far end answered | nothing |
 | unhealthy | `✗` | no answer, and no cause the log names | read the log |
-| auth expired | `⊗` | no answer, and the log in the last two minutes says `Reauthentication required` or `gcloud auth login`; or the tunnel stopped itself for that reason and has not been started since | `gcloud auth login`, then `s` (`R` while it still runs) |
+| auth expired | `⊗` | no answer, and the log in the last two minutes says `Reauthentication required` or `gcloud auth login`; or the tunnel stopped itself for that reason and has not been started since | `gcloud auth login`; the watchdog then starts it within one interval, or `s` (`R` while it still runs), or `gtunnel start --auth-expired` |
 | credentials refused | `⊘` | no answer, and the log says impersonation was denied (`Failed to impersonate`), a key is invalid (`Invalid JWT`) or the gcloud configuration does not exist; or the tunnel stopped itself for that reason | read the log, fix the account, then `s` |
 | crash loop | `↻` | the service restarted three times or more inside two minutes | check the log; a single restart after the machine wakes is expected: [troubleshooting](troubleshooting.md#restarts-after-the-laptop-wakes) |
 | checking | `…` | the first probe is still in flight | wait |
@@ -710,7 +710,7 @@ in-repo Skill tells the agent how to use them.
 | Tool | Parameters | What it does |
 |---|---|---|
 | `gtunnel_list_tunnels` | `account?` | Lists configured tunnels and the account's live runs (`"run": true`), each with `status`, `local_port` (`null` on a public tunnel), `health` and `unmanaged` (always `false`): the rows of `gtunnel list --json` without the unmanaged ones |
-| `gtunnel_start_tunnel` | `name`, `account?` | Starts a stopped tunnel daemon |
+| `gtunnel_start_tunnel` | `name`, `account?`, `auth_expired?` | Starts a stopped tunnel daemon; `auth_expired: true` takes the place of `name` and starts every tunnel stopped on an expired login |
 | `gtunnel_stop_tunnel` | `name`, `account?` | Stops a running tunnel daemon; with no persistent tunnel of that name, stops the live `gtunnel_run_tunnel` run of that name |
 | `gtunnel_restart_tunnel` | `name`, `account?` | Reinstalls service spec and restarts daemon |
 | `gtunnel_get_status` | `name`, `account?` | Returns `status`, `health`, PID, restarts and the TCP probe's round-trip latency; for a live run, its pid, `local_port` and `expires_at` instead of restarts (`"run": true`) |

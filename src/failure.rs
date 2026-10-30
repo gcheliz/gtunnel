@@ -65,6 +65,9 @@ const LINES: &[(Failure, &[&str])] = &[
     (Failure::Network, &["Temporary failure in name resolution"]),
     (Failure::Network, &["Name or service not known"]),
     (Failure::Network, &["No route to host"]),
+    // macOS words a failed lookup this way, where glibc says "Name or service"
+    (Failure::Network, &["nodename nor servname"]),
+    (Failure::Network, &["Failed to establish a new connection"]),
     (Failure::Timeout, &["timed out"]),
 ];
 
@@ -555,5 +558,17 @@ mod tests {
         assert_eq!(Failure::from_marker(""), Failure::LoginExpired);
         assert!(!Failure::Network.is_stopping());
         assert!(!Failure::PermissionDenied.is_stopping());
+    }
+
+    // macOS names a failed lookup differently from glibc, and the supervisor
+    // can only ride out an outage it recognises
+    #[test]
+    fn a_failed_dns_lookup_on_macos_and_a_refused_connection_are_network() {
+        for line in [
+            "socket.gaierror: [Errno 8] nodename nor servname provided, or not known",
+            "urllib3.exceptions.NewConnectionError: Failed to establish a new connection",
+        ] {
+            assert_eq!(Failure::from_line(line), Some(Failure::Network), "{line}");
+        }
     }
 }

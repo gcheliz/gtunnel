@@ -22,18 +22,45 @@ pub struct RouteRemoval {
 }
 
 // Url maps and instance groups are updated read-modify-write under a
-// fingerprint; a concurrent change returns 412 and the read has to be redone
-pub async fn retry_on_precondition<F, Fut, T>(attempts: u32, mut f: F) -> Result<T>
+// fingerprint; a concurrent change returns 412 and the read has to be redone,
+// after the same backoff the client uses for a transient error
+pub async fn retry_on_precondition<F, Fut, T>(attempts: u32, f: F) -> Result<T>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<T>>,
 {
+    retry_on_precondition_pausing(
+        attempts,
+        |attempt| tokio::time::sleep(crate::gcp::retry::delay(attempt, None)),
+        f,
+    )
+    .await
+}
+
+// The pause is a parameter so a test can see when it is taken without
+// sleeping. It runs between attempts, never after the last: a caller that is
+// giving up has nothing to wait for.
+async fn retry_on_precondition_pausing<F, Fut, P, PFut, T>(
+    attempts: u32,
+    mut pause: P,
+    mut f: F,
+) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T>>,
+    P: FnMut(u32) -> PFut,
+    PFut: Future<Output = ()>,
+{
+    let attempts = attempts.max(1);
     let mut last: Option<anyhow::Error> = None;
-    for _ in 0..attempts.max(1) {
+    for attempt in 1..=attempts {
         match f().await {
             Ok(value) => return Ok(value),
             Err(e) if is_precondition_failed(&e) => last = Some(e),
             Err(e) => return Err(e),
+        }
+        if attempt < attempts {
+            pause(attempt).await;
         }
     }
     match last {
@@ -148,6 +175,8 @@ pub async fn add_route(
     ex: &ExposeConfig,
     t: &PersistentTunnel,
 ) -> Result<()> {
+    // Held to the end of the build, never across the tunnel's runtime
+    let _relay = super::lock::route_guard(&acct.name)?;
     let target = route_target(acct, t)?;
     let project = &acct.project;
     let names = &target.names;
@@ -294,6 +323,33 @@ mod tests {
             TokenSource::Static("tok".to_string()),
             Endpoints::single(&server.uri()),
         )
+    }
+
+    // A fingerprint conflict means someone else wrote first; going straight
+    // back to read races them again at the same instant
+    #[tokio::test]
+    async fn a_fingerprint_conflict_backs_off_between_attempts_and_not_after_the_last() {
+        let mut pauses = Vec::new();
+        let mut tries = 0;
+        let out: Result<()> = retry_on_precondition_pausing(
+            4,
+            |attempt| {
+                pauses.push(attempt);
+                std::future::ready(())
+            },
+            || {
+                tries += 1;
+                async {
+                    Err(anyhow::Error::new(
+                        crate::gcp::client::GcpError::PreconditionFailed,
+                    ))
+                }
+            },
+        )
+        .await;
+        assert!(out.is_err());
+        assert_eq!(tries, 4);
+        assert_eq!(pauses, vec![1, 2, 3]);
     }
 
     fn account() -> Account {
@@ -476,6 +532,26 @@ mod tests {
 
         assert_eq!(count(&server, "GET", "/urlMaps/").await, 2);
         assert_eq!(count(&server, "PUT", "/urlMaps/").await, 2);
+    }
+
+    // A route built into a relay that `relay down` is deleting would be
+    // orphaned the moment the group goes
+    #[tokio::test]
+    async fn add_route_refuses_while_the_relay_is_being_torn_down() {
+        let dir = tempfile::tempdir().unwrap();
+        super::super::lock::TEST_DIR.with(|d| *d.borrow_mut() = Some(dir.path().to_path_buf()));
+        let _teardown = super::super::lock::teardown_guard("dev").unwrap();
+        let server = MockServer::start().await;
+        base_mocks(&server).await;
+
+        let err = add_route(&client(&server), &account(), &expose(), &tunnel())
+            .await
+            .expect_err("should refuse");
+        assert_eq!(
+            err.to_string(),
+            "the relay for 'dev' is being torn down; try again after relay down finishes"
+        );
+        assert!(server.received_requests().await.unwrap().is_empty());
     }
 
     #[tokio::test]

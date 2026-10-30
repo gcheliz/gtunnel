@@ -266,6 +266,8 @@ pub fn render_watchdog_plist(
     <dict>
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>{stamp_var}</key>
+        <string>{stamp}</string>
     </dict>
     <key>RunAtLoad</key>
     <true/>
@@ -281,6 +283,8 @@ pub fn render_watchdog_plist(
 </plist>
 "#,
         label = WATCHDOG_LABEL,
+        stamp_var = super::DEFINITION_VERSION_VAR,
+        stamp = super::DEFINITION_VERSION,
         program = xml_escape(&program.to_string_lossy()),
         interval = interval_secs,
         log = xml_escape(&log.to_string_lossy()),
@@ -550,6 +554,14 @@ pub async fn status(label: &str) -> TunnelStatus {
         Some(text) => parse_launchctl_print(&text).0,
         None => TunnelStatus::Stopped,
     }
+}
+
+/// `status`, but a call that errored or timed out is `None` rather than
+/// `Stopped`. Only the watchdog needs the difference: it must not act on a
+/// manager that did not answer.
+pub async fn status_checked(label: &str) -> Option<TunnelStatus> {
+    let out = launchctl(&["print", &format!("{}/{}", domain_target(), label)]).await;
+    super::checked_status(out, |text| parse_launchctl_print(text).0)
 }
 
 pub async fn runtime_info(label: &str) -> RuntimeInfo {

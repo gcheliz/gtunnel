@@ -231,6 +231,30 @@ pub async fn supervise(
         return Ok(crate::daemon::auth_expired_exit(cfg!(target_os = "macos")));
     }
     let code = status.code().unwrap_or(1);
+    let outage = is_outage_exit(
+        status.success(),
+        asked_to_stop,
+        lock(&conn).outage_failure(std::time::Instant::now()),
+    );
+    if outage && let Some(spend) = &spend {
+        // Not the tunnel's fault and not the budget's business: wait, count
+        // it, and let the service manager start gcloud again. Never parks,
+        // however long the network stays away.
+        let file = crate::daemon::net_failures_beside(&spend.marker);
+        let mut fails = crate::restart_budget::parse_net_failures(
+            &std::fs::read_to_string(&file).unwrap_or_default(),
+        );
+        let after = crate::restart_budget::network_wait(&spend.budget, &mut fails, began.elapsed());
+        if let Some(parent) = file.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = crate::fsutil::write_atomic(&file, &format!("{fails}\n"));
+        tokio::select! {
+            _ = tokio::time::sleep(after) => {}
+            _ = stops.next() => {}
+        }
+        return Ok(code);
+    }
     if let Some(spend) = &spend
         && spends_budget(status.success(), expired, asked_to_stop)
     {
@@ -310,7 +334,7 @@ impl Stops {
 
 /// Where the child's group is written down: beside the ready file, so the
 /// next supervisor of the same job finds it by what the installer chose.
-fn group_file_beside(ready: &std::path::Path) -> PathBuf {
+pub(crate) fn group_file_beside(ready: &std::path::Path) -> PathBuf {
     ready.with_extension("pgid")
 }
 
@@ -368,6 +392,18 @@ async fn sweep_stale_group(file: &std::path::Path) {
 /// nothing about the tunnel.
 fn spends_budget(succeeded: bool, expired: bool, asked_to_stop: bool) -> bool {
     !(succeeded || expired || asked_to_stop)
+}
+
+/// Whether gcloud died because the network was gone: it failed on its own and
+/// the newest thing it said was a network or timeout line. Such an exit is
+/// waited out rather than counted, because no restart count can fix it.
+fn is_outage_exit(
+    succeeded: bool,
+    asked_to_stop: bool,
+    last: Option<crate::failure::Failure>,
+) -> bool {
+    use crate::failure::Failure;
+    !succeeded && !asked_to_stop && matches!(last, Some(Failure::Network | Failure::Timeout))
 }
 
 /// Whether the verdict ends the job.
@@ -684,5 +720,91 @@ mod tests {
         .expect("run");
         assert_eq!(code, 0);
         assert!(!marker.exists());
+    }
+
+    // The #370 outage: the machine is offline, gcloud dies at once on every
+    // start, and each run used to spend the budget until the job was parked
+    // for good. Network exits wait and retry, however many there are.
+    #[tokio::test]
+    async fn ten_network_exits_in_a_row_do_not_park_the_job_and_the_wait_reaches_the_cap() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let marker = dir.path().join("com.gtunnel.dev.db.crash");
+        let budget = tiny(2, Duration::from_secs(60));
+        for n in 1..=10 {
+            assert_eq!(
+                run_once(
+                    dir.path(),
+                    "echo 'curl: (6) Could not resolve host: oauth2.googleapis.com' >&2; exit 1",
+                    budget
+                )
+                .await,
+                1,
+                "exit {n} must still be one the service manager restarts"
+            );
+            assert!(!marker.exists(), "parked after network exit {n}");
+        }
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("com.gtunnel.dev.db.netfails"))
+                .expect("count")
+                .trim(),
+            "10"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("com.gtunnel.dev.db.restarts"))
+                .map_or(0, |t| t.lines().count()),
+            0,
+            "an outage spends none of the restart budget"
+        );
+        assert_eq!(
+            crate::restart_budget::network_wait(&budget, &mut 9, Duration::ZERO),
+            budget.max_backoff
+        );
+    }
+
+    // No regression of #193: a login that expired is still the permanent kind,
+    // even with the network line after it that an offline retry also prints
+    #[tokio::test]
+    async fn an_auth_failure_still_parks_after_one_failure_even_with_a_network_line_after_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let marker = dir.path().join("com.gtunnel.dev.db.auth");
+        let code = supervise(
+            fake_gcloud(
+                "echo 'ERROR: Reauthentication required.' >&2; \
+                 echo 'Could not resolve host: oauth2.googleapis.com' >&2; exit 1",
+            ),
+            None,
+            None,
+            None,
+            Some(marker.clone()),
+            Some(Spend {
+                marker: dir.path().join("com.gtunnel.dev.db.crash"),
+                budget: tiny(2, Duration::from_secs(60)),
+            }),
+        )
+        .await
+        .expect("run");
+        let want = if cfg!(target_os = "macos") {
+            0
+        } else {
+            crate::daemon::AUTH_EXPIRED_EXIT
+        };
+        assert_eq!(code, want);
+        assert!(marker.exists(), "the auth marker names the login");
+        assert!(
+            !dir.path().join("com.gtunnel.dev.db.netfails").exists(),
+            "a stop-class failure is not an outage"
+        );
+    }
+
+    // A network line is not an alibi for a run the user stopped or for one
+    // that succeeded: neither is an outage exit
+    #[test]
+    fn only_a_failed_run_that_nobody_asked_to_stop_is_an_outage_exit() {
+        use crate::failure::Failure::{Network, Timeout};
+        assert!(is_outage_exit(false, false, Some(Network)));
+        assert!(is_outage_exit(false, false, Some(Timeout)));
+        assert!(!is_outage_exit(true, false, Some(Network)), "clean exit");
+        assert!(!is_outage_exit(false, true, Some(Network)), "SIGTERM");
+        assert!(!is_outage_exit(false, false, None), "no network line");
     }
 }

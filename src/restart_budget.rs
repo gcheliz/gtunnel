@@ -114,6 +114,31 @@ pub fn judge(b: &Budget, h: &mut History, ran_for: Duration, now: SystemTime) ->
     Verdict::Restart { after }
 }
 
+/// How long to wait after a run that died of the network, and the count to
+/// keep for the next one.
+///
+/// A network exit says nothing about the tunnel, so it never reaches [`judge`]
+/// and can never stop the job: an outage that lasts an hour is a loop of
+/// retries, not a verdict. The wait uses the budget's own backoff, 10 s doubling
+/// to 5 min, so an offline laptop is not hammered. `fails` is the count of
+/// network exits in a row; a run that lived `min_uptime` was working, so it
+/// starts the count over, as it does for the budget.
+pub fn network_wait(b: &Budget, fails: &mut u32, ran_for: Duration) -> Duration {
+    if ran_for >= b.min_uptime {
+        *fails = 0;
+    }
+    *fails = fails.saturating_add(1);
+    b.base_backoff
+        .saturating_mul(1 << (*fails - 1).min(30))
+        .min(b.max_backoff)
+}
+
+/// The persisted network count: one integer. Anything else is zero, because a
+/// damaged file must cost the count and never the tunnel.
+pub fn parse_net_failures(text: &str) -> u32 {
+    text.trim().parse().unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,5 +254,50 @@ mod tests {
         judge(&b, &mut h, quick(), at(1005));
         assert_eq!(History::parse(&h.render()), h);
         assert_eq!(History::parse("junk\n\n42\n").len(), 1, "junk is dropped");
+    }
+
+    fn ladder(b: &Budget, n: u32) -> Duration {
+        let mut fails = n - 1;
+        network_wait(b, &mut fails, quick())
+    }
+
+    // The same 10 s to 5 min the budget already uses between fast failures,
+    // so a network outage backs off as a crash loop does and never stops
+    #[test]
+    fn the_network_wait_doubles_from_ten_seconds_to_five_minutes_and_stays() {
+        let b = Budget::default();
+        let secs = |n| Duration::from_secs(n);
+        let got: Vec<Duration> = (1..=8).map(|n| ladder(&b, n)).collect();
+        assert_eq!(
+            got,
+            [10, 20, 40, 80, 160, 300, 300, 300].map(secs),
+            "10, 20, 40, 80, 160, then the 300 s cap"
+        );
+        assert_eq!(
+            ladder(&b, 1000),
+            b.max_backoff,
+            "an unbounded count is safe"
+        );
+    }
+
+    #[test]
+    fn a_run_that_lived_min_uptime_starts_the_network_wait_over() {
+        let b = Budget::default();
+        let mut fails = 9;
+        assert_eq!(network_wait(&b, &mut fails, b.min_uptime), b.base_backoff);
+        assert_eq!(fails, 1, "the long run was working, so the count restarts");
+        assert_eq!(network_wait(&b, &mut fails, quick()), 2 * b.base_backoff);
+        assert_eq!(fails, 2);
+    }
+
+    #[test]
+    fn the_network_count_survives_a_round_trip_through_its_file() {
+        assert_eq!(parse_net_failures("7\n"), 7);
+        assert_eq!(parse_net_failures(""), 0);
+        assert_eq!(
+            parse_net_failures("junk"),
+            0,
+            "a damaged file costs the count"
+        );
     }
 }
