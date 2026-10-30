@@ -50,7 +50,8 @@ fn an_unmanaged_row_offers_no_action_that_would_refuse() {
 fn details_do_not_credit_gtunnel_with_someone_elses_process() {
     let mut app = app_with_two();
     app.entries[0].kind = TunnelKind::External;
-    let buffer = screen(&app, 120, 30);
+    // Details is the side-by-side layout's pane
+    let buffer = screen(&app, 130, 30);
     let text: String = (0..buffer.area.height)
         .map(|y| row_chars(&buffer, y).into_iter().collect::<String>())
         .collect::<Vec<_>>()
@@ -792,12 +793,12 @@ fn only_the_logo_names_an_exact_hue() {
 fn the_footer_offers_only_what_the_selection_can_do() {
     let (ctx, _) = ui::footer_groups(Some((TunnelStatus::Running, TunnelKind::Managed)), true);
     let keys: Vec<_> = ctx.iter().map(|a| a.key).collect();
-    assert_eq!(keys, ["S", "R", "c", "o", "L"]);
+    assert_eq!(keys, ["S", "R", "c", "o", "PgUp", "L"]);
     assert!(!keys.contains(&"s"), "a running tunnel cannot be started");
 
     let (ctx, _) = ui::footer_groups(Some((TunnelStatus::Stopped, TunnelKind::Managed)), true);
     let keys: Vec<_> = ctx.iter().map(|a| a.key).collect();
-    assert_eq!(keys, ["s", "e", "d", "A"]);
+    assert_eq!(keys, ["s", "e", "d", "A", "PgUp"]);
     assert!(!keys.contains(&"S"), "s and S are never on screen together");
     // a/A is the one pair that can share the screen, in two groups.
     let text = line_text(&ui::footer_line(
@@ -821,7 +822,7 @@ fn a_selected_run_offers_import() {
     let (ctx, _) = ui::footer_groups(Some((TunnelStatus::Running, TunnelKind::Ephemeral)), true);
     assert_eq!(
         ctx.iter().map(|a| a.key).collect::<Vec<_>>(),
-        ["m", "c", "o"]
+        ["m", "c", "o", "PgUp"]
     );
 }
 
@@ -1181,6 +1182,27 @@ fn every_key_the_help_page_lists_is_handled() {
             assert!(app.suspend, "Ctrl+Z suspends");
             continue;
         }
+        // The Logs pane's paging acts on the log view, not on the selection
+        // or the mode, so it is checked by where the view ends up
+        if doc.key == "PgUp" || doc.key == "End/G" {
+            let pressed: &[KeyCode] = if doc.key == "PgUp" {
+                &[KeyCode::PageUp]
+            } else {
+                &[KeyCode::End, KeyCode::Char('G')]
+            };
+            for code in pressed {
+                let mut app = keymap_fixture();
+                app.logs = (0..80).map(|i| format!("line {i}")).collect();
+                screen(&app, 80, 24);
+                app.handle_key(key(KeyCode::PageUp));
+                assert!(app.log_scroll.back() > 0, "PgUp scrolls the log back");
+                if doc.key == "End/G" {
+                    app.handle_key(key(*code));
+                    assert_eq!(app.log_scroll.back(), 0, "{code:?} follows the log");
+                }
+            }
+            continue;
+        }
         // Bound on the help page only: pressed in the list they do nothing,
         // so each is checked where it acts, by the position it moves
         if HELP_ONLY.contains(&doc.key) {
@@ -1281,7 +1303,7 @@ fn help_app() -> App {
 
 #[test]
 fn the_footer_never_shows_more_than_the_board_says_it_does() {
-    assert_eq!(ui::footer_most(), 10);
+    assert_eq!(ui::footer_most(), 11);
 }
 
 // The page is reached with `:`, the shift of the `;` that cycles accounts,
@@ -1345,7 +1367,7 @@ fn a_wide_terminal_lays_the_help_page_out_in_two_columns() {
     // for any table, and this one has to change when a key is added
     let count_row = rows
         .iter()
-        .find(|r| r.contains("32 keys bound - the footer shows at most 10"))
+        .find(|r| r.contains("35 keys bound - the footer shows at most 11"))
         .expect("the count line");
     // In this page `q` closes the page, it does not quit the program
     assert!(count_row.contains("Esc back  q back"), "{count_row:?}");
@@ -1689,7 +1711,7 @@ fn the_keymap_documents_the_scroll_keys_in_the_program_group() {
     }
     let rows = text_of(&screen(&help_app(), 120, 40));
     assert!(
-        rows.iter().any(|r| r.contains("32 keys bound")),
+        rows.iter().any(|r| r.contains("35 keys bound")),
         "{}",
         rows.join("\n")
     );
@@ -1700,7 +1722,7 @@ fn a_page_that_fits_says_nothing_about_cuts() {
     for (w, h) in [(120, 40), (80, 60)] {
         let rows = text_of(&screen(&help_app(), w, h));
         assert!(counter(&rows).is_none(), "{w}x{h}:\n{}", rows.join("\n"));
-        assert_eq!(keys_shown(&rows), 32, "{w}x{h}");
+        assert_eq!(keys_shown(&rows), 35, "{w}x{h}");
     }
 }
 
@@ -2303,8 +2325,16 @@ fn below_121_columns_the_list_stacks_above_the_other_panes() {
     let buffer = screen(&app, 80, 30);
     let rows = text_of(&buffer);
     let list_y = rows.iter().position(|r| r.contains("TUNNELS (")).unwrap();
-    let details_y = rows.iter().position(|r| r.contains("DETAILS")).unwrap();
-    assert!(details_y > list_y, "details must sit below the list");
+    // Stacked, Details folds into one line under the list
+    let summary_y = rows
+        .iter()
+        .position(|r| r.contains(" running \u{b7} "))
+        .unwrap();
+    assert!(summary_y > list_y, "the summary must sit below the list");
+    assert!(
+        !rows.iter().any(|r| r.contains("DETAILS")),
+        "no Details pane"
+    );
     // the list's frame spans the terminal, and no second pane shares its row
     assert_eq!(buffer[(0, list_y as u16 - 1)].symbol(), "\u{256d}");
     assert_eq!(buffer[(79, list_y as u16 - 1)].symbol(), "\u{256e}");
@@ -2359,8 +2389,14 @@ fn from_100_to_120_columns_the_list_shows_every_url_uncut() {
         let buffer = screen(&app, width, 24);
         let rows = text_of(&buffer);
         let list_y = rows.iter().position(|r| r.contains("TUNNELS (")).unwrap();
-        let details_y = rows.iter().position(|r| r.contains("DETAILS")).unwrap();
-        assert!(details_y > list_y, "{width}: details sits below the list");
+        let summary_y = rows
+            .iter()
+            .position(|r| r.contains(" running \u{b7} "))
+            .unwrap();
+        assert!(
+            summary_y > list_y,
+            "{width}: the summary sits below the list"
+        );
         let text = rows.join("\n");
         for wanted in [
             "https://api.demo.example.com",
@@ -2399,12 +2435,15 @@ fn at_100x24_the_stacked_list_keeps_rows_and_the_panes_stay_usable() {
     let rows = text_of(&screen(&app, 100, 24));
     let text = rows.join("\n");
     let list_y = rows.iter().position(|r| r.contains("TUNNELS (")).unwrap();
-    let details_y = rows.iter().position(|r| r.contains("DETAILS")).unwrap();
+    let summary_y = rows
+        .iter()
+        .position(|r| r.contains(" running \u{b7} "))
+        .unwrap();
     assert!(
-        details_y - list_y >= 5,
+        summary_y - list_y >= 5,
         "the list shows its header and two rows"
     );
-    for wanted in ["DETAILS", "LOGS: ", "the newest log line"] {
+    for wanted in ["LOGS: ", "METRICS", "the newest log line"] {
         assert!(text.contains(wanted), "missing {wanted:?}\n{text}");
     }
 }
@@ -2555,9 +2594,17 @@ fn at_60_columns_no_details_or_metrics_row_is_cut_mid_word() {
         ..Default::default()
     });
     app.entries[1].history.record(123_000);
-    // 44 is where even the url and the four figures stop fitting a row
-    for width in [60, 44] {
-        let text = text_of(&screen(&app, width, 60)).join("\n");
+    // 44 is where even the url and the four figures stop fitting a row. The
+    // panes are measured on their own: Details is drawn only from 121 columns,
+    // and a pane that narrow is what the wrapping has to survive
+    for width in [56usize, 40] {
+        let entry = &app.entries[1];
+        let text = super::detail_lines(entry, "", width)
+            .iter()
+            .chain(super::metrics_lines(entry, width).iter())
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
         // the whole stored name and url are readable, wrapped
         for wanted in [
             "payments-callback-sandbox-dev",
@@ -2776,8 +2823,12 @@ fn a_long_instance_name_is_cut_and_the_zone_stays() {
 #[test]
 fn a_short_name_is_not_cut() {
     let app = app_with_many_instances(0);
-    let text = render_to_string(&app, 80, 30);
-    assert!(!text.contains('\u{2026}'), "{text}");
+    // Only the picker's rows: the summary line behind the dialog is cut at 80
+    // columns by design and its mark shows beside the frame
+    for name in ["instance-00", "instance-01"] {
+        let rows = lines_with(&app, 80, 30, name);
+        assert!(rows.iter().all(|r| !r.contains('\u{2026}')), "{rows:?}");
+    }
     let row = lines_with(&app, 80, 30, "instance-00");
     assert_eq!(row.len(), 1, "{row:?}");
     assert!(row[0].contains("europe-west1-b"), "{}", row[0]);
@@ -3719,4 +3770,373 @@ fn the_instance_picker_marks_iap_rows_and_counts_what_it_hides() {
     let rendered = render_to_string(&app, 120, 40);
     assert!(rendered.contains("gke-node-1"), "Tab did not show it");
     assert!(rendered.contains("Tab hides"), "no hint to hide again");
+}
+
+// ---- the small-screen layout (issue 348) ----
+
+fn demo_text(width: u16, height: u16) -> Vec<String> {
+    text_of(&screen(&App::new_demo(), width, height))
+}
+
+fn joined(rows: &[String]) -> String {
+    rows.join("\n")
+}
+
+const SPARK_GLYPHS: [char; 8] = [
+    '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}', '\u{2588}',
+];
+
+// A list is as tall as its entries need and no taller, so a short list does not
+// hold empty rows the panes under it could use, and a long one stops at 40
+// percent and scrolls
+#[test]
+fn the_stacked_list_is_sized_to_its_entries_and_capped_at_forty_percent() {
+    // 7 entries want 11 rows; 40 percent of 18 is 7
+    assert_eq!(ui::stacked_heights(18, 7, true), (7, 1, 10));
+    // 2 entries want 6 and the cap of 40 percent of 40 is 16: the list keeps 6
+    assert_eq!(ui::stacked_heights(40, 2, true), (6, 1, 33));
+    // the cap is a share of the height, not a count
+    assert_eq!(ui::stacked_heights(40, 30, true).0, 16);
+    // an empty list still has room to say it is empty
+    assert_eq!(ui::stacked_heights(40, 0, false), (6, 0, 34));
+}
+
+#[test]
+fn a_short_work_area_keeps_the_list_floor_and_gives_the_rest_away() {
+    // 40 percent of 10 is 4: under LIST_MIN_ROWS, so the floor wins
+    assert_eq!(ui::stacked_heights(10, 7, true), (6, 1, 3));
+    // a work area under the floor gives it all to the list
+    assert_eq!(ui::stacked_heights(4, 7, true), (4, 0, 0));
+}
+
+#[test]
+fn the_stacked_heights_always_add_up_to_the_work_area() {
+    for total in 0..80u16 {
+        for entries in [0usize, 1, 2, 3, 7, 20, 500] {
+            for selected in [false, true] {
+                let (list, summary, rest) = ui::stacked_heights(total, entries, selected);
+                assert_eq!(list + summary + rest, total, "{total} {entries} {selected}");
+                assert!(summary <= 1);
+            }
+        }
+    }
+}
+
+#[test]
+fn from_80_columns_logs_and_metrics_share_a_row_at_sixty_forty() {
+    let area = ratatui::layout::Rect::new(0, 5, 80, 10);
+    let split = ui::bottom_split(area);
+    assert!(!split.strip);
+    assert_eq!((split.logs.width, split.metrics.width), (48, 32));
+    assert_eq!(split.logs.x + split.logs.width, split.metrics.x);
+    assert_eq!((split.logs.height, split.metrics.height), (10, 10));
+    // 100 columns: the same share
+    let wide = ui::bottom_split(ratatui::layout::Rect::new(0, 0, 100, 8));
+    assert_eq!((wide.logs.width, wide.metrics.width), (60, 40));
+}
+
+#[test]
+fn under_80_columns_metrics_is_one_row_under_logs() {
+    let split = ui::bottom_split(ratatui::layout::Rect::new(0, 3, 79, 9));
+    assert!(split.strip);
+    assert_eq!(split.logs.width, 79);
+    assert_eq!((split.logs.height, split.metrics.height), (8, 1));
+    assert_eq!(split.logs.y + split.logs.height, split.metrics.y);
+    // one row left: the chart is what it goes to, not Logs
+    let one = ui::bottom_split(ratatui::layout::Rect::new(0, 0, 70, 1));
+    assert_eq!((one.logs.height, one.metrics.height), (0, 1));
+    // none left: nothing to divide, and no panic
+    let none = ui::bottom_split(ratatui::layout::Rect::new(0, 0, 70, 0));
+    assert_eq!((none.logs.height, none.metrics.height), (0, 0));
+}
+
+#[test]
+fn the_chart_keeps_the_rows_left_after_the_figures_and_never_fewer_than_one() {
+    // stacked: 7 rows of body, 3 of figures, 4 for the chart
+    assert_eq!(ui::metrics_split(7, 3, true), (3, 4));
+    // short: the figures give way, the chart keeps one
+    assert_eq!(ui::metrics_split(3, 3, true), (2, 1));
+    assert_eq!(ui::metrics_split(1, 3, true), (0, 1));
+    assert_eq!(ui::metrics_split(0, 3, true), (0, 0));
+    // side by side the pane is sized to its figures and they come first
+    assert_eq!(ui::metrics_split(3, 3, false), (3, 0));
+    assert_eq!(ui::metrics_split(5, 3, false), (3, 2));
+}
+
+#[test]
+fn the_log_extent_counts_lines_by_the_rows_they_take() {
+    // ten one-row lines in four rows: the view can go back until line 0 is at
+    // the top, 6 lines, and a page is 3 so one line carries over
+    let extent = ui::log_extent(&[1; 10], 4);
+    assert_eq!((extent.max_back, extent.page), (6, 3));
+    // a line that wraps takes its rows: 2 + 2 + 1 fit in 5 rows
+    let extent = ui::log_extent(&[2, 2, 1, 1, 1, 3], 5);
+    assert_eq!(extent.max_back, 3);
+    // everything fits: nowhere to scroll
+    assert_eq!(ui::log_extent(&[1, 1], 10).max_back, 0);
+    // nothing to show, nothing to page
+    assert_eq!(
+        ui::log_extent(&[], 10),
+        LogExtent {
+            max_back: 0,
+            page: 1
+        }
+    );
+    // a line taller than the pane is still the one that is shown
+    assert_eq!(ui::log_extent(&[9, 9], 4).max_back, 1);
+}
+
+#[test]
+fn the_summary_line_says_status_url_target_uptime_and_auto_start() {
+    let app = App::new_demo();
+    let entry = app.selected_entry().expect("a selection");
+    let line = line_text(&ui::summary_line(entry, 120));
+    for part in [
+        "db",
+        "running",
+        "localhost:15432",
+        "\u{2192} postgres-1:5432 (europe-west1-b)",
+        "up 2h 32m",
+        "auto-start on",
+    ] {
+        assert!(line.contains(part), "{part:?} missing from {line:?}");
+    }
+}
+
+// The reader needs the row's name, its state and its url to act on it, so those
+// are what a narrow line keeps and the rest goes a whole part at a time
+#[test]
+fn a_narrow_summary_line_drops_whole_parts_from_the_right() {
+    let app = App::new_demo();
+    let entry = app.selected_entry().expect("a selection");
+    let mut seen = Vec::new();
+    for width in (20..=120).rev() {
+        let line = line_text(&ui::summary_line(entry, width));
+        assert!(
+            line.chars().count() <= width,
+            "{width}: {} cells {line:?}",
+            line.chars().count()
+        );
+        if width >= 36 {
+            assert!(line.contains("running"), "{width}: {line:?}");
+            assert!(line.contains("localhost:15432"), "{width}: {line:?}");
+        }
+        seen.push((width, line.contains("auto-start"), line.contains("up 2h")));
+    }
+    // the flag goes before the uptime, which goes before the target
+    let flag_gone = seen.iter().find(|s| !s.1).map(|s| s.0).unwrap();
+    let up_gone = seen.iter().find(|s| !s.2).map(|s| s.0).unwrap();
+    assert!(flag_gone > up_gone, "{seen:?}");
+    // a line that cannot hold even the first part says it is cut
+    let tiny = line_text(&ui::summary_line(entry, 12));
+    assert!(tiny.ends_with('\u{2026}'), "{tiny:?}");
+    assert_eq!(tiny.chars().count(), 12);
+}
+
+// The three terminals the issue names. Every pane is drawn, the chart is on
+// screen, the summary line is whole, and the list says it has more rows
+#[test]
+fn at_80x24_every_pane_is_drawn_and_the_chart_and_summary_are_on_screen() {
+    let rows = demo_text(80, 24);
+    let all = joined(&rows);
+    for pane in ["TUNNELS (7)", "LOGS: DB", "METRICS"] {
+        assert!(all.contains(pane), "{pane}\n{all}");
+    }
+    assert!(
+        !all.contains("DETAILS"),
+        "Details folds into the summary\n{all}"
+    );
+    assert!(
+        rows.iter()
+            .any(|r| r.contains("db  running \u{b7} localhost:15432 \u{2192} postgres-1:5432")),
+        "{all}"
+    );
+    assert!(
+        rows.iter()
+            .any(|r| r.chars().any(|c| SPARK_GLYPHS.contains(&c))),
+        "the chart\n{all}"
+    );
+    // Logs and Metrics share a row: one frame closes where the next opens
+    assert!(
+        rows.iter().any(|r| r.contains("\u{256e}\u{256d}")),
+        "side by side\n{all}"
+    );
+    // 7 entries, 3 rows: the list says so on its border
+    let list_edge: String = rows[4..10]
+        .iter()
+        .filter_map(|r| r.chars().nth(79))
+        .collect();
+    assert!(
+        list_edge.contains('\u{25b2}') && list_edge.contains('\u{25bc}'),
+        "{list_edge:?}\n{all}"
+    );
+}
+
+#[test]
+fn at_100x30_the_list_scrolls_and_logs_and_metrics_sit_side_by_side() {
+    let rows = demo_text(100, 30);
+    let all = joined(&rows);
+    for pane in ["TUNNELS (7)", "LOGS: DB", "METRICS"] {
+        assert!(all.contains(pane), "{pane}\n{all}");
+    }
+    assert!(all.contains("latency"), "{all}");
+    assert!(rows.iter().any(|r| r.contains("\u{256e}\u{256d}")), "{all}");
+    assert!(
+        rows.iter()
+            .any(|r| r.chars().any(|c| SPARK_GLYPHS.contains(&c))),
+        "{all}"
+    );
+    assert!(all.contains("up 2h 32m"), "{all}");
+    // more rows than the list holds, so a scrollbar; the demo has 7
+    assert!(all.contains('\u{25bc}'), "{all}");
+}
+
+#[test]
+fn at_70x20_metrics_is_a_strip_under_logs_and_the_chart_is_kept() {
+    let rows = demo_text(70, 20);
+    let all = joined(&rows);
+    for pane in ["TUNNELS (7)", "LOGS: DB"] {
+        assert!(all.contains(pane), "{pane}\n{all}");
+    }
+    // no Metrics frame: the strip is not a pane
+    assert!(!all.contains("METRICS"), "{all}");
+    let strip = rows
+        .iter()
+        .find(|r| r.contains("peak") && r.contains("active"))
+        .unwrap_or_else(|| panic!("the strip\n{all}"));
+    assert!(strip.contains("14 ms"), "{strip:?}");
+    assert!(
+        strip.chars().any(|c| SPARK_GLYPHS.contains(&c)),
+        "{strip:?}"
+    );
+    assert!(
+        all.contains("localhost:15432 \u{2192}"),
+        "the summary\n{all}"
+    );
+    // two entries are visible, so the list is more than a row
+    assert!(all.contains("redis"), "{all}");
+}
+
+// The strip is a row of figures and a chart, and the cells are counted, not
+// trusted: a row wider than the terminal wraps and breaks the layout under it
+#[test]
+fn the_metrics_strip_fits_the_terminal_at_every_width_it_is_used() {
+    let app = App::new_demo();
+    let entry = app.selected_entry().expect("a selection");
+    let (line, used) = ui::metrics_strip(entry);
+    assert_eq!(line.to_string().chars().count(), used);
+    assert!(
+        used < 40,
+        "the figures leave a chart room at 70 columns: {used}"
+    );
+    for width in [79u16, 70, 60, 44] {
+        for row in text_of(&screen(&app, width, 20)) {
+            assert!(row.chars().count() <= width as usize, "{width}: {row:?}");
+        }
+    }
+}
+
+// The terminal sizes users really have: nothing panics, every row fits, and a
+// selected tunnel is somewhere on screen
+#[test]
+fn the_stacked_layout_draws_at_every_small_size_without_a_wide_row() {
+    let app = App::new_demo();
+    for width in (30..=120u16).step_by(7) {
+        for height in 4..=40u16 {
+            let rows = text_of(&screen(&app, width, height));
+            for row in &rows {
+                assert!(row.chars().count() <= width as usize, "{width}x{height}");
+            }
+        }
+    }
+}
+
+#[test]
+fn from_121_columns_the_layout_is_unchanged_and_keeps_details() {
+    let rows = demo_text(121, 30);
+    let all = joined(&rows);
+    for pane in ["TUNNELS (7)", "DETAILS", "LOGS: DB", "METRICS"] {
+        assert!(all.contains(pane), "{pane}\n{all}");
+    }
+    assert!(!all.contains(" running \u{b7} "), "no summary line\n{all}");
+}
+
+// Hidden lines are said on the border; the title counts the ones below
+#[test]
+fn scrolled_back_the_logs_title_counts_the_newer_lines_and_a_scrollbar_shows() {
+    let mut app = crate::tui::tests::app_with_two();
+    app.logs = (0..60).map(|i| format!("entry {i:02}")).collect();
+    let following = joined(&text_of(&screen(&app, 100, 30)));
+    assert!(following.contains("entry 59"), "{following}");
+    assert!(!following.contains("newer"), "{following}");
+    // lines above the view: the bar is there while following too
+    assert!(following.contains('\u{25b2}'), "{following}");
+
+    app.handle_key(key(KeyCode::PageUp));
+    let back = joined(&text_of(&screen(&app, 100, 30)));
+    let hidden = app.log_scroll.back();
+    assert!(hidden > 0);
+    assert!(back.contains(&format!("\u{2193} {hidden} newer")), "{back}");
+    assert!(back.contains("LOGS: DB"), "{back}");
+    assert!(
+        !back.contains("entry 59"),
+        "the newest line is below the view\n{back}"
+    );
+}
+
+#[test]
+fn a_log_that_fits_draws_no_scrollbar() {
+    let mut app = crate::tui::tests::app_with_two();
+    app.logs = vec!["only line".to_string()];
+    let all = joined(&text_of(&screen(&app, 100, 30)));
+    assert!(all.contains("only line"), "{all}");
+    assert!(!all.contains('\u{25b2}'), "{all}");
+}
+
+#[test]
+fn the_keymap_page_says_shift_selects_text_while_the_mouse_is_captured() {
+    // One column, so the note's rows are consecutive and can be read as a
+    // sentence
+    let rows = text_of(&screen(&help_app(), 70, 80));
+    let flat: String = rows
+        .iter()
+        .map(|r| r.trim_matches(|c: char| c == '\u{2502}' || c.is_whitespace()))
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        flat.contains("hold Shift while dragging to select"),
+        "{flat}"
+    );
+    assert!(
+        flat.contains("The mouse wheel scrolls the list or the log"),
+        "{flat}"
+    );
+}
+
+// Paging the log is advertised where it fits and never at the price of the
+// actions on the row: `c copy` and `o open` outlast it
+#[test]
+fn the_footer_names_log_paging_where_it_fits_and_sheds_it_before_copy() {
+    let running = Some((TunnelStatus::Running, TunnelKind::Managed));
+    let at = |w: u16| line_text(&ui::footer_line(w, running, true));
+    assert!(at(120).contains("PgUp logs"), "{:?}", at(120));
+    // 80 columns holds copy and open and not the paging word
+    let eighty = at(80);
+    assert!(eighty.contains("o open"), "{eighty:?}");
+    assert!(!eighty.contains("PgUp"), "{eighty:?}");
+    // wherever it shows, copy and open show with it
+    for w in 40..140 {
+        let text = at(w);
+        if text.contains("PgUp") {
+            assert!(
+                text.contains("c copy") && text.contains("o open"),
+                "{w}: {text:?}"
+            );
+        }
+    }
+    // a stranger's process and an empty list have no log of ours to page
+    for state in [Some((TunnelStatus::Running, TunnelKind::External)), None] {
+        let text = line_text(&ui::footer_line(200, state, state.is_some()));
+        assert!(!text.contains("PgUp"), "{text:?}");
+    }
 }

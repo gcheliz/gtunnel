@@ -3029,3 +3029,269 @@ fn opening_the_dialog_again_hides_what_the_last_one_showed() {
     keys(&mut app, "a1cache\n");
     assert!(!app.show_all_instances, "the new dialog inherited the view");
 }
+
+// ---- scrolling the Logs pane, and the mouse wheel (issue 348) ----
+
+fn numbered(from: usize, to: usize) -> Vec<String> {
+    (from..to).map(|i| format!("entry {i:03}")).collect()
+}
+
+fn logs_app(lines: usize) -> App {
+    let mut app = app_with_two();
+    app.logs = numbered(0, lines);
+    // a draw measures the pane, as the loop's first one does
+    screen(&app, 100, 30);
+    app
+}
+
+fn on_screen(app: &App) -> String {
+    let buffer = screen(app, 100, 30);
+    (0..buffer.area.height)
+        .map(|y| {
+            (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol().to_string())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn an_arrival_is_the_lines_new_has_that_old_did_not() {
+    let old = numbered(0, 5);
+    assert_eq!(lines_arrived(&old, &numbered(0, 5)), Some(0));
+    assert_eq!(lines_arrived(&old, &numbered(0, 8)), Some(3));
+    // the file is read as its last lines, so the front moves as it grows
+    assert_eq!(lines_arrived(&old, &numbered(2, 8)), Some(3));
+    // nothing in common: a cleared or rotated file, where no position holds
+    assert_eq!(lines_arrived(&old, &numbered(50, 55)), None);
+    assert_eq!(lines_arrived(&old, &[]), None);
+    // the first read has nothing to hold a place in
+    assert_eq!(lines_arrived(&[], &numbered(0, 4)), Some(4));
+}
+
+#[test]
+fn a_pane_that_was_never_touched_follows_the_newest_line() {
+    let app = logs_app(120);
+    assert_eq!(app.log_scroll.back(), 0);
+    let text = on_screen(&app);
+    assert!(text.contains("entry 119"), "{text}");
+    assert!(!text.contains("newer"), "{text}");
+}
+
+#[test]
+fn page_up_goes_back_a_page_and_page_down_returns_the_same_distance() {
+    let mut app = logs_app(120);
+    app.handle_key(key(KeyCode::PageUp));
+    let one_page = app.log_scroll.back();
+    assert!(one_page > 0);
+    app.handle_key(key(KeyCode::PageUp));
+    assert_eq!(app.log_scroll.back(), one_page * 2);
+    app.handle_key(key(KeyCode::PageDown));
+    assert_eq!(app.log_scroll.back(), one_page);
+    app.handle_key(key(KeyCode::PageDown));
+    assert_eq!(app.log_scroll.back(), 0);
+    // past the newest line there is nothing to page to
+    app.handle_key(key(KeyCode::PageDown));
+    assert_eq!(app.log_scroll.back(), 0);
+}
+
+#[test]
+fn a_page_keeps_one_line_of_the_last_screen_in_view() {
+    let mut app = logs_app(120);
+    let before = on_screen(&app);
+    let top_before = (0..120)
+        .find(|i| before.contains(&format!("entry {i:03}")))
+        .expect("a visible line");
+    app.handle_key(key(KeyCode::PageUp));
+    let after = on_screen(&app);
+    assert!(
+        after.contains(&format!("entry {top_before:03}")),
+        "the line at the top of the old view is still on screen\n{after}"
+    );
+}
+
+#[test]
+fn new_lines_arriving_while_scrolled_back_do_not_move_the_view() {
+    let mut app = logs_app(120);
+    app.handle_key(key(KeyCode::PageUp));
+    let back = app.log_scroll.back();
+    let held = on_screen(&app);
+    // three lines arrive: the file's tail now starts three lines later
+    app.set_logs(numbered(3, 123));
+    assert_eq!(
+        app.log_scroll.back(),
+        back + 3,
+        "the count of newer lines grew"
+    );
+    let after = on_screen(&app);
+    let strip = |text: &str| -> Vec<String> {
+        text.lines()
+            .filter(|l| l.contains("entry "))
+            .map(|l| l[l.find("entry ").unwrap()..][..9].to_string())
+            .collect()
+    };
+    assert_eq!(strip(&held), strip(&after), "the same lines are on screen");
+    assert!(
+        after.contains(&format!("\u{2193} {} newer", back + 3)),
+        "{after}"
+    );
+}
+
+#[test]
+fn a_following_view_stays_on_the_newest_line_as_lines_arrive() {
+    let mut app = logs_app(120);
+    app.set_logs(numbered(5, 125));
+    assert_eq!(app.log_scroll.back(), 0);
+    assert!(on_screen(&app).contains("entry 124"));
+}
+
+#[test]
+fn end_and_capital_g_return_to_following() {
+    for code in [KeyCode::End, KeyCode::Char('G')] {
+        let mut app = logs_app(120);
+        app.handle_key(key(KeyCode::PageUp));
+        app.handle_key(key(KeyCode::PageUp));
+        assert!(app.log_scroll.back() > 0);
+        app.handle_key(key(code));
+        assert_eq!(app.log_scroll.back(), 0, "{code:?}");
+        let text = on_screen(&app);
+        assert!(text.contains("entry 119"), "{code:?}\n{text}");
+        assert!(!text.contains("newer"), "{code:?}\n{text}");
+    }
+}
+
+#[test]
+fn the_offset_is_clamped_to_the_first_line() {
+    let mut app = logs_app(120);
+    for _ in 0..100 {
+        app.handle_key(key(KeyCode::PageUp));
+    }
+    let furthest = app.log_scroll.back();
+    assert_eq!(furthest, app.log_scroll.extent.get().max_back);
+    let text = on_screen(&app);
+    assert!(
+        text.contains("entry 000"),
+        "the oldest line is at the top\n{text}"
+    );
+    // one more press does not move it, and one page forward moves a page
+    app.handle_key(key(KeyCode::PageUp));
+    assert_eq!(app.log_scroll.back(), furthest);
+}
+
+#[test]
+fn a_taller_terminal_pulls_a_stale_offset_back_into_range() {
+    let mut app = logs_app(40);
+    for _ in 0..10 {
+        app.handle_key(key(KeyCode::PageUp));
+    }
+    // the same log drawn where everything fits: nothing can be hidden
+    screen(&app, 100, 70);
+    assert_eq!(app.log_scroll.back(), 0);
+}
+
+#[test]
+fn a_read_that_shares_nothing_with_the_last_follows_the_new_file() {
+    let mut app = logs_app(120);
+    app.handle_key(key(KeyCode::PageUp));
+    app.set_logs(numbered(500, 520));
+    assert_eq!(app.log_scroll.back(), 0);
+}
+
+#[test]
+fn moving_the_selection_goes_back_to_following() {
+    let mut app = logs_app(120);
+    app.handle_key(key(KeyCode::PageUp));
+    assert!(app.log_scroll.back() > 0);
+    app.handle_key(key(KeyCode::Char('j')));
+    assert_eq!(app.log_scroll.back(), 0);
+}
+
+#[test]
+fn clearing_the_log_goes_back_to_following() {
+    let mut app = logs_app(120);
+    app.handle_key(key(KeyCode::PageUp));
+    app.clear_logs();
+    assert_eq!(app.log_scroll.back(), 0);
+    assert!(app.logs.is_empty());
+}
+
+fn wheel(
+    kind: crossterm::event::MouseEventKind,
+    column: u16,
+    row: u16,
+) -> crossterm::event::MouseEvent {
+    crossterm::event::MouseEvent {
+        kind,
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    }
+}
+
+#[test]
+fn the_wheel_over_logs_scrolls_the_log_and_leaves_the_selection() {
+    use crossterm::event::MouseEventKind::{ScrollDown, ScrollUp};
+    let mut app = logs_app(120);
+    let logs = app.pane_rects.get().logs;
+    assert!(
+        logs.width > 0 && logs.height > 0,
+        "a draw recorded the pane"
+    );
+    let (x, y) = (logs.x + 3, logs.y + 3);
+    app.handle_mouse(wheel(ScrollUp, x, y));
+    assert_eq!(app.log_scroll.back(), WHEEL_LOG_LINES);
+    app.handle_mouse(wheel(ScrollUp, x, y));
+    assert_eq!(app.log_scroll.back(), WHEEL_LOG_LINES * 2);
+    app.handle_mouse(wheel(ScrollDown, x, y));
+    assert_eq!(app.log_scroll.back(), WHEEL_LOG_LINES);
+    assert_eq!(app.selected, 0, "the list did not move");
+}
+
+#[test]
+fn the_wheel_over_the_list_moves_the_selection_like_j_and_k() {
+    use crossterm::event::MouseEventKind::{ScrollDown, ScrollUp};
+    let mut app = logs_app(120);
+    let list = app.pane_rects.get().list;
+    let (x, y) = (list.x + 3, list.y + 2);
+    app.handle_mouse(wheel(ScrollDown, x, y));
+    assert_eq!(app.selected, 1);
+    // the end of the list holds, as `j` does
+    app.handle_mouse(wheel(ScrollDown, x, y));
+    assert_eq!(app.selected, 1);
+    app.handle_mouse(wheel(ScrollUp, x, y));
+    assert_eq!(app.selected, 0);
+    assert_eq!(app.log_scroll.back(), 0);
+}
+
+#[test]
+fn the_wheel_elsewhere_and_every_other_mouse_event_do_nothing() {
+    use crossterm::event::{MouseButton, MouseEventKind};
+    let mut app = logs_app(120);
+    let logs = app.pane_rects.get().logs;
+    // the footer row is in neither pane
+    app.handle_mouse(wheel(MouseEventKind::ScrollUp, 2, 29));
+    assert_eq!(app.log_scroll.back(), 0);
+    for kind in [
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+        MouseEventKind::Drag(MouseButton::Left),
+        MouseEventKind::Moved,
+        MouseEventKind::ScrollLeft,
+        MouseEventKind::ScrollRight,
+    ] {
+        app.handle_mouse(wheel(kind, logs.x + 3, logs.y + 3));
+        assert_eq!(app.log_scroll.back(), 0, "{kind:?}");
+        assert_eq!(app.selected, 0, "{kind:?}");
+    }
+}
+
+#[test]
+fn the_wheel_is_ignored_while_a_page_or_dialog_is_open() {
+    use crossterm::event::MouseEventKind::ScrollUp;
+    let mut app = logs_app(120);
+    let logs = app.pane_rects.get().logs;
+    app.input_mode = InputMode::Help;
+    app.handle_mouse(wheel(ScrollUp, logs.x + 3, logs.y + 3));
+    assert_eq!(app.log_scroll.back(), 0);
+}
