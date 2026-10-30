@@ -1,11 +1,9 @@
+mod common;
+
+use common::Harness;
 use std::fs;
 use std::io::Write;
 use std::process::{Command, Stdio};
-use tempfile::TempDir;
-
-struct Harness {
-    dir: TempDir,
-}
 
 const STUB: &str = r#"#!/bin/sh
 exit 0
@@ -39,72 +37,31 @@ project = "example-prod-3c4d"
 default_zone = "europe-west1-b"
 "#;
 
-const CONFIG: &str = r#"selected_account = "demo"
+use common::{CONFIG, TUNNELS};
 
-[[accounts]]
-name = "demo"
-gcloud_configuration = "work"
-project = "example-dev-1a2b"
-default_zone = "europe-west1-b"
-"#;
-
-const TUNNELS: &str = r#"[[tunnels]]
-name = "db"
-account_name = "demo"
-auto_start = false
-
-[tunnels.spec]
-mode = "access"
-remote_port = 5432
-local_port = 15432
-
-[tunnels.spec.target]
-kind = "instance"
-instance = "postgres-1"
-zone = "europe-west1-b"
-"#;
-
+// The MCP server also runs with discovery off, so no test looks for a real
+// project through the machine's gcloud
 impl Harness {
     fn new() -> Self {
-        Self::with_stub(STUB)
+        Self::stubbed(STUB)
     }
 
     #[cfg(target_os = "macos")]
-    fn failing_gcloud() -> Self {
-        Self::with_stub(FAILING_STUB)
+    fn failing_gcloud() -> Harness {
+        Self::stubbed(FAILING_STUB)
     }
 
-    // Two accounts, neither logged in: a move has a destination to be refused by
-    fn logged_out() -> Self {
-        Self::build(LOGGED_OUT_STUB, TWO_ACCOUNTS)
+    fn logged_out() -> Harness {
+        Self::configured(LOGGED_OUT_STUB, TWO_ACCOUNTS)
     }
 
-    fn with_stub(stub: &str) -> Self {
-        Self::build(stub, CONFIG)
+    fn stubbed(stub: &str) -> Harness {
+        Self::configured(stub, CONFIG)
     }
 
-    fn build(stub: &str, config: &str) -> Self {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let root = dir.path();
-        fs::create_dir_all(root.join("bin")).unwrap();
-        fs::create_dir_all(root.join("config")).unwrap();
-
-        let gcloud = root.join("bin/gcloud");
-        fs::write(&gcloud, stub).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&gcloud, fs::Permissions::from_mode(0o755)).unwrap();
-        }
-
-        fs::write(root.join("config/config.toml"), config).unwrap();
-        fs::write(root.join("config/tunnels.toml"), TUNNELS).unwrap();
-        fs::write(
-            root.join("config/update-check.json"),
-            r#"{"latest_version":"0.0.1","checked_at":99999999999}"#,
-        )
-        .unwrap();
-        Self { dir }
+    fn configured(stub: &str, config: &str) -> Harness {
+        Harness::build(&[("gcloud", stub)], config, Some(TUNNELS))
+            .with_env("GTUNNEL_NO_DISCOVERY", "1")
     }
 
     fn run_mcp_pipe(&self, input: &str) -> (String, String, bool) {
@@ -112,18 +69,8 @@ impl Harness {
     }
 
     fn run_mcp_pipe_bytes(&self, input: &[u8]) -> (String, String, bool) {
-        let root = self.dir.path();
-        let path = format!(
-            "{}:/usr/bin:/bin:/usr/sbin:/sbin",
-            root.join("bin").display()
-        );
-        let mut child = Command::new(env!("CARGO_BIN_EXE_gtunnel"))
-            .args(["mcp"])
-            .env("PATH", path)
-            .env("HOME", root)
-            .env("GTUNNEL_CONFIG_DIR", root.join("config"))
-            .env("GTUNNEL_NO_NOTIFY", "1")
-            .env("GTUNNEL_NO_DISCOVERY", "1")
+        let mut child = self
+            .command(&["mcp"], &[])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -137,31 +84,17 @@ impl Harness {
 
         let out = child.wait_with_output().expect("wait on mcp");
         (
-            String::from_utf8_lossy(&out.stdout).into_owned(),
-            String::from_utf8_lossy(&out.stderr).into_owned(),
+            common::text(&out.stdout),
+            common::text(&out.stderr),
             out.status.success(),
         )
     }
 
-    fn run(&self, args: &[&str]) -> (String, String, bool) {
-        let root = self.dir.path();
-        let path = format!(
-            "{}:/usr/bin:/bin:/usr/sbin:/sbin",
-            root.join("bin").display()
-        );
-        let out = Command::new(env!("CARGO_BIN_EXE_gtunnel"))
-            .args(args)
-            .env("PATH", path)
-            .env("HOME", root)
-            .env("GTUNNEL_CONFIG_DIR", root.join("config"))
-            .env("GTUNNEL_NO_NOTIFY", "1")
-            .env("GTUNNEL_NO_DISCOVERY", "1")
-            .stdin(Stdio::null())
-            .output()
-            .expect("run gtunnel");
+    fn run_text(&self, args: &[&str]) -> (String, String, bool) {
+        let out = self.run(args);
         (
-            String::from_utf8_lossy(&out.stdout).into_owned(),
-            String::from_utf8_lossy(&out.stderr).into_owned(),
+            common::text(&out.stdout),
+            common::text(&out.stderr),
             out.status.success(),
         )
     }
@@ -170,7 +103,7 @@ impl Harness {
 #[test]
 fn mcp_validate_flag_exits_successfully() {
     let h = Harness::new();
-    let (stdout, stderr, success) = h.run(&["mcp", "--validate"]);
+    let (stdout, stderr, success) = h.run_text(&["mcp", "--validate"]);
     assert!(success, "stderr: {stderr}");
     assert!(stdout.contains("Validated 14 tools and 2 resources successfully."));
 }
@@ -834,7 +767,7 @@ fn list_json_and_mcp_list_tunnels_have_the_same_keys_for_a_tunnel_and_a_run() {
     let mut sleeper = Command::new("/bin/sleep").arg("30").spawn().expect("sleep");
     write_run_record(&h, "demo", "scratch", sleeper.id(), ACCESS_SPEC);
     let mcp = json_text(&call(&h, "gtunnel_list_tunnels", "{}"));
-    let (cli, stderr, success) = h.run(&["list", "--json"]);
+    let (cli, stderr, success) = h.run_text(&["list", "--json"]);
     let _ = sleeper.kill();
     let _ = sleeper.wait();
     assert!(success, "stderr: {stderr}");
@@ -983,10 +916,10 @@ fn reap(mut child: std::process::Child) {
 
 #[test]
 fn the_cli_stop_finds_a_live_run_and_its_record_goes() {
-    let h = Harness::with_stub(RUN_STUB);
+    let h = Harness::stubbed(RUN_STUB);
     let record = launch_run(&h, "clistop");
     let pid = record["pid"].as_u64().expect("a pid");
-    let (stdout, stderr, ok) = h.run(&["stop", "clistop"]);
+    let (stdout, stderr, ok) = h.run_text(&["stop", "clistop"]);
     assert!(ok, "stderr: {stderr}");
     assert!(stdout.contains("clistop stopped"), "{stdout}");
     assert!(record_gone(&h, "clistop"));
@@ -1010,7 +943,7 @@ fn a_persistent_tunnel_wins_over_a_run_of_the_same_name() {
 
 #[test]
 fn the_skill_flow_for_a_run_is_run_status_logs_stop() {
-    let h = Harness::with_stub(RUN_STUB);
+    let h = Harness::stubbed(RUN_STUB);
     let record = launch_run(&h, "flow");
     let port = record["local_port"].as_u64().expect("a port");
 
@@ -1123,7 +1056,7 @@ exit 1
 // before any record, so the kind is deterministic
 #[test]
 fn a_failed_run_carries_the_childs_kind() {
-    let h = Harness::with_stub(LOGGED_OUT_STUB);
+    let h = Harness::stubbed(LOGGED_OUT_STUB);
     let req = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"gtunnel_run_tunnel","arguments":{"name":"r1","target":"my-vm:5432","ttl_minutes":1}}}"#;
     let (stdout, _, _) = h.run_mcp_pipe(&format!("{req}\n"));
     let f = &frames(&stdout)[0];
@@ -1235,17 +1168,17 @@ fn a_notification_gets_no_reply_and_the_session_goes_on() {
 
 #[test]
 fn the_cli_logs_of_a_run_print_its_log_and_a_terminal_run_has_none() {
-    let h = Harness::with_stub(RUN_STUB);
+    let h = Harness::stubbed(RUN_STUB);
     launch_run(&h, "clilogs");
     let mut out = String::new();
     for _ in 0..100 {
-        out = h.run(&["logs", "clilogs"]).0;
+        out = h.run_text(&["logs", "clilogs"]).0;
         if out.contains("Testing if tunnel connection works.") {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    let (_, stop_err, stopped) = h.run(&["stop", "clilogs"]);
+    let (_, stop_err, stopped) = h.run_text(&["stop", "clilogs"]);
     assert!(
         out.contains("Testing if tunnel connection works."),
         "{out}\n{stop_err}"
@@ -1255,7 +1188,7 @@ fn the_cli_logs_of_a_run_print_its_log_and_a_terminal_run_has_none() {
     // A run started from a terminal prints there and leaves no file
     let term = sleeper();
     write_run_record(&h, "demo", "term", term.id(), ACCESS_SPEC);
-    let (stdout, stderr, ok) = h.run(&["logs", "term"]);
+    let (stdout, stderr, ok) = h.run_text(&["logs", "term"]);
     reap(term);
     assert!(!ok, "{stdout}");
     assert!(stderr.contains("started from a terminal"), "{stderr}");
@@ -1411,7 +1344,7 @@ fn expose_without_a_relay_is_refused_and_changes_nothing() {
 
 #[test]
 fn expose_with_a_string_public_is_invalid_params() {
-    let h = Harness::build(STUB, RELAY_CONFIG);
+    let h = Harness::configured(STUB, RELAY_CONFIG);
     let req = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"gtunnel_expose_tunnel","arguments":{"name":"web","target":"3000","public":"true"}}}"#;
     let (stdout, _, _) = h.run_mcp_pipe(&format!("{req}\n"));
     let frames = frames(&stdout);
@@ -1420,7 +1353,7 @@ fn expose_with_a_string_public_is_invalid_params() {
 
 #[test]
 fn expose_of_an_existing_name_is_refused() {
-    let h = Harness::build(STUB, RELAY_CONFIG);
+    let h = Harness::configured(STUB, RELAY_CONFIG);
     let before = tunnels_toml(&h);
     let result = call(
         &h,
@@ -1434,7 +1367,7 @@ fn expose_of_an_existing_name_is_refused() {
 
 #[test]
 fn expose_of_a_remote_target_is_refused_and_changes_nothing() {
-    let h = Harness::build(STUB, RELAY_CONFIG);
+    let h = Harness::configured(STUB, RELAY_CONFIG);
     let before = tunnels_toml(&h);
     let req = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"gtunnel_expose_tunnel","arguments":{"name":"web","target":"169.254.169.254:80"}}}"#;
     let (stdout, _, _) = h.run_mcp_pipe(&format!("{req}\n"));
@@ -1452,7 +1385,7 @@ fn expose_of_a_remote_target_is_refused_and_changes_nothing() {
 
 #[test]
 fn expose_of_port_zero_is_refused_and_changes_nothing() {
-    let h = Harness::build(STUB, RELAY_CONFIG);
+    let h = Harness::configured(STUB, RELAY_CONFIG);
     let before = tunnels_toml(&h);
     let req = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"gtunnel_expose_tunnel","arguments":{"name":"web","target":"localhost:0"}}}"#;
     let (stdout, _, _) = h.run_mcp_pipe(&format!("{req}\n"));

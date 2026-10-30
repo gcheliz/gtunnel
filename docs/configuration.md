@@ -427,6 +427,7 @@ precedence are under [Settings the environment can override](#settings-the-envir
 | `GTUNNEL_RESTART_MIN_UPTIME` | | `restart.min_uptime` | `60s` | How long a run must last to clear the count |
 | `GTUNNEL_RESTART_BASE_BACKOFF` | | `restart.base_backoff` | `10s` | The wait after the first failure, doubled on each next one |
 | `GTUNNEL_RESTART_MAX_BACKOFF` | | `restart.max_backoff` | `5m` | The cap on that doubling wait. Not shorter than the base backoff |
+| `GTUNNEL_TEST_GCP_ENDPOINT` | | nothing | none | Debug builds only, for tests: points every Google API at one base URL, such as a wiremock server. A release build does not read it, and CI checks the name is absent from the release binary |
 | `PATH` | | nothing: it is the shell's, shared with every other program | | Where `gcloud` is found at startup |
 
 **`GTUNNEL_CONFIG_DIR` does not move the service label.** The label is still

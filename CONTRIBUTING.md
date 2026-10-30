@@ -66,6 +66,53 @@ by recording the constraint that made the code look like that.
 `unsafe` block needs a `SAFETY:` comment stating what makes it sound. `dbg!`, `todo!` and
 `unimplemented!` are lints too and will not reach a release binary.
 
+## Tests: four layers
+
+Pick the lowest layer that can fail for the reason you care about. A higher layer costs
+more to run and says less about where it broke.
+
+| Layer | Lives in | Fake | Use it for |
+|---|---|---|---|
+| Unit | `#[cfg(test)]` modules in `src/` | none; `Endpoints::single` and a static token for a client | parsing, formatting, a decision made from values |
+| Component | `src/gcp/*` tests | a wiremock `MockServer` behind `GcpClient::new(TokenSource::Static, Endpoints::single(..))` | one API call: its URL, body and error handling |
+| Binary integration | `tests/*.rs` | `Harness`: a stub `gcloud` on `PATH`, a scratch config, and for GCP a wiremock server named by `GTUNNEL_TEST_GCP_ENDPOINT` | a command as a person types it: exit code, output and saved files together |
+| End to end | not yet | a real project | nothing runs here today |
+
+### Using `Harness`
+
+`tests/common/mod.rs` holds the one harness. A test file starts with `mod common;`.
+
+```rust
+mod common;
+use common::{text, Harness, CONFIG, LOGGED_IN_STUB};
+
+#[tokio::test(flavor = "multi_thread")]
+async fn add_saves_the_zone_the_api_reports() {
+    let server = wiremock::MockServer::start().await;
+    // mount the compute responses the command asks for
+    let h = Harness::build(&[("gcloud", LOGGED_IN_STUB)], CONFIG, None).with_gcp(&server);
+    let out = h.run(&["add", "pg", "10.0.0.10:5432", "--via", "bastion"]);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", text(&out.stderr));
+}
+```
+
+| Piece | Does |
+|---|---|
+| `Harness::with_stub(stub)` | a `gcloud` stub, the `demo` account and one saved tunnel |
+| `Harness::build(stubs, config, tunnels)` | the same with your own stubs, config and tunnels (`None` writes no `tunnels.toml`) |
+| `.with_env(key, value)`, `.with_inherited_path()` | one more variable for every run; the caller's `PATH` after the stubs |
+| `.with_gcp(&server)` | every GCP API of the binary answers from that wiremock server |
+| `run(args)`, `run_with_env(args, envs)` | run to completion and return the `Output` |
+| `spawn(args, envs)`, `wait_exit(n, bound)` | start a run that stays; `Drop` ends what a failed test leaves |
+| `poll(bound, condition)` | wait on a condition with a bound; never a bare `sleep` |
+
+Two rules for a GCP test. Use an account name no other test uses, because a launchd label is
+`com.gtunnel.<account>.<name>` and a test must not share one with a real config. And never
+start a tunnel (`-s`, `start`): the job would outlive the test.
+
+`GTUNNEL_TEST_GCP_ENDPOINT` exists only in a debug build, which is what `cargo test` runs.
+A release build does not contain the name, and CI builds `--release` and fails if it finds it.
+
 ## Documentation is part of the change
 
 A change that alters behaviour updates the docs in the same pull request.
