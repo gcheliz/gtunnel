@@ -121,6 +121,13 @@ pub enum Finding {
         account: String,
         what: &'static str,
     },
+    // The relay boots from an image family once and nothing patches it after:
+    // with no external IP and no Cloud NAT it cannot reach the mirrors, and a
+    // kernel update needs a reboot nobody schedules. Age is the only signal.
+    RelayImageOld {
+        account: String,
+        days: u64,
+    },
     CertNotActive {
         domain: String,
         state: String,
@@ -319,6 +326,11 @@ impl Finding {
             Finding::RelayOutOfDate { account, what } => format!(
                 "The relay for account '{account}' has an out-of-date {what}. Run \
                  `gtunnel relay up` to update it in place"
+            ),
+            Finding::RelayImageOld { account, days } => format!(
+                "The relay for account '{account}' was built {days} days ago and its image has \
+                 not been patched since. Run `gtunnel relay up --recreate` to rebuild it \
+                 (exposed URLs are down while it runs)"
             ),
             Finding::CertNotActive { domain, state } => {
                 format!("Certificate for {domain} is {state}, so HTTPS does not work yet")
@@ -1295,6 +1307,17 @@ fn starts_at_login(label: &str) -> bool {
     }
 }
 
+// Past this the relay has missed a quarter of Debian's security updates
+const RELAY_IMAGE_MAX_AGE_DAYS: u64 = 90;
+
+// Days since `created` when that is past the limit. An unreadable timestamp
+// is no finding: guessing would tell the person to rebuild a healthy relay.
+fn relay_image_age_days(created: &str, now: std::time::SystemTime) -> Option<u64> {
+    let created = humantime::parse_rfc3339(created).ok()?;
+    let days = now.duration_since(created).ok()?.as_secs() / 86_400;
+    (days > RELAY_IMAGE_MAX_AGE_DAYS).then_some(days)
+}
+
 // What `relay up` would rewrite, read without writing. A failed read is
 // not a finding: the other checks already say when GCP cannot be reached.
 async fn relay_drift(
@@ -1306,12 +1329,23 @@ async fn relay_drift(
     let mut findings = Vec::new();
     if let Ok(Some(vm)) =
         compute::get_instance(client, &acct.project, &expose.relay_zone, &names.relay_vm).await
-        && vm.startup_script() != Some(compute::RELAY_STARTUP_SCRIPT)
     {
-        findings.push(Finding::RelayOutOfDate {
-            account: acct.name.clone(),
-            what: "startup script",
-        });
+        if vm.startup_script() != Some(compute::RELAY_STARTUP_SCRIPT) {
+            findings.push(Finding::RelayOutOfDate {
+                account: acct.name.clone(),
+                what: "startup script",
+            });
+        }
+        if let Some(days) = vm
+            .creation_timestamp
+            .as_deref()
+            .and_then(|t| relay_image_age_days(t, std::time::SystemTime::now()))
+        {
+            findings.push(Finding::RelayImageOld {
+                account: acct.name.clone(),
+                days,
+            });
+        }
     }
     if let Ok(Some(false)) =
         compute::health_check_is_current(client, &acct.project, &names.health_check).await
@@ -2412,6 +2446,10 @@ mod tests {
                 account: "dev".to_string(),
                 what: "health check",
             },
+            Finding::RelayImageOld {
+                account: "dev".to_string(),
+                days: 120,
+            },
             Finding::CertNotActive {
                 domain: "dev.example.com".to_string(),
                 state: "PROVISIONING".to_string(),
@@ -3105,6 +3143,67 @@ mod tests {
         assert!(described.iter().any(|d| d.contains("health check")));
         assert!(described.iter().all(|d| d.contains("gtunnel relay up")));
         assert!(findings.iter().all(|f| !f.fixable()));
+    }
+
+    fn days_ago(days: u64) -> String {
+        let at = std::time::SystemTime::now() - std::time::Duration::from_secs(days * 86_400);
+        humantime::format_rfc3339_seconds(at).to_string()
+    }
+
+    #[test]
+    fn doctor_flags_a_relay_image_older_than_90_days() {
+        let now = std::time::SystemTime::now();
+        assert_eq!(relay_image_age_days(&days_ago(120), now), Some(120));
+        assert_eq!(relay_image_age_days(&days_ago(91), now), Some(91));
+        assert_eq!(relay_image_age_days(&days_ago(90), now), None);
+        assert_eq!(relay_image_age_days(&days_ago(5), now), None);
+        assert_eq!(relay_image_age_days("not a timestamp", now), None);
+    }
+
+    #[test]
+    fn the_old_image_finding_names_the_rebuild_command_and_is_not_fixable() {
+        let finding = Finding::RelayImageOld {
+            account: "dev".to_string(),
+            days: 120,
+        };
+        assert!(finding.describe().contains("gtunnel relay up --recreate"));
+        assert!(!finding.fixable());
+    }
+
+    async fn aged_relay_server(days: u64) -> wiremock::MockServer {
+        use wiremock::matchers::{method, path_regex};
+        use wiremock::{Mock, ResponseTemplate};
+        let server = wiremock::MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_regex(r".*/instances/.*"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "name": "gt-dev-relay",
+                "status": "RUNNING",
+                "creationTimestamp": days_ago(days),
+                "metadata": {"items": [{
+                    "key": "startup-script",
+                    "value": crate::gcp::compute::RELAY_STARTUP_SCRIPT
+                }]}
+            })))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    #[tokio::test]
+    async fn a_relay_built_long_ago_is_reported_and_a_fresh_one_is_not() {
+        let old = aged_relay_server(120).await;
+        let findings = relay_drift(&drift_client(&old), &account(), &expose_config()).await;
+        assert!(
+            findings
+                .iter()
+                .any(|f| matches!(f, Finding::RelayImageOld { days: 120, .. })),
+            "{findings:?}"
+        );
+
+        let fresh = aged_relay_server(3).await;
+        let findings = relay_drift(&drift_client(&fresh), &account(), &expose_config()).await;
+        assert!(findings.is_empty(), "{findings:?}");
     }
 
     #[tokio::test]

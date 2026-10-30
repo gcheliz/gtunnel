@@ -589,6 +589,13 @@ pub enum RelayCommands {
         )]
         managed_zone: Option<String>,
 
+        // Rebuild the relay VM from the current image family
+        #[arg(
+            long,
+            help = "Delete and rebuild the relay VM from the current image family; exposed URLs are down while it runs"
+        )]
+        recreate: bool,
+
         // Skip the confirmation prompt
         #[arg(short, long, help = "Skip the confirmation prompt")]
         yes: bool,
@@ -988,6 +995,21 @@ mod tests {
     #[test]
     fn run_rejects_three_positionals() {
         assert!(Cli::try_parse_from(["gtunnel", "run", "a", "b", "c"]).is_err());
+    }
+
+    #[test]
+    fn relay_up_parses_recreate_and_defaults_it_off() {
+        for (args, expected) in [
+            (vec!["gtunnel", "relay", "up", "--recreate", "-y"], true),
+            (vec!["gtunnel", "relay", "up"], false),
+        ] {
+            match parse(&args).command.expect("command") {
+                Commands::Relay {
+                    command: RelayCommands::Up { recreate, .. },
+                } => assert_eq!(recreate, expected),
+                other => panic!("not relay up: {other:?}"),
+            }
+        }
     }
 
     #[test]
