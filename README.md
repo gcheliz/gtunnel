@@ -115,7 +115,7 @@ Every variable gtunnel reads, with its default and what it beats: [docs/configur
 
 ## Credits
 
-gtunnel is derived from [ytunnel](https://github.com/yetidevworks/ytunnel) by YetiDevWorks, used under the MIT License.
+gtunnel is inspired by [ytunnel](https://github.com/yetidevworks/ytunnel) by YetiDevWorks.
 
 ## License
 
