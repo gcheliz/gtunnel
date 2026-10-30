@@ -83,6 +83,14 @@ from a checkout behind `main` does this, and nothing is broken.
 `git pull && cargo install --path .` from a clone, or
 `cargo install --git https://github.com/gcheliz/gtunnel --force` from the repository.
 
+### A service or `gtunnel_run` fails after an update, with `(deleted)` in the program path
+
+On Linux a process that outlives an update still runs the replaced file, and the kernel names
+it `/path/gtunnel (deleted)`. gtunnel drops that suffix and, when a Homebrew `opt` or `bin`
+path or a `PATH` entry reaches the same file, writes that stable path instead of the versioned
+Cellar one. A unit written by an older version still carries the bad path:
+`gtunnel restart <name>` rewrites it, and a restart of the TUI or MCP server clears the rest.
+
 ### `gtunnel: command not found` right after installing
 
 The directory holding the binary is not on `PATH`. Cargo installs to `~/.cargo/bin`, which

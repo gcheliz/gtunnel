@@ -267,7 +267,7 @@ fn service_spec_with(
             tunnel::expose_argv(acct, ex, t, level)?
         }
     };
-    let program = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("gtunnel"));
+    let program = crate::update::exe_path()?;
     let label = platform_label(&t.account_name, &t.name);
     // The level the gcloud argv above was built for, so the supervisor decides
     // about connection lines from the same answer instead of re-reading a
