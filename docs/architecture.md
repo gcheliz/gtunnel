@@ -49,7 +49,8 @@ forward from the far side. It is a different gcloud command, not a flag:
 ```
 gcloud compute ssh <instance> --zone=<zone> --tunnel-through-iap --quiet \
   --verbosity=info [--project ...] -- \
-  -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+  -N -o ConnectTimeout=30 -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 \
+  -o ServerAliveCountMax=3 \
   -o LogLevel=DEBUG -L <local-port>:<host>:<remote-port>
 ```
 
@@ -58,8 +59,9 @@ gcloud compute ssh <instance> --zone=<zone> --tunnel-through-iap --quiet \
 [One level, two scales](troubleshooting.md#one-level-two-scales).
 
 Because the command is `ssh`, not `start-iap-tunnel`, gcloud has no local listener, so nothing
-prints `Listening on port`; and the keepalive options are what notice a dead bastion, which
-SSH would otherwise hold a forward open against.
+prints `Listening on port`; the keepalive options are what notice a dead bastion, which
+SSH would otherwise hold a forward open against, and `ConnectTimeout=30` ends a handshake
+that stalls behind IAP, which the keepalives cannot because they start after login.
 
 ## Expose mode
 
@@ -88,7 +90,8 @@ The tunnel process runs:
 
 ```
 gcloud compute ssh <relay-instance> --zone=<zone> --tunnel-through-iap --quiet -- \
-  -N -o ExitOnForwardFailure=yes -R 0.0.0.0:<relay-port>:localhost:<local-port>
+  -N -o ConnectTimeout=30 -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 \
+  -o ServerAliveCountMax=3 -R 0.0.0.0:<relay-port>:localhost:<local-port>
 ```
 
 Without `ExitOnForwardFailure=yes`, SSH stays up after the remote bind fails and the tunnel

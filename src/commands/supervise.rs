@@ -125,6 +125,9 @@ pub async fn supervise(
     }
 
     let began = std::time::Instant::now();
+    let began_wall = std::time::SystemTime::now();
+    // Both clocks, because `Instant` stops during a sleep: see `run_length`
+    let ran_for = || crate::restart_budget::run_length(began.elapsed(), began_wall.elapsed());
     let mut child = cmd
         .args(args)
         .stdout(std::process::Stdio::piped())
@@ -260,7 +263,7 @@ pub async fn supervise(
         let after = crate::restart_budget::network_wait(
             &spend.budget,
             &mut fails,
-            began.elapsed(),
+            ran_for(),
             crate::daemon::backoff::draw(),
         );
         if let Some(parent) = file.parent() {
@@ -291,7 +294,7 @@ pub async fn supervise(
             if let Busy::Wait { since, after } = judge_busy(
                 &spend.budget,
                 since,
-                began.elapsed(),
+                ran_for(),
                 now,
                 crate::daemon::backoff::draw(),
             ) {
@@ -319,7 +322,7 @@ pub async fn supervise(
         let verdict = judge(
             &spend.budget,
             &mut history,
-            began.elapsed(),
+            ran_for(),
             std::time::SystemTime::now(),
             crate::daemon::backoff::draw(),
         );
