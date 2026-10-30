@@ -49,6 +49,33 @@ const RESTART_VARS: [&str; 5] = [
     "GTUNNEL_RESTART_MAX_BACKOFF",
 ];
 
+/// The gcloud, proxy and CA variables a supervised gcloud needs and a service
+/// manager does not hand it.
+///
+/// launchd and `systemd --user` start a job with an empty environment, while
+/// the login check, `doctor` and the REST client run in the user's shell. A
+/// person who points `CLOUDSDK_CONFIG` at a second gcloud home, or sits behind
+/// a proxy that re-signs TLS, saw `start` pass its login check and the tunnel
+/// then fail as `auth expired`: the two were not looking at the same gcloud.
+/// Read when the definition is written, like `GTUNNEL_RESTART_*`, and part of
+/// what the post-upgrade refresh compares, so a changed value is rewritten.
+/// Lower-case proxy forms are listed because Python's `requests` and curl read
+/// them as well as the upper-case ones.
+pub const FORWARDED_ENV_VARS: [&str; 12] = [
+    "CLOUDSDK_CONFIG",
+    "CLOUDSDK_PYTHON",
+    "CLOUDSDK_PYTHON_SITEPACKAGES",
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "NO_PROXY",
+    "https_proxy",
+    "http_proxy",
+    "no_proxy",
+    "SSL_CERT_FILE",
+    "REQUESTS_CA_BUNDLE",
+    "CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE",
+];
+
 fn daemon_env_with(
     gcloud: &std::path::Path,
     get: &dyn Fn(&str) -> Option<String>,
@@ -68,12 +95,20 @@ fn daemon_env_with(
         // process exits, and a working tunnel reads as a silent one.
         ("PYTHONUNBUFFERED".to_string(), "1".to_string()),
     ];
-    for name in RESTART_VARS {
+    for name in RESTART_VARS.into_iter().chain(FORWARDED_ENV_VARS) {
         if let Some(value) = get(name).filter(|v| !v.trim().is_empty()) {
             env.push((name.to_string(), value));
         }
     }
     env
+}
+
+/// The value an installed definition, in either format, holds for `name`.
+/// `doctor` compares it with the shell's; reading it back through the same
+/// escaping the writers use is what keeps a value with `&` or a space equal
+/// to itself.
+pub fn forwarded_in(text: &str, name: &str) -> Option<String> {
+    launchd::plist_env_value(text, name).or_else(|| systemd::unit_env_value(text, name))
 }
 
 /// How many file descriptors a tunnel's service may hold open.
@@ -1252,6 +1287,116 @@ mod tests {
             !env.iter().any(|(k, _)| k == "GTUNNEL_LOG_LEVEL"),
             "only the restart variables travel"
         );
+    }
+
+    // Names only, never values: a proxy URL can carry a password.
+    const FORWARDED: [&str; 12] = [
+        "CLOUDSDK_CONFIG",
+        "CLOUDSDK_PYTHON",
+        "CLOUDSDK_PYTHON_SITEPACKAGES",
+        "HTTPS_PROXY",
+        "HTTP_PROXY",
+        "NO_PROXY",
+        "https_proxy",
+        "http_proxy",
+        "no_proxy",
+        "SSL_CERT_FILE",
+        "REQUESTS_CA_BUNDLE",
+        "CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE",
+    ];
+
+    #[test]
+    fn the_gcloud_proxy_and_ca_environment_of_the_shell_reaches_the_service() {
+        let gcloud = std::path::Path::new("/opt/homebrew/bin/gcloud");
+        for name in FORWARDED {
+            let value = format!("/value/for/{name}");
+            let want = value.clone();
+            let get = move |n: &str| (n == name).then(|| value.clone());
+            let env = daemon_env_with(gcloud, &get);
+            assert!(
+                env.iter().any(|(k, v)| k == name && *v == want),
+                "{name} is read from the shell when the definition is written\n{env:?}"
+            );
+        }
+        assert_eq!(
+            FORWARDED_ENV_VARS.len(),
+            FORWARDED.len(),
+            "no variable travels unlisted"
+        );
+    }
+
+    #[test]
+    fn a_forwarded_variable_that_is_empty_or_blank_is_left_out() {
+        let gcloud = std::path::Path::new("/opt/homebrew/bin/gcloud");
+        let get = |n: &str| match n {
+            "HTTPS_PROXY" => Some(String::new()),
+            "CLOUDSDK_CONFIG" => Some("   ".to_string()),
+            _ => None,
+        };
+        let env = daemon_env_with(gcloud, &get);
+        assert!(
+            !env.iter()
+                .any(|(k, _)| k == "HTTPS_PROXY" || k == "CLOUDSDK_CONFIG"),
+            "{env:?}"
+        );
+    }
+
+    #[test]
+    fn a_plist_and_a_unit_rendered_with_cloudsdk_config_carry_it() {
+        let gcloud = std::path::Path::new("/opt/homebrew/bin/gcloud");
+        let get = |n: &str| match n {
+            "CLOUDSDK_CONFIG" => Some("/home/you/second gcloud".to_string()),
+            "HTTPS_PROXY" => Some("http://proxy.example:3128/?a=1&b=2%40x".to_string()),
+            _ => None,
+        };
+        let mut s = spec();
+        s.env = daemon_env_with(gcloud, &get);
+
+        let plist = launchd::render_plist(&s);
+        assert!(plist.contains("<key>CLOUDSDK_CONFIG</key>"), "{plist}");
+        assert!(
+            plist.contains("<string>/home/you/second gcloud</string>"),
+            "{plist}"
+        );
+        assert!(plist.contains("a=1&amp;b=2%40x"), "{plist}");
+
+        // A space would end the assignment, and a bare percent is a
+        // specifier, so a proxy URL with an encoded password would not
+        // arrive as written.
+        let unit = systemd::render_unit(&s);
+        assert!(
+            unit.contains("Environment=\"CLOUDSDK_CONFIG=/home/you/second gcloud\"\n"),
+            "{unit}"
+        );
+        assert!(
+            unit.contains("Environment=HTTPS_PROXY=http://proxy.example:3128/?a=1&b=2%%40x\n"),
+            "{unit}"
+        );
+    }
+
+    #[test]
+    fn what_a_definition_forwards_reads_back_from_both_formats() {
+        let gcloud = std::path::Path::new("/opt/homebrew/bin/gcloud");
+        let get = |n: &str| match n {
+            "CLOUDSDK_CONFIG" => Some("/home/you/second gcloud".to_string()),
+            "HTTPS_PROXY" => Some("http://proxy.example:3128/?a=1&b=2%40x".to_string()),
+            _ => None,
+        };
+        let mut s = spec();
+        s.env = daemon_env_with(gcloud, &get);
+        for text in [launchd::render_plist(&s), systemd::render_unit(&s)] {
+            assert_eq!(
+                forwarded_in(&text, "CLOUDSDK_CONFIG").as_deref(),
+                Some("/home/you/second gcloud"),
+                "{text}"
+            );
+            assert_eq!(
+                forwarded_in(&text, "HTTPS_PROXY").as_deref(),
+                Some("http://proxy.example:3128/?a=1&b=2%40x"),
+                "{text}"
+            );
+            assert_eq!(forwarded_in(&text, "NO_PROXY"), None, "{text}");
+        }
     }
 
     #[test]

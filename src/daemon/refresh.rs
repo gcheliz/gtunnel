@@ -561,6 +561,23 @@ mod tests {
     }
 
     #[test]
+    fn a_changed_gcloud_or_proxy_value_makes_a_definition_stale() {
+        let installed = unit(&BASE, &[("CLOUDSDK_CONFIG", "/home/you/gcloud-a")]);
+        let same = unit(&BASE, &[("CLOUDSDK_CONFIG", "/home/you/gcloud-a")]);
+        let moved = unit(&BASE, &[("CLOUDSDK_CONFIG", "/home/you/gcloud-b")]);
+        let added = unit(
+            &BASE,
+            &[
+                ("CLOUDSDK_CONFIG", "/home/you/gcloud-a"),
+                ("HTTPS_PROXY", "http://proxy.example:3128"),
+            ],
+        );
+        assert!(!is_stale(&installed, &same, |_| true));
+        assert!(is_stale(&installed, &moved, |_| true));
+        assert!(is_stale(&installed, &added, |_| true));
+    }
+
+    #[test]
     fn a_definition_lacking_the_crash_marker_is_stale() {
         let old = unit(&["__supervise", "--log-level", "info", "--"], &[]);
         assert!(is_stale(&old, &unit(&BASE, &[]), |_| true));
