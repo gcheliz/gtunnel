@@ -113,6 +113,14 @@ Every variable gtunnel reads, with its default and what it beats: [docs/configur
 | `gtunnel reset` | Local state only |
 | `gtunnel relay down` | The relay and everything it owns in GCP, never the managed zone |
 
+## Credits
+
+gtunnel is derived from [ytunnel](https://github.com/yetidevworks/ytunnel) by YetiDevWorks, used under the MIT License.
+
 ## License
 
-MIT. See [LICENSE](LICENSE).
+| Part | License | Copyright |
+|---|---|---|
+| gtunnel | [MIT](LICENSE) | 2026 gcheliz |
+
+The full text, with the ytunnel notice, is in [LICENSE](LICENSE).
