@@ -45,6 +45,15 @@ fn observe(status: TunnelStatus, probe_ok: bool, gained_error: bool) -> Observat
     })
 }
 
+/// How old a counted failure may be and still pair with a new one: two passes.
+///
+/// A run of two failures is two consecutive passes. A longer gap is a sleep, a
+/// closed lid or a skipped round, and the failure before it says nothing about
+/// the tunnel now.
+fn stale_after(interval: std::time::Duration) -> std::time::Duration {
+    interval * 2
+}
+
 /// Where in the log this pass starts reading: the offset the last pass
 /// stopped at, as a position in the file.
 ///
@@ -366,7 +375,9 @@ async fn visit(
     };
     // Kept so a decision the service manager refuses can be undone
     let before = row.breaker.clone();
-    let action = row.breaker.observe(obs, now);
+    let action = row
+        .breaker
+        .observe(obs, now, stale_after(settings.watch_interval));
     if verbose {
         println!("{}: {obs:?} -> {action:?}", key(tunnel));
     }
@@ -550,6 +561,14 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_failure_goes_stale_after_two_watch_passes() {
+        assert_eq!(
+            stale_after(std::time::Duration::from_secs(30)),
+            std::time::Duration::from_secs(60)
+        );
+    }
+
     // The degraded verdict reads the breaker's own counter through its
     // serialised form, so a renamed field would quietly read as zero failures
     // and the watchdog would never call anything degraded
@@ -559,14 +578,14 @@ mod tests {
         assert_eq!(consecutive_failures(&breaker, 2), 0);
         let now = SystemTime::UNIX_EPOCH;
         let fail = Observation::Failed(Reason::ProbeRefused);
-        breaker.observe(fail, now);
+        breaker.observe(fail, now, std::time::Duration::MAX);
         assert_eq!(consecutive_failures(&breaker, 2), 1);
-        breaker.observe(fail, now);
+        breaker.observe(fail, now, std::time::Duration::MAX);
         assert!(
             consecutive_failures(&breaker, 2) >= 2,
             "a tripped breaker has zeroed its counter and is still failing"
         );
-        breaker.observe(Observation::NotRunning, now);
+        breaker.observe(Observation::NotRunning, now, std::time::Duration::MAX);
         assert_eq!(consecutive_failures(&breaker, 2), 0);
     }
 
@@ -821,6 +840,7 @@ mod tests {
         after.observe(
             Observation::Failed(Reason::ProbeRefused),
             SystemTime::UNIX_EPOCH,
+            std::time::Duration::MAX,
         );
         assert_ne!(before, after, "the failure moved the breaker");
         let row = Row {
