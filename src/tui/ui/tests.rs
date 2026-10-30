@@ -2884,6 +2884,7 @@ fn a_create_that_succeeded_leaves_no_dialog_behind() {
         from_create: true,
         from_account: false,
         name: None,
+        account: "dev".to_string(),
     });
     assert_eq!(app.input_mode, InputMode::Normal);
     app.apply(failed("some later failure"));
