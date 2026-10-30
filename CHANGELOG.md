@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.2.66](https://github.com/gcheliz/gtunnel/compare/v0.2.65...v0.2.66) - 2026-10-30
+
+### Added
+
+- *(update)* smoke-test the new binary, keep the old one and add --rollback ([#395](https://github.com/gcheliz/gtunnel/pull/395))
+
 ## [0.2.65](https://github.com/gcheliz/gtunnel/compare/v0.2.64...v0.2.65) - 2026-10-30
 
 ### Added
