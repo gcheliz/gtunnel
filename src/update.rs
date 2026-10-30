@@ -274,11 +274,18 @@ pub fn spawn_check_if_due() {
         return;
     }
     if let Ok(exe) = std::env::current_exe() {
-        let _ = std::process::Command::new(exe)
+        let child = std::process::Command::new(exe)
             .args(["update", "--check"])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn();
+        // The TUI outlives the check, so an unreaped child is a zombie for the
+        // whole session; the thread only waits, it never reads the result
+        if let Ok(mut child) = child {
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+        }
     }
 }
 

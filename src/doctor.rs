@@ -137,6 +137,12 @@ pub enum Finding {
         tunnel: String,
         holder: Option<Holder>,
     },
+    // The run directory cannot be read, so which runs are live is unknown: a
+    // scan that read it as empty would call a run's DNS record an orphan.
+    // Machine-wide and report only, since the cause is the directory's.
+    RunDirUnreadable {
+        reason: String,
+    },
     // A key in one of the two hand-edited files that the structs drop on load.
     // Report only: which of the file's keys was meant is the person's call,
     // and gtunnel rewriting a file they edit would lose their layout.
@@ -307,6 +313,10 @@ impl Finding {
                      then `gtunnel restart {tunnel}`"
                 )
             }
+            Finding::RunDirUnreadable { reason } => format!(
+                "The run directory cannot be read ({reason}), so live runs are not known and \
+                 nothing that depends on them was checked"
+            ),
             Finding::ReservedAccountName { account } => format!(
                 "Account '{account}' has a reserved name: run logs are written as \
                  run-<account>-<name>.log, so its tunnel logs can share a file with a run. \
@@ -447,6 +457,29 @@ fn credential_file_problem(path: &std::path::Path) -> Option<CredentialFileProbl
 // The watchdog is machine-wide, so doctor reports it once rather than once per
 // account. It is only worth reporting when there is a tunnel for it to watch:
 // a fresh install with nothing in tunnels.toml is not missing anything.
+// An unreadable directory is a finding of its own: dropping it to "no runs"
+// would also drop every dead record it holds, and say nothing about why
+fn run_record_findings(runs: Result<Vec<(EphemeralRecord, bool)>>) -> Vec<(String, Finding)> {
+    match runs {
+        Ok(runs) => runs
+            .into_iter()
+            .filter(|(_, alive)| !alive)
+            .map(|(record, _)| {
+                (
+                    record.account_name.clone(),
+                    Finding::DeadEphemeral { name: record.name },
+                )
+            })
+            .collect(),
+        Err(e) => vec![(
+            String::new(),
+            Finding::RunDirUnreadable {
+                reason: format!("{e:#}"),
+            },
+        )],
+    }
+}
+
 pub fn watchdog_finding(installed: bool, tunnels: usize) -> Option<Finding> {
     (!installed && tunnels > 0).then_some(Finding::WatchdogMissing)
 }
@@ -844,14 +877,7 @@ pub async fn run_doctor(
         out.push((account, Finding::StaleReservation { tunnel }));
     }
 
-    for (record, alive) in list_ephemeral().unwrap_or_default() {
-        if !alive {
-            out.push((
-                record.account_name.clone(),
-                Finding::DeadEphemeral { name: record.name },
-            ));
-        }
-    }
+    out.extend(run_record_findings(list_ephemeral()));
 
     for acct in accounts {
         out.extend(
@@ -1141,8 +1167,12 @@ async fn relay_findings(
 
     let (state_hostnames, mut state_names) = live_ownership(owned, &[], &acct.name);
 
-    let (ephemeral_hostnames, ephemeral_names) =
-        ephemeral_ownership(&list_ephemeral().unwrap_or_default(), &acct.name);
+    // Without the runs, a record one of them owns would read as an orphan, and
+    // `--fix` would delete it; the machine-wide scan reports why nothing is checked
+    let Ok(runs) = list_ephemeral() else {
+        return findings;
+    };
+    let (ephemeral_hostnames, ephemeral_names) = ephemeral_ownership(&runs, &acct.name);
     let mut state_hostnames = state_hostnames;
     state_hostnames.extend(ephemeral_hostnames);
     state_names.extend(ephemeral_names);
@@ -1292,11 +1322,10 @@ async fn apply_fix(
     let acct = config.get_account(Some(account_name)).ok();
     // Re-read both owners: `gtunnel expose` writes tunnels.toml and `gtunnel
     // run` writes a record, and either can land between the scan and here
-    let (hostnames, tunnels) = live_ownership(
-        &owners(state),
-        &list_ephemeral().unwrap_or_default(),
-        account_name,
-    );
+    // Refused when unreadable: an empty list would let a run's own record be
+    // removed as unclaimed
+    let runs = list_ephemeral()?;
+    let (hostnames, tunnels) = live_ownership(&owners(state), &runs, account_name);
     if claimed_since_scan(finding, &hostnames, &tunnels, &Names::new(account_name)) {
         anyhow::bail!("a tunnel claimed it since the scan");
     }
@@ -1866,6 +1895,19 @@ mod tests {
     }
 
     // What gtunnel created, it may remove; what it only found, it explains
+    #[test]
+    fn an_unreadable_run_directory_is_a_finding_not_an_empty_list() {
+        let found = run_record_findings(Err(anyhow::anyhow!("Permission denied")));
+        assert_eq!(found.len(), 1);
+        let (account, finding) = &found[0];
+        assert_eq!(account, "", "machine-wide, like the watchdog");
+        assert!(matches!(finding, Finding::RunDirUnreadable { .. }));
+        assert!(!finding.fixable());
+        assert!(finding.describe().contains("Permission denied"));
+        // A readable one with nothing dead says nothing
+        assert!(run_record_findings(Ok(Vec::new())).is_empty());
+    }
+
     #[test]
     fn only_gtunnels_own_leftovers_are_fixable() {
         assert!(Finding::StaleState {
