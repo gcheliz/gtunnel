@@ -83,6 +83,14 @@ from a checkout behind `main` does this, and nothing is broken.
 `git pull && cargo install --path .` from a clone, or
 `cargo install --git https://github.com/gcheliz/gtunnel --force` from the repository.
 
+### A service or `gtunnel_run` fails after an update, with `(deleted)` in the program path
+
+On Linux a process that outlives an update still runs the replaced file, and the kernel names
+it `/path/gtunnel (deleted)`. gtunnel drops that suffix and, when a Homebrew `opt` or `bin`
+path or a `PATH` entry reaches the same file, writes that stable path instead of the versioned
+Cellar one. A unit written by an older version still carries the bad path:
+`gtunnel restart <name>` rewrites it, and a restart of the TUI or MCP server clears the rest.
+
 ### `gtunnel: command not found` right after installing
 
 The directory holding the binary is not on `PATH`. Cargo installs to `~/.cargo/bin`, which
@@ -127,7 +135,10 @@ emptied when its tunnel starts, so a line in it was written by the process runni
 | `4003` | IAP cannot reach the target port | Allow `35.235.240.0/20` to that port, see below |
 | `4033` | Not authorized to tunnel through IAP | Grant `roles/iap.tunnelResourceAccessor` |
 | A public URL answers `503` (nothing in the log) | The tunnel's backend, host rule, named port or DNS record is missing | `gtunnel restart <name>` re-creates them, see [the log](commands.md#start-stop-restart-autostart-logs-list-delete) |
-| `Reauthentication required` | gcloud credentials expired. The supervisor stops the job instead of restarting it every few seconds, and `list` keeps showing `auth expired` until the next start | `gcloud auth login`, then `gtunnel start <name>` |
+| `Reauthentication required` | gcloud credentials expired. The supervisor stops the job instead of restarting it every few seconds, and `list` keeps showing `auth expired` until the next start | `gcloud auth login`, then `gtunnel start <name>`. An account with a `credential_file` is not told to log in: its hint names the key file |
+| `Failed to impersonate` | The signed-in identity may not impersonate the account's service account. The supervisor stops the job on the first failure and `list` shows `[credentials refused]` | Grant `roles/iam.serviceAccountTokenCreator` on that service account, or remove `impersonate_service_account`, then `gtunnel start <name>` |
+| `Invalid JWT` | gcloud rejected the service-account key. Same stop and `[credentials refused]` | Replace the key (or the account's `credential_file`), then `gtunnel start <name>` |
+| `The configuration [...] does not exist` | The account's `gcloud_configuration` was renamed or deleted. Same stop and `[credentials refused]` | `gcloud config configurations list`, correct `gcloud_configuration` on the account, then `gtunnel start <name>` |
 | `list` shows `[restart budget spent: ...]` | gcloud died more than `max_restarts` times, each before `min_uptime`, for a reason gtunnel does not recognise. The supervisor stopped the job, and the log says why | Read the log, fix the cause, then `gtunnel start <name>`. To tune or disable the budget see [The restart budget](configuration.md#the-restart-budget) |
 | A tunnel keeps restarting and never shows `[restart budget spent: ...]` | Its definition has no `--crash-marker` | Run any gtunnel command: it reinstalls the definition and prints `gtunnel: reinstalled ...` on stderr. If it prints `could not reinstall`, the reason follows; fix it and run a command again |
 | `4004` | IAP asked gcloud to reauthenticate; gcloud resumes the session on its own | Nothing, unless it repeats: then check the account's credentials with `gtunnel doctor` |
@@ -137,6 +148,30 @@ emptied when its tunnel starts, so a line in it was written by the process runni
 | `Too many open files` | The tunnel ran out of file descriptors | `gtunnel doctor` names the process holding them, see below |
 | `numpy` | gcloud's Python has no NumPy | See NumPy below |
 | `timed out after` (in the TUI status line or a command's error) | A subprocess did not answer within its bound: 30s for `gcloud`, 10s for `launchctl` and `systemctl`. Usually `gcloud` waiting on a browser login or a dead network, or a wedged launchd | Run the named command by hand to see what it waits on, then `gcloud auth login` or `gtunnel doctor`. `delete` that times out stopping the job keeps the record, so retry it once the job answers |
+
+### What a token or API failure means
+
+A failure that comes back from gcloud or from a GCP API is named once, and the name decides the
+exit code and the advice. Only an expired login is told to log in.
+
+| Failure | Typical text | Kind (exit) | Advice |
+|---|---|---|---|
+| Login expired | `Reauthentication required`, `invalid_grant`, a 401 | `auth` (4) | `gcloud auth login --configuration=<name>`; a `credential_file` account is pointed at its key instead |
+| Configuration missing | `The configuration [x] does not exist` | `usage` (2) | List them with `gcloud config configurations list` and correct `gcloud_configuration` |
+| Impersonation denied | `Failed to impersonate` | `auth` (4) | Grant `roles/iam.serviceAccountTokenCreator` on the service account |
+| Key invalid | `Invalid JWT` | `auth` (4) | Replace the key file |
+| Permission denied | a 403 with no reason | `auth` (4) | Check the account's IAM roles in the project; `gtunnel doctor` |
+| Service disabled | a 403 with `SERVICE_DISABLED` | `usage` (2) | `gcloud services enable <api> --project=<project>`: the message names the API |
+| Quota or rate limited | a 429, `RATE_LIMIT_EXCEEDED`, `RESOURCE_EXHAUSTED` | `unavailable` (6) | Wait and retry |
+| Network | `Could not resolve host`, `Network is unreachable`, a 502 to 504 | `unavailable` (6) | Check the connection and retry |
+| Timeout | `timed out after` | `unavailable` (6) | Retry; do not log in again |
+| Not found | a 404 | `not_found` (3) | Check the name, project and zone |
+
+The stop-class failures (login expired, impersonation denied, key invalid, configuration
+missing) are the ones a restart cannot fix, so a supervisor stops the job on the first. It
+writes the failure's name into `run/<label>.auth`, which `list` reads. A marker written by an
+older gtunnel holds `1` and reads as login expired. The kinds and their exit codes are in
+[Errors and exit codes](commands.md#errors-and-exit-codes).
 
 ### A start that says `failed to start`
 
@@ -336,6 +371,21 @@ A `config.toml` that cannot be read (a TOML error, or a value such as `log_level
 one of the choices) stops every command, and `account add` and `init` refuse to write over it:
 the error names the file and the line, and the file is left byte for byte as it was. Fix that
 line, or move the file aside to start again with `gtunnel init`.
+
+## A file written by a newer gtunnel
+
+An older gtunnel reads a file a newer one wrote, and refuses to change it.
+
+```console,ignore
+$ gtunnel account add prod
+Error: ~/.gtunnel/config.toml was written by a newer gtunnel (v3); upgrade this one
+```
+
+| You see | It means | Do |
+|---|---|---|
+| `written by a newer gtunnel (vN); upgrade this one` on `config.toml` or `tunnels.toml` | A second install, an open TUI or a downgrade is older than the file. Writing would drop what it cannot see | Upgrade that binary; `command -v gtunnel` shows which one runs |
+| `  mesh  unsupported by this version (mesh_relay)` under `gtunnel list` | `tunnels.toml` holds a tunnel of a kind this version does not know. It is kept as written and cannot be started or edited here | Upgrade, or remove the entry by hand if it is stale |
+| `run record <file> cannot be read by this version` under `gtunnel list`, and a `doctor` finding | A run started by another version, or a damaged file. Its ports stay reserved | Upgrade; if it is damaged, stop its process and delete the file |
 
 ## Connections drop after an hour
 

@@ -156,6 +156,14 @@ pub enum Finding {
     RunDirUnreadable {
         reason: String,
     },
+    // A file in the run directory that this version cannot parse, most often a
+    // record a newer gtunnel wrote. Its process may be alive and its port is
+    // still held, so the file is left alone: deleting it is the one thing that
+    // would free a port something is using.
+    UnreadableRunRecord {
+        file: String,
+        reason: String,
+    },
     // A key in one of the two hand-edited files that the structs drop on load.
     // Report only: which of the file's keys was meant is the person's call,
     // and gtunnel rewriting a file they edit would lose their layout.
@@ -346,6 +354,11 @@ impl Finding {
                 "The run directory cannot be read ({reason}), so live runs are not known and \
                  nothing that depends on them was checked"
             ),
+            Finding::UnreadableRunRecord { file, reason } => format!(
+                "Run record {file} cannot be read by this version ({reason}). The run is not \
+                 listed or reaped, and the ports it names stay reserved. Upgrade gtunnel; if it \
+                 is damaged, stop its process and delete the file"
+            ),
             Finding::ReservedAccountName { account } => format!(
                 "Account '{account}' has a reserved name: run logs are written as \
                  run-<account>-<name>.log, so its tunnel logs can share a file with a run. \
@@ -427,7 +440,7 @@ pub fn unknown_key_findings(dir: &std::path::Path) -> Vec<Finding> {
     );
     scan(
         "tunnels.toml",
-        read("tunnels.toml").and_then(|t| crate::config::unknown_keys::<TunnelState>(&t).ok()),
+        read("tunnels.toml").and_then(|t| crate::state::unknown_tunnel_keys(&t).ok()),
     );
     out
 }
@@ -534,6 +547,23 @@ fn run_record_findings(runs: Result<Vec<(EphemeralRecord, bool)>>) -> Vec<(Strin
             },
         )],
     }
+}
+
+fn unreadable_record_findings(
+    records: Vec<crate::ephemeral::UnreadableRecord>,
+) -> Vec<(String, Finding)> {
+    records
+        .into_iter()
+        .map(|r| {
+            (
+                r.account.unwrap_or_default(),
+                Finding::UnreadableRunRecord {
+                    file: r.file,
+                    reason: r.reason,
+                },
+            )
+        })
+        .collect()
 }
 
 pub fn watchdog_finding(installed: bool, tunnels: usize) -> Option<Finding> {
@@ -934,6 +964,9 @@ pub async fn run_doctor(
     }
 
     out.extend(run_record_findings(list_ephemeral()));
+    out.extend(unreadable_record_findings(
+        crate::ephemeral::unreadable_records().unwrap_or_default(),
+    ));
 
     for acct in accounts {
         out.extend(
@@ -997,7 +1030,9 @@ fn remove_stale_record(
 // The same advice `run` gives, and for a credential file the same `; gcloud
 // said:` reason, so doctor is never the vaguer of the two
 fn gcloud_auth_finding(acct: &Account, interactive: bool, err: &anyhow::Error) -> Finding {
-    let mut advice = gcloud::auth_advice(acct, interactive);
+    let mut advice = crate::failure::Failure::of(err)
+        .unwrap_or(crate::failure::Failure::LoginExpired)
+        .advice(acct, interactive);
     if acct.credential_file.is_some()
         && let Some(reason) = gcloud::gcloud_reason(&format!("{err:#}"))
     {
@@ -1591,7 +1626,7 @@ async fn apply_fix(
         // The binary that runs the watchdog is this one: a path baked from
         // `cargo run` or a moved binary would install a job that cannot start
         Finding::WatchdogMissing => {
-            crate::daemon::install_watchdog(&std::env::current_exe()?).await
+            crate::daemon::install_watchdog(&crate::update::exe_path()?).await
         }
         _ => Ok(()),
     }
@@ -2039,6 +2074,23 @@ mod tests {
         assert!(finding.describe().contains("Permission denied"));
         // A readable one with nothing dead says nothing
         assert!(run_record_findings(Ok(Vec::new())).is_empty());
+    }
+
+    #[test]
+    fn an_unreadable_run_record_is_a_report_only_finding_for_its_account() {
+        let found = unreadable_record_findings(vec![crate::ephemeral::UnreadableRecord {
+            file: "dev-mesh.json".to_string(),
+            reason: "unknown variant".to_string(),
+            account: Some("dev".to_string()),
+            local_port: Some(15999),
+            relay_port: None,
+        }]);
+        assert_eq!(found.len(), 1);
+        let (account, finding) = &found[0];
+        assert_eq!(account, "dev");
+        assert!(!finding.fixable(), "deleting it would free a held port");
+        assert!(finding.describe().contains("dev-mesh.json"));
+        assert!(unreadable_record_findings(Vec::new()).is_empty());
     }
 
     fn wiremock_client(server: &wiremock::MockServer) -> GcpClient {
@@ -2739,6 +2791,14 @@ mod tests {
         config.accounts.push(account());
         let text = toml::to_string_pretty(&config).expect("serialize");
         std::fs::write(dir.path().join("config.toml"), text).expect("write");
+        assert!(unknown_key_findings(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn the_schema_marker_and_a_newer_kind_of_tunnel_are_not_unknown_keys() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let text = "schema_version = 1\n\n[[tunnels]]\nname = \"mesh\"\naccount_name = \"dev\"\n\n[tunnels.spec]\nmode = \"mesh_relay\"\npeers = 3\n";
+        std::fs::write(dir.path().join("tunnels.toml"), text).expect("write");
         assert!(unknown_key_findings(dir.path()).is_empty());
     }
 

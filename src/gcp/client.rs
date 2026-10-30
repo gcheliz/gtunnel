@@ -101,7 +101,14 @@ pub(crate) fn encode_query_value(raw: &str) -> String {
 pub enum GcpError {
     NotFound,
     PreconditionFailed,
-    Api { status: u16, message: String },
+    /// `reason` is the API's own machine word (`SERVICE_DISABLED`,
+    /// `RATE_LIMIT_EXCEEDED`): the status alone cannot tell a disabled API from
+    /// a missing role, and the two want different advice
+    Api {
+        status: u16,
+        message: String,
+        reason: Option<String>,
+    },
 }
 
 impl std::fmt::Display for GcpError {
@@ -111,7 +118,26 @@ impl std::fmt::Display for GcpError {
             GcpError::PreconditionFailed => {
                 write!(f, "precondition failed (412): fingerprint mismatch")
             }
-            GcpError::Api { status, message } => write!(f, "GCP API error {status}: {message}"),
+            GcpError::Api {
+                status,
+                message,
+                reason,
+            } => {
+                write!(f, "GCP API error {status}: {message}")?;
+                // Google's message names the API and the project but not the
+                // command, and "permission denied" is where people look for a
+                // role that is not missing
+                if crate::failure::Failure::from_gcp(*status, reason.as_deref())
+                    == crate::failure::Failure::ServiceDisabled
+                {
+                    write!(
+                        f,
+                        ". Enable the API the message names: gcloud services enable <api> \
+                         --project=<project>"
+                    )?;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -252,6 +278,7 @@ impl GcpClient {
             code => GcpError::Api {
                 status: code,
                 message,
+                reason: extract_error_reason(&text),
             },
         };
         Err(anyhow::Error::new(err).context(format!("{method} {url}")))
@@ -431,6 +458,21 @@ fn extract_error_message(text: &str) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+// The most specific machine word the body carries: Google's newer APIs put it
+// in `details[].reason`, Compute and the older ones in `errors[].reason`, and
+// `error.status` (`PERMISSION_DENIED`) is the coarse fallback
+fn extract_error_reason(text: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    let error = value.get("error")?;
+    ["details", "errors"]
+        .iter()
+        .filter_map(|key| error.get(key)?.as_array())
+        .flatten()
+        .find_map(|item| item.get("reason")?.as_str())
+        .or_else(|| error.get("status")?.as_str())
+        .map(str::to_string)
+}
+
 fn operation_error(err: &serde_json::Value) -> anyhow::Error {
     let detail = err
         .get("errors")
@@ -458,6 +500,29 @@ mod tests {
     use serde::Deserialize;
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[test]
+    fn the_most_specific_reason_in_an_error_body_is_kept() {
+        let disabled = r#"{"error":{"code":403,"message":"API disabled","status":"PERMISSION_DENIED",
+            "details":[{"@type":"x","reason":"SERVICE_DISABLED"}]}}"#;
+        assert_eq!(
+            extract_error_reason(disabled).as_deref(),
+            Some("SERVICE_DISABLED")
+        );
+        let compute =
+            r#"{"error":{"code":403,"message":"m","errors":[{"reason":"rateLimitExceeded"}]}}"#;
+        assert_eq!(
+            extract_error_reason(compute).as_deref(),
+            Some("rateLimitExceeded")
+        );
+        let coarse = r#"{"error":{"code":403,"message":"m","status":"PERMISSION_DENIED"}}"#;
+        assert_eq!(
+            extract_error_reason(coarse).as_deref(),
+            Some("PERMISSION_DENIED")
+        );
+        assert_eq!(extract_error_reason("not json"), None);
+        assert_eq!(extract_error_reason(r#"{"error":{"message":"m"}}"#), None);
+    }
 
     #[cfg(debug_assertions)]
     #[test]

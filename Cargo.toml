@@ -1,6 +1,6 @@
 [package]
 name = "gtunnel"
-version = "0.2.67"
+version = "0.3.0"
 edition = "2024"
 # std File::lock sets this floor; ratatui 0.30 needs 1.88.
 rust-version = "1.89"
@@ -23,6 +23,9 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1"
+# Read-modify-write of the hand-edited files: unknown keys and comments survive a save.
+# Same line as the one toml already resolves, so no second copy is built.
+toml_edit = "0.25"
 serde_ignored = "0.1"
 dirs = "7"
 anyhow = "1"
