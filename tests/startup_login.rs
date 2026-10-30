@@ -126,7 +126,7 @@ fn list_never_probes_and_works_logged_out() {
 fn a_logged_in_account_goes_through_without_a_login() {
     let h = Harness::new(true);
     // Past the gate, then not found: exit 3 and no login
-    let out = h.run(&["stop", "nope"]);
+    let out = h.run(&["start", "nope"]);
     assert_eq!(out.status.code(), Some(3), "stderr: {}", stderr(&out));
     assert!(h.calls().contains("auth print-access-token"));
     assert!(!h.calls().contains("auth login"));
@@ -136,7 +136,7 @@ fn a_logged_in_account_goes_through_without_a_login() {
 #[test]
 fn the_probe_carries_the_accounts_configuration_and_project() {
     let h = Harness::new(true);
-    h.run(&["stop", "nope"]);
+    h.run(&["start", "nope"]);
     let calls = h.calls();
     assert!(calls.contains("--configuration=work"), "calls: {calls}");
     assert!(calls.contains("--project=demo-project"), "calls: {calls}");
@@ -145,7 +145,7 @@ fn the_probe_carries_the_accounts_configuration_and_project() {
 #[test]
 fn a_logged_out_account_without_a_terminal_fails_and_never_starts_a_login() {
     let h = Harness::new(false);
-    let out = h.run(&["stop", "nope"]);
+    let out = h.run(&["start", "nope"]);
     assert_eq!(out.status.code(), Some(4), "stderr: {}", stderr(&out));
     let err = stderr(&out);
     assert!(
@@ -160,7 +160,7 @@ fn a_logged_out_account_without_a_terminal_fails_and_never_starts_a_login() {
 #[test]
 fn the_failure_names_the_account_once() {
     let h = Harness::new(false);
-    let err = stderr(&h.run(&["stop", "nope"]));
+    let err = stderr(&h.run(&["start", "nope"]));
     assert_eq!(err.matches("needs a logged-in").count(), 1, "stderr: {err}");
     assert!(err.contains("'demo'"), "stderr: {err}");
 }
@@ -195,6 +195,22 @@ fn an_add_that_looks_the_zone_up_needs_a_login() {
     let out = h.run(&["add", "db", "bastion:5432"]);
     assert_eq!(out.status.code(), Some(4), "stderr: {}", stderr(&out));
     assert!(h.calls().contains("auth print-access-token"));
+    assert!(!h.exists("login-ran"));
+}
+
+#[test]
+fn stop_works_logged_out_because_it_makes_no_gcp_call() {
+    // Stopping only talks to the service manager, so an expired login must
+    // neither prompt nor block it: the name is looked up and not found (3),
+    // never refused at the gate (4), and gcloud is not asked anything
+    let h = Harness::new(false);
+    let out = h.run(&["stop", "nope"]);
+    assert_eq!(out.status.code(), Some(3), "stderr: {}", stderr(&out));
+    assert!(
+        !h.calls().contains("print-access-token"),
+        "calls: {}",
+        h.calls()
+    );
     assert!(!h.exists("login-ran"));
 }
 
