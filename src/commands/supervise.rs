@@ -282,9 +282,13 @@ pub async fn supervise(
                 .ok()
                 .and_then(|t| crate::restart_budget::parse_since(&t));
             let now = std::time::SystemTime::now();
-            if let Busy::Wait { since, after } =
-                judge_busy(&spend.budget, since, began.elapsed(), now)
-            {
+            if let Busy::Wait { since, after } = judge_busy(
+                &spend.budget,
+                since,
+                began.elapsed(),
+                now,
+                crate::daemon::backoff::draw(),
+            ) {
                 if let Some(parent) = busy_file.parent() {
                     let _ = std::fs::create_dir_all(parent);
                 }

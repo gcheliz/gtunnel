@@ -393,10 +393,10 @@ until `gtunnel start`, which clears the marker and the count. A run that lasts `
 or longer clears the count, so a laptop that sleeps and wakes never adds up to a stop.
 
 One failure is kept out of the count: `remote port forwarding failed`, which means the relay
-still holds a dead session's listener. A restart is the cure, so the supervisor waits a fixed
-15 seconds and starts again, for up to 5 minutes from the first one, and only then counts it.
+still holds a dead session's listener. A restart is the cure, so the supervisor waits a random
+7.5 to 15 seconds and starts again, for up to 5 minutes from the first one, and only then counts it.
 Neither number is configurable.
-When one run prints both a busy line and a network line, the newer line decides: the network wait if the network line is newer, the 15 second streak if the busy line is.
+When one run prints both a busy line and a network line, the newer line decides: the network wait if the network line is newer, the busy streak if the busy line is.
 
 A run that dies of the network does not count at all: the supervisor waits, using `base_backoff` and `max_backoff`, and starts again however long the outage lasts. Every wait is drawn at random from zero up to its doubling, so the tunnels a wake or an outage failed together do not all retry on the same second. See [What a network outage does](troubleshooting.md#what-a-network-outage-does).
 

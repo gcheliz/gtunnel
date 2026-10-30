@@ -102,9 +102,9 @@ after a laptop sleeps or changes network the relay keeps the dead session's list
 two hours, and the reconnect fails with `remote port forwarding failed`. With the probes sshd
 drops a silent session in about 30 seconds and the port is free again.
 
-Until then the supervisor retries every 15 seconds and does not spend the restart budget on
-that failure, for up to 5 minutes from the first one. After that each failure counts like any
-other. `relay up` waits for the startup script to print `gtunnel-relay-ready` on the serial
+Until then the supervisor retries after a random 7.5 to 15 seconds and does not spend the restart
+budget on that failure, for up to 5 minutes from the first one. After that each failure counts
+like any other. `relay up` waits for the startup script to print `gtunnel-relay-ready` on the serial
 console before it returns, so an `expose` straight after it never binds on loopback only.
 
 The bind is on every interface because the load balancer connects to the relay's internal

@@ -144,11 +144,16 @@ pub enum Busy {
 /// it does not spend the budget; but a relay that never lets go must not be
 /// retried forever, hence the window. A run that lived `min_uptime` was
 /// working, so what killed it afterwards starts a new streak.
+///
+/// The wait is half `busy_delay` plus a draw over the other half (`unit` in
+/// `[0, 1]`): the tunnels one wake cut retry apart, and none comes back before
+/// sshd has had half the delay to reap the old session.
 pub fn judge_busy(
     b: &Budget,
     since: Option<SystemTime>,
     ran_for: Duration,
     now: SystemTime,
+    unit: f64,
 ) -> Busy {
     let since = match since {
         Some(t) if ran_for < b.min_uptime => t,
@@ -160,9 +165,10 @@ pub fn judge_busy(
     if age > b.busy_window {
         return Busy::Spent;
     }
+    let half = b.busy_delay / 2;
     Busy::Wait {
         since,
-        after: b.busy_delay,
+        after: half + crate::daemon::backoff::spread_at(b.busy_delay - half, unit),
     }
 }
 
@@ -367,13 +373,13 @@ mod tests {
     }
 
     #[test]
-    fn a_relay_that_still_holds_the_old_listener_is_retried_on_a_fixed_delay() {
+    fn a_relay_that_still_holds_the_old_listener_is_retried_without_spending_the_budget() {
         let b = Budget::default();
         let first = at(1000);
         let mut since = None;
         for n in 0..20u64 {
             let now = at(1000 + n * 15);
-            match judge_busy(&b, since, quick(), now) {
+            match judge_busy(&b, since, quick(), now, 1.0) {
                 Busy::Wait { since: s, after } => {
                     assert_eq!(after, Duration::from_secs(15), "attempt {n}");
                     since = Some(s);
@@ -387,9 +393,9 @@ mod tests {
     #[test]
     fn a_relay_that_never_lets_go_is_counted_after_the_window() {
         let b = Budget::default();
-        let v = judge_busy(&b, Some(at(1000)), quick(), at(1000) + b.busy_window);
+        let v = judge_busy(&b, Some(at(1000)), quick(), at(1000) + b.busy_window, 1.0);
         assert!(matches!(v, Busy::Wait { .. }), "{v:?}");
-        let v = judge_busy(&b, Some(at(1000)), quick(), at(1001) + b.busy_window);
+        let v = judge_busy(&b, Some(at(1000)), quick(), at(1001) + b.busy_window, 1.0);
         assert_eq!(v, Busy::Spent);
     }
 
@@ -397,7 +403,7 @@ mod tests {
     fn a_run_that_worked_starts_a_new_streak() {
         let b = Budget::default();
         let now = at(1000) + b.busy_window * 3;
-        let v = judge_busy(&b, Some(at(1000)), b.min_uptime, now);
+        let v = judge_busy(&b, Some(at(1000)), b.min_uptime, now, 1.0);
         assert_eq!(
             v,
             Busy::Wait {
@@ -405,6 +411,18 @@ mod tests {
                 after: b.busy_delay
             }
         );
+    }
+
+    #[test]
+    fn a_busy_relay_wait_is_drawn_from_half_its_delay_to_all_of_it() {
+        let b = Budget::default();
+        let wait = |unit| match judge_busy(&b, None, quick(), at(1000), unit) {
+            Busy::Wait { after, .. } => after,
+            Busy::Spent => panic!("a new streak is never spent"),
+        };
+        assert_eq!(wait(0.0), Duration::from_millis(7500));
+        assert_eq!(wait(0.5), Duration::from_millis(11250));
+        assert_eq!(wait(1.0), Duration::from_secs(15));
     }
 
     fn ladder(b: &Budget, n: u32) -> Duration {
