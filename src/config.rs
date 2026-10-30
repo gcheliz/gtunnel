@@ -208,6 +208,10 @@ pub struct Config {
     // relay and lives under `[[accounts]]`.
     #[serde(default)]
     pub expose: ExposeSettings,
+    // Written for the same reason: how big a relay is a cost decision, and an
+    // absent key hides it
+    #[serde(default)]
+    pub relay: RelayConfig,
     #[serde(default)]
     pub accounts: Vec<Account>,
 }
@@ -230,6 +234,7 @@ impl Default for Config {
             logs: LogsConfig::default(),
             gcp: GcpConfig::default(),
             expose: ExposeSettings::default(),
+            relay: RelayConfig::default(),
             accounts: Vec::new(),
         }
     }
@@ -317,6 +322,22 @@ impl Default for ExposeSettings {
     fn default() -> Self {
         Self {
             backend_timeout: settings::default_expose_backend_timeout(),
+        }
+    }
+}
+
+/// What `relay up` builds, as written in `config.toml`. Raw like `GcpConfig`,
+/// so a bad value is named by key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RelayConfig {
+    pub machine_type: String,
+}
+
+impl Default for RelayConfig {
+    fn default() -> Self {
+        Self {
+            machine_type: settings::default_relay_machine_type(),
         }
     }
 }
@@ -1708,7 +1729,7 @@ mod tests {
 
     #[test]
     fn an_account_without_credential_file_round_trips_unchanged() {
-        let text = "config_version = 2\nselected_account = \"dev\"\nlog_level = \"info\"\nstart_deadline = \"20s\"\ndiscovery = true\nservice_call_timeout = \"10s\"\nlist_probe_timeout = \"500ms\"\nupdate_check_interval = \"6h\"\neditor = \"\"\n\n[notifications]\nenabled = false\nup = false\ndegraded = true\nrecovered = true\nfailed = true\n\n[restart]\nmax_restarts = 5\nwindow = \"10m\"\nmin_uptime = \"60s\"\nbase_backoff = \"10s\"\nmax_backoff = \"5m\"\n\n[watch]\nprobe_timeout = \"3s\"\ndegraded_after = 2\ninterval = \"30s\"\n\n[logs]\nmax_size = \"8MiB\"\nkeep_size = \"2MiB\"\nlines_per_minute = 60\nauth_exit_window = \"30s\"\n\n[gcp]\ntoken_ttl = \"45m\"\noperation_timeout = \"10m\"\nhttp_timeout = \"30s\"\npoll_interval = \"2s\"\nlock_deadline = \"5s\"\nfingerprint_attempts = 5\n\n[expose]\nbackend_timeout = \"1h\"\n\n[[accounts]]\nname = \"dev\"\ngcloud_configuration = \"work\"\nproject = \"example-dev-1a2b\"\ndefault_zone = \"europe-west1-b\"\n";
+        let text = "config_version = 2\nselected_account = \"dev\"\nlog_level = \"info\"\nstart_deadline = \"20s\"\ndiscovery = true\nservice_call_timeout = \"10s\"\nlist_probe_timeout = \"500ms\"\nupdate_check_interval = \"6h\"\neditor = \"\"\n\n[notifications]\nenabled = false\nup = false\ndegraded = true\nrecovered = true\nfailed = true\n\n[restart]\nmax_restarts = 5\nwindow = \"10m\"\nmin_uptime = \"60s\"\nbase_backoff = \"10s\"\nmax_backoff = \"5m\"\n\n[watch]\nprobe_timeout = \"3s\"\ndegraded_after = 2\ninterval = \"30s\"\n\n[logs]\nmax_size = \"8MiB\"\nkeep_size = \"2MiB\"\nlines_per_minute = 60\nauth_exit_window = \"30s\"\n\n[gcp]\ntoken_ttl = \"45m\"\noperation_timeout = \"10m\"\nhttp_timeout = \"30s\"\npoll_interval = \"2s\"\nlock_deadline = \"5s\"\nfingerprint_attempts = 5\n\n[expose]\nbackend_timeout = \"1h\"\n\n[relay]\nmachine_type = \"e2-micro\"\n\n[[accounts]]\nname = \"dev\"\ngcloud_configuration = \"work\"\nproject = \"example-dev-1a2b\"\ndefault_zone = \"europe-west1-b\"\n";
         let cfg: Config = toml::from_str(text).expect("parse");
         assert_eq!(cfg.accounts[0].credential_file, None);
         let again = toml::to_string_pretty(&cfg).expect("serialize");

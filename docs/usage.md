@@ -249,6 +249,9 @@ IAP destination group.
 Publishing a local service needs a Cloud DNS managed zone and a one-off relay per account:
 `gtunnel relay up --managed-zone <zone>` ([relay](commands.md#relay)), then [expose](commands.md#expose).
 [domains add](commands.md#zones-and-domains) registers further zones once the relay exists.
+The relay is created as an `e2-micro`; [`relay.machine_type`](configuration.md#the-relays-machine-type) sets
+another size for a new one. It serves one laptop per account, and its capacity is unmeasured: see
+[Limits](architecture.md#limits).
 
 ## Concepts
 

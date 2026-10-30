@@ -177,7 +177,7 @@ emptied when its tunnel starts, so a line in it was written by the process runni
 | `Address already in use` | Another process holds the local port | `gtunnel doctor`, or set `--local-port` |
 | `remote port forwarding failed` | The relay still holds the listener of a session that is gone, usually after the laptop slept or changed network. The supervisor retries every 15 seconds for 5 minutes without spending the restart budget; an updated relay drops the dead session in about 30 seconds | Wait. If it lasts minutes, run `gtunnel relay up`: a relay created before the keepalive settings existed gets them from it. `gtunnel restart` does not help |
 | `Too many open files` | The tunnel ran out of file descriptors | `gtunnel doctor` names the process holding them, see below |
-| `numpy` | gcloud's Python has no NumPy | See NumPy below |
+| `consider installing NumPy` | gcloud's Python has no NumPy | See NumPy below |
 | `timed out after` (in the TUI status line or a command's error) | A subprocess did not answer within its bound: 30s for `gcloud`, 10s for `launchctl` and `systemctl`. Usually `gcloud` waiting on a browser login or a dead network, or a wedged launchd | Run the named command by hand to see what it waits on, then `gcloud auth login` or `gtunnel doctor`. `delete` that times out stopping the job keeps the record, so retry it once the job answers |
 
 ### What a token or API failure means
@@ -571,8 +571,13 @@ Without NumPy, gcloud's IAP tunnel falls back to a pure-Python socket loop and r
 times slower. gcloud bundles its own Python, so the system's NumPy does not count.
 
 ```
-gcloud components reinstall
+$(gcloud info --format="value(basic.python_location)") -m pip install numpy
+export CLOUDSDK_PYTHON_SITEPACKAGES=1
 ```
+
+That is Google's fix and both steps are needed. A service takes the variable from your shell
+when it is written, so `gtunnel restart <name>` after exporting it. `doctor` also reports a
+tunnel whose own log carries gcloud's `consider installing NumPy` warning.
 
 To see what `doctor` sees:
 

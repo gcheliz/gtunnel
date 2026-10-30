@@ -1160,6 +1160,7 @@ mod tests {
                 .collect(),
             metadata: Vec::new(),
             metadata_fingerprint: None,
+            machine_type: None,
         }
     }
 

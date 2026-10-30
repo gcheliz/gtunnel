@@ -257,8 +257,9 @@ pub fn diagnose_log_line(line: &str, credential_file: bool) -> Option<String> {
              open. Run: gtunnel doctor to name the process.",
         ),
         (
-            "numpy",
-            "Install NumPy for gcloud to speed up IAP tunnels (see docs/troubleshooting.md).",
+            crate::failure::NUMPY_WARNING,
+            "gcloud is running this tunnel without NumPy, which slows large transfers. Run: \
+             gtunnel doctor for the fix.",
         ),
         (
             "[4004:",
@@ -811,7 +812,8 @@ mod tests {
             // sets ExitOnForwardFailure=yes, and OpenSSH spells the same
             // failure `Error:` and makes it fatal when that option is on
             ("Error: remote port forwarding failed for listen port 30123", "old session"),
-            ("WARNING: Python 3.12 lacks numpy, falling back to a slower implementation", "NumPy"),
+            // What gcloud 590 prints, spelled as its source spells it
+            ("WARNING: To increase the performance of the tunnel, consider installing NumPy. For instructions,", "NumPy"),
             ("INFO: [3] Received WebSocket Close message [4004: 'reauthentication required'].", "resumes the session"),
             ("WARNING: [3] Unable to reconnect within [900000] ms", "15 minutes"),
         ];
