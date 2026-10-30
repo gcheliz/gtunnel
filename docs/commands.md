@@ -323,6 +323,11 @@ carries `[restart budget spent: exit status: 1]`, the last thing gcloud died of,
 shows it as a crash loop. `gtunnel start` clears the marker and the count; `gtunnel watch`
 never restarts it.
 
+A `stop` or `start` you run while the watchdog is restarting the same tunnel wins: the
+watchdog skips its own start, and the tunnel's log says `not restarting it: it was stopped or
+started by a person`. A tunnel the watchdog had given up on is watched again once you start it.
+See [A restart and a person](architecture.md#a-restart-and-a-person).
+
 `stop` makes no GCP call, so it works with an expired login and never asks for one; `start` and
 `restart` do reach GCP and check the login first.
 

@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.3.9](https://github.com/gcheliz/gtunnel/compare/v0.3.8...v0.3.9) - 2026-10-30
+
+### Added
+
+- *(relay)* make the relay machine type a setting and flag gcloud's NumPy warning ([#407](https://github.com/gcheliz/gtunnel/pull/407))
+
 ## [0.3.8](https://github.com/gcheliz/gtunnel/compare/v0.3.7...v0.3.8) - 2026-10-30
 
 ### Fixed

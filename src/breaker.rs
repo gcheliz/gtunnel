@@ -92,7 +92,7 @@ impl Breaker {
     /// is two consecutive passes, and anything older is a gap, not a run.
     pub fn observe(&mut self, obs: Observation, now: SystemTime, stale_after: Duration) -> Action {
         // Before anything else: a tunnel that is not running is not a tunnel
-        // with a problem. This is also the only way out of `Stopped` - the
+        // with a problem. This is also how `Stopped` normally ends - the
         // breaker the watchdog just stopped sees `NotRunning` on its next
         // pass and goes quiet, clean for whenever a person starts it again.
         if obs == Observation::NotRunning {
@@ -101,8 +101,17 @@ impl Breaker {
         }
         // Changes nothing, not even to forget a stale failure: what the
         // pass could not see is not evidence of anything
-        if obs == Observation::Unknown || self.state == State::Stopped {
+        if obs == Observation::Unknown {
             return Action::Nothing;
+        }
+        // `Stopped` is written when the watchdog stops a tunnel, and the
+        // `NotRunning` above is how it normally ends. A person who starts the
+        // tunnel again before the next pass skips that step, and a tunnel
+        // found running is the proof: no one but a person brings it back. The
+        // breaker starts over rather than staying deaf to a tunnel that was
+        // never watched again.
+        if self.state == State::Stopped {
+            *self = Self::default();
         }
 
         match obs {
@@ -231,6 +240,17 @@ pub mod persist {
     pub struct Row {
         pub breaker: Breaker,
         pub log_len: u64,
+        /// Set before the watchdog stops a tunnel to restart it and cleared
+        /// after the start, holding the moment the decision was made.
+        ///
+        /// A restart is two service-manager calls, and a pass that dies
+        /// between them (logout, `watch uninstall`, a kill) leaves the tunnel
+        /// down with nothing but this to say the watchdog did it. The next
+        /// pass reads it and starts the tunnel, instead of treating a stopped
+        /// tunnel as a person's choice. Absent when nothing is in flight, so
+        /// files written before it existed load as not restarting.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub restarting: Option<std::time::SystemTime>,
     }
 
     /// Every row, keyed `"<account>.<name>"`. Ordered, so the file does not
@@ -275,6 +295,19 @@ pub mod persist {
         std::fs::rename(&path, &moved)
             .with_context(|| format!("Failed to move {} to {}", path.display(), moved.display()))?;
         Ok(moved)
+    }
+
+    /// Writes one tunnel's row now, ahead of the pass's own save at its end.
+    ///
+    /// The `restarting` entry has to be on disk before the stop it guards, or
+    /// a pass that dies there leaves no trace. Every other row is kept as the
+    /// file has it; the pass holds the lock from its read to its write, so
+    /// this read-modify-write cannot lose another pass's decision.
+    pub fn checkpoint(key: &str, row: &Row) -> Result<()> {
+        let mut breakers = load()?;
+        breakers.insert(key.to_string(), row.clone());
+        let live: Vec<String> = breakers.keys().cloned().collect();
+        save(&breakers, &live)
     }
 
     /// Writes the breakers of tunnels that still exist, and only those: a
@@ -332,6 +365,7 @@ mod persist_tests {
         Row {
             breaker,
             log_len: 0,
+            restarting: None,
         }
     }
 
@@ -349,6 +383,34 @@ mod persist_tests {
             Some(&row(armed())),
             "a round trip lost state"
         );
+    }
+
+    // A restart in flight is the one thing a dying pass must leave behind, so
+    // it is written ahead of the pass's own save, and beside the other rows
+    // rather than over them
+    #[test]
+    fn a_restart_in_flight_is_written_ahead_of_the_pass_and_beside_the_other_rows() {
+        let _dir = TempConfigDir::new();
+        let (kept, mine) = ("dev.cache".to_string(), "dev.kubernetes".to_string());
+        persist::save(&one(&kept, armed()), std::slice::from_ref(&kept)).expect("save");
+
+        let since = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000);
+        let restarting = Row {
+            restarting: Some(since),
+            ..row(Breaker::default())
+        };
+        persist::checkpoint(&mine, &restarting).expect("checkpoint");
+
+        let back = persist::load().expect("load");
+        assert_eq!(back.get(&mine), Some(&restarting));
+        assert_eq!(back.get(&kept), Some(&row(armed())), "the other row stays");
+        assert_eq!(
+            persist::load().expect("load")[&kept].restarting,
+            None,
+            "an idle row writes no entry"
+        );
+        let text = std::fs::read_to_string(persist::path().unwrap()).unwrap();
+        assert_eq!(text.matches("restarting").count(), 1, "{text}");
     }
 
     #[test]
@@ -738,24 +800,47 @@ mod tests {
         );
     }
 
+    // Stopped is the watchdog's own verdict. While the pass cannot tell, it
+    // holds, however long that lasts
     #[test]
-    fn a_stopped_breaker_never_acts_again() {
+    fn a_stopped_breaker_holds_while_a_pass_cannot_tell() {
         let mut breaker = stopped();
         let mut now = epoch() + secs(1_000);
         for _ in 0..20 {
             now += secs(3_600);
             assert_eq!(
-                breaker.observe(
-                    Observation::Failed(Reason::ProbeRefused),
-                    now,
-                    std::time::Duration::MAX
-                ),
+                breaker.observe(Observation::Unknown, now, std::time::Duration::MAX),
                 Action::Nothing
             );
+        }
+        assert_eq!(breaker, stopped(), "an unknown pass changes nothing");
+    }
+
+    // The watchdog stops a wedged tunnel, the person starts it again before the
+    // next pass, and the pass finds it running. `NotRunning` never comes, so
+    // the breaker stayed `Stopped` and the tunnel was never watched again
+    #[test]
+    fn a_stopped_breaker_closes_when_a_person_has_started_the_tunnel_again() {
+        for running in [Observation::Pass, Observation::Failed(Reason::ProbeRefused)] {
+            let mut breaker = stopped();
+            let first = breaker.observe(running, epoch() + secs(10), std::time::Duration::MAX);
             assert_eq!(
-                breaker.observe(Observation::Pass, now, std::time::Duration::MAX),
-                Action::Nothing
+                first,
+                Action::Nothing,
+                "{running:?} reads the person's start"
             );
+            assert_ne!(breaker, stopped(), "{running:?} must leave Stopped");
+
+            // Watched again: a later wedge is counted, trips, and is restarted
+            let fail = Observation::Failed(Reason::ProbeRefused);
+            let mut now = epoch() + secs(20);
+            let mut restarted = false;
+            for _ in 0..4 {
+                now += secs(30);
+                restarted |=
+                    breaker.observe(fail, now, std::time::Duration::MAX) == Action::Restart;
+            }
+            assert!(restarted, "after {running:?} a later wedge counts again");
         }
     }
 

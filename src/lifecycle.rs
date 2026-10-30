@@ -275,6 +275,29 @@ fn transition_at(
     })
 }
 
+/// Whether a person ran `start` or `stop` on the tunnel at or after `since`
+/// (seconds since the epoch).
+///
+/// The watchdog restarts a tunnel in two service-manager calls and cannot tell
+/// from the manager whether a `stop` in between was its own. The ledger can:
+/// a person's row is marked, and an observer's is not. Whole seconds on both
+/// sides and a tie goes to the person, as in [`transition_since_in`].
+pub fn person_acted_since_in(dir: &Path, account: &str, name: &str, since: u64) -> bool {
+    read(dir)
+        .get(&key(account, name))
+        .is_some_and(|row| row.user && row.at >= since)
+}
+
+/// [`person_acted_since_in`] for the configured directory. An unreadable
+/// configuration directory is "no", which is the lenient answer: the watchdog
+/// then does what it always did.
+pub fn person_acted_since(account: &str, name: &str, since: std::time::SystemTime) -> bool {
+    let since = since
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    config_dir().is_some_and(|dir| person_acted_since_in(&dir, account, name, since))
+}
+
 /// The state the ledger holds, for an observer that was told nothing new.
 #[cfg(test)]
 pub fn stored_in(dir: &Path, account: &str, name: &str) -> Option<State> {
@@ -601,6 +624,35 @@ mod tests {
             .expect("a later sighting is news");
         assert_eq!((edge.from, edge.to), (State::Stopped, State::Up));
         assert_eq!(stored_in(dir.path(), a, n), Some(State::Up));
+    }
+
+    // The watchdog's restart is a stop and a start with seconds between them.
+    // The ledger is the only record of what a person did in that gap, because
+    // the service manager reports a tunnel they stopped and one the watchdog
+    // stopped as the same thing
+    #[test]
+    fn a_person_acting_since_a_moment_is_told_apart_from_the_watchdog_and_from_the_past() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, n) = ("dev", "kubernetes");
+        assert!(
+            !person_acted_since_in(dir.path(), a, n, 0),
+            "no row, no act"
+        );
+
+        transition_in(dir.path(), a, n, State::Stopped, Cause::Observed).unwrap();
+        assert!(
+            !person_acted_since_in(dir.path(), a, n, 0),
+            "the watchdog's own row is not a person"
+        );
+
+        transition_in(dir.path(), a, n, State::Stopped, Cause::User).unwrap();
+        let at = read(dir.path()).get(&key(a, n)).unwrap().at;
+        assert!(person_acted_since_in(dir.path(), a, n, at));
+        assert!(
+            !person_acted_since_in(dir.path(), a, n, at + 1),
+            "a stop from before the sighting is not news"
+        );
+        assert!(!person_acted_since_in(dir.path(), a, "other", 0));
     }
 
     #[test]
