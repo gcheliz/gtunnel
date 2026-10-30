@@ -89,6 +89,10 @@ looks healthy while serving nothing. The relay's startup script sets
 `GatewayPorts clientspecified` so the `0.0.0.0` bind is accepted and the load balancer's
 health check can reach the port.
 
+Every relay resource that has a wanted shape is converged, not only created: `relay up` reads
+the health check, each backend service and the relay's startup script, and writes only what
+differs. `expose`, `start` and `restart` converge the tunnel's backend the same way.
+
 ## What belongs to whom
 
 | Scope | Resource | Name | Created by |

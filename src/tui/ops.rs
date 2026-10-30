@@ -1157,6 +1157,8 @@ mod tests {
                 .then(|| ("goog-gke-node".to_string(), String::new()))
                 .into_iter()
                 .collect(),
+            metadata: Vec::new(),
+            metadata_fingerprint: None,
         }
     }
 
