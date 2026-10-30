@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.3.12](https://github.com/gcheliz/gtunnel/compare/v0.3.11...v0.3.12) - 2026-10-30
+
+### Fixed
+
+- *(supervise)* stop tunnels retrying and starting in lockstep after a wake, login or outage ([#411](https://github.com/gcheliz/gtunnel/pull/411))
+
 ## [0.3.11](https://github.com/gcheliz/gtunnel/compare/v0.3.10...v0.3.11) - 2026-10-30
 
 ### Fixed
