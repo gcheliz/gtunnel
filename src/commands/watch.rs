@@ -459,6 +459,132 @@ async fn resume_logins(state: &TunnelState, verbose: bool) {
     }
 }
 
+/// What a restart needs from the world, so the race it has to survive can be
+/// staged without a launchd, a ledger of the real config dir or a clock.
+trait Manager {
+    async fn stop(&self) -> Result<()>;
+    async fn start(&self) -> Result<()>;
+    /// Whether a person has acted on the tunnel since `since`, or the
+    /// supervisor parked it. The service manager cannot say: a tunnel a person
+    /// stopped and one the watchdog stopped are the same stopped tunnel.
+    fn overruled(&self, since: SystemTime) -> bool;
+    /// Writes the row where a pass that dies can still be read by the next.
+    fn remember(&self, row: &Row) -> Result<()>;
+}
+
+/// The real service manager, for one tunnel.
+struct Live<'a> {
+    tunnel: &'a PersistentTunnel,
+    label: &'a str,
+}
+
+impl Manager for Live<'_> {
+    async fn stop(&self) -> Result<()> {
+        daemon::stop(self.label).await
+    }
+
+    async fn start(&self) -> Result<()> {
+        daemon::start(self.label).await
+    }
+
+    fn overruled(&self, since: SystemTime) -> bool {
+        crate::config::config_dir().is_ok_and(|dir| parked(&dir, self.label))
+            || lifecycle::person_acted_since(&self.tunnel.account_name, &self.tunnel.name, since)
+    }
+
+    fn remember(&self, row: &Row) -> Result<()> {
+        persist::checkpoint(&key(self.tunnel), row)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Restarted {
+    Done,
+    /// A person stopped, started or parked the tunnel in the gap, so the
+    /// start was not sent
+    Overruled,
+}
+
+/// Stop, then start, unless a person or the supervisor decided otherwise in
+/// between.
+///
+/// Stop first, exactly as `gtunnel restart` does. Starting alone is not a
+/// restart: `launchctl kickstart` without `-k` and `systemctl start` are both
+/// no-ops on a service that is already running, and a tunnel that is running
+/// is the only kind the breaker ever trips on. Verified by watching the pid:
+/// without the stop it does not change, and four restarts cost four nothings.
+/// Unlike `gtunnel restart`, a failed stop is fatal here rather than ignored,
+/// because nobody is watching the start that would quietly do nothing.
+///
+/// The stop leaves a window of seconds, and `hold_decision` could only look
+/// before it. The check after it is the one that matters: a `stop` that lands
+/// in the window is the person saying no, and starting the tunnel anyway
+/// brings it back against them. The `restarting` entry is written before the
+/// stop and cleared after the start, so a pass that dies in the window leaves
+/// the next one something to read; see [`recover`].
+async fn restart(manager: &impl Manager, row: &mut Row, since: SystemTime) -> Result<Restarted> {
+    row.restarting = Some(since);
+    if let Err(err) = manager.remember(row) {
+        row.restarting = None;
+        return Err(err);
+    }
+    manager.stop().await?;
+    let outcome = if manager.overruled(since) {
+        Restarted::Overruled
+    } else {
+        manager.start().await?;
+        Restarted::Done
+    };
+    row.restarting = None;
+    // A tunnel that is up with an entry still on disk is cleared by the next
+    // pass anyway, so a write that fails here is not worth failing the restart
+    let _ = manager.remember(row);
+    Ok(outcome)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Recovery {
+    NotNeeded,
+    /// The manager did not answer; the entry stays for a pass that gets one
+    Waiting,
+    /// The tunnel runs, so the restart finished after all
+    Cleared,
+    /// A person acted since the restart began: the tunnel stays as they left it
+    Dropped,
+    Started,
+}
+
+/// What to do about a restart an earlier pass began and did not finish.
+///
+/// An entry with the tunnel not running means the pass died between its stop
+/// and its start, and the tunnel is down only because of the watchdog, which
+/// nothing else would ever say: the next pass reads a stopped tunnel as a
+/// person's choice and leaves it. The entry is cleared whatever the start
+/// does, so a start that keeps failing is tried once and reported, not every
+/// thirty seconds forever.
+async fn recover(
+    manager: &impl Manager,
+    row: &mut Row,
+    status: Option<TunnelStatus>,
+) -> Result<Recovery> {
+    let Some(since) = row.restarting else {
+        return Ok(Recovery::NotNeeded);
+    };
+    let Some(status) = status else {
+        return Ok(Recovery::Waiting);
+    };
+    let (recovery, started) = if status == TunnelStatus::Running {
+        (Recovery::Cleared, Ok(()))
+    } else if manager.overruled(since) {
+        (Recovery::Dropped, Ok(()))
+    } else {
+        (Recovery::Started, manager.start().await)
+    };
+    row.restarting = None;
+    let _ = manager.remember(row);
+    started.map(|()| recovery)
+}
+
 /// Look at one tunnel, feed the breaker, and carry out what it decided.
 async fn visit(
     tunnel: &PersistentTunnel,
@@ -498,6 +624,35 @@ async fn visit(
     let gained =
         daemon::read_from(&log_path, unread_from(len, row.log_len)).contains(DESCRIPTOR_ERROR);
     row.log_len = len;
+
+    // Before judging anything: a restart an earlier pass began and did not
+    // finish is a tunnel the watchdog took down, not one a person did
+    let live = Live {
+        tunnel,
+        label: &label,
+    };
+    match recover(&live, row, status).await {
+        Ok(Recovery::Started) => {
+            let _ = daemon::log_event(
+                &log_path,
+                "restarting it: an earlier watch pass stopped it and ended before starting it",
+            );
+            // Just started: the next pass judges it, with the start grace
+            return Ok(());
+        }
+        Ok(Recovery::Dropped) => {
+            let _ = daemon::log_event(
+                &log_path,
+                "not restarting it: it was stopped or started by a person after the watch pass that took it down",
+            );
+            return Ok(());
+        }
+        Ok(Recovery::NotNeeded | Recovery::Waiting | Recovery::Cleared) => {}
+        Err(err) => {
+            let _ = daemon::log_event(&log_path, &format!("could not restart it: {err:#}"));
+            return Err(err);
+        }
+    }
 
     let starting = status == Some(TunnelStatus::Running)
         && !probe_ok
@@ -553,18 +708,15 @@ async fn visit(
     // moved on a restart the service manager refused would spend the whole
     // ladder on restarts that never happened, and park in Stopped reporting
     // a tunnel that is still up.
+    let mut overruled = false;
     let outcome = match action {
         Action::Nothing => Ok(()),
-        // Stop first, exactly as `gtunnel restart` does. Starting alone is
-        // not a restart: `launchctl kickstart` without `-k` and `systemctl
-        // start` are both no-ops on a service that is already running, and
-        // a tunnel that is running is the only kind the breaker ever trips
-        // on. Verified by watching the pid: without the stop it does not
-        // change, and four restarts cost four nothings. Unlike `gtunnel
-        // restart`, a failed stop is fatal here rather than ignored, because
-        // nobody is watching the start that would quietly do nothing.
-        Action::Restart => match daemon::stop(&label).await {
-            Ok(()) => daemon::start(&label).await,
+        Action::Restart => match restart(&live, row, sighted).await {
+            Ok(Restarted::Done) => Ok(()),
+            Ok(Restarted::Overruled) => {
+                overruled = true;
+                Ok(())
+            }
             Err(err) => Err(err),
         },
         Action::StopAndReport(_) => daemon::stop(&label).await,
@@ -578,9 +730,18 @@ async fn visit(
         *row = Row {
             breaker: before,
             log_len: row.log_len,
+            restarting: None,
         };
     }
-    if let Some(line) = action_line(action, reason, &holders, failed.as_deref()) {
+    if overruled {
+        // The breaker moved on a restart that did not happen. The tunnel is
+        // as the person left it, and the next pass reads that: a stop resets
+        // the breaker, a start leaves it watching a tunnel that runs.
+        let _ = daemon::log_event(
+            &log_path,
+            "not restarting it: it was stopped or started by a person while the watch pass was restarting it",
+        );
+    } else if let Some(line) = action_line(action, reason, &holders, failed.as_deref()) {
         let _ = daemon::log_event(&log_path, &line);
     }
     // Stopped on purpose by the watchdog, for a reason it just logged: that
@@ -983,6 +1144,7 @@ mod tests {
         let row = Row {
             breaker: after,
             log_len: 9,
+            restarting: None,
         };
         (row, before)
     }
@@ -1204,5 +1366,194 @@ mod tests {
                 private: false,
             },
         }
+    }
+
+    // The service manager, with a ledger of what a person did and a log of
+    // what was asked of it. `on_stop` is the person: it runs inside the stop,
+    // which is the gap the restart leaves open.
+    struct Fake {
+        dir: tempfile::TempDir,
+        calls: std::cell::RefCell<Vec<&'static str>>,
+        remembered: std::cell::RefCell<Vec<Option<SystemTime>>>,
+        on_stop: Option<fn(&std::path::Path)>,
+    }
+
+    impl Fake {
+        fn new(on_stop: Option<fn(&std::path::Path)>) -> Self {
+            Self {
+                dir: tempfile::tempdir().unwrap(),
+                calls: Default::default(),
+                remembered: Default::default(),
+                on_stop,
+            }
+        }
+
+        fn calls(&self) -> Vec<&'static str> {
+            self.calls.borrow().clone()
+        }
+    }
+
+    impl Manager for Fake {
+        async fn stop(&self) -> Result<()> {
+            self.calls.borrow_mut().push("stop");
+            if let Some(person) = self.on_stop {
+                person(self.dir.path());
+            }
+            Ok(())
+        }
+
+        async fn start(&self) -> Result<()> {
+            self.calls.borrow_mut().push("start");
+            Ok(())
+        }
+
+        fn overruled(&self, since: SystemTime) -> bool {
+            let since = since
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            lifecycle::person_acted_since_in(self.dir.path(), "dev", "db", since)
+        }
+
+        fn remember(&self, row: &Row) -> Result<()> {
+            self.remembered.borrow_mut().push(row.restarting);
+            Ok(())
+        }
+    }
+
+    fn person(dir: &std::path::Path, to: State) {
+        lifecycle::transition_in(dir, "dev", "db", to, Cause::User).unwrap();
+    }
+
+    // The window is the seconds between `launchctl bootout` and `kickstart`.
+    // A `gtunnel stop` that lands in it is a person saying no, and the
+    // service manager shows it as the same stopped tunnel the watchdog made
+    #[tokio::test]
+    async fn a_stop_recorded_between_the_watchdogs_stop_and_start_prevents_the_start() {
+        let fake = Fake::new(Some(|dir| person(dir, State::Stopped)));
+        let mut row = Row::default();
+
+        let done = restart(&fake, &mut row, SystemTime::now()).await.unwrap();
+
+        assert_eq!(done, Restarted::Overruled);
+        assert_eq!(fake.calls(), ["stop"], "the start must not be sent");
+        assert_eq!(row.restarting, None, "nothing is left in flight");
+    }
+
+    #[tokio::test]
+    async fn a_restart_nobody_interrupted_stops_then_starts_and_leaves_nothing_in_flight() {
+        let fake = Fake::new(None);
+        let since = SystemTime::now();
+        let mut row = Row::default();
+
+        assert_eq!(
+            restart(&fake, &mut row, since).await.unwrap(),
+            Restarted::Done
+        );
+
+        assert_eq!(fake.calls(), ["stop", "start"]);
+        assert_eq!(
+            *fake.remembered.borrow(),
+            [Some(since), None],
+            "recorded before the stop, cleared after the start"
+        );
+        assert_eq!(row.restarting, None);
+    }
+
+    // A person's `start` in the gap is also theirs: the tunnel is already
+    // coming up, and a second start would race the first
+    #[tokio::test]
+    async fn a_start_recorded_between_the_watchdogs_stop_and_start_is_not_doubled() {
+        let fake = Fake::new(Some(|dir| person(dir, State::Starting)));
+        let mut row = Row::default();
+
+        assert_eq!(
+            restart(&fake, &mut row, SystemTime::now()).await.unwrap(),
+            Restarted::Overruled
+        );
+        assert_eq!(fake.calls(), ["stop"]);
+    }
+
+    // The pass died after the stop. The service manager says Stopped, the
+    // same as if a person had stopped it, and only the entry says otherwise
+    #[tokio::test]
+    async fn a_restarting_entry_with_the_tunnel_not_running_makes_the_next_pass_start_it_once() {
+        let fake = Fake::new(None);
+        let mut row = Row {
+            restarting: Some(SystemTime::now()),
+            ..Row::default()
+        };
+
+        let first = recover(&fake, &mut row, Some(TunnelStatus::Stopped))
+            .await
+            .unwrap();
+        assert_eq!(first, Recovery::Started);
+        assert_eq!(fake.calls(), ["start"]);
+        assert_eq!(row.restarting, None, "cleared by the start");
+
+        let again = recover(&fake, &mut row, Some(TunnelStatus::Stopped))
+            .await
+            .unwrap();
+        assert_eq!(
+            again,
+            Recovery::NotNeeded,
+            "a stopped tunnel is stopped now"
+        );
+        assert_eq!(fake.calls(), ["start"], "once");
+    }
+
+    #[tokio::test]
+    async fn a_restarting_entry_for_a_tunnel_a_person_stopped_since_is_dropped_not_obeyed() {
+        let fake = Fake::new(None);
+        let since = SystemTime::now();
+        person(fake.dir.path(), State::Stopped);
+        let mut row = Row {
+            restarting: Some(since),
+            ..Row::default()
+        };
+
+        let outcome = recover(&fake, &mut row, Some(TunnelStatus::Stopped))
+            .await
+            .unwrap();
+
+        assert_eq!(outcome, Recovery::Dropped);
+        assert!(fake.calls().is_empty(), "the stop was theirs");
+        assert_eq!(row.restarting, None);
+    }
+
+    #[tokio::test]
+    async fn a_restarting_entry_for_a_tunnel_that_runs_is_only_cleared() {
+        let fake = Fake::new(None);
+        let mut row = Row {
+            restarting: Some(SystemTime::now()),
+            ..Row::default()
+        };
+
+        let outcome = recover(&fake, &mut row, Some(TunnelStatus::Running))
+            .await
+            .unwrap();
+
+        assert_eq!(outcome, Recovery::Cleared);
+        assert!(fake.calls().is_empty());
+        assert_eq!(row.restarting, None);
+    }
+
+    // A service manager that did not answer says nothing about the tunnel: the
+    // entry waits for a pass that gets an answer
+    #[tokio::test]
+    async fn a_restarting_entry_waits_when_the_service_manager_does_not_answer() {
+        let fake = Fake::new(None);
+        let since = SystemTime::now();
+        let mut row = Row {
+            restarting: Some(since),
+            ..Row::default()
+        };
+
+        assert_eq!(
+            recover(&fake, &mut row, None).await.unwrap(),
+            Recovery::Waiting
+        );
+        assert!(fake.calls().is_empty());
+        assert_eq!(row.restarting, Some(since));
     }
 }

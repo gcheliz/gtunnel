@@ -188,6 +188,18 @@ A restart cannot renew a login, so a supervisor that sees gcloud die of `Reauthe
 
 Nothing in the supervisor notices the login being renewed, so the watchdog does. Once per pass, for each account with at least one `login-expired` marker, it fetches a token for that account (one fetch per account, bounded like every gcloud call, and only when the network gate says IAP is reachable). A token that works clears each of the account's `login-expired` markers and starts those tunnels; one that fails changes nothing. The other stopping failures are never resumed, because a new login does not change them. `gtunnel start --auth-expired` and the MCP `gtunnel_start_tunnel` with `auth_expired: true` run the same step on demand. The diagram's `Stays down` box ends at `gtunnel start`, which remains true; the watchdog is a second way out of it.
 
+#### A restart and a person
+
+The watchdog restarts a wedged tunnel as a stop and a start, with seconds between them, and the service manager reports a tunnel the watchdog stopped and one a person stopped as the same stopped tunnel. Three rules keep the two from undoing each other. All three read what is already there: the pass lock, the breaker file and the lifecycle ledger that `start` and `stop` write.
+
+| Race | What decides it |
+|---|---|
+| A person starts a tunnel the watchdog parked in `Stopped` before the next pass | A pass that finds the tunnel running closes the breaker: nothing but a person brings a parked tunnel back. A later wedge counts and is restarted as for any other tunnel |
+| A person stops (or starts) a tunnel between the watchdog's stop and its start | After the stop, the watchdog reads the lifecycle ledger, where `stop` and `start` record a person's row before they act, and the supervisor's crash marker. A row at or after the pass's first look, or a marker, means the start is not sent. The ledger is read in whole seconds and a tie goes to the person |
+| The pass dies between its stop and its start (logout, `watch uninstall`, a kill) | The row in `breakers.toml` gets a `restarting` entry, written before the stop and cleared after the start. A later pass that finds the entry and the tunnel not running starts it once, unless a person acted since the entry was written. A tunnel that runs just clears it, and a service manager that does not answer leaves it for the next pass |
+
+A start the watchdog sends from an entry is logged in the tunnel's log as `restarting it: an earlier watch pass stopped it and ended before starting it`. A restart given up for a person is logged as `not restarting it: it was stopped or started by a person ...`.
+
 The two auto-start mechanisms are not symmetric, and the asymmetry is deliberate. On macOS
 the flag *is* the file: launchd loads everything in `~/Library/LaunchAgents` at login, and a
 `KeepAlive` job runs the moment it is loaded, so a definition left there would start whether
@@ -298,7 +310,7 @@ Keys, defaults and the traps of editing `config.toml` and `tunnels.toml` are in
 | `<config>/run/definitions-newer` | The version of a newer gtunnel whose definitions this one left alone, so the notice prints once per version |
 | `<config>/refresh.lock` | Held for the length of a refresh pass; a command that cannot take it skips the refresh |
 | `~/Library/LaunchAgents/<label>.plist` | macOS: present only while auto-start is on |
-| `<config>/breakers.toml`, `<config>/breakers.lock` | One row per tunnel: what the watchdog has seen of it, and how far up the restart ladder it is. Rewritten whole on every pass, by writing a sibling file and renaming it, and pruned to the tunnels that still exist. A pass holds the lock from its read to its write, so a second watchdog skips its round instead of overwriting the first one's decisions |
+| `<config>/breakers.toml`, `<config>/breakers.lock` | One row per tunnel: what the watchdog has seen of it, and how far up the restart ladder it is. Rewritten whole on every pass, by writing a sibling file and renaming it, and pruned to the tunnels that still exist. A pass holds the lock from its read to its write, so a second watchdog skips its round instead of overwriting the first one's decisions. A row carries a `restarting` entry only while the watchdog is between the stop and the start of a restart, see [A restart and a person](#a-restart-and-a-person) |
 | `<config>/logs/watchdog.log` | What the watchdog did. A pass where nothing needed doing writes nothing |
 | `<config>/logs/<account>-<name>.log` | Per-tunnel log, written by the service |
 | `<config>/logs/run-<account>-<name>.log` | Output of a `gtunnel run` that `gtunnel_run_tunnel` started. A run started in a terminal prints there and has no file |
