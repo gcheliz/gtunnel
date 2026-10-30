@@ -285,6 +285,11 @@ fn start_token_of(pid: i32) -> Option<String> {
 #[cfg(target_os = "linux")]
 fn start_token_of(pid: i32) -> Option<String> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // A zombie keeps its stat until its parent reaps it, but it has done all it
+    // will do; macOS already answers None for one, so Linux says gone as well
+    if linux_has_exited(&stat) {
+        return None;
+    }
     let ticks = linux_start_ticks(&stat)?;
     match std::fs::read_to_string("/proc/sys/kernel/random/boot_id") {
         Ok(boot) => Some(format!("{}/{ticks}", boot.trim())),
@@ -301,6 +306,15 @@ fn start_token_of(_pid: i32) -> Option<String> {
 /// command name is field 2, in parentheses, and may itself hold `) `, so the
 /// fields are counted from the last `)`. Compiled everywhere so the parser is
 /// tested on the machine the author has.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn linux_has_exited(stat: &str) -> bool {
+    // Field 3, the state: Z is a zombie, X a process being torn down
+    let Some(close) = stat.rfind(')') else {
+        return false;
+    };
+    matches!(stat[close + 1..].split_whitespace().next(), Some("Z" | "X"))
+}
+
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn linux_start_ticks(stat: &str) -> Option<u64> {
     let after = &stat[stat.rfind(')')? + 1..];
@@ -420,6 +434,31 @@ mod tests {
         let stat = "4242 (a) b) S 1 4242 4242 0 -1 4194304 1 0 0 0 0 0 0 0 20 0 1 0 987654 1 2 3";
         assert_eq!(linux_start_ticks(stat), Some(987_654));
         assert_eq!(linux_start_ticks("4242 (sh) S 1"), None);
+    }
+
+    #[test]
+    fn a_zombie_has_exited_even_when_the_command_name_holds_a_parenthesis() {
+        assert!(linux_has_exited("4242 (a) S) Z 1 4242"));
+        assert!(linux_has_exited("4242 (sh) X 1"));
+        assert!(!linux_has_exited("4242 (a) Z) S 1 4242"));
+        assert!(!linux_has_exited("garbage"));
+    }
+
+    // An owner whose parent has not reaped it yet must not read as alive, or a
+    // caller waiting for it to finish waits out its whole budget
+    #[test]
+    fn an_exited_child_not_yet_reaped_has_no_start_token() {
+        let mut child = std::process::Command::new("true")
+            .spawn()
+            .expect("spawn true");
+        let pid = child.id();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while start_token(pid).is_some() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let token = start_token(pid);
+        child.wait().unwrap();
+        assert_eq!(token, None, "a zombie read as alive");
     }
 
     #[test]
