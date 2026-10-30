@@ -114,12 +114,6 @@ impl RawInstance {
 }
 
 #[derive(Deserialize)]
-struct AggregatedInstances {
-    #[serde(default)]
-    items: std::collections::BTreeMap<String, AggregatedScope>,
-}
-
-#[derive(Deserialize)]
 struct AggregatedScope {
     #[serde(default)]
     instances: Vec<RawInstance>,
@@ -130,9 +124,9 @@ pub async fn list_instances(client: &GcpClient, project: &str) -> Result<Vec<Ins
         "{}/projects/{project}/aggregated/instances",
         client.endpoints.compute
     );
-    let raw: AggregatedInstances = client.get(&url).await?;
+    let scopes: Vec<(String, AggregatedScope)> = client.get_all_scoped(&url, "items").await?;
     let mut out = Vec::new();
-    for (scope, bucket) in raw.items {
+    for (scope, bucket) in scopes {
         let zone_hint = scope.strip_prefix("zones/").unwrap_or(&scope).to_string();
         for instance in bucket.instances {
             out.push(instance.into_instance(&zone_hint));
@@ -177,9 +171,9 @@ pub async fn find_instances(
         client.endpoints.compute,
         query_encode(&filter)
     );
-    let raw: AggregatedInstances = client.get(&url).await?;
+    let scopes: Vec<(String, AggregatedScope)> = client.get_all_scoped(&url, "items").await?;
     let mut out = Vec::new();
-    for (scope, bucket) in raw.items {
+    for (scope, bucket) in scopes {
         let zone_hint = scope.strip_prefix("zones/").unwrap_or(&scope).to_string();
         out.extend(
             bucket
@@ -208,29 +202,37 @@ fn query_encode(s: &str) -> String {
 }
 
 #[derive(Deserialize)]
-struct NamedList {
-    #[serde(default)]
-    items: Vec<NamedItem>,
-}
-
-#[derive(Deserialize)]
 struct NamedItem {
     name: String,
 }
 
 pub async fn list_zones(client: &GcpClient, project: &str) -> Result<Vec<String>> {
     let url = format!("{}/projects/{project}/zones", client.endpoints.compute);
-    let raw: NamedList = client.get(&url).await?;
-    Ok(raw.items.into_iter().map(|z| z.name).collect())
+    let zones: Vec<NamedItem> = client.get_all(&url, "items").await?;
+    Ok(zones.into_iter().map(|z| z.name).collect())
 }
 
 // Kept as one constant so creation and reconciliation compare against the same
 // text: a script that differs by a byte is a relay that is out of date
+//
+// The nftables table is the relay's own defence for a private tunnel. The port
+// has to listen on 0.0.0.0, because the load balancer connects to the VM's
+// internal address, so a VPC rule such as default-allow-internal would admit a
+// peer past the IAP sign-in. The drop lives on the VM, so the VPC firewall
+// stays the operator's (docs/decisions.md section 8). The ranges repeat
+// LB_HEALTH_CHECK_RANGES because the script is one literal; a test pins them.
+// Sshd is configured first: a failed package install must not undo it.
 pub const RELAY_STARTUP_SCRIPT: &str = "#!/bin/bash\n\
     set -e\n\
     grep -q '^GatewayPorts clientspecified' /etc/ssh/sshd_config || \
     echo 'GatewayPorts clientspecified' >> /etc/ssh/sshd_config\n\
-    systemctl restart ssh || systemctl restart sshd\n";
+    systemctl restart ssh || systemctl restart sshd\n\
+    command -v nft >/dev/null || { apt-get update -qq && apt-get install -y -qq nftables; }\n\
+    nft delete table inet gtunnel_relay 2>/dev/null || true\n\
+    nft add table inet gtunnel_relay\n\
+    nft add chain inet gtunnel_relay input '{ type filter hook input priority 0; policy accept; }'\n\
+    nft add rule inet gtunnel_relay input 'ip saddr != { 35.191.0.0/16, 130.211.0.0/22 } tcp dport 30000-30999 drop'\n\
+    nft add rule inet gtunnel_relay input 'meta nfproto ipv6 tcp dport 30000-30999 drop'\n";
 
 // What a reconcile did, so `relay up` can say it instead of printing "exists"
 // for a resource it just rewrote
@@ -371,19 +373,12 @@ fn ingress() -> String {
     "INGRESS".to_string()
 }
 
-#[derive(Deserialize)]
-struct FirewallList {
-    #[serde(default)]
-    items: Vec<Firewall>,
-}
-
 pub async fn list_firewalls(client: &GcpClient, project: &str) -> Result<Vec<Firewall>> {
     let url = format!(
         "{}/projects/{project}/global/firewalls",
         client.endpoints.compute
     );
-    let raw: FirewallList = client.get(&url).await?;
-    Ok(raw.items)
+    client.get_all(&url, "items").await
 }
 
 pub async fn get_firewall(
@@ -746,18 +741,32 @@ pub struct BackendSettings {
 }
 
 impl BackendSettings {
+    /// The defaults, for tests that must not read the tester's `config.toml`.
+    #[cfg(test)]
     pub fn new(iap: bool) -> Self {
+        Self::with_timeout(
+            iap,
+            crate::settings::EXPOSE_BACKEND_TIMEOUT.as_secs() as u32,
+        )
+    }
+
+    pub fn with_timeout(iap: bool, timeout_sec: u32) -> Self {
         BackendSettings {
-            timeout_sec: BACKEND_TIMEOUT_SEC,
+            timeout_sec,
             draining_sec: BACKEND_DRAINING_SEC,
             iap,
         }
     }
+
+    /// What `expose.backend_timeout` says. Read here, not in `new`, so a unit
+    /// test of the reconcile never depends on the tester's own `config.toml`.
+    pub fn configured(iap: bool) -> Self {
+        let timeout = crate::settings::current().expose_backend_timeout;
+        // Whole seconds are enforced at resolve; the clamp is for the type
+        Self::with_timeout(iap, u32::try_from(timeout.as_secs()).unwrap_or(u32::MAX))
+    }
 }
 
-// Long enough for a websocket or a slow upload; the load balancer's own
-// default of 30 s cuts both
-pub const BACKEND_TIMEOUT_SEC: u32 = 3600;
 pub const BACKEND_DRAINING_SEC: u32 = 30;
 
 #[derive(Deserialize)]
@@ -800,12 +809,6 @@ impl From<RawBackendService> for BackendService {
     }
 }
 
-#[derive(Deserialize)]
-struct BackendServiceList {
-    #[serde(default)]
-    items: Vec<RawBackendService>,
-}
-
 pub async fn list_backend_services(
     client: &GcpClient,
     project: &str,
@@ -814,8 +817,8 @@ pub async fn list_backend_services(
         "{}/projects/{project}/global/backendServices",
         client.endpoints.compute
     );
-    let raw: BackendServiceList = client.get(&url).await?;
-    Ok(raw.items.into_iter().map(Into::into).collect())
+    let raw: Vec<RawBackendService> = client.get_all(&url, "items").await?;
+    Ok(raw.into_iter().map(Into::into).collect())
 }
 
 pub async fn get_backend_service(
@@ -858,7 +861,10 @@ pub async fn insert_backend_service(
         "healthChecks": [health_check],
         "backends": [{"group": instance_group, "balancingMode": "UTILIZATION"}],
         "timeoutSec": settings.timeout_sec,
-        "connectionDraining": {"drainingTimeoutSec": settings.draining_sec}
+        "connectionDraining": {"drainingTimeoutSec": settings.draining_sec},
+        // Off is what GCP does when the field is absent; stating it keeps the
+        // body the one place that shows what the backend is created with
+        "logConfig": {"enable": false}
     });
     if settings.iap {
         body["iap"] = json!({"enabled": true});
@@ -901,6 +907,62 @@ pub async fn reconcile_backend_service(
         .await?;
     client.wait_operation(&op).await?;
     Ok(Reconciled::Updated)
+}
+
+// A backend service that sends traffic to one instance group, read apart from
+// `BackendService` because only the relay teardown needs the group link and
+// the list there answers a different question: who still holds this group
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupHolder {
+    pub name: String,
+    pub description: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RawHolder {
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    backends: Vec<RawBackendRef>,
+}
+
+#[derive(Deserialize)]
+struct RawBackendRef {
+    #[serde(default)]
+    group: String,
+}
+
+#[derive(Deserialize)]
+struct RawHolderList {
+    #[serde(default)]
+    items: Vec<RawHolder>,
+}
+
+// TODO: page this through get_all once list calls paginate (#375)
+// Matched on the path tail: the link is a full URL whose host is the API
+// endpoint, which differs between production and the test fake
+pub async fn backend_services_on_group(
+    client: &GcpClient,
+    project: &str,
+    zone: &str,
+    group: &str,
+) -> Result<Vec<GroupHolder>> {
+    let url = format!(
+        "{}/projects/{project}/global/backendServices",
+        client.endpoints.compute
+    );
+    let raw: RawHolderList = client.get(&url).await?;
+    let tail = format!("/zones/{zone}/instanceGroups/{group}");
+    Ok(raw
+        .items
+        .into_iter()
+        .filter(|b| b.backends.iter().any(|r| r.group.ends_with(&tail)))
+        .map(|b| GroupHolder {
+            name: b.name,
+            description: b.description,
+        })
+        .collect())
 }
 
 pub async fn delete_backend_service(
@@ -1776,6 +1838,48 @@ mod tests {
         assert_eq!((want.timeout_sec, want.draining_sec), (3600, 30));
     }
 
+    // The body is the whole contract with the load balancer: a field missing
+    // from it is a field GCP fills with its 30 s default
+    #[tokio::test]
+    async fn a_new_backend_service_is_created_with_a_long_timeout_draining_and_logging_stated() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(done_op()))
+            .mount(&server)
+            .await;
+
+        insert_backend_service(
+            &client(&server),
+            "p",
+            "gt-dev-api",
+            "gt-api",
+            "projects/p/zones/z/instanceGroups/g",
+            "projects/p/global/healthChecks/hc",
+            &BackendSettings::new(false),
+            "owner",
+        )
+        .await
+        .expect("insert");
+
+        let posts = sent(&server, "POST").await;
+        let body: serde_json::Value = serde_json::from_slice(&posts[0].body).expect("json");
+        assert_eq!(body["timeoutSec"], 3600);
+        assert_eq!(
+            body["connectionDraining"],
+            serde_json::json!({"drainingTimeoutSec": 30})
+        );
+        assert_eq!(body["logConfig"], serde_json::json!({"enable": false}));
+    }
+
+    #[test]
+    fn a_configured_timeout_replaces_the_default_and_nothing_else() {
+        let want = BackendSettings::with_timeout(true, 120);
+        assert_eq!(
+            (want.timeout_sec, want.draining_sec, want.iap),
+            (120, BACKEND_DRAINING_SEC, true)
+        );
+    }
+
     fn instance(script: Option<&str>) -> Instance {
         let mut metadata = vec![("ssh-keys".to_string(), "kept".to_string())];
         if let Some(script) = script {
@@ -1834,6 +1938,69 @@ mod tests {
                 .any(|i| i["key"] == "ssh-keys" && i["value"] == "kept"),
             "metadata gtunnel does not own must survive: {items:?}"
         );
+    }
+
+    // The relay port is bound on 0.0.0.0 because the load balancer reaches the
+    // VM's internal address, so a VPC rule broader than gtunnel's would admit a
+    // peer too: the VM itself has to refuse everything but the load balancer
+    #[test]
+    fn the_startup_script_drops_the_relay_ports_from_every_source_but_the_load_balancer() {
+        let script = RELAY_STARTUP_SCRIPT;
+        assert!(
+            script.contains("nft add table inet gtunnel_relay"),
+            "{script}"
+        );
+        assert!(script.contains("tcp dport 30000-30999 drop"), "{script}");
+        for range in LB_HEALTH_CHECK_RANGES {
+            assert!(script.contains(range), "{range} missing from {script}");
+        }
+        assert!(
+            script.contains("ip saddr != {"),
+            "the accept set must be a negated source match: {script}"
+        );
+        assert!(
+            script.contains("meta nfproto ipv6 tcp dport 30000-30999 drop"),
+            "{script}"
+        );
+    }
+
+    // Sshd comes first: a failed nftables install must not leave the relay
+    // without the GatewayPorts setting the forward needs
+    #[test]
+    fn the_startup_script_configures_sshd_before_it_touches_the_firewall() {
+        let script = RELAY_STARTUP_SCRIPT;
+        let sshd = script.find("systemctl restart ssh").expect("sshd restart");
+        let nft = script.find("nft add table").expect("nft");
+        assert!(sshd < nft, "{script}");
+    }
+
+    #[tokio::test]
+    async fn a_new_relay_instance_is_created_with_the_nftables_guard_in_its_startup_script() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(done_op()))
+            .mount(&server)
+            .await;
+
+        insert_relay_instance(
+            &client(&server),
+            "example-dev-1a2b",
+            "europe-west1-b",
+            "gt-dev-relay",
+            "default",
+            "gt-relay",
+        )
+        .await
+        .expect("insert");
+
+        let posts = sent(&server, "POST").await;
+        let body: serde_json::Value = serde_json::from_slice(&posts[0].body).expect("json");
+        let script = body["metadata"]["items"][0]["value"]
+            .as_str()
+            .expect("script");
+        assert_eq!(body["metadata"]["items"][0]["key"], "startup-script");
+        assert!(script.contains("tcp dport 30000-30999 drop"), "{script}");
+        assert!(script.contains("35.191.0.0/16"), "{script}");
     }
 
     #[tokio::test]
@@ -1899,5 +2066,122 @@ mod tests {
         assert_eq!(got.metadata_fingerprint.as_deref(), Some("fp-9"));
         assert_eq!(got.startup_script(), Some("#!/bin/bash\n"));
         assert_eq!(got.metadata.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_firewall_on_the_second_page_is_listed() {
+        use wiremock::matchers::query_param;
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/projects/p/global/firewalls"))
+            .and(query_param("pageToken", "page-2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [{"name": "late"}]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/projects/p/global/firewalls"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [{"name": "early"}],
+                "nextPageToken": "page-2"
+            })))
+            .mount(&server)
+            .await;
+
+        let got = list_firewalls(&client(&server), "p").await.expect("list");
+        let names: Vec<&str> = got.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, vec!["early", "late"]);
+    }
+
+    #[tokio::test]
+    async fn an_instance_on_the_second_page_of_the_aggregated_list_is_listed() {
+        use wiremock::matchers::query_param;
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/projects/p/aggregated/instances"))
+            .and(query_param("pageToken", "page-2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+              "items": {"zones/europe-west1-b": {"instances": [{"name": "late"}]}}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/projects/p/aggregated/instances"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+              "items": {"zones/us-central1-a": {"instances": [{"name": "early"}]}},
+              "nextPageToken": "page-2"
+            })))
+            .mount(&server)
+            .await;
+
+        let got = list_instances(&client(&server), "p").await.expect("list");
+        let names: Vec<&str> = got.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, vec!["early", "late"]);
+    }
+
+    #[tokio::test]
+    async fn find_instances_keeps_its_filter_on_every_page() {
+        use wiremock::matchers::query_param;
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/projects/p/aggregated/instances"))
+            .and(query_param("filter", "name=\"bastion\""))
+            .and(query_param("pageToken", "page-2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+              "items": {"zones/europe-west1-b": {"instances": [{"name": "bastion"}]}}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/projects/p/aggregated/instances"))
+            .and(query_param("filter", "name=\"bastion\""))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+              "items": {"zones/us-central1-a": {"instances": [{"name": "bastion"}]}},
+              "nextPageToken": "page-2"
+            })))
+            .mount(&server)
+            .await;
+
+        let got = find_instances(&client(&server), "p", "bastion")
+            .await
+            .expect("find");
+        assert_eq!(got.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn zones_and_backend_services_follow_their_pages_too() {
+        use wiremock::matchers::query_param;
+        let server = MockServer::start().await;
+        for (route, key) in [
+            ("/projects/p/zones", "a"),
+            ("/projects/p/global/backendServices", "gt-a"),
+        ] {
+            Mock::given(method("GET"))
+                .and(path(route))
+                .and(query_param("pageToken", "page-2"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "items": [{"name": format!("{key}-late")}]
+                })))
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path(route))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "items": [{"name": format!("{key}-early")}],
+                    "nextPageToken": "page-2"
+                })))
+                .mount(&server)
+                .await;
+        }
+
+        let zones = list_zones(&client(&server), "p").await.expect("zones");
+        assert_eq!(zones, vec!["a-early", "a-late"]);
+        let backends = list_backend_services(&client(&server), "p")
+            .await
+            .expect("backends");
+        let names: Vec<&str> = backends.iter().map(|b| b.name.as_str()).collect();
+        assert_eq!(names, vec!["gt-a-early", "gt-a-late"]);
     }
 }

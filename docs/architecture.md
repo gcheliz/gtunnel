@@ -77,6 +77,13 @@ A gated tunnel, `expose --private`, also turns on IAP for its backend service, s
 signs in with Google before a request reaches the relay. `list` and the TUI show its mode
 as `gated` rather than `public`.
 
+Every backend service is created with a `timeoutSec` of 3600 (`expose.backend_timeout`, see
+[configuration](configuration.md)), a 30 second connection-draining timeout and request logging
+stated as off. The load balancer's own default is 30 seconds, which for a websocket is the
+longest it may stay idle, so without the longer value hot reload and server-sent events
+reconnect in a loop and a slow upload fails with a 502 or 504. GCP closes every websocket at
+24 hours regardless.
+
 The tunnel process runs:
 
 ```
@@ -88,6 +95,15 @@ Without `ExitOnForwardFailure=yes`, SSH stays up after the remote bind fails and
 looks healthy while serving nothing. The relay's startup script sets
 `GatewayPorts clientspecified` so the `0.0.0.0` bind is accepted and the load balancer's
 health check can reach the port.
+
+The bind is on every interface because the load balancer connects to the relay's internal
+address, so the VPC firewall alone decides who else can. The startup script therefore also
+installs an `nftables` table, `gtunnel_relay`, that drops `30000-30999` from every source but
+the load balancer's ranges (`130.211.0.0/22`, `35.191.0.0/16`). It is what keeps `--private`
+meaningful: a VM in the same VPC cannot reach a tunnel's relay port directly, even under a
+rule such as `default-allow-internal`, so IAP sign-in is not skipped. The table is rewritten
+on every run of the script, which `relay up` applies to an existing relay too. It does not
+cover SSH on port 22, which only IAP reaches.
 
 Every relay resource that has a wanted shape is converged, not only created: `relay up` reads
 the health check, each backend service and the relay's startup script, and writes only what
@@ -136,7 +152,12 @@ rule, HTTPS proxy, global address, URL map, default backend, health check, each 
 certificate-map entries, certificate and DNS authorization, the certificate map, the instance
 group, the relay instance, then both firewall rules. It **refuses** while any expose tunnel or live
 `gtunnel run --public` still holds a route — `--force` deletes those tunnels' routes and
-services first. It never touches the Cloud DNS managed zone, which is yours.
+services first. Before it deletes anything it looks for backend services that still point at the
+relay's instance group: one that gtunnel tagged (an orphan left by a `run --public` killed before
+its cleanup) is deleted after the URL map, and one that gtunnel did not create stops the teardown
+by name, with the relay untouched. A per-account lock held for the whole teardown makes `expose`,
+`run --public` and `relay up` refuse meanwhile instead of building a route into a group that is
+about to be deleted. It never touches the Cloud DNS managed zone, which is yours.
 
 ## Process model
 
@@ -149,6 +170,7 @@ services first. It never touches the Cloud DNS managed zone, which is yours.
 | Wedged tunnels | Supervision only catches a process that exits. A tunnel that stays up and refuses connections is caught instead by one watchdog job for the whole machine, which wakes every 30s by default (`watch.interval`), makes one pass over every tunnel and exits. It is an interval job rather than a supervised one precisely because it is supposed to exit every time |
 | PATH | A daemon does not inherit a shell, so gcloud's directory is written into the unit. Without it the service dies at every start |
 | Credentials | None stored ([decision 1](decisions.md#1-gtunnel-stores-no-credential)). Each API call shells out to `gcloud auth print-access-token` for the account's configuration, and an account with a `credential_file` adds `--credential-file-override=<path>` to every gcloud call. The Google API base URLs are fixed in a release build; a debug build lets `GTUNNEL_TEST_GCP_ENDPOINT` point them at one test server, which is how the binary-level tests fake GCP |
+| Lists | A GCP list call is read to its last page, bounded at 50 pages and an error beyond that, so an entry on a later page is never read as absent. Looking up one Cloud DNS record asks for it by name and type and never lists the zone. See [A list that does not end](troubleshooting.md#a-list-that-does-not-end) |
 | Ephemeral runs | `run` writes a record with gcloud's pid and that pid's start time, so `list`, the TUI and `doctor` see it and a recycled pid reads as gone, as does an exited process its parent has not reaped yet. A pid the system cannot inspect is unknown, never gone, so `reset` waits on it rather than delete under it. Nothing on a run's way out, and no command after `reset`, creates the config directory again. Every exit path stops gcloud's process group and tears the route down, including signals. A run and a saved tunnel never share a name in one account: `run` refuses a saved name, and `add`, `expose`, `rename` and `move` refuse a live run's |
 | TUI polling | Discovery, metrics and health are three pollers (health reuses the metrics probe where one ran), each with at most one round in flight: a round slower than its period is waited for, never started again on top of itself. A result carries the generation its round began under and is dropped when that is no longer current, which is what an account switch does to every round begun for the old account. Every `gcloud`, `launchctl` and `systemctl` call is bounded (30s and 10s; the 10s is `service_call_timeout`, see [Settings the environment can override](configuration.md#settings-the-environment-can-override)) and fails with `<command> timed out after <n>s`; the child is killed on timeout. The `lsof` and `ps` reads run on the blocking pool. `delete` treats a timed-out stop as a failure and keeps the record, because removing it would orphan a job that may still be running |
 | Strangers | A `[not managed by gtunnel]` row is an IAP process nothing here accounts for. One `ps` snapshot is read, then a process is gtunnel's if it forwards a port that any account's `tunnels.toml` entry or any run record owns, or if it sits below a pid launchd or a run record names. The port is tried first because launchd reports a supervisor's pid before the supervisor has spawned its gcloud child, and a verdict that depends on that gap is a verdict that depends on timing |

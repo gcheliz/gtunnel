@@ -3,10 +3,6 @@ use serde::Deserialize;
 
 use super::GcpClient;
 
-// A large org can hold thousands of projects. Ten pages of 500 is far past
-// what a person scrolls, and the picker filters as you type, so the cap bounds
-// the wait without hiding a project the user can still type
-const MAX_PAGES: usize = 10;
 const PAGE_SIZE: u32 = 500;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -14,15 +10,6 @@ pub struct Project {
     pub project_id: String,
     // Display name; empty when the project has none
     pub name: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SearchPage {
-    #[serde(default)]
-    projects: Vec<RawProject>,
-    #[serde(default)]
-    next_page_token: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -35,49 +22,23 @@ struct RawProject {
     state: Option<String>,
 }
 
-// A page token is opaque and may carry `+`, `/` or `=`, so it cannot be
-// pasted into a query string as it is
-fn encode_query_value(raw: &str) -> String {
-    let mut out = String::with_capacity(raw.len());
-    for b in raw.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
-            }
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
-}
-
 pub async fn list_projects(client: &GcpClient) -> Result<Vec<Project>> {
     let base = format!(
         "{}/projects:search?query=state:ACTIVE&pageSize={PAGE_SIZE}",
         client.endpoints.resource_manager
     );
+    let raw: Vec<RawProject> = client.get_all(&base, "projects").await?;
     let mut out = Vec::new();
-    let mut token: Option<String> = None;
-    for _ in 0..MAX_PAGES {
-        let url = match &token {
-            Some(t) => format!("{base}&pageToken={}", encode_query_value(t)),
-            None => base.clone(),
-        };
-        let page: SearchPage = client.get(&url).await?;
-        for p in page.projects {
-            // The query already asks for ACTIVE; check again so a project
-            // pending deletion is never offered if the filter is ignored
-            if p.state.as_deref().is_some_and(|s| s != "ACTIVE") {
-                continue;
-            }
-            out.push(Project {
-                project_id: p.project_id,
-                name: p.display_name.unwrap_or_default(),
-            });
+    for p in raw {
+        // The query already asks for ACTIVE; check again so a project pending
+        // deletion is never offered if the filter is ignored
+        if p.state.as_deref().is_some_and(|s| s != "ACTIVE") {
+            continue;
         }
-        match page.next_page_token.filter(|t| !t.is_empty()) {
-            Some(next) => token = Some(next),
-            None => break,
-        }
+        out.push(Project {
+            project_id: p.project_id,
+            name: p.display_name.unwrap_or_default(),
+        });
     }
     out.sort_by(|a, b| a.project_id.cmp(&b.project_id));
     Ok(out)
@@ -135,7 +96,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_projects_stops_at_the_page_cap() {
+    async fn list_projects_stops_at_the_shared_page_cap_with_an_error() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/projects:search"))
@@ -148,10 +109,10 @@ mod tests {
             .mount(&server)
             .await;
 
-        let got = list_projects(&client(&server)).await.expect("no error");
-        assert!(!got.is_empty());
+        let err = list_projects(&client(&server)).await.expect_err("cap");
+        assert!(format!("{err:#}").contains("50 pages"), "{err:#}");
         let seen = server.received_requests().await.expect("recorded").len();
-        assert_eq!(seen, MAX_PAGES);
+        assert_eq!(seen, 50);
     }
 
     #[tokio::test]

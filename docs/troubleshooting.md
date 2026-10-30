@@ -461,6 +461,7 @@ never blocks the account: the prompt falls back to a typed project id.
 | The login expired | `gcloud auth login`, see [above](#gtunnel-needs-a-logged-in-google-account) |
 | No network | The line names the connection error; the typed field still works once the project id is known |
 | The list is empty | The account sees no active project; type the id of one it can use |
+| `did not end after 50 pages` | The server kept handing out page tokens; gtunnel stops rather than show a partial list. Type the project id |
 
 ## IAP firewall
 
@@ -499,6 +500,19 @@ Once created, register it with gtunnel:
 ```
 gtunnel domains add my-zone
 ```
+
+## A list that does not end
+
+```
+The list at https://compute.googleapis.com/... did not end after 50 pages; stopped so a partial list is not mistaken for the whole
+```
+
+gtunnel follows every page of a GCP list call (instances, zones, firewall rules, backend
+services, DNS records, projects) and stops at 50. A server that never stops handing out page
+tokens is reported as an error, not read as a short list, so a rule or instance that sits on a
+later page is never reported missing. In `doctor` the line reads `could not read firewall rules`
+and the IAP firewall check is skipped. Run the command again; if it repeats, the API is
+faulty, and the same call through `gcloud` shows what it returns.
 
 ## NumPy
 
