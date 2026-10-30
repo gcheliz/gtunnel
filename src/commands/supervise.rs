@@ -33,6 +33,12 @@ pub async fn run(
             Budget::default()
         });
     let spend = crash_marker.map(|marker| Spend { marker, budget });
+    // Before anything is registered or spawned: a stop that lands in the wait
+    // ends the process by its default action, and there is no child to orphan
+    let asked = ready_file
+        .as_deref()
+        .is_some_and(|ready| take_asked(&asked_beside(ready)));
+    tokio::time::sleep(start_delay(asked, crate::daemon::backoff::draw())).await;
     let code = supervise(argv, port, ready_file, conns, auth_marker, spend).await?;
     std::process::exit(code);
 }
@@ -245,7 +251,12 @@ pub async fn supervise(
         let mut fails = crate::restart_budget::parse_net_failures(
             &std::fs::read_to_string(&file).unwrap_or_default(),
         );
-        let after = crate::restart_budget::network_wait(&spend.budget, &mut fails, began.elapsed());
+        let after = crate::restart_budget::network_wait(
+            &spend.budget,
+            &mut fails,
+            began.elapsed(),
+            crate::daemon::backoff::draw(),
+        );
         if let Some(parent) = file.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
@@ -271,9 +282,13 @@ pub async fn supervise(
                 .ok()
                 .and_then(|t| crate::restart_budget::parse_since(&t));
             let now = std::time::SystemTime::now();
-            if let Busy::Wait { since, after } =
-                judge_busy(&spend.budget, since, began.elapsed(), now)
-            {
+            if let Busy::Wait { since, after } = judge_busy(
+                &spend.budget,
+                since,
+                began.elapsed(),
+                now,
+                crate::daemon::backoff::draw(),
+            ) {
                 if let Some(parent) = busy_file.parent() {
                     let _ = std::fs::create_dir_all(parent);
                 }
@@ -300,6 +315,7 @@ pub async fn supervise(
             &mut history,
             began.elapsed(),
             std::time::SystemTime::now(),
+            crate::daemon::backoff::draw(),
         );
         if let Some(parent) = history_file.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -421,6 +437,47 @@ async fn sweep_stale_group(file: &std::path::Path) {
     let _ = file;
 }
 
+/// A start asked for by a person or by the watchdog, written by `daemon::start`
+/// just before it asks the service manager, and read once by the supervisor
+/// that start produces.
+///
+/// A supervisor cannot tell who started it: a login or a wake loads every job
+/// at once, and `gtunnel start` kickstarts one through the same manager. The
+/// marker is the difference. Without it the first `gcloud` waits a random few
+/// seconds so five jobs do not start together; with it nobody who asked for
+/// this tunnel waits for a draw. It is beside the ready file, named by the
+/// label, so the two sides agree on it without being told.
+pub fn asked_beside(ready_file: &std::path::Path) -> PathBuf {
+    ready_file.with_extension("asked")
+}
+
+/// How old a marker may be and still be the start that produced this
+/// supervisor. One older than this is left over from a start that never
+/// reached a supervisor, and must not excuse a later login from the draw.
+const ASKED_FRESH: Duration = Duration::from_secs(60);
+
+/// Whether a person or the watchdog asked for this start. The marker is
+/// removed either way, so it excuses one supervisor and no more.
+fn take_asked(marker: &std::path::Path) -> bool {
+    let fresh = std::fs::metadata(marker)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|at| std::time::SystemTime::now().duration_since(at).ok())
+        .is_some_and(|age| age <= ASKED_FRESH);
+    let _ = std::fs::remove_file(marker);
+    fresh
+}
+
+/// The wait before the first `gcloud`: none when someone asked for this start,
+/// otherwise a draw from zero to [`crate::daemon::backoff::START_SPREAD`].
+fn start_delay(asked: bool, unit: f64) -> Duration {
+    if asked {
+        Duration::ZERO
+    } else {
+        crate::daemon::backoff::spread_at(crate::daemon::backoff::START_SPREAD, unit)
+    }
+}
+
 /// Whether this exit counts against the budget. Credentials have their own
 /// stop, a clean exit is not a failure, and a stop the user asked for says
 /// nothing about the tunnel.
@@ -454,6 +511,61 @@ fn stops_for_credentials(succeeded: bool, expired: bool, asked_to_stop: bool) ->
 
 #[cfg(test)]
 mod tests {
+
+    fn secs(n: u64) -> Duration {
+        Duration::from_secs(n)
+    }
+
+    #[test]
+    fn a_start_nobody_asked_for_waits_a_draw_from_zero_to_three_seconds() {
+        assert_eq!(start_delay(false, 0.0), Duration::ZERO);
+        assert_eq!(start_delay(false, 0.5), Duration::from_millis(1500));
+        assert_eq!(start_delay(false, 1.0), secs(3));
+    }
+
+    #[test]
+    fn a_start_a_person_or_the_watchdog_asked_for_does_not_wait() {
+        assert_eq!(start_delay(true, 1.0), Duration::ZERO);
+    }
+
+    #[test]
+    fn the_marker_is_found_beside_the_ready_file_by_the_name_the_installer_chose() {
+        let dir = std::path::Path::new("/cfg");
+        let ready = crate::daemon::ready_file_in(dir, "com.gtunnel.dev.db");
+        assert_eq!(
+            asked_beside(&ready),
+            crate::daemon::asked_file_in(dir, "com.gtunnel.dev.db"),
+            "a dotted label must not lose a segment"
+        );
+    }
+
+    #[test]
+    fn an_asked_marker_excuses_one_supervisor_and_is_gone_after() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let marker = crate::daemon::asked_file_in(dir.path(), "com.gtunnel.dev.db");
+        assert!(!take_asked(&marker), "no marker, no one asked");
+        crate::daemon::note_asked_in(dir.path(), "com.gtunnel.dev.db");
+        assert!(marker.exists());
+        assert!(take_asked(&marker));
+        assert!(!marker.exists(), "read once");
+        assert!(!take_asked(&marker), "the next supervisor waits its draw");
+    }
+
+    #[test]
+    fn a_marker_from_a_start_that_never_arrived_does_not_excuse_a_later_login() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let marker = dir.path().join("com.gtunnel.dev.db.asked");
+        std::fs::write(&marker, "").expect("write");
+        let old = std::time::SystemTime::now() - secs(3600);
+        std::fs::File::options()
+            .write(true)
+            .open(&marker)
+            .expect("open")
+            .set_modified(old)
+            .expect("mtime");
+        assert!(!take_asked(&marker));
+        assert!(!marker.exists(), "a stale marker is swept, not kept");
+    }
     use super::*;
 
     #[test]
@@ -839,7 +951,7 @@ mod tests {
             "an outage spends none of the restart budget"
         );
         assert_eq!(
-            crate::restart_budget::network_wait(&budget, &mut 9, Duration::ZERO),
+            crate::restart_budget::network_wait(&budget, &mut 9, Duration::ZERO, 1.0),
             budget.max_backoff
         );
     }

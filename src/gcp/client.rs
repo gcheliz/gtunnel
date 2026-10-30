@@ -226,13 +226,57 @@ fn is_transient(status: u16) -> bool {
     matches!(status, 429 | 500 | 502 | 503 | 504)
 }
 
+/// One client per account for as long as the process lives, so everything that
+/// asks Google on an account's behalf shares one cached token.
+///
+/// A client caches its token, but a client made per call starts with none: the
+/// TUI's load-balancer round built one per public tunnel, so three tunnels on
+/// an account ran three `gcloud auth print-access-token` at once, every round.
+/// The pool is keyed by account name and checked against the whole account, so
+/// an edit to its project or credentials makes a new client instead of
+/// serving the old one.
+#[derive(Default)]
+pub struct ClientPool {
+    clients:
+        std::sync::Mutex<std::collections::HashMap<String, (Account, std::sync::Arc<GcpClient>)>>,
+}
+
+impl ClientPool {
+    pub fn client(
+        &self,
+        acct: &Account,
+        make: impl FnOnce(&Account) -> GcpClient,
+    ) -> std::sync::Arc<GcpClient> {
+        // A poisoned lock only means another thread panicked mid-insert; the
+        // map is still a map of whole entries
+        let mut clients = self.clients.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((held, client)) = clients.get(&acct.name)
+            && held == acct
+        {
+            return client.clone();
+        }
+        let client = std::sync::Arc::new(make(acct));
+        clients.insert(acct.name.clone(), (acct.clone(), client.clone()));
+        client
+    }
+}
+
+/// The long-lived processes' client for `acct`: the TUI, which asks every
+/// minute. A command that runs once keeps `GcpClient::for_account`.
+pub fn session_client(acct: &Account) -> std::sync::Arc<GcpClient> {
+    static POOL: std::sync::OnceLock<ClientPool> = std::sync::OnceLock::new();
+    POOL.get_or_init(ClientPool::default)
+        .client(acct, GcpClient::for_account)
+}
+
 pub struct GcpClient {
     http: reqwest::Client,
     source: TokenSource,
     pub endpoints: Endpoints,
     cached: Mutex<Option<HeldToken>>,
-    // Read once per client, from `gcp.*`: a client lives for one command, so
-    // a value edited in the file applies to the next one. `token_ttl` caps
+    // Read once per client, from `gcp.*`: a client lives for one command, or
+    // for the TUI's session, so a value edited in the file applies to the next
+    // command and to the next TUI. `token_ttl` caps
     // how long a token is reused; the token's own expiry, when gcloud
     // reports it, can only shorten that.
     token_ttl: Duration,

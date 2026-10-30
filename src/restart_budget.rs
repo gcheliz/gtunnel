@@ -21,7 +21,8 @@ pub struct Budget {
     pub window: Duration,
     /// A run at least this long clears the count.
     pub min_uptime: Duration,
-    /// The wait after the first failure; each next one doubles it.
+    /// The ceiling of the wait after the first failure; each next one doubles
+    /// it, and the wait itself is drawn from zero up to that ceiling.
     pub base_backoff: Duration,
     pub max_backoff: Duration,
     /// The fixed wait after a run that died because the relay still holds the
@@ -92,7 +93,16 @@ pub enum Verdict {
 }
 
 /// Judge one failed run. `ran_for` is how long the child lived.
-pub fn judge(b: &Budget, h: &mut History, ran_for: Duration, now: SystemTime) -> Verdict {
+///
+/// `unit` is the draw in `[0, 1]` that places the wait inside its backoff;
+/// see [`crate::daemon::backoff`] for why it is drawn at all.
+pub fn judge(
+    b: &Budget,
+    h: &mut History,
+    ran_for: Duration,
+    now: SystemTime,
+    unit: f64,
+) -> Verdict {
     // A budget of 0 is the old behaviour: restart at once, forever, keeping
     // nothing that could grow
     if b.max_restarts == 0 {
@@ -114,12 +124,8 @@ pub fn judge(b: &Budget, h: &mut History, ran_for: Duration, now: SystemTime) ->
     if n > b.max_restarts as usize {
         return Verdict::Stop;
     }
-    // 2^(n-1), with the shift bounded so a large budget cannot overflow
-    let doublings = u32::try_from(n - 1).unwrap_or(u32::MAX).min(30);
-    let after = b
-        .base_backoff
-        .saturating_mul(1 << doublings)
-        .min(b.max_backoff);
+    let attempt = u32::try_from(n).unwrap_or(u32::MAX);
+    let after = crate::daemon::backoff::backoff_at(attempt, b.base_backoff, b.max_backoff, unit);
     Verdict::Restart { after }
 }
 
@@ -138,11 +144,16 @@ pub enum Busy {
 /// it does not spend the budget; but a relay that never lets go must not be
 /// retried forever, hence the window. A run that lived `min_uptime` was
 /// working, so what killed it afterwards starts a new streak.
+///
+/// The wait is half `busy_delay` plus a draw over the other half (`unit` in
+/// `[0, 1]`): the tunnels one wake cut retry apart, and none comes back before
+/// sshd has had half the delay to reap the old session.
 pub fn judge_busy(
     b: &Budget,
     since: Option<SystemTime>,
     ran_for: Duration,
     now: SystemTime,
+    unit: f64,
 ) -> Busy {
     let since = match since {
         Some(t) if ran_for < b.min_uptime => t,
@@ -154,9 +165,10 @@ pub fn judge_busy(
     if age > b.busy_window {
         return Busy::Spent;
     }
+    let half = b.busy_delay / 2;
     Busy::Wait {
         since,
-        after: b.busy_delay,
+        after: half + crate::daemon::backoff::spread_at(b.busy_delay - half, unit),
     }
 }
 
@@ -177,17 +189,16 @@ pub fn render_since(t: SystemTime) -> String {
 /// A network exit says nothing about the tunnel, so it never reaches [`judge`]
 /// and can never stop the job: an outage that lasts an hour is a loop of
 /// retries, not a verdict. The wait uses the budget's own backoff, 10 s doubling
-/// to 5 min, so an offline laptop is not hammered. `fails` is the count of
+/// to 5 min and drawn from zero up to it, so an offline laptop is not hammered
+/// and a house of them does not retry on the same second. `fails` is the count of
 /// network exits in a row; a run that lived `min_uptime` was working, so it
 /// starts the count over, as it does for the budget.
-pub fn network_wait(b: &Budget, fails: &mut u32, ran_for: Duration) -> Duration {
+pub fn network_wait(b: &Budget, fails: &mut u32, ran_for: Duration, unit: f64) -> Duration {
     if ran_for >= b.min_uptime {
         *fails = 0;
     }
     *fails = fails.saturating_add(1);
-    b.base_backoff
-        .saturating_mul(1 << (*fails - 1).min(30))
-        .min(b.max_backoff)
+    crate::daemon::backoff::backoff_at(*fails, b.base_backoff, b.max_backoff, unit)
 }
 
 /// The persisted network count: one integer. Anything else is zero, because a
@@ -206,6 +217,54 @@ mod tests {
 
     fn quick() -> Duration {
         Duration::from_secs(1)
+    }
+
+    // The ceiling is the draw of 1.0, so every wait below is the doubling the
+    // table names; the jitter has its own tests
+    fn judge(b: &Budget, h: &mut History, ran_for: Duration, now: SystemTime) -> Verdict {
+        super::judge(b, h, ran_for, now, 1.0)
+    }
+
+    fn network_wait(b: &Budget, fails: &mut u32, ran_for: Duration) -> Duration {
+        super::network_wait(b, fails, ran_for, 1.0)
+    }
+
+    #[test]
+    fn a_restart_wait_is_drawn_from_zero_to_its_backoff() {
+        let b = Budget::default();
+        let wait = |unit| match super::judge(&b, &mut History::default(), quick(), at(1000), unit) {
+            Verdict::Restart { after } => after,
+            Verdict::Stop => panic!("stopped"),
+        };
+        assert_eq!(wait(0.0), Duration::ZERO);
+        assert_eq!(wait(0.5), b.base_backoff / 2);
+        assert_eq!(wait(1.0), b.base_backoff);
+    }
+
+    #[test]
+    fn a_network_wait_is_drawn_from_zero_to_its_backoff() {
+        let b = Budget::default();
+        let wait = |unit| super::network_wait(&b, &mut 2, quick(), unit);
+        assert_eq!(wait(0.0), Duration::ZERO);
+        assert_eq!(wait(0.5), b.base_backoff * 2);
+        assert_eq!(wait(1.0), b.base_backoff * 4);
+    }
+
+    // The issue's second acceptance item: two copies of the doubling is how
+    // the supervisor and the breaker drifted apart in the first place
+    #[test]
+    fn the_supervisor_and_the_breaker_use_the_shared_backoff_and_double_nothing_themselves() {
+        for (file, source) in [
+            ("restart_budget.rs", include_str!("restart_budget.rs")),
+            ("breaker.rs", include_str!("breaker.rs")),
+        ] {
+            let production = source.split("#[cfg(test)]\nmod ").next().unwrap();
+            assert!(production.contains("backoff::"), "{file} does not call it");
+            assert!(
+                !production.contains("saturating_mul(1"),
+                "{file} writes the doubling again"
+            );
+        }
     }
 
     #[test]
@@ -314,13 +373,13 @@ mod tests {
     }
 
     #[test]
-    fn a_relay_that_still_holds_the_old_listener_is_retried_on_a_fixed_delay() {
+    fn a_relay_that_still_holds_the_old_listener_is_retried_without_spending_the_budget() {
         let b = Budget::default();
         let first = at(1000);
         let mut since = None;
         for n in 0..20u64 {
             let now = at(1000 + n * 15);
-            match judge_busy(&b, since, quick(), now) {
+            match judge_busy(&b, since, quick(), now, 1.0) {
                 Busy::Wait { since: s, after } => {
                     assert_eq!(after, Duration::from_secs(15), "attempt {n}");
                     since = Some(s);
@@ -334,9 +393,9 @@ mod tests {
     #[test]
     fn a_relay_that_never_lets_go_is_counted_after_the_window() {
         let b = Budget::default();
-        let v = judge_busy(&b, Some(at(1000)), quick(), at(1000) + b.busy_window);
+        let v = judge_busy(&b, Some(at(1000)), quick(), at(1000) + b.busy_window, 1.0);
         assert!(matches!(v, Busy::Wait { .. }), "{v:?}");
-        let v = judge_busy(&b, Some(at(1000)), quick(), at(1001) + b.busy_window);
+        let v = judge_busy(&b, Some(at(1000)), quick(), at(1001) + b.busy_window, 1.0);
         assert_eq!(v, Busy::Spent);
     }
 
@@ -344,7 +403,7 @@ mod tests {
     fn a_run_that_worked_starts_a_new_streak() {
         let b = Budget::default();
         let now = at(1000) + b.busy_window * 3;
-        let v = judge_busy(&b, Some(at(1000)), b.min_uptime, now);
+        let v = judge_busy(&b, Some(at(1000)), b.min_uptime, now, 1.0);
         assert_eq!(
             v,
             Busy::Wait {
@@ -352,6 +411,18 @@ mod tests {
                 after: b.busy_delay
             }
         );
+    }
+
+    #[test]
+    fn a_busy_relay_wait_is_drawn_from_half_its_delay_to_all_of_it() {
+        let b = Budget::default();
+        let wait = |unit| match judge_busy(&b, None, quick(), at(1000), unit) {
+            Busy::Wait { after, .. } => after,
+            Busy::Spent => panic!("a new streak is never spent"),
+        };
+        assert_eq!(wait(0.0), Duration::from_millis(7500));
+        assert_eq!(wait(0.5), Duration::from_millis(11250));
+        assert_eq!(wait(1.0), Duration::from_secs(15));
     }
 
     fn ladder(b: &Budget, n: u32) -> Duration {

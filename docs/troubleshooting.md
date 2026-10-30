@@ -175,7 +175,7 @@ emptied when its tunnel starts, so a line in it was written by the process runni
 | `4004` | IAP asked gcloud to reauthenticate; gcloud resumes the session on its own | Nothing, unless it repeats: then check the account's credentials with `gtunnel doctor` |
 | `Unable to reconnect within` | gcloud gave up reconnecting to IAP after 15 minutes and the clients on the tunnel were cut | Restart the tunnel; see [Limits](architecture.md#limits) |
 | `Address already in use` | Another process holds the local port | `gtunnel doctor`, or set `--local-port` |
-| `remote port forwarding failed` | The relay still holds the listener of a session that is gone, usually after the laptop slept or changed network. The supervisor retries every 15 seconds for 5 minutes without spending the restart budget; an updated relay drops the dead session in about 30 seconds | Wait. If it lasts minutes, run `gtunnel relay up`: a relay created before the keepalive settings existed gets them from it. `gtunnel restart` does not help |
+| `remote port forwarding failed` | The relay still holds the listener of a session that is gone, usually after the laptop slept or changed network. The supervisor retries every 7.5 to 15 seconds for 5 minutes without spending the restart budget; an updated relay drops the dead session in about 30 seconds | Wait. If it lasts minutes, run `gtunnel relay up`: a relay created before the keepalive settings existed gets them from it. `gtunnel restart` does not help |
 | `Too many open files` | The tunnel ran out of file descriptors | `gtunnel doctor` names the process holding them, see below |
 | `consider installing NumPy` | gcloud's Python has no NumPy | See NumPy below |
 | `timed out after` (in the TUI status line or a command's error) | A subprocess did not answer within its bound: 30s for `gcloud`, 10s for `launchctl` and `systemctl`. Usually `gcloud` waiting on a browser login or a dead network, or a wedged launchd | Run the named command by hand to see what it waits on, then `gcloud auth login` or `gtunnel doctor`. `delete` that times out stopping the job keeps the record, so retry it once the job answers |
@@ -462,11 +462,11 @@ tunnels are kept, not stopped. They come back by themselves when the network doe
 | Layer | During the outage | When the network returns |
 |---|---|---|
 | Watchdog | Each pass first connects to `tunnel.cloudproxy.app:443`. If that fails, no tunnel is judged and no breaker moves | The next pass judges tunnels as usual |
-| Supervisor | gcloud exits on a network or timeout line. The job waits 10 s, then 20, 40, up to 5 minutes, and starts again. None of it counts toward the restart budget | The first start that lives past `min_uptime` clears the wait |
+| Supervisor | gcloud exits on a network or timeout line. The job waits a random time from zero up to 10 s, then up to 20, 40, and up to 5 minutes, and starts again. None of it counts toward the restart budget | The first start that lives past `min_uptime` clears the wait |
 | Notifications | The watchdog sends no "unhealthy" or "stopped" notification for the outage | A tunnel that stays down afterwards is reported as before |
 
 `gtunnel list` may show a tunnel as down or unhealthy while the wait runs. A tunnel is back
-within about 5 minutes of the network returning, the longest wait, and sooner when the
+within 5 minutes of the network returning at the latest, and sooner when the
 outage was short.
 
 | You see | Meaning |

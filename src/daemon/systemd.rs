@@ -297,6 +297,7 @@ pub async fn uninstall(label: &str) -> Result<()> {
 }
 
 pub async fn start(label: &str) -> Result<()> {
+    crate::daemon::note_asked(label);
     let out = systemctl(&["start", label]).await?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);

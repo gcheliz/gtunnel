@@ -102,9 +102,9 @@ after a laptop sleeps or changes network the relay keeps the dead session's list
 two hours, and the reconnect fails with `remote port forwarding failed`. With the probes sshd
 drops a silent session in about 30 seconds and the port is free again.
 
-Until then the supervisor retries every 15 seconds and does not spend the restart budget on
-that failure, for up to 5 minutes from the first one. After that each failure counts like any
-other. `relay up` waits for the startup script to print `gtunnel-relay-ready` on the serial
+Until then the supervisor retries after a random 7.5 to 15 seconds and does not spend the restart
+budget on that failure, for up to 5 minutes from the first one. After that each failure counts
+like any other. `relay up` waits for the startup script to print `gtunnel-relay-ready` on the serial
 console before it returns, so an `expose` straight after it never binds on loopback only.
 
 The bind is on every interface because the load balancer connects to the relay's internal
@@ -177,6 +177,7 @@ about to be deleted. It never touches the Cloud DNS managed zone, which is yours
 | Concern | Decision |
 |---|---|
 | Supervision | launchd on macOS, systemd `--user` on Linux. Both restart on failure. The supervisor answers a stop at once, during its restart backoff too. When gcloud exits it stops the rest of gcloud's process group (ssh, the IAP proxy), and a supervisor that was killed leaves its group's id beside the ready file for the next one to end, so nothing is left holding the port |
+| Retries after a wake or a login | A wake, a login or the end of an outage fails every tunnel at the same moment, and a fixed doubling would keep them failing together, each retry a `gcloud` start that reads the credential store and asks Google for a token. So nothing waits a fixed time. The supervisor's restart and network waits and the breaker's restart schedule are each drawn from zero up to their doubling (`src/daemon/backoff.rs`, one function for all three). A supervisor that launchd or systemd started on its own waits a random 0-3 s before its first `gcloud`; one started by `gtunnel start` or the watchdog skips that wait, told apart by `run/<label>.asked`, which `start` writes and the supervisor deletes. The watchdog pauses a random 0-2 s before each restart in a pass, ahead of the stop so the tunnel is not down for it, and before each tunnel it starts after a renewed login; `gtunnel start --auth-expired` and the MCP tool have a person waiting and do not pause. The TUI keeps one client per account for the session, so a round over several public tunnels fetches one token |
 | Reboot | Auto-start is per tunnel; off by default, toggled with `A` in the TUI or `autostart`. How each platform holds it is under [Service lifecycle](#service-lifecycle) |
 | Wedged tunnels | Supervision only catches a process that exits. A tunnel that stays up and refuses connections is caught instead by one watchdog job for the whole machine, which wakes every 30s by default (`watch.interval`), makes one pass over every tunnel and exits. It is an interval job rather than a supervised one precisely because it is supposed to exit every time |
 | PATH | A daemon does not inherit a shell, so gcloud's directory is written into the unit. Without it the service dies at every start |

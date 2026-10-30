@@ -5,6 +5,7 @@ use crate::config::Config;
 use crate::state::{PersistentTunnel, TunnelSpec};
 use crate::tunnel;
 
+pub mod backoff;
 pub mod launchd;
 pub mod refresh;
 pub mod systemd;
@@ -186,6 +187,29 @@ pub fn remove_auth_marker_in(config_dir: &std::path::Path, label: &str) {
 /// the watchdog reads the one the installer chose.
 pub fn ready_file_in(config_dir: &std::path::Path, label: &str) -> PathBuf {
     config_dir.join("run").join(format!("{label}.ready"))
+}
+
+/// Where `start` leaves word that someone asked for this start, so the
+/// supervisor it produces skips the random pause it takes after a login or a
+/// wake. See `commands::supervise::asked_beside` for the reading side.
+pub fn asked_file_in(config_dir: &std::path::Path, label: &str) -> PathBuf {
+    config_dir.join("run").join(format!("{label}.asked"))
+}
+
+/// Best effort: a marker that cannot be written costs the tunnel a pause of at
+/// most a few seconds, never the start.
+pub fn note_asked_in(config_dir: &std::path::Path, label: &str) {
+    let file = asked_file_in(config_dir, label);
+    if let Some(parent) = file.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(file, "");
+}
+
+pub fn note_asked(label: &str) {
+    if let Ok(dir) = crate::config::config_dir() {
+        note_asked_in(&dir, label);
+    }
 }
 
 /// Where a supervisor records that it stopped because its tunnel spent the

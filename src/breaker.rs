@@ -13,8 +13,14 @@ use std::time::{Duration, SystemTime};
 /// is not the fix.
 pub const MAX_ATTEMPTS: u8 = 4;
 
-/// The first wait. Each attempt doubles it: 10, 20, 40, 80 seconds.
+/// The ceiling of the first wait. Each attempt doubles it: 10, 20, 40, 80
+/// seconds, and the wait is drawn from zero up to that.
 pub const BASE_BACKOFF: Duration = Duration::from_secs(10);
+
+/// The last wait, which the ceiling stops at. With [`MAX_ATTEMPTS`] of 4 the
+/// doubling never reaches it; it is the cap `backoff` asks for, not a second
+/// limit.
+const MAX_BACKOFF: Duration = Duration::from_secs(10 * (1 << (MAX_ATTEMPTS as u64 - 1)));
 
 /// How many observations in a row it takes to change the breaker's mind, in
 /// either direction. One transient refusal during a restart must not trip it,
@@ -84,13 +90,26 @@ pub struct Breaker {
 }
 
 impl Breaker {
+    /// [`Breaker::observe_with`] with the wait at its ceiling, so a schedule
+    /// can be read as the plain doubling. The watchdog draws; tests do not.
+    #[cfg(test)]
+    pub fn observe(&mut self, obs: Observation, now: SystemTime, stale_after: Duration) -> Action {
+        self.observe_with(obs, now, stale_after, 1.0)
+    }
+
     /// Feed it one check and learn what to do. `now` is a parameter so the
     /// whole schedule is testable without waiting for it.
     ///
     /// `stale_after` is how old a counted failure may be and still pair with
     /// a new one. The watchdog passes twice its pass interval: a run of two
     /// is two consecutive passes, and anything older is a gap, not a run.
-    pub fn observe(&mut self, obs: Observation, now: SystemTime, stale_after: Duration) -> Action {
+    pub fn observe_with(
+        &mut self,
+        obs: Observation,
+        now: SystemTime,
+        stale_after: Duration,
+        unit: f64,
+    ) -> Action {
         // Before anything else: a tunnel that is not running is not a tunnel
         // with a problem. This is also how `Stopped` normally ends - the
         // breaker the watchdog just stopped sees `NotRunning` on its next
@@ -116,7 +135,7 @@ impl Breaker {
 
         match obs {
             Observation::Pass => self.pass(),
-            Observation::Failed(reason) => self.failure(reason, now, stale_after),
+            Observation::Failed(reason) => self.failure(reason, now, stale_after, unit),
             Observation::NotRunning | Observation::Unknown => unreachable!("handled above"),
         }
     }
@@ -137,7 +156,13 @@ impl Breaker {
         Action::Nothing
     }
 
-    fn failure(&mut self, reason: Reason, now: SystemTime, stale_after: Duration) -> Action {
+    fn failure(
+        &mut self,
+        reason: Reason,
+        now: SystemTime,
+        stale_after: Duration,
+        unit: f64,
+    ) -> Action {
         self.passes = 0;
         match self.state {
             State::Closed => {
@@ -154,7 +179,7 @@ impl Breaker {
                 self.failures += 1;
                 self.last_failure = Some(now);
                 if self.failures >= RUN {
-                    self.trip(1, now);
+                    self.trip(1, now, unit);
                 }
                 Action::Nothing
             }
@@ -179,19 +204,28 @@ impl Breaker {
                     };
                     return Action::StopAndReport(reason);
                 }
-                self.trip(self.attempt + 1, now);
+                self.trip(self.attempt + 1, now, unit);
                 Action::Nothing
             }
             State::Stopped => Action::Nothing,
         }
     }
 
-    // Open, with the next restart due one backoff from now
-    fn trip(&mut self, attempt: u8, now: SystemTime) {
+    // Open, with the next restart due within one backoff from now. The moment
+    // is drawn once, here, and stored: `still_waiting` reads it back on every
+    // later pass, so a redraw per pass would never settle.
+    fn trip(&mut self, attempt: u8, now: SystemTime, unit: f64) {
         self.state = State::Open;
         self.failures = 0;
         self.attempt = attempt;
-        self.next_attempt = Some(now + backoff(attempt));
+        self.next_attempt = Some(
+            now + crate::daemon::backoff::backoff_at(
+                attempt.into(),
+                BASE_BACKOFF,
+                MAX_BACKOFF,
+                unit,
+            ),
+        );
     }
 }
 
@@ -212,11 +246,10 @@ fn still_waiting(due: SystemTime, now: SystemTime, backoff: Duration) -> bool {
         .is_ok_and(|remaining| !remaining.is_zero() && remaining <= backoff)
 }
 
-/// `10s * 2^(attempt - 1)`, saturating rather than overflowing: an attempt
-/// count this function cannot represent is one no schedule should produce,
-/// and a panic in the watchdog would take every tunnel's check with it.
+/// The longest the wait for `attempt` can be, which is what `still_waiting`
+/// bounds a stored moment by: the draw only ever shortens it.
 fn backoff(attempt: u8) -> Duration {
-    BASE_BACKOFF.saturating_mul(1u32 << attempt.saturating_sub(1).min(16))
+    crate::daemon::backoff::ceiling(attempt.into(), BASE_BACKOFF, MAX_BACKOFF)
 }
 
 /// Where a breaker's memory lives between runs. A thirty-second agent is a
@@ -588,6 +621,26 @@ mod tests {
             ),
             Action::Restart
         );
+    }
+
+    // Two tunnels that tripped on the same pass, one pass apart from a wake,
+    // must not come due on the same later pass
+    #[test]
+    fn the_restart_is_due_somewhere_inside_the_backoff_not_always_at_its_end() {
+        let fail = Observation::Failed(Reason::ProbeRefused);
+        let due_after = |unit: f64| {
+            let mut breaker = Breaker::default();
+            for _ in 0..2 {
+                breaker.observe_with(fail, epoch(), Duration::MAX, unit);
+            }
+            (0..=10).find(|s| {
+                let mut probe = breaker.clone();
+                probe.observe_with(fail, epoch() + secs(*s), Duration::MAX, unit) == Action::Restart
+            })
+        };
+        assert_eq!(due_after(0.0), Some(0), "the shortest draw is due at once");
+        assert_eq!(due_after(0.5), Some(5), "half of a 10s backoff");
+        assert_eq!(due_after(1.0), Some(10), "the ceiling is the old schedule");
     }
 
     #[test]

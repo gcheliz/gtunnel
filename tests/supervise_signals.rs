@@ -37,7 +37,13 @@ struct Supervisor {
 }
 
 impl Supervisor {
+    // The draw is pinned to 0, so the first start and every backoff are
+    // instant, unless the test is about the wait itself
     fn start(script: &str, extra: &[&str]) -> Self {
+        Self::start_pinned(script, extra, "0")
+    }
+
+    fn start_pinned(script: &str, extra: &[&str], jitter: &str) -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().to_path_buf();
         let child = Command::new(env!("CARGO_BIN_EXE_gtunnel"))
@@ -55,6 +61,7 @@ impl Supervisor {
             ])
             .env("GTUNNEL_CONFIG_DIR", path.join("config"))
             .env("GTUNNEL_NO_NOTIFY", "1")
+            .env("GTUNNEL_TEST_JITTER", jitter)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -82,10 +89,12 @@ impl Drop for Supervisor {
 
 #[test]
 fn a_stop_during_the_restart_backoff_is_answered_at_once() {
-    // exit 1 inside min_uptime spends the budget, and the first backoff is 10s
-    let mut sup = Supervisor::start(
+    // exit 1 inside min_uptime spends the budget, and the first backoff is 10s:
+    // pinned to the top of the draw, so it is not a wait of 0.2 s by chance
+    let mut sup = Supervisor::start_pinned(
         "exit 1",
         &["--crash-marker", "{dir}/run/com.gtunnel.dev.db.crash"],
+        "1",
     );
     // Past the child's exit and into the sleep
     assert!(
@@ -170,6 +179,7 @@ fn a_group_left_by_a_killed_supervisor_is_swept_before_the_next_spawn() {
         .args(["--", "true"])
         .env("GTUNNEL_CONFIG_DIR", dir.path().join("config"))
         .env("GTUNNEL_NO_NOTIFY", "1")
+        .env("GTUNNEL_TEST_JITTER", "0")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

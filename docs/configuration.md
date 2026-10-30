@@ -393,19 +393,19 @@ until `gtunnel start`, which clears the marker and the count. A run that lasts `
 or longer clears the count, so a laptop that sleeps and wakes never adds up to a stop.
 
 One failure is kept out of the count: `remote port forwarding failed`, which means the relay
-still holds a dead session's listener. A restart is the cure, so the supervisor waits a fixed
-15 seconds and starts again, for up to 5 minutes from the first one, and only then counts it.
+still holds a dead session's listener. A restart is the cure, so the supervisor waits a random
+7.5 to 15 seconds and starts again, for up to 5 minutes from the first one, and only then counts it.
 Neither number is configurable.
-When one run prints both a busy line and a network line, the newer line decides: the network wait if the network line is newer, the 15 second streak if the busy line is.
+When one run prints both a busy line and a network line, the newer line decides: the network wait if the network line is newer, the busy streak if the busy line is.
 
-A run that dies of the network does not count at all: the supervisor waits, using `base_backoff` and `max_backoff`, and starts again however long the outage lasts. See [What a network outage does](troubleshooting.md#what-a-network-outage-does).
+A run that dies of the network does not count at all: the supervisor waits, using `base_backoff` and `max_backoff`, and starts again however long the outage lasts. Every wait is drawn at random from zero up to its doubling, so the tunnels a wake or an outage failed together do not all retry on the same second. See [What a network outage does](troubleshooting.md#what-a-network-outage-does).
 
 | Key under `[restart]` | Default | Range |
 |---|---|---|
 | `max_restarts` | `5` | whole number, `0` to 4294967295; `0` turns the budget off |
 | `window` | `"10m"` | a duration above zero, not shorter than `base_backoff` |
 | `min_uptime` | `"60s"` | a duration above zero; keep it above gcloud's normal startup |
-| `base_backoff` | `"10s"` | a duration above zero; the wait after the first failure, doubled on each next one |
+| `base_backoff` | `"10s"` | a duration above zero; the longest wait after the first failure, doubled on each next one. The wait itself is drawn from zero up to that |
 | `max_backoff` | `"5m"` | a duration not shorter than `base_backoff` |
 
 Each key has a `GTUNNEL_RESTART_<KEY>` variable ([Environment](#environment)), resolved in the
@@ -478,8 +478,9 @@ precedence are under [Settings the environment can override](#settings-the-envir
 | `GTUNNEL_RESTART_MAX_RESTARTS` | | `restart.max_restarts` | `5` | Fast failures tolerated inside the window; `0` to 4294967295, and `0` turns the budget off. For a tunnel that loops, or one that must never be parked. Read by the supervisor, `start` and `restart`, as are the next four. See [The restart budget](#the-restart-budget) |
 | `GTUNNEL_RESTART_WINDOW` | | `restart.window` | `10m` | How long a failure counts. Not shorter than the base backoff |
 | `GTUNNEL_RESTART_MIN_UPTIME` | | `restart.min_uptime` | `60s` | How long a run must last to clear the count |
-| `GTUNNEL_RESTART_BASE_BACKOFF` | | `restart.base_backoff` | `10s` | The wait after the first failure, doubled on each next one |
+| `GTUNNEL_RESTART_BASE_BACKOFF` | | `restart.base_backoff` | `10s` | The longest wait after the first failure, doubled on each next one; the wait is drawn from zero up to it |
 | `GTUNNEL_RESTART_MAX_BACKOFF` | | `restart.max_backoff` | `5m` | The cap on that doubling wait. Not shorter than the base backoff |
+| `GTUNNEL_TEST_JITTER` | | nothing | none | Debug builds only, for tests: pins the random draw behind every retry wait and start spread to one value in `0` to `1`, so a test of the real binary can say how long a wait is. A release build does not read it |
 | `GTUNNEL_TEST_GCP_ENDPOINT` | | nothing | none | Debug builds only, for tests: points every Google API at one base URL, such as a wiremock server. A release build does not read it, and CI checks the name is absent from the release binary |
 | `PATH` | | nothing: it is the shell's, shared with every other program | | Where `gcloud` is found at startup |
 

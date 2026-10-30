@@ -515,7 +515,7 @@ the log says, so the fix is on screen instead of in the log:
 |---|---|---|---|
 | healthy | `✓` | the far end answered | nothing |
 | unhealthy | `✗` | no answer, and no cause the log names | read the log |
-| auth expired | `⊗` | no answer, and the log in the last two minutes says `Reauthentication required` or `gcloud auth login`; or the tunnel stopped itself for that reason and has not been started since | `gcloud auth login`; the watchdog then starts it within one interval, or `s` (`R` while it still runs), or `gtunnel start --auth-expired` |
+| auth expired | `⊗` | no answer, and the log in the last two minutes says `Reauthentication required` or `gcloud auth login`; or the tunnel stopped itself for that reason and has not been started since | `gcloud auth login`; the watchdog then starts it within one interval, a random 0-2 s apart from the other tunnels it brings back, or `s` (`R` while it still runs), or `gtunnel start --auth-expired` |
 | credentials refused | `⊘` | no answer, and the log says impersonation was denied (`Failed to impersonate`), a key is invalid (`Invalid JWT`) or the gcloud configuration does not exist; or the tunnel stopped itself for that reason | read the log, fix the account, then `s` |
 | crash loop | `↻` | the service restarted three times or more inside two minutes | check the log; a single restart after the machine wakes is expected: [troubleshooting](troubleshooting.md#restarts-after-the-laptop-wakes) |
 | checking | `…` | the first probe is still in flight | wait |

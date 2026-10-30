@@ -103,7 +103,7 @@ const STOPPING: [Failure; 4] = [
 /// Why a restart does not help and what does. The supervisor already retries
 /// on its own, so the reader is told to wait, not to run `restart`.
 const LISTENER_BUSY_HINT: &str = "The relay still holds the old session's listener. The tunnel \
-     retries every 15 seconds; on a relay updated by `gtunnel relay up` the old session is \
+     retries every 7.5 to 15 seconds; on a relay updated by `gtunnel relay up` the old session is \
      reaped within about 30 seconds. If it persists, run: gtunnel relay up";
 
 impl Failure {

@@ -451,7 +451,7 @@ An outage says nothing about a tunnel, so neither the supervisor nor the watchdo
 
 | Question | Answer |
 |---|---|
-| A supervisor exit whose newest classified line is `Network` or `Timeout` | Spends none of the restart budget and never writes `run/<label>.crash`. It waits 10 s, doubling to 300 s (the `[restart]` backoff settings), then exits with gcloud's status so the service manager starts it again |
+| A supervisor exit whose newest classified line is `Network` or `Timeout` | Spends none of the restart budget and never writes `run/<label>.crash`. It waits a random time from zero up to 10 s, the ceiling doubling to 300 s (the `[restart]` backoff settings), then exits with gcloud's status so the service manager starts it again |
 | Where the count lives | `run/<label>.netfails`, beside the restart history. A run that lived `min_uptime` starts it over; `start` and `delete` remove it |
 | A login or key failure printed in the same run | The stop-class line wins: the marker, the exit and the single failure that parks are unchanged (#193) |
 | What the watchdog does first | One bounded connect to `tunnel.cloudproxy.app:443` per pass. If it fails, every tunnel is `Unknown` for that pass: no breaker moves and no lifecycle event is emitted |

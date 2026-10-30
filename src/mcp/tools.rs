@@ -1144,7 +1144,15 @@ async fn resume_auth_expired(account: Option<&str>) -> anyhow::Result<String> {
     if found.resumable.is_empty() && found.left_alone.is_empty() {
         return Ok("No tunnel is stopped on an expired login".to_string());
     }
-    let outcome = resume::resume(&dir, found.resumable, &resume::Live { config }).await;
+    let outcome = resume::resume(
+        &dir,
+        found.resumable,
+        &resume::Live {
+            config,
+            paced: false,
+        },
+    )
+    .await;
     let text = resume::report(&outcome, &found.left_alone).join("\n");
     if outcome.failed.is_empty() && outcome.still_expired.is_empty() {
         Ok(text)
