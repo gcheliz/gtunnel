@@ -20,6 +20,12 @@ use crate::probe::HealthStatus;
 const WATCHDOG_OFFER: &str =
     "notifications need the watchdog when the TUI is closed: gtunnel watch install";
 
+// Never over something the user is already reading, and never while
+// notifications are off: a watchdog would be installed to deliver nothing
+fn watchdog_offer_due(installed: bool, status_is_free: bool, notifications_on: bool) -> bool {
+    !installed && status_is_free && notifications_on
+}
+
 const TICK: Duration = Duration::from_millis(120);
 
 // What the event loop reacts to; everything slow arrives as a message
@@ -510,8 +516,8 @@ async fn event_loop(
             | Msg::Health(..)) => apply_polled(app, &mut timers, msg),
             Msg::Samples(samples) => app.record_samples(samples),
             Msg::Watchdog(installed) => {
-                // Never over something the user is already reading
-                if !installed && app.status.is_none() {
+                app.watchdog_installed = Some(installed);
+                if watchdog_offer_due(installed, app.status.is_none(), app.notifications_on) {
                     app.set_status(WATCHDOG_OFFER);
                 }
             }

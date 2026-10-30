@@ -91,6 +91,28 @@ fn wants_refresh(command: &Option<Commands>) -> bool {
     )
 }
 
+// The first load of the process is the one that migrates an older file, and
+// this is the only place that may say so: the commands that run unattended
+// keep stderr for their own diagnostics, and `mcp` keeps stdout for frames
+fn say_if_migrated(command: &Option<Commands>) {
+    use std::io::IsTerminal;
+    let unattended = matches!(
+        command,
+        Some(Commands::Supervise { .. } | Commands::Watch { .. } | Commands::Mcp { .. })
+    );
+    let outcome = config::take_migration();
+    if config::migration_note_wanted(outcome, unattended, std::io::stderr().is_terminal()) {
+        eprintln!(
+            "{}",
+            if outcome == config::MigrationOutcome::NotSaved {
+                config::MIGRATION_NOT_SAVED
+            } else {
+                config::MIGRATION_NOTE
+            }
+        );
+    }
+}
+
 pub async fn run(args: Cli) -> Result<()> {
     // Before anything builds an argv or calls gcloud, and before the config
     // is needed for anything else: a bad GTUNNEL_LOG_LEVEL should fail here,
@@ -100,6 +122,7 @@ pub async fn run(args: Cli) -> Result<()> {
     let from_file = config::load_config()
         .map(|c| c.log_level)
         .unwrap_or_default();
+    say_if_migrated(&args.command);
     // The override is kept apart from the resolved level: it is the half of
     // the answer that stays true for a session that outlives this moment,
     // while `config.toml` may be edited under a running TUI.

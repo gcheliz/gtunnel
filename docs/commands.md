@@ -748,22 +748,28 @@ A pass's changes become one notification, so a laptop waking is one alert
 
 ```toml
 [notifications]
-enabled = true
+enabled = false
 up = false
 degraded = true
 recovered = true
 failed = true
 ```
 
-Missing keys take the defaults. `enabled = false`, or `GTUNNEL_NOTIFICATIONS=false`, turns
-every notification off; `init` writes `enabled = true`.
+Notifications are off until you turn them on: press `N` in the TUI, or set `enabled = true` in
+`config.toml`. `N` changes only that line. Missing keys take the defaults, and `init` writes
+`enabled = false`. `GTUNNEL_NOTIFICATIONS=true` turns them on for one run and
+`GTUNNEL_NOTIFICATIONS=false` forces them off, whatever the file says.
+
+A `config.toml` written before `config_version = 2` was switched off once, on the first
+command that read it, and says so on stderr from an interactive command (not from the
+watchdog or `mcp`). Setting `enabled = true` afterwards stays on.
 
 | Who notifies | Rule |
 |---|---|
 | Shared ledger | `lifecycle.json` in the configuration directory: a change is announced by whoever stores it first, never twice |
 | Watchdog | writes `run/watchdog.heartbeat` after each pass |
 | TUI | quiet while the heartbeat is under 90 seconds old; otherwise it announces what it sees, for the account on screen only |
-| TUI, no watchdog installed | says `notifications need the watchdog when the TUI is closed: gtunnel watch install` once, installs nothing |
+| TUI, notifications on, no watchdog installed | says `notifications need the watchdog when the TUI is closed: gtunnel watch install` once, installs nothing. With notifications off it says nothing |
 | A tunnel never seen before | recorded silently, so the first pass does not announce every state |
 
 ## doctor

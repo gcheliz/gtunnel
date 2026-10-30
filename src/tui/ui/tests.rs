@@ -1367,7 +1367,7 @@ fn a_wide_terminal_lays_the_help_page_out_in_two_columns() {
     // for any table, and this one has to change when a key is added
     let count_row = rows
         .iter()
-        .find(|r| r.contains("35 keys bound - the footer shows at most 11"))
+        .find(|r| r.contains("36 keys bound - the footer shows at most 11"))
         .expect("the count line");
     // In this page `q` closes the page, it does not quit the program
     assert!(count_row.contains("Esc back  q back"), "{count_row:?}");
@@ -1711,7 +1711,7 @@ fn the_keymap_documents_the_scroll_keys_in_the_program_group() {
     }
     let rows = text_of(&screen(&help_app(), 120, 40));
     assert!(
-        rows.iter().any(|r| r.contains("35 keys bound")),
+        rows.iter().any(|r| r.contains("36 keys bound")),
         "{}",
         rows.join("\n")
     );
@@ -1722,7 +1722,7 @@ fn a_page_that_fits_says_nothing_about_cuts() {
     for (w, h) in [(120, 40), (80, 60)] {
         let rows = text_of(&screen(&help_app(), w, h));
         assert!(counter(&rows).is_none(), "{w}x{h}:\n{}", rows.join("\n"));
-        assert_eq!(keys_shown(&rows), 35, "{w}x{h}");
+        assert_eq!(keys_shown(&rows), 36, "{w}x{h}");
     }
 }
 

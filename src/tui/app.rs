@@ -1001,6 +1001,10 @@ pub struct App {
     // Read from the same cache: the last check ended in an error and none has
     // succeeded since, so "no notice" does not mean "up to date"
     pub update_check_failed: bool,
+    /// The master switch as the file last said it; `N` flips it
+    pub notifications_on: bool,
+    /// `None` until the one check per session answers
+    pub watchdog_installed: Option<bool>,
 }
 
 impl App {
@@ -1086,6 +1090,8 @@ impl App {
             flash: None,
             update: None,
             update_check_failed: false,
+            notifications_on: false,
+            watchdog_installed: None,
         }
     }
 
@@ -1300,6 +1306,29 @@ impl App {
         self.draft_error = Some(format!("{message}. Type the configuration instead"));
         self.set_status(message);
         self.status_error = true;
+    }
+
+    /// Flips the master switch in the file, then in the running app, in that
+    /// order: a failed save leaves both as they were and says why.
+    fn toggle_notifications(&mut self) {
+        // Through the page's guard, so a test without its own directory cannot
+        // reach the real file
+        match page_dir().and_then(|_| crate::config::toggle_notifications()) {
+            Ok(on) => {
+                self.notifications_on = on;
+                let mut message = format!("notifications {}", if on { "on" } else { "off" });
+                if on && self.watchdog_installed == Some(false) {
+                    message = format!("{message}; {}", super::WATCHDOG_OFFER);
+                }
+                // As `c` copy does: a plain status is not drawn, the flash is
+                self.flash(&message);
+                self.set_status(message);
+            }
+            Err(e) => {
+                self.set_status(format!("notifications not changed: {e:#}"));
+                self.status_error = true;
+            }
+        }
     }
 
     pub fn set_status(&mut self, message: impl Into<String>) {
@@ -1728,6 +1757,7 @@ impl App {
             KeyCode::Char('e') => self.open_edit(),
             KeyCode::Char('L') => return self.clear_log_op(),
             KeyCode::Char('C') => self.open_config(),
+            KeyCode::Char('N') => self.toggle_notifications(),
             // The Logs pane's own paging. `PgUp` goes back because the newest
             // line is at the bottom, and `End` or `G` come home, the pair the
             // keymap page already uses for "the end"
@@ -1968,6 +1998,7 @@ impl App {
     /// the list is emptied and the first remaining account takes over, as
     /// `Config::remove_account` does for the stored selection.
     pub fn reload_config(&mut self, config: &crate::config::Config) {
+        self.notifications_on = config.notifications.enabled;
         self.accounts = config.accounts.iter().map(|a| a.name.clone()).collect();
         self.projects = config
             .accounts

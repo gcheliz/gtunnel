@@ -751,7 +751,7 @@ mod tests {
         assert_eq!(s.start_deadline, Duration::from_secs(20));
         assert_eq!(s.service_call_timeout, Duration::from_secs(10));
         assert!(s.discovery);
-        assert!(s.notifications);
+        assert!(!s.notifications, "notifications are off until turned on");
         assert_eq!(s.editor_env, None);
         assert_eq!(s.editor_file, None);
         assert!(resolve_with("", &[]).expect("ok").overrides.is_empty());
@@ -834,7 +834,7 @@ mod tests {
             &[("GTUNNEL_NO_DISCOVERY", "0"), ("GTUNNEL_NO_NOTIFY", " ")],
         );
         assert!(!s.discovery, "0 says nothing, so the file decides");
-        assert!(s.notifications);
+        assert!(!s.notifications);
     }
 
     #[test]
@@ -943,7 +943,7 @@ mod tests {
             &[
                 ("GTUNNEL_SERVICE_CALL_TIMEOUT", "1s"),
                 ("GTUNNEL_DISCOVERY", "false"),
-                ("GTUNNEL_NOTIFICATIONS", "off"),
+                ("GTUNNEL_NOTIFICATIONS", "on"),
                 ("GTUNNEL_EDITOR", "vim"),
             ],
         )
