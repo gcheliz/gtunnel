@@ -226,7 +226,7 @@ Keys, defaults and the traps of editing `config.toml` and `tunnels.toml` are in
 | `<config>/tunnels.toml` | Persistent tunnels |
 | `<config>/tunnels.lock`, `<config>/config.lock` | Empty files whose only job is to be locked. A command or the TUI's config page that changes `tunnels.toml` or `config.toml` holds the matching lock from its read to its write, so two gtunnels cannot drop each other's change. Safe to delete when no gtunnel is running |
 | `<config>/tunnels.edit-<pid>.toml`, `<config>/config.edit-<pid>.toml` | The config page's private copy of the file being edited. Removed on save or `Esc`, and on the next page open once its gtunnel is gone |
-| `<config>/run/<account>-<name>.json` | One record per live `gtunnel run` |
+| `<config>/run/<account>-<name>.json` | One record per live `gtunnel run`, naming its owner process. `list` and every watchdog pass stop a run whose owner has died or whose TTL has passed: its route, its gcloud group and this record. The TUI import waits for the owner to exit before taking the tunnel over |
 | `<config>/run/<label>.ready` | Written by a tunnel's supervisor once its log reports the listener; what `start` waits for |
 | `<config>/run/<label>.crash` | Written by a supervisor whose tunnel spent its restart budget: the last exit reason. `list` reads it, `watch` skips the job, `start` and `delete` remove it |
 | `<config>/run/<label>.restarts` | The times of the recent fast failures, one unix second per line, kept because the service manager starts a new supervisor per attempt |

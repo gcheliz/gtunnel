@@ -159,11 +159,17 @@ fn doctor_json_outputs_valid_array_of_findings() {
 
 // A run record as `gtunnel run` writes it. The pid decides whether the run
 // counts as live, so the caller picks one that is or is not.
-fn write_run_record(h: &Harness, name: &str, pid: u32, ttl_secs: Option<u64>) {
-    write_run_record_on(h, name, pid, ttl_secs, 15999);
+// Started now, and the start time is returned: a run whose TTL had long passed
+// is one `list` stops, so a fixture that means "live" must not be expired.
+fn write_run_record(h: &Harness, name: &str, pid: u32, ttl_secs: Option<u64>) -> u64 {
+    write_run_record_on(h, name, pid, ttl_secs, 15999)
 }
 
-fn write_run_record_on(h: &Harness, name: &str, pid: u32, ttl_secs: Option<u64>, port: u16) {
+fn write_run_record_on(h: &Harness, name: &str, pid: u32, ttl_secs: Option<u64>, port: u16) -> u64 {
+    let started_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
     let dir = h.dir.path().join("config/run");
     fs::create_dir_all(&dir).unwrap();
     let ttl = ttl_secs
@@ -172,11 +178,12 @@ fn write_run_record_on(h: &Harness, name: &str, pid: u32, ttl_secs: Option<u64>,
     fs::write(
         dir.join(format!("demo-{name}.json")),
         format!(
-            r#"{{"name":"{name}","account_name":"demo","pid":{pid},"started_at":1700000000,
+            r#"{{"name":"{name}","account_name":"demo","pid":{pid},"started_at":{started_at},
 "spec":{{"mode":"access","target":{{"kind":"instance","instance":"my-vm","zone":"europe-west1-b"}},"remote_port":5432,"local_port":{port}}}{ttl}}}"#
         ),
     )
     .unwrap();
+    started_at
 }
 
 // Orphaned so it is a live pid that is not this test process
@@ -193,7 +200,7 @@ fn live_pid() -> (std::process::Child, u32) {
 fn a_live_run_is_listed_in_json_with_its_expiry() {
     let h = Harness::new();
     let (mut sleeper, pid) = live_pid();
-    write_run_record(&h, "scratch", pid, Some(120));
+    let started_at = write_run_record(&h, "scratch", pid, Some(120));
     let out = h.run(&["list", "--json"]);
     let _ = sleeper.kill();
     let _ = sleeper.wait();
@@ -211,7 +218,7 @@ fn a_live_run_is_listed_in_json_with_its_expiry() {
     assert_eq!(run["status"], "running");
     assert_eq!(run["url"], "localhost:15999");
     assert_eq!(run["target"], "my-vm:5432 (europe-west1-b)");
-    assert_eq!(run["expires_at"], 1_700_000_120u64);
+    assert_eq!(run["expires_at"], started_at + 120);
     let declared = arr.iter().find(|r| r["name"] == "db").expect("declared");
     assert_eq!(declared["run"], false, "the schema stays uniform");
     assert!(declared.get("expires_at").is_none());

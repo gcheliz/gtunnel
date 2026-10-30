@@ -31,6 +31,10 @@ const TCP_HEALTH_TIMEOUT: Duration = TCP_TIMEOUT;
 // How long an imported run is given to let go of its ports and its route
 const IMPORT_HANDOVER: Duration = Duration::from_secs(10);
 
+/// What a record that names no owner gets after gcloud exits: the run that wrote
+/// it cannot be waited on, and its teardown takes a few API calls.
+const IMPORT_SETTLE: Duration = Duration::from_secs(5);
+
 // Everything the list shows for one account, read fresh
 pub async fn load_entries(account: &str) -> Result<(Vec<TunnelEntry>, HashSet<u16>)> {
     let state = TunnelState::load()?;
@@ -569,12 +573,18 @@ async fn import(account: &str, name: &str) -> Result<String> {
     // A run that already exited is not signalled, and the wait below treats it
     // the same as a clean exit
     record.terminate();
-    let exited = record.wait_for_exit(IMPORT_HANDOVER).await;
+    // Only a route has a teardown to outwait; a local port is free once gcloud is
+    let settle = if tunnel.is_expose() {
+        IMPORT_SETTLE
+    } else {
+        Duration::ZERO
+    };
+    let exited = record.wait_for_handover(IMPORT_HANDOVER, settle).await;
     record.remove()?;
 
     // The run tears its own route down as it dies, taking the backend, host
     // rule and DNS record the imported tunnel now owns, so the route is
-    // rebuilt once the pid is gone and not a moment before
+    // rebuilt once the run's own process is gone and not a moment before
     if tunnel.is_expose() {
         if !exited {
             bail!(
@@ -735,6 +745,8 @@ mod tests {
             started_at: 1_700_000_000,
             ttl_secs: None,
             pid_start: None,
+            owner_pid: None,
+            owner_start: None,
         }
         .save()
         .unwrap();

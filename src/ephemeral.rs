@@ -35,6 +35,15 @@ pub struct EphemeralRecord {
     /// means the pid was spawned with `process_group(0)` and leads its group.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid_start: Option<String>,
+    /// The `gtunnel run` process that owns this record: the one that tears the
+    /// route down and removes the file. `pid` is gcloud, its child, which dies
+    /// first and so says nothing about whether that teardown has finished.
+    /// Absent in records an older version wrote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_pid: Option<u32>,
+    /// The owner's start token, with the same meaning as `pid_start`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_start: Option<String>,
 }
 
 pub fn run_dir() -> Result<PathBuf> {
@@ -80,6 +89,65 @@ impl EphemeralRecord {
         match &self.pid_start {
             Some(token) => crate::proc::start_token(self.pid).as_deref() == Some(token),
             None => true,
+        }
+    }
+
+    /// Whether the `gtunnel run` that owns this record is still there, judged
+    /// like `is_alive`. None for a record that names no owner, which no one can
+    /// call orphaned on this evidence.
+    pub fn owner_alive(&self) -> Option<bool> {
+        let pid = self.owner_pid?;
+        if !pid_is_alive(pid) {
+            return Some(false);
+        }
+        Some(match &self.owner_start {
+            Some(token) => crate::proc::start_token(pid).as_deref() == Some(token),
+            None => true,
+        })
+    }
+
+    /// Why this run should be stopped by someone other than its owner, or None
+    /// when it is the owner's to end. A dead owner never will; a run past its
+    /// TTL with a live owner gets `EXPIRY_GRACE` first, because the owner's own
+    /// one-second tick is about to end it and two teardowns would race.
+    pub fn orphan_reason(&self, now: u64) -> Option<&'static str> {
+        let owner = self.owner_alive();
+        if owner == Some(false) {
+            return Some("its process is gone");
+        }
+        let grace = if owner == Some(true) { EXPIRY_GRACE } else { 0 };
+        match self.expires_at() {
+            Some(at) if now >= at + grace => Some("it is past its TTL"),
+            _ => None,
+        }
+    }
+
+    /// Wait until an imported run has let go of everything: gcloud first, then
+    /// the process that tears its route down. The owner is the one to wait for,
+    /// because gcloud dies first and the owner goes on to remove the backend,
+    /// host rule and DNS record. A record that names no owner cannot say when
+    /// that is done, so it gets `settle` after gcloud exits instead.
+    pub async fn wait_for_handover(
+        &self,
+        budget: std::time::Duration,
+        settle: std::time::Duration,
+    ) -> bool {
+        let deadline = std::time::Instant::now() + budget;
+        if !self.wait_for_exit(budget).await {
+            return false;
+        }
+        if self.owner_pid.is_none() {
+            tokio::time::sleep(settle).await;
+            return true;
+        }
+        loop {
+            if self.owner_alive() != Some(true) {
+                return true;
+            }
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
     }
 
@@ -131,6 +199,9 @@ impl EphemeralRecord {
         Ok(())
     }
 }
+
+/// How long a run past its TTL keeps its live owner's right to end it itself.
+const EXPIRY_GRACE: u64 = 30;
 
 /// The only way a recorded pid becomes an argument to `kill(2)`. A pid is a
 /// number read back from a file, and kill gives three of its values a meaning
@@ -387,35 +458,135 @@ pub fn check_run_name(state: &TunnelState, account: &str, name: &str) -> Result<
     Ok(())
 }
 
-// Ctrl+C, SIGTERM and SIGHUP all have to reach teardown: a route left behind
-// keeps resolving for everyone
+/// Ctrl+C, SIGTERM and SIGHUP all have to reach teardown: a route left behind
+/// keeps resolving for everyone. The streams are registered once, before
+/// gcloud starts, and kept for the whole run: a signal that arrives while the
+/// route is being created has to take the same exit as one that arrives later,
+/// and until a handler exists the default action ends gtunnel and leaves gcloud,
+/// which is in its own process group, running.
 #[cfg(unix)]
-async fn stop_signal() {
-    use tokio::signal::unix::{signal, SignalKind};
-    let mut term = match signal(SignalKind::terminate()) {
-        Ok(stream) => stream,
-        Err(_) => {
-            let _ = tokio::signal::ctrl_c().await;
-            return;
+struct StopSignals {
+    int: tokio::signal::unix::Signal,
+    term: tokio::signal::unix::Signal,
+    hup: tokio::signal::unix::Signal,
+}
+
+#[cfg(unix)]
+impl StopSignals {
+    fn register() -> Result<Self> {
+        use tokio::signal::unix::{signal, SignalKind};
+        let stream = |kind| signal(kind).context("Failed to listen for stop signals");
+        Ok(Self {
+            int: stream(SignalKind::interrupt())?,
+            term: stream(SignalKind::terminate())?,
+            hup: stream(SignalKind::hangup())?,
+        })
+    }
+
+    async fn next(&mut self) {
+        tokio::select! {
+            _ = self.int.recv() => {}
+            _ = self.term.recv() => {}
+            _ = self.hup.recv() => {}
         }
-    };
-    let mut hup = match signal(SignalKind::hangup()) {
-        Ok(stream) => stream,
-        Err(_) => {
-            let _ = tokio::signal::ctrl_c().await;
-            return;
-        }
-    };
-    tokio::select! {
-        _ = tokio::signal::ctrl_c() => {}
-        _ = term.recv() => {}
-        _ = hup.recv() => {}
     }
 }
 
 #[cfg(not(unix))]
-async fn stop_signal() {
-    let _ = tokio::signal::ctrl_c().await;
+struct StopSignals;
+
+#[cfg(not(unix))]
+impl StopSignals {
+    fn register() -> Result<Self> {
+        Ok(Self)
+    }
+
+    async fn next(&mut self) {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+/// Run `work` unless a stop signal comes first. None means the signal won and
+/// `work` was dropped half done, which the caller undoes with its teardown.
+async fn unless_stopped<T>(
+    signals: &mut StopSignals,
+    work: impl std::future::Future<Output = T>,
+) -> Option<T> {
+    tokio::select! {
+        out = work => Some(out),
+        _ = signals.next() => None,
+    }
+}
+
+/// What the run prints once it is up. A reader that went away (`| head -1`
+/// closes the pipe, a closed terminal answers EIO) must cost the run its
+/// output and nothing else: `println!` panics on a failed write, and the panic
+/// hook turns that into a silent exit that leaves gcloud forwarding with no one
+/// to enforce the TTL. A failed write clears the flag and the run carries on
+/// quietly until a signal or the TTL ends it.
+struct Console {
+    out: std::cell::Cell<bool>,
+    err: std::cell::Cell<bool>,
+}
+
+impl Console {
+    fn new() -> Self {
+        Self {
+            out: std::cell::Cell::new(true),
+            err: std::cell::Cell::new(true),
+        }
+    }
+
+    fn say(&self, line: std::fmt::Arguments) {
+        use std::io::Write;
+        if self.out.get() && writeln!(std::io::stdout().lock(), "{line}").is_err() {
+            self.out.set(false);
+        }
+    }
+
+    fn warn(&self, line: std::fmt::Arguments) {
+        use std::io::Write;
+        if self.err.get() && writeln!(std::io::stderr().lock(), "{line}").is_err() {
+            self.err.set(false);
+        }
+    }
+}
+
+/// Holds gcloud for the life of the run so an unwind still stops it. Release
+/// builds abort on panic and never run this, so it backs up the signal paths
+/// and does not replace them. The record is left in place: for a public run it
+/// is what lets the next sweep find the route that needs tearing down.
+struct ChildGuard {
+    child: tokio::process::Child,
+    pgid: Option<i32>,
+    armed: bool,
+}
+
+impl ChildGuard {
+    fn new(child: tokio::process::Child, pgid: Option<i32>) -> Self {
+        Self {
+            child,
+            pgid,
+            armed: true,
+        }
+    }
+
+    /// Teardown has run, so there is nothing left for `Drop` to do.
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        if let Some(pgid) = self.pgid {
+            crate::proc::signal_group(pgid, libc::SIGTERM);
+        }
+        let _ = self.child.start_kill();
+    }
 }
 
 // Spawn gcloud and write the run record; both have to succeed together
@@ -434,14 +605,30 @@ fn start_child(
         None => access_argv(acct, tunnel, level)?,
     };
 
-    let child = Command::new(gcloud_path)
+    let mut command = Command::new(gcloud_path);
+    command
         .args(&argv)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         // Its own group, as the supervisor does: gcloud is a launcher, and a
         // signal to the group is the only way to reach ssh and the IAP proxy
-        .process_group(0)
+        .process_group(0);
+    // If this process dies without a chance to clean up, gcloud hears SIGTERM
+    // from the kernel instead of forwarding with no one to enforce the TTL
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: the closure runs in the forked child before exec and makes one
+        // prctl(2) call that takes integers and no pointer, which is
+        // async-signal-safe; nothing in it allocates or takes a lock.
+        unsafe {
+            command.pre_exec(|| {
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+                Ok(())
+            });
+        }
+    }
+    let child = command
         .spawn()
         .with_context(|| format!("Failed to run {}", gcloud_path.display()))?;
 
@@ -471,6 +658,8 @@ fn start_child(
         started_at: now_secs(),
         ttl_secs: ttl.map(|t| t.as_secs()),
         pid_start,
+        owner_pid: Some(std::process::id()),
+        owner_start: crate::proc::start_token(std::process::id()),
     };
     if let Err(e) = record.save() {
         // Nothing has connected yet, so there is no grace to give
@@ -565,19 +754,25 @@ fn claim_and_start(
 /// Undo a started run whose route could not be made: the group first, so
 /// nothing holds the port, then the route and the record.
 async fn abort_started(
-    child: &mut tokio::process::Child,
+    guard: &mut ChildGuard,
+    console: &Console,
     client: &GcpClient,
     acct: &crate::config::Account,
     expose: Option<&ExposeConfig>,
     tunnel: &PersistentTunnel,
     record: &EphemeralRecord,
 ) {
-    if let Err(e) =
-        crate::proc::stop_group(child, signalable(record.pid), crate::proc::STOP_GRACE).await
+    if let Err(e) = crate::proc::stop_group(
+        &mut guard.child,
+        signalable(record.pid),
+        crate::proc::STOP_GRACE,
+    )
+    .await
     {
-        eprintln!("Failed to stop gcloud: {e:#}");
+        console.warn(format_args!("Failed to stop gcloud: {e:#}"));
     }
-    teardown(client, acct, expose, tunnel, record).await;
+    guard.disarm();
+    teardown(console, client, acct, expose, tunnel, record).await;
 }
 
 pub async fn cmd_run(
@@ -638,35 +833,62 @@ pub async fn cmd_run(
     };
 
     let client = GcpClient::for_account(&acct);
-    let (mut child, record, tunnel) =
+    let console = Console::new();
+    // Before gcloud exists: from here on every exit is ours to make
+    let mut signals = StopSignals::register()?;
+    let (child, record, tunnel) =
         claim_and_start(&gcloud_path, &acct, &expose_config, &name, shape, ttl)?;
+    // Taken before the select: its `child.wait()` arm reaps gcloud, after which
+    // `child.id()` is None and the group would have no name
+    let pgid = signalable(record.pid);
+    let mut guard = ChildGuard::new(child, pgid);
     // The route is created after gcloud starts, outside the lock (decision
     // 16): its reverse forward is up for the few seconds before the hostname
     // resolves, which serves nothing
-    if let Some(expose) = &expose_config
-        && let Err(e) = routes::add_route(&client, &acct, expose, &tunnel).await
-    {
-        abort_started(&mut child, &client, &acct, Some(expose), &tunnel, &record).await;
-        return Err(e);
+    if let Some(expose) = &expose_config {
+        let routed = unless_stopped(
+            &mut signals,
+            routes::add_route(&client, &acct, expose, &tunnel),
+        )
+        .await;
+        let failure = match routed {
+            Some(Ok(())) => None,
+            Some(Err(e)) => Some(Err(e)),
+            // Ctrl+C is a request to stop, not a failure
+            None => Some(Ok(())),
+        };
+        if let Some(outcome) = failure {
+            abort_started(
+                &mut guard,
+                &console,
+                &client,
+                &acct,
+                Some(expose),
+                &tunnel,
+                &record,
+            )
+            .await;
+            return outcome;
+        }
     }
 
-    println!(
+    console.say(format_args!(
         "{}  {} -> {}",
         name,
         tunnel.display_url(),
         tunnel.display_target()
-    );
+    ));
     match ttl {
-        Some(ttl) => println!(
+        Some(ttl) => console.say(format_args!(
             "Stops by itself in {}, or Ctrl+C",
             humantime::format_duration(ttl)
-        ),
-        None => println!("Ctrl+C to stop"),
+        )),
+        None => console.say(format_args!("Ctrl+C to stop")),
     }
 
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
-    let pump = async move {
+    let stdout = guard.child.stdout.take();
+    let stderr = guard.child.stderr.take();
+    let pump = async {
         let mut out_lines = stdout.map(|s| BufReader::new(s).lines());
         let mut err_lines = stderr.map(|s| BufReader::new(s).lines());
         loop {
@@ -681,51 +903,58 @@ pub async fn cmd_run(
             };
             match line {
                 Ok(Some(line)) => match diagnose_log_line(&line) {
-                    Some(hint) => println!("{line}\n  {hint}"),
-                    None => println!("{line}"),
+                    Some(hint) => console.say(format_args!("{line}\n  {hint}")),
+                    None => console.say(format_args!("{line}")),
                 },
                 Ok(None) => return,
                 Err(e) => {
-                    eprintln!("Failed to read gcloud output: {e}");
+                    console.warn(format_args!("Failed to read gcloud output: {e}"));
                     return;
                 }
             }
         }
     };
 
-    // Taken before the select: its `child.wait()` arm reaps gcloud, after which
-    // `child.id()` is None and the group would have no name
-    let pgid = signalable(record.pid);
     tokio::select! {
         _ = pump => {}
-        status = child.wait() => {
+        status = guard.child.wait() => {
             if let Ok(status) = status
                 && !status.success() {
-                    println!("gcloud exited with {status}");
+                    console.say(format_args!("gcloud exited with {status}"));
                 }
         }
-        _ = stop_signal() => {
-            println!();
+        _ = signals.next() => {
+            console.say(format_args!(""));
         }
         // The same exit as Ctrl+C, so the route and the record go the same way
         _ = ttl_elapsed(record.expires_at(), TTL_TICK, now_secs) => {
-            println!("TTL reached, stopping");
+            console.say(format_args!("TTL reached, stopping"));
         }
     }
 
     // Whichever arm won, the group goes the way the supervisor's does. When
     // gcloud exited by itself its ssh child may still hold the port, and the
     // sweep inside `stop_group` is what ends it.
-    if let Err(e) = crate::proc::stop_group(&mut child, pgid, crate::proc::STOP_GRACE).await {
-        eprintln!("Failed to stop gcloud: {e:#}");
+    if let Err(e) = crate::proc::stop_group(&mut guard.child, pgid, crate::proc::STOP_GRACE).await {
+        console.warn(format_args!("Failed to stop gcloud: {e:#}"));
     }
-    teardown(&client, &acct, expose_config.as_ref(), &tunnel, &record).await;
+    guard.disarm();
+    teardown(
+        &console,
+        &client,
+        &acct,
+        expose_config.as_ref(),
+        &tunnel,
+        &record,
+    )
+    .await;
     Ok(())
 }
 
 // Every removal is reported as it happened: a DNS record that is still there
 // must never be announced as deleted
 async fn teardown(
+    console: &Console,
     client: &GcpClient,
     acct: &crate::config::Account,
     expose: Option<&crate::config::ExposeConfig>,
@@ -736,23 +965,114 @@ async fn teardown(
         match routes::remove_route(client, acct, expose, tunnel).await {
             Ok(removal) => {
                 if removal.dns {
-                    println!("Removed DNS record for {}", tunnel.display_url());
+                    console.say(format_args!(
+                        "Removed DNS record for {}",
+                        tunnel.display_url()
+                    ));
                 }
                 if removal.backend {
-                    println!("Removed backend service");
+                    console.say(format_args!("Removed backend service"));
                 }
                 if removal.host_rule {
-                    println!("Removed the load balancer host rule");
+                    console.say(format_args!("Removed the load balancer host rule"));
                 }
             }
             Err(e) => {
-                eprintln!("Failed to remove the relay route: {e:#}");
-                eprintln!("Run `gtunnel doctor --fix` to clean it up");
+                console.warn(format_args!("Failed to remove the relay route: {e:#}"));
+                console.warn(format_args!("Run `gtunnel doctor --fix` to clean it up"));
             }
         }
     }
     if let Err(e) = record.remove() {
-        eprintln!("Failed to remove the run record: {e:#}");
+        console.warn(format_args!("Failed to remove the run record: {e:#}"));
+    }
+}
+
+/// How long a reaped run's gcloud gets to exit on SIGTERM before its group is
+/// killed: the grace a stopping run gives its own.
+const REAP_GRACE: std::time::Duration = crate::proc::STOP_GRACE;
+
+/// Stop the runs whose owner is gone or whose TTL has passed, for `accounts`:
+/// the process that would have ended them has died, so the next watchdog pass or
+/// `list` does it. One line per run, for the caller to print where it can: `list
+/// --json` must keep stdout clean.
+pub async fn reap_orphans(accounts: &[crate::config::Account]) -> Vec<String> {
+    let records: Vec<EphemeralRecord> = list_ephemeral()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(record, _)| record)
+        .filter(|r| accounts.iter().any(|a| a.name == r.account_name))
+        .collect();
+    reap_with(records, now_secs(), async |record| {
+        let Some(acct) = accounts.iter().find(|a| a.name == record.account_name) else {
+            bail!("account '{}' is gone", record.account_name);
+        };
+        let Some(expose) = &acct.expose else {
+            bail!("account '{}' has no relay configured", acct.name);
+        };
+        let client = GcpClient::for_account(acct);
+        routes::remove_route(&client, acct, expose, &record.as_tunnel())
+            .await
+            .map(|_| ())
+    })
+    .await
+}
+
+/// The reaper without GCP: `remove_route` is called for a public run and its
+/// failure keeps the record, so the next pass tries the route again instead of
+/// forgetting it. A private run has no route and goes with its process.
+async fn reap_with(
+    records: Vec<EphemeralRecord>,
+    now: u64,
+    remove_route: impl AsyncFn(&EphemeralRecord) -> Result<()>,
+) -> Vec<String> {
+    let mut report = Vec::new();
+    for record in records {
+        let Some(reason) = record.orphan_reason(now) else {
+            continue;
+        };
+        stop_orphan(&record).await;
+        if record.as_tunnel().is_expose()
+            && let Err(e) = remove_route(&record).await
+        {
+            report.push(format!(
+                "Stopped run {} ({reason}) but could not remove its relay route: {e:#}. \
+                 Run `gtunnel doctor --fix` to clean it up",
+                record.name
+            ));
+            continue;
+        }
+        match record.remove() {
+            Ok(()) => report.push(format!("Stopped run {} ({reason})", record.name)),
+            Err(e) => report.push(format!(
+                "Failed to remove the record of {}: {e:#}",
+                record.name
+            )),
+        }
+    }
+    report
+}
+
+/// SIGTERM to the group, a bounded wait, then SIGKILL to what is left. The
+/// group is killed only while the leader we recorded is still there: once it
+/// has gone, its pid may belong to a stranger.
+async fn stop_orphan(record: &EphemeralRecord) {
+    if !record.terminate() {
+        return;
+    }
+    if !record.wait_for_exit(REAP_GRACE).await
+        && let Some(pid) = signalable(record.pid)
+    {
+        crate::proc::signal_group(pid, libc::SIGKILL);
+        return;
+    }
+    // The leader exited on TERM; an ssh that ignored it may still hold the port
+    if let Some(pid) = signalable(record.pid)
+        && record.pid_start.is_some()
+        && crate::proc::group_alive(pid)
+    {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        crate::proc::signal_group(pid, libc::SIGKILL);
     }
 }
 
@@ -785,6 +1105,8 @@ mod tests {
             started_at: 1_700_000_000,
             ttl_secs: None,
             pid_start: None,
+            owner_pid: None,
+            owner_start: None,
         };
         record.save().expect("save");
 
@@ -821,6 +1143,8 @@ mod tests {
             started_at: 1_700_000_000,
             ttl_secs: None,
             pid_start: None,
+            owner_pid: None,
+            owner_start: None,
         };
         record.save().expect("save");
         let found = list_ephemeral().expect("list");
@@ -859,6 +1183,8 @@ mod tests {
             started_at: 1_700_000_000,
             ttl_secs: None,
             pid_start: None,
+            owner_pid: None,
+            owner_start: None,
         }
     }
 
@@ -871,6 +1197,8 @@ mod tests {
         let run = EphemeralRecord {
             pid,
             pid_start: crate::proc::start_token(pid),
+            owner_pid: None,
+            owner_start: None,
             ..record("gt-wait")
         };
         assert!(
@@ -895,6 +1223,8 @@ mod tests {
         let run = EphemeralRecord {
             pid,
             pid_start: Some("0.000000".into()),
+            owner_pid: None,
+            owner_start: None,
             ..record("gt-reuse")
         };
         run.save().unwrap();
@@ -913,6 +1243,8 @@ mod tests {
         let run = EphemeralRecord {
             pid,
             pid_start: crate::proc::start_token(pid),
+            owner_pid: None,
+            owner_start: None,
             ..record("gt-live")
         };
         assert!(run.is_alive());
@@ -950,6 +1282,8 @@ mod tests {
         let run = EphemeralRecord {
             pid,
             pid_start: crate::proc::start_token(pid),
+            owner_pid: None,
+            owner_start: None,
             ..record("gt-group")
         };
         let mut grandchild = 0;
@@ -1113,6 +1447,8 @@ mod tests {
         let live = EphemeralRecord {
             pid: std::process::id(),
             pid_start: crate::proc::start_token(std::process::id()),
+            owner_pid: None,
+            owner_start: None,
             ..record("db")
         };
         live.save().unwrap();
@@ -1148,6 +1484,8 @@ mod tests {
         EphemeralRecord {
             pid: std::process::id(),
             pid_start: crate::proc::start_token(std::process::id()),
+            owner_pid: None,
+            owner_start: None,
             account_name: "prod-eu".to_string(),
             ..record("api")
         }
@@ -1298,10 +1636,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let gcloud = fake_gcloud(dir.path(), "exec sleep 30");
         let acct = dev_account();
-        let (mut child, run, tunnel) =
+        let (child, run, tunnel) =
             claim_and_start(&gcloud, &acct, &None, "db", access(None), None).unwrap();
+        let mut guard = ChildGuard::new(child, signalable(run.pid));
         abort_started(
-            &mut child,
+            &mut guard,
+            &Console::new(),
             &GcpClient::for_account(&acct),
             &acct,
             None,
@@ -1332,6 +1672,8 @@ mod tests {
             started_at: 1_700_000_000,
             ttl_secs: None,
             pid_start: None,
+            owner_pid: None,
+            owner_start: None,
         };
         record.save().expect("save");
 
@@ -1355,6 +1697,8 @@ mod tests {
             started_at: 1_700_000_000,
             ttl_secs: None,
             pid_start: None,
+            owner_pid: None,
+            owner_start: None,
         };
         record.save().expect("save");
 
@@ -1384,6 +1728,8 @@ mod tests {
             started_at: 1_700_000_000,
             ttl_secs: Some(90),
             pid_start: None,
+            owner_pid: None,
+            owner_start: None,
         };
         assert_eq!(record.expires_at(), Some(1_700_000_090));
     }
@@ -1399,6 +1745,8 @@ mod tests {
             started_at: 1_700_000_000,
             ttl_secs: None,
             pid_start: None,
+            owner_pid: None,
+            owner_start: None,
         };
         mk("alive", "dev", std::process::id()).save().unwrap();
         mk("dead", "dev", 999_999).save().unwrap();
@@ -1481,6 +1829,8 @@ mod tests {
             started_at: 1_700_000_000,
             ttl_secs: None,
             pid_start: None,
+            owner_pid: None,
+            owner_start: None,
         };
         record.save().expect("save");
 
@@ -1505,10 +1855,274 @@ mod tests {
             started_at: 1_700_000_000,
             ttl_secs: None,
             pid_start: None,
+            owner_pid: None,
+            owner_start: None,
         };
         record.save().expect("save");
 
         let used = run_relay_ports("dev").expect("ports");
         assert!(!used.contains(&30_124), "{used:?}");
+    }
+
+    // ---- owner: who tears a run down, as opposed to the gcloud it spawned
+
+    fn owned_by_us(run: EphemeralRecord) -> EphemeralRecord {
+        EphemeralRecord {
+            owner_pid: Some(std::process::id()),
+            owner_start: crate::proc::start_token(std::process::id()),
+            ..run
+        }
+    }
+
+    // The pid is real and alive, the start token is not its own: a recycled pid
+    fn owned_by_a_stranger(run: EphemeralRecord) -> EphemeralRecord {
+        EphemeralRecord {
+            owner_pid: Some(std::process::id()),
+            owner_start: Some("0.000000".into()),
+            ..run
+        }
+    }
+
+    fn public_run(name: &str) -> EphemeralRecord {
+        EphemeralRecord {
+            spec: TunnelSpec::Expose {
+                local_target: "3000".to_string(),
+                domain: "dev.example.com".to_string(),
+                hostname: format!("{name}.dev.example.com"),
+                relay_port: 30_200,
+                private: false,
+            },
+            ..record(name)
+        }
+    }
+
+    // A real gcloud stand-in: a group leader, reaped by a thread the moment it
+    // dies so a zombie never answers kill(pid, 0)
+    fn group_leader_sleep() -> (u32, Option<String>) {
+        use std::os::unix::process::CommandExt;
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .expect("spawn");
+        let pid = child.id();
+        let token = crate::proc::start_token(pid);
+        std::thread::spawn(move || child.wait());
+        (pid, token)
+    }
+
+    #[test]
+    fn a_record_written_before_the_owner_fields_still_loads() {
+        // Exactly what 0.2.39 wrote: this version's record minus the new fields
+        let mut value = serde_json::to_value(record("gt-old001")).unwrap();
+        value.as_object_mut().unwrap().remove("owner_pid");
+        value.as_object_mut().unwrap().remove("owner_start");
+        let run: EphemeralRecord = serde_json::from_value(value).unwrap();
+        assert_eq!(run.owner_pid, None);
+        assert_eq!(run.owner_alive(), None, "no owner named, none judged");
+        let written = serde_json::to_string(&run).unwrap();
+        assert!(!written.contains("owner_pid"), "{written}");
+    }
+
+    #[test]
+    fn the_owner_is_judged_by_its_pid_and_its_start() {
+        assert_eq!(owned_by_us(record("gt-own1")).owner_alive(), Some(true));
+        assert_eq!(
+            owned_by_a_stranger(record("gt-own2")).owner_alive(),
+            Some(false),
+            "a live pid with another start is not our owner"
+        );
+        let gone = EphemeralRecord {
+            owner_pid: Some(0),
+            ..record("gt-own3")
+        };
+        assert_eq!(gone.owner_alive(), Some(false));
+    }
+
+    #[tokio::test]
+    async fn the_handover_waits_for_the_owner_not_for_gcloud() {
+        // gcloud is already gone; the owner, which still has a route to remove,
+        // is a live sleep
+        let gcloud = orphan_sleep();
+        kill_pid(gcloud);
+        let owner = orphan_sleep();
+        let run = EphemeralRecord {
+            pid: gcloud,
+            pid_start: None,
+            owner_pid: Some(owner),
+            owner_start: crate::proc::start_token(owner),
+            ..record("gt-handover")
+        };
+        assert!(
+            !run.wait_for_handover(Duration::from_millis(400), Duration::ZERO)
+                .await,
+            "gcloud being gone is not the handover while the owner lives"
+        );
+        kill_pid(owner);
+        assert!(
+            run.wait_for_handover(Duration::from_secs(5), Duration::ZERO)
+                .await
+        );
+    }
+
+    #[tokio::test]
+    async fn a_record_without_an_owner_settles_after_gcloud_exits() {
+        let gcloud = orphan_sleep();
+        kill_pid(gcloud);
+        let run = EphemeralRecord {
+            pid: gcloud,
+            ..record("gt-settle")
+        };
+        let began = std::time::Instant::now();
+        assert!(
+            run.wait_for_handover(Duration::from_secs(5), Duration::from_millis(300))
+                .await
+        );
+        assert!(
+            began.elapsed() >= Duration::from_millis(300),
+            "an owner-less record gets the settle delay: {:?}",
+            began.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_run_is_an_orphan_when_its_owner_is_gone_or_its_ttl_has_passed() {
+        let now = 1_700_000_100;
+        let mut live = owned_by_us(record("gt-live1"));
+        assert_eq!(live.orphan_reason(now), None, "a live owner, no TTL");
+
+        live.ttl_secs = Some(80);
+        assert_eq!(live.orphan_reason(now), None, "inside the owner's grace");
+        assert!(
+            live.orphan_reason(now + EXPIRY_GRACE).is_some(),
+            "a live owner that has not ended a run past its TTL"
+        );
+
+        let dead = owned_by_a_stranger(record("gt-dead1"));
+        assert_eq!(dead.orphan_reason(now), Some("its process is gone"));
+
+        let old = EphemeralRecord {
+            ttl_secs: Some(50),
+            ..record("gt-old1")
+        };
+        assert_eq!(old.orphan_reason(now), Some("it is past its TTL"));
+        assert_eq!(
+            record("gt-old2").orphan_reason(now),
+            None,
+            "no owner and no TTL is never judged"
+        );
+    }
+
+    #[test]
+    fn the_stop_signals_are_raced_against_route_creation() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let mut signals = StopSignals::register().expect("register");
+            // SAFETY: raise(3) sends a signal to this process; SIGHUP has a
+            // handler registered just above, so it does not end the test run.
+            unsafe { libc::raise(libc::SIGHUP) };
+            let stopped = unless_stopped(&mut signals, std::future::pending::<()>()).await;
+            assert!(
+                stopped.is_none(),
+                "a signal ends a route that never returns"
+            );
+            let done = unless_stopped(&mut signals, async { 7 }).await;
+            assert_eq!(done, Some(7), "work that finishes is not cut short");
+        });
+    }
+
+    #[test]
+    fn a_closed_stdout_stops_the_printing_and_never_panics() {
+        let console = Console::new();
+        console.out.set(false);
+        console.say(format_args!("dropped"));
+        assert!(!console.out.get());
+        console.warn(format_args!("still open"));
+        assert!(console.err.get());
+    }
+
+    #[tokio::test]
+    async fn reaping_stops_the_gcloud_of_a_dead_owners_run_and_removes_its_record() {
+        let _temp = TempConfigDir::new();
+        let (pid, token) = group_leader_sleep();
+        let run = owned_by_a_stranger(EphemeralRecord {
+            pid,
+            pid_start: token,
+            ..record("gt-reap1")
+        });
+        run.save().unwrap();
+        assert!(run.is_alive());
+
+        let report = reap_with(vec![run.clone()], now_secs(), async |_| {
+            panic!("a private run has no route")
+        })
+        .await;
+
+        assert!(
+            run.wait_for_exit(Duration::from_secs(5)).await,
+            "gcloud is gone"
+        );
+        assert!(list_ephemeral().unwrap().is_empty(), "record removed");
+        assert_eq!(report, vec!["Stopped run gt-reap1 (its process is gone)"]);
+    }
+
+    #[tokio::test]
+    async fn a_run_past_its_ttl_whose_owner_is_gone_is_stopped_by_one_reap() {
+        let _temp = TempConfigDir::new();
+        let (pid, token) = group_leader_sleep();
+        let run = EphemeralRecord {
+            pid,
+            pid_start: token,
+            ttl_secs: Some(1),
+            started_at: now_secs() - 100,
+            ..record("gt-reap2")
+        };
+        run.save().unwrap();
+
+        reap_with(vec![run.clone()], now_secs(), async |_| Ok(())).await;
+
+        assert!(!run.is_alive());
+        assert!(list_ephemeral().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_live_owners_run_is_left_alone() {
+        let _temp = TempConfigDir::new();
+        let run = owned_by_us(record("gt-keep1"));
+        run.save().unwrap();
+        let report = reap_with(vec![run], now_secs(), async |_| panic!("nothing to reap")).await;
+        assert!(report.is_empty());
+        assert_eq!(list_ephemeral().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn reaping_a_public_run_removes_its_route_and_keeps_the_record_when_that_fails() {
+        let _temp = TempConfigDir::new();
+        let calls = std::cell::RefCell::new(Vec::new());
+        let run = owned_by_a_stranger(public_run("gt-pub1"));
+        run.save().unwrap();
+
+        let report = reap_with(vec![run.clone()], now_secs(), async |r| {
+            calls.borrow_mut().push(r.name.clone());
+            bail!("the relay is unreachable")
+        })
+        .await;
+        assert_eq!(*calls.borrow(), vec!["gt-pub1"], "the route is torn down");
+        assert_eq!(list_ephemeral().unwrap().len(), 1, "kept for the next pass");
+        assert!(report[0].contains("doctor --fix"), "{report:?}");
+
+        reap_with(vec![run], now_secs(), async |r| {
+            calls.borrow_mut().push(r.name.clone());
+            Ok(())
+        })
+        .await;
+        assert_eq!(calls.borrow().len(), 2);
+        assert!(
+            list_ephemeral().unwrap().is_empty(),
+            "gone once the route is"
+        );
     }
 }

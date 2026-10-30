@@ -1407,6 +1407,8 @@ mod tests {
                 started_at: 0,
                 ttl_secs: None,
                 pid_start: None,
+                owner_pid: None,
+                owner_start: None,
             },
             alive,
         )

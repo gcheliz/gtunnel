@@ -259,6 +259,13 @@ pub async fn one_pass(verbose: bool) -> Result<()> {
     else {
         return Ok(());
     };
+    // A `gtunnel run` whose process died has no one left to enforce its TTL or
+    // tear its route down; the pass is the one thing that keeps running
+    if let Ok(config) = crate::config::load_config() {
+        for line in crate::ephemeral::reap_orphans(&config.accounts).await {
+            println!("{line}");
+        }
+    }
     // Read once per pass: the file is the TUI's to edit while this runs
     let settings = crate::settings::current();
     let state = TunnelState::load()?;

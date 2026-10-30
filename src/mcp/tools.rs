@@ -1098,6 +1098,8 @@ mod schema_tests {
             started_at: 1_700_000_000,
             ttl_secs,
             pid_start: None,
+            owner_pid: None,
+            owner_start: None,
         }
     }
 
