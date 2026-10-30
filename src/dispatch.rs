@@ -354,7 +354,7 @@ pub async fn run(args: Cli) -> Result<()> {
         }) => doctor::cmd_doctor(account, fix, yes, all, json).await,
         Some(Commands::Reset { yes }) => commands::maint::cmd_reset(yes).await,
         Some(Commands::Demo) => tui::run_demo().await,
-        Some(Commands::Update { check }) => update::cmd_update(check).await,
+        Some(Commands::Update { check, rollback }) => update::cmd_update(check, rollback).await,
         Some(Commands::Mcp { validate }) => {
             if validate {
                 mcp::validator::run_validate()
