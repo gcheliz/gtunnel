@@ -113,6 +113,24 @@ start a tunnel (`-s`, `start`): the job would outlive the test.
 `GTUNNEL_TEST_GCP_ENDPOINT` exists only in a debug build, which is what `cargo test` runs.
 A release build does not contain the name, and CI builds `--release` and fails if it finds it.
 
+### A TUI change: PTY test or render test
+
+Two kinds of test cover the TUI. Pick by what the change can break.
+
+| The change touches | Test | Where |
+|---|---|---|
+| A key reaching the app, or what it opens | PTY | `tests/tui_pty.rs` |
+| Terminal setup and restore: alternate screen, raw mode, cursor | PTY | `tests/tui_pty.rs` |
+| Resize, or anything that must survive one | PTY | `tests/tui_pty.rs` |
+| The real binary's wiring: `main`, dispatch, the event loop | PTY | `tests/tui_pty.rs` |
+| Layout, truncation, colour, what a pane says | `TestBackend` render | `src/tui/ui/tests.rs` |
+
+A PTY test runs `gtunnel demo` in a 100x30 terminal, types keys and reads the screen back,
+so it is slow and says nothing about layout. A render test draws `App` into a buffer and is
+fast, but cannot see a key that never arrives. If the change is a layout, write the render
+test; if it is a key or the terminal, write the PTY test; a new key that also changes a
+layout needs both. A PTY test waits on the screen with a bound, never a fixed sleep.
+
 ## Documentation is part of the change
 
 A change that alters behaviour updates the docs in the same pull request.
