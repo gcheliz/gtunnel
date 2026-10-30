@@ -586,6 +586,21 @@ $ gtunnel relay status
 No relay for account 'dev'. Run `gtunnel relay up`
 ```
 
+The instance is created with [`relay.machine_type`](configuration.md#the-relays-machine-type)
+(`e2-micro` by default) and never resized: a resize needs a stop, and a stop drops every
+exposed URL until the instance is back. When the running relay has another type, `up` prints a
+`!` line and `status` a `note` line, each with the commands that change it, and neither stops
+anything:
+
+```console,ignore
+$ gtunnel relay up
+  ! relay instance gt-dev-relay is e2-small but relay.machine_type is e2-micro; it is left as it is, because changing the type needs a stop. Run `gtunnel relay down`, then `gtunnel relay up`, or stop the instance and run: gcloud compute instances set-machine-type gt-dev-relay --machine-type=e2-micro --zone=europe-west1-b --project=example-dev-1a2b
+  · relay instance gt-dev-relay (exists)
+```
+
+`status` also prints the instance's `machine type`. When the confirmation shows an instance
+other than `e2-micro`, it names the type and leaves the price to GCP.
+
 `up` prompts for confirmation before creating cloud resources:
 
 ```console,ignore
@@ -853,9 +868,23 @@ Reports what gtunnel can see without changing anything.
 ```console,ignore
 $ gtunnel doctor          # with a gcloud whose Python has no numpy
 gtunnel:
-  - gcloud's Python is missing numpy, which makes IAP tunnels slow. Run `gcloud components reinstall`
+  - gcloud's Python is missing numpy, which makes IAP tunnels slow. Install numpy into gcloud's Python: `$(gcloud info --format="value(basic.python_location)") -m pip install numpy`, and set `CLOUDSDK_PYTHON_SITEPACKAGES=1`
 account dev:
   - gcloud has no usable credentials for account 'dev'. Run `gcloud auth login --configuration=dev` and try again
+```
+
+A tunnel whose log carries gcloud's NumPy warning (`consider installing NumPy`) is reported
+under its account, because that tunnel was started by a gcloud whose Python has no NumPy: the
+probe above asks the gcloud on `PATH`, and a service can run another. The advice is Google's:
+install numpy into gcloud's Python and set `CLOUDSDK_PYTHON_SITEPACKAGES=1`, which a service
+takes from your shell (see [Variables a service takes from your
+shell](configuration.md#variables-a-service-takes-from-your-shell)). Then `gtunnel restart` the
+tunnel:
+
+```console,ignore
+$ gtunnel doctor
+account dev:
+  - Tunnel 'k8s': gcloud warned that it runs without NumPy, which slows large transfers over IAP. Install numpy into gcloud's Python: `$(gcloud info --format="value(basic.python_location)") -m pip install numpy`, and set `CLOUDSDK_PYTHON_SITEPACKAGES=1`, then `gtunnel restart k8s`
 ```
 
 A service with no record is machine-wide, so it is filed under `gtunnel:` like the watchdog;

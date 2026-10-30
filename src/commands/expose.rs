@@ -11,10 +11,13 @@ use crate::gcp::{certmanager, dns, GcpClient};
 use crate::state::{validate_tunnel_name, PersistentTunnel, TunnelSpec, TunnelState, TunnelStatus};
 
 // What the relay costs before anyone agrees to create it
-pub fn relay_cost_line() -> String {
-    "Global forwarding rule (~USD 18/month) and e2-micro instance (~USD 7/month, free tier in some US \
-     regions)"
-        .to_string()
+pub fn relay_cost_line(machine_type: &str) -> String {
+    let instance = if machine_type == "e2-micro" {
+        "e2-micro instance (~USD 7/month, free tier in some US regions)".to_string()
+    } else {
+        format!("{machine_type} instance (priced by GCP for its type and region)")
+    };
+    format!("Global forwarding rule (~USD 18/month) and {instance}")
 }
 
 #[allow(clippy::print_stdout, clippy::print_stderr)]
@@ -35,7 +38,8 @@ pub async fn cmd_relay_up(
     };
 
     println!("Relay for account '{}' in {zone}:", acct.name);
-    println!("  {}", relay_cost_line());
+    let machine_type = crate::settings::current().relay_machine_type;
+    println!("  {}", relay_cost_line(&machine_type));
     if !confirm("Create it?", assume_yes)? {
         println!("Cancelled");
         return Ok(());
@@ -45,6 +49,7 @@ pub async fn cmd_relay_up(
         zone,
         network: network.to_string(),
         managed_zone,
+        machine_type,
     };
     let expose = relay::relay_up(&client, &acct, &opts).await?;
     update_config(|config| {
@@ -123,6 +128,9 @@ pub async fn cmd_relay_status(account: Option<&str>) -> Result<()> {
         "instance        {}",
         status.vm.as_deref().unwrap_or("missing")
     );
+    if let Some(machine_type) = &status.machine_type {
+        println!("machine type    {machine_type}");
+    }
     println!(
         "address         {}",
         status.ip.as_deref().unwrap_or("missing")
@@ -137,6 +145,17 @@ pub async fn cmd_relay_status(account: Option<&str>) -> Result<()> {
     );
     for (domain, state) in status.certs {
         println!("certificate     {domain}: {state}");
+    }
+    if let Some(expose) = &acct.expose
+        && let Some(note) = relay::machine_type_mismatch(
+            status.machine_type.as_deref(),
+            &crate::settings::current().relay_machine_type,
+            &acct.project,
+            &expose.relay_zone,
+            &expose.relay_instance,
+        )
+    {
+        println!("note            {note}");
     }
     Ok(())
 }
@@ -501,9 +520,19 @@ mod tests {
 
     #[test]
     fn the_cost_line_names_both_charges() {
-        let line = relay_cost_line();
+        let line = relay_cost_line("e2-micro");
         assert!(line.contains("forwarding rule"), "{line}");
         assert!(line.contains("e2-micro"), "{line}");
+    }
+
+    // The USD 7 is e2-micro's price, so quoting it for another type is a wrong
+    // number printed ahead of a confirmation
+    #[test]
+    fn the_cost_line_does_not_price_a_machine_type_it_does_not_know() {
+        let line = relay_cost_line("e2-small");
+        assert!(line.contains("e2-small"), "{line}");
+        assert!(!line.contains("USD 7"), "{line}");
+        assert!(line.contains("forwarding rule"), "{line}");
     }
     #[tokio::test]
     async fn pick_managed_zone_empty_suggests_creating_one() {

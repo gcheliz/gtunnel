@@ -231,6 +231,28 @@ The two shapes pay differently.
 | One hour idle | Cuts that connection. An application's TCP keepalive does not help: it never leaves the local socket | Does not apply: ssh's keepalive keeps the one stream busy |
 | Shared fate | None | Every connection rides one stream |
 
+A relay serves one laptop per account. The relay ports are handed out from the laptop's own
+`tunnels.toml`, so a second laptop on the same account would hand out ports the first already
+holds, and `relay down` from either would remove the shared load balancer under the other's
+URLs. A second laptop on the same account is not supported.
+
+Capacity is unmeasured. No test has recorded how many concurrent visitor connections one exposed
+URL carries, or what a large transfer does to the rest: every connection of a tunnel shares one
+ssh connection over one IAP WebSocket into the relay, which is an `e2-micro` unless
+[`relay.machine_type`](configuration.md#the-relays-machine-type) says otherwise. Do not read
+the absence of a limit above as headroom.
+
+gcloud's WebSocket path is pure Python and slow without NumPy. When its Python lacks it, gcloud
+logs `consider installing NumPy` and `gtunnel doctor` reports the tunnel. Google's fix is two
+steps, both needed:
+
+```
+$(gcloud info --format="value(basic.python_location)") -m pip install numpy
+export CLOUDSDK_PYTHON_SITEPACKAGES=1
+```
+
+Then `gtunnel restart` the tunnel, so its service takes the variable from your shell.
+
 What to do about it:
 
 | If | Then |

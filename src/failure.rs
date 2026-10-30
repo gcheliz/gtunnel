@@ -71,6 +71,20 @@ const LINES: &[(Failure, &[&str])] = &[
     (Failure::Timeout, &["timed out"]),
 ];
 
+/// The warning gcloud prints when its Python has no NumPy, and the one thing
+/// in it that is stable: the text is a `_NUMPY_HELP_TEXT` block that
+/// `_CheckNumpyInstalled` hands to `log.warning`, in
+/// `lib/surface/compute/start_iap_tunnel.py` of the Cloud SDK (read at 590.0.0):
+///
+/// ```text
+/// To increase the performance of the tunnel, consider installing NumPy. For instructions,
+/// please see https://cloud.google.com/iap/docs/using-tcp-forwarding#increasing_the_tcp_upload_bandwidth
+/// ```
+///
+/// Matched as a substring, in the case the SDK spells it: the older row that
+/// looked for a lowercase `numpy` matched nothing gcloud prints.
+pub const NUMPY_WARNING: &str = "consider installing NumPy";
+
 /// The failures a restart cannot fix. A supervisor that sees one stops the
 /// job instead of burning its budget on a login or a key that will be refused
 /// again, and leaves its slug behind so `list` can say which.
