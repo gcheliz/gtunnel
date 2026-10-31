@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.3.20](https://github.com/gcheliz/gtunnel/compare/v0.3.19...v0.3.20) - 2026-10-31
+
+### Added
+
+- *(relay)* flag an old relay image and rebuild it with relay up --recreate ([#426](https://github.com/gcheliz/gtunnel/pull/426))
+
 ## [0.3.19](https://github.com/gcheliz/gtunnel/compare/v0.3.18...v0.3.19) - 2026-10-31
 
 ### Fixed
