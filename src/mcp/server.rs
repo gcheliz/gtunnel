@@ -5,7 +5,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use super::protocol::{
     modern_version, stamp_modern, InitializeResult, JsonRpcError, JsonRpcRequest, JsonRpcResponse,
     ResourcesCapability, ServerCapabilities, ServerInfo, ToolsCapability, INVALID_PARAMS,
-    METHOD_NOT_FOUND, MODERN_PROTOCOL_VERSIONS, PARSE_ERROR,
+    INVALID_REQUEST, METHOD_NOT_FOUND, MODERN_PROTOCOL_VERSIONS, PARSE_ERROR,
 };
 use super::tools::{all_resources, all_tools, execute_tool, read_resource};
 use super::validator::ToolValidator;
@@ -18,12 +18,24 @@ pub async fn handle_message(line: &str) -> Option<JsonRpcResponse> {
         return None;
     }
 
-    let req: JsonRpcRequest = match serde_json::from_str(trimmed) {
-        Ok(r) => r,
+    // Two steps, because JSON-RPC gives them two codes: text that is not JSON
+    // is a parse error, and JSON that is not a request is an invalid one
+    let value: serde_json::Value = match serde_json::from_str(trimmed) {
+        Ok(v) => v,
         Err(e) => {
             return Some(JsonRpcResponse::error(
                 None,
                 JsonRpcError::new(PARSE_ERROR, format!("Parse error: {e}")),
+            ));
+        }
+    };
+    let id = value.get("id").cloned();
+    let req: JsonRpcRequest = match serde_json::from_value(value) {
+        Ok(r) => r,
+        Err(e) => {
+            return Some(JsonRpcResponse::error(
+                id,
+                JsonRpcError::new(INVALID_REQUEST, format!("Invalid Request: {e}")),
             ));
         }
     };

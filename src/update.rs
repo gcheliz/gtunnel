@@ -1,26 +1,20 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
+use crate::version::parse_version;
+
 pub const REPO: &str = "gcheliz/gtunnel";
 // brew installs from this repository's formula, not from the release, so it is
 // the source of truth for what a Homebrew user can actually upgrade to
 const TAP_REPO: &str = "gcheliz/homebrew-tap";
 
-fn parse_version(v: &str) -> (u64, u64, u64) {
-    let parts: Vec<u64> = v
-        .trim_start_matches('v')
-        .split('.')
-        .filter_map(|p| p.parse().ok())
-        .collect();
-    (
-        parts.first().copied().unwrap_or(0),
-        parts.get(1).copied().unwrap_or(0),
-        parts.get(2).copied().unwrap_or(0),
-    )
-}
-
+/// An unreadable tag is never newer: offering an upgrade to a version that
+/// cannot be compared would be a guess, and a wrong guess replaces the binary.
 fn is_newer(current: &str, latest: &str) -> bool {
-    parse_version(latest) > parse_version(current)
+    match (parse_version(latest), parse_version(current)) {
+        (Some(latest), Some(current)) => latest > current,
+        _ => false,
+    }
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -814,14 +808,19 @@ mod tests {
 
     #[test]
     fn versions_compare_by_number_not_by_text() {
-        assert_eq!(parse_version("1.2.3"), (1, 2, 3));
-        assert_eq!(parse_version("v0.1.0"), (0, 1, 0));
-        assert_eq!(parse_version("10.0.1"), (10, 0, 1));
         // "10" sorts before "9" as text, and that is the bug this guards
         assert!(is_newer("0.9.0", "0.10.0"));
         assert!(is_newer("1.2.3", "1.2.4"));
         assert!(!is_newer("1.2.3", "1.2.3"));
         assert!(!is_newer("2.0.0", "1.9.9"));
+    }
+
+    #[test]
+    fn an_unreadable_tag_is_not_newer() {
+        assert!(!is_newer("0.3.20", "garbage"));
+        assert!(!is_newer("0.3.20", ""));
+        assert!(!is_newer("garbage", "0.3.21"));
+        assert!(is_newer("0.3.20", "v0.3.21-rc.1"));
     }
 
     // The asset names are what a visitor reads on the releases page, so they

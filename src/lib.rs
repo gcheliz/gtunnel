@@ -30,5 +30,6 @@ mod state;
 mod tui;
 mod tunnel;
 mod update;
+mod version;
 
 pub mod dispatch;
