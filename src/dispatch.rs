@@ -44,9 +44,17 @@ fn is_broken_pipe_panic(message: &str) -> bool {
         .any(|stream| message == format!("failed printing to {stream}: {epipe}"))
 }
 
+/// What a command that succeeded owes before the process ends: a
+/// notification still being delivered dies with the process otherwise.
+pub fn finish() {
+    crate::notify::flush();
+}
+
 /// Prints a failure the way the caller asked for it and ends the process
 /// with the code its kind maps to.
 pub fn exit_with(e: &anyhow::Error, json: bool) -> ! {
+    // A failed start announces its failure; it must reach the desktop first
+    crate::notify::flush();
     // The command already said why and chose its own status
     if let Some(exited) = e.downcast_ref::<crate::error::Exited>() {
         std::process::exit(exited.0);
