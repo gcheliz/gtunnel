@@ -4,7 +4,7 @@
 # docs/tapes/agent.sh, only performs the JSON-RPC handshake and prints the
 # answer; every line below is gtunnel's own, unedited.
 #
-# The hidden preamble is demo-access.tape's: a throwaway account in a temporary
+# The hidden preamble sets up a throwaway account in a temporary
 # directory and a stand-in `gcloud` on PATH, so the recording needs no GCP
 # project. `target/release` goes first on PATH, so the recording shows the
 # binary this checkout builds (`cargo build --release`).

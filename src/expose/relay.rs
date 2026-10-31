@@ -1536,6 +1536,49 @@ mod tests {
         assert!(paths.is_empty(), "{paths:?}");
     }
 
+    // The foreign backend sits on page 2 of the list: reading only page 1
+    // would let the teardown delete the front end and then fail at the group
+    #[tokio::test]
+    async fn relay_down_stops_before_any_delete_on_a_foreign_backend_on_page_two() {
+        use wiremock::matchers::query_param;
+        let _cfg = crate::config::testing::TempConfigDir::new();
+        let server = MockServer::start().await;
+        group_guarded_deletes(&server, "gt-dev-handmade").await;
+        Mock::given(method("GET"))
+            .and(path_regex(r".*/global/backendServices$"))
+            .and(query_param("pageToken", "page-2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [backend_on_group("gt-dev-handmade", None, &server)]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path_regex(r".*/global/backendServices$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [{"name": "unrelated", "backends": []}],
+                "nextPageToken": "page-2"
+            })))
+            .mount(&server)
+            .await;
+        relay_mocks(&server).await;
+
+        let mut state = TunnelState::default();
+        let err = relay_down(
+            &client(&server),
+            &dev_config(),
+            &account(),
+            &mut state,
+            false,
+        )
+        .await
+        .expect_err("should stop");
+
+        let message = err.to_string();
+        assert!(message.contains("gt-dev-handmade"), "{message}");
+        let paths = deleted(&server.received_requests().await.unwrap_or_default());
+        assert!(paths.is_empty(), "{paths:?}");
+    }
+
     // The teardown reads the run records of the config dir it is given, so a
     // test that owns the dir sees its own records and nobody else's
     #[tokio::test]
