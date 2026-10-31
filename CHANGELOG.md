@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.3.19](https://github.com/gcheliz/gtunnel/compare/v0.3.18...v0.3.19) - 2026-10-31
+
+### Fixed
+
+- *(supervise)* restart a tunnel whose gcloud exits 0 on its own ([#428](https://github.com/gcheliz/gtunnel/pull/428))
+
 ## [0.3.18](https://github.com/gcheliz/gtunnel/compare/v0.3.17...v0.3.18) - 2026-10-30
 
 ### Fixed
