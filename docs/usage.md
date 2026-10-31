@@ -769,6 +769,7 @@ CLI's `--json` errors carry. Only a call the server cannot act on is a JSON-RPC 
 | A missing or mistyped parameter, a `local_port` outside 1 to 65535, an instance, zone or host that gcloud would read as an option | `error.code` -32602 |
 | A tool name the server does not have | `error.code` -32601 |
 | A line that is not JSON | `error.code` -32700 |
+| A line that is JSON but not a request, such as one with no `method` | `error.code` -32600, with the request's `id` when it has one |
 | A notification (`notifications/...`) | No reply at all, as JSON-RPC requires |
 
 ```text
