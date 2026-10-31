@@ -390,7 +390,7 @@ looping. The supervisor counts runs that died before `min_uptime`; past `max_res
 them inside `window` it writes `run/<label>.crash` with the last exit reason and ends with the
 exit the service manager leaves alone (0 on macOS, 78 on Linux). The tunnel stays stopped
 until `gtunnel start`, which clears the marker and the count. A run that lasts `min_uptime`
-or longer clears the count, so a laptop that sleeps and wakes never adds up to a stop.
+or longer clears the count, and the time the machine spent asleep counts toward it, so a laptop that sleeps and wakes never adds up to a stop.
 
 One failure is kept out of the count: `remote port forwarding failed`, which means the relay
 still holds a dead session's listener. A restart is the cure, so the supervisor waits a random

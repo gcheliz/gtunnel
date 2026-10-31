@@ -49,7 +49,8 @@ forward from the far side. It is a different gcloud command, not a flag:
 ```
 gcloud compute ssh <instance> --zone=<zone> --tunnel-through-iap --quiet \
   --verbosity=info [--project ...] -- \
-  -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+  -N -o ConnectTimeout=30 -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 \
+  -o ServerAliveCountMax=3 \
   -o LogLevel=DEBUG -L <local-port>:<host>:<remote-port>
 ```
 
@@ -58,8 +59,9 @@ gcloud compute ssh <instance> --zone=<zone> --tunnel-through-iap --quiet \
 [One level, two scales](troubleshooting.md#one-level-two-scales).
 
 Because the command is `ssh`, not `start-iap-tunnel`, gcloud has no local listener, so nothing
-prints `Listening on port`; and the keepalive options are what notice a dead bastion, which
-SSH would otherwise hold a forward open against.
+prints `Listening on port`; the keepalive options are what notice a dead bastion, which
+SSH would otherwise hold a forward open against, and `ConnectTimeout=30` ends a handshake
+that stalls behind IAP, which the keepalives cannot because they start after login.
 
 ## Expose mode
 
@@ -88,7 +90,8 @@ The tunnel process runs:
 
 ```
 gcloud compute ssh <relay-instance> --zone=<zone> --tunnel-through-iap --quiet -- \
-  -N -o ExitOnForwardFailure=yes -R 0.0.0.0:<relay-port>:localhost:<local-port>
+  -N -o ConnectTimeout=30 -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 \
+  -o ServerAliveCountMax=3 -R 0.0.0.0:<relay-port>:localhost:<local-port>
 ```
 
 Without `ExitOnForwardFailure=yes`, SSH stays up after the remote bind fails and the tunnel
@@ -198,6 +201,8 @@ One diagram for both platforms: the shape is the same and only the manager diffe
 
 A restart cannot renew a login, so a supervisor that sees gcloud die of `Reauthentication required` (or of a denied impersonation, an invalid key or a missing configuration) stops the loop and leaves `run/<label>.auth` behind, holding the failure's name (`login-expired`, `impersonation-denied`, ...), which keeps `list` on `auth expired` or `credentials refused` after the log goes quiet. It exits 0 on macOS, where `KeepAlive` restarts every non-zero exit, and 78 on Linux, which the unit lists in `RestartPreventExitStatus`. `gtunnel start`, and the supervisor itself, clear the marker.
 
+The opposite case is a gcloud that exits 0 without being asked to stop. `launchd` (`SuccessfulExit:false`) and `systemd` (`Restart=on-failure`) read 0 as finished, and on macOS 0 is also the park code above, so the tunnel would stay down with nothing in the log. The supervisor logs `gcloud exited 0 on its own, restarting` and exits 1, which is outside `RestartPreventExitStatus` and does not spend the restart budget. A stop that `stop`, `delete` or a signal asked for still ends the job.
+
 Nothing in the supervisor notices the login being renewed, so the watchdog does. Once per pass, for each account with at least one `login-expired` marker, it fetches a token for that account (one fetch per account, bounded like every gcloud call, and only when the network gate says IAP is reachable). A token that works clears each of the account's `login-expired` markers and starts those tunnels; one that fails changes nothing. The other stopping failures are never resumed, because a new login does not change them. `gtunnel start --auth-expired` and the MCP `gtunnel_start_tunnel` with `auth_expired: true` run the same step on demand. The diagram's `Stays down` box ends at `gtunnel start`, which remains true; the watchdog is a second way out of it.
 
 #### A restart and a person
@@ -234,6 +239,7 @@ names where it comes from.
 | A tunnel through a GCP instance carries every connection over one WebSocket, kept busy by `ServerAliveInterval=30` | gtunnel, `src/tunnel.rs` (the command shown under [Jump tunnels](#jump-tunnels)) |
 | Every tunable setting resolves in one place: a variable beats `config.toml`, which beats the default | gtunnel, `src/settings.rs`; [Settings the environment can override](configuration.md#settings-the-environment-can-override) |
 | A gcloud that keeps dying before `min_uptime` stops its job after `max_restarts` fast failures | gtunnel, `src/restart_budget.rs`; [The restart budget](configuration.md#the-restart-budget) |
+| The relay VM boots from an image family once and is never patched. With no external IP it reaches no package mirror unless the VPC has Cloud NAT, and a kernel update still needs a reboot. `relay up --recreate` rebuilds the VM and drops every exposed URL while it runs; `doctor` flags a relay older than 90 days | gtunnel, `src/gcp/compute.rs`, `src/doctor.rs`; [relay](commands.md#relay) |
 
 The two shapes pay differently.
 

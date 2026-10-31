@@ -185,7 +185,9 @@ fn a_group_left_by_a_killed_supervisor_is_swept_before_the_next_spawn() {
         .stderr(Stdio::null())
         .status()
         .expect("run");
-    assert!(status.success());
+    // `true` quit by itself, which the supervisor reports as a failure so the
+    // service manager starts it again
+    assert_eq!(status.code(), Some(1));
     assert!(
         poll(Duration::from_secs(1), || !alive(stale)),
         "the stale group's member survived the next supervisor"

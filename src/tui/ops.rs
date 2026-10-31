@@ -1161,6 +1161,7 @@ mod tests {
             metadata: Vec::new(),
             metadata_fingerprint: None,
             machine_type: None,
+            creation_timestamp: None,
         }
     }
 
