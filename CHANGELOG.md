@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.3.25](https://github.com/gcheliz/gtunnel/compare/v0.3.24...v0.3.25) - 2026-10-31
+
+### Fixed
+
+- *(notify)* deliver Linux notifications over D-Bus without notify-send ([#451](https://github.com/gcheliz/gtunnel/pull/451))
+
 ## [0.3.24](https://github.com/gcheliz/gtunnel/compare/v0.3.23...v0.3.24) - 2026-10-31
 
 ### Fixed
