@@ -72,7 +72,8 @@ Six routes. Homebrew comes first on macOS and Linux; the rest are for machines w
 | Upgrade a download or cargo install | [`gtunnel update`](commands.md#update) |
 
 There is no `cargo install gtunnel`. The name on crates.io belongs to an unrelated crate
-by another author, so a bare name would install somebody else's binary. If you have
+by another author, a tcp-over-grpc proxy published in 2022, so a bare name would install
+somebody else's binary. If you have
 already run it, [troubleshooting.md](troubleshooting.md#cargo-install-gtunnel-installed-something-else)
 says what it left behind and how to undo it.
 
@@ -125,8 +126,8 @@ tunnels. A service whose binary no longer exists is rewritten to name the runnin
 gtunnel prints `gtunnel: reinstalled N services to match this version`. `gtunnel restart <name>`
 does the same for one tunnel.
 
-The binary a service names is the stable path to it, not the versioned Homebrew Cellar directory
-that `brew upgrade` deletes, and a `gtunnel_run_tunnel` started by the MCP server uses the same path.
+A service and a `gtunnel_run_tunnel` name the binary by a stable path that `brew upgrade` leaves
+in place ([update](commands.md#update)).
 
 ```console,ignore
 $ rm ~/.cargo/bin/gtunnel
@@ -457,9 +458,8 @@ Error: gtunnel needs a logged-in Google account for 'prod'. Run `gcloud auth log
 Every command except `update` prints a one-line hint when a cached check found a newer
 version, naming the command for how gtunnel was installed: `brew upgrade gtunnel` for
 Homebrew, `gtunnel update` for a downloaded binary. A Homebrew install is told only once the
-tap formula offers the version, so the hint never precedes what `brew upgrade` can do; if the
-formula cannot be read it says `brew update && brew upgrade gtunnel`. [update](commands.md#update) has the
-check itself. On a Homebrew install:
+tap offers the version; [update](commands.md#update) has that rule, the fallback command and
+the check itself. On a Homebrew install:
 
 ```console,ignore
 $ gtunnel list
@@ -594,7 +594,7 @@ When a newer release is cached, the header's closing rule carries it at its righ
 | Question | Answer |
 |---|---|
 | Where | the rule under the header; the rule above the footer when the header is hidden (under 16 rows) or is the one-line form |
-| What it says | `↑ v<latest> · <command>`: `brew upgrade gtunnel` for a Homebrew install once the tap has the version (`brew update && brew upgrade gtunnel` when the tap cannot be read), `gtunnel update` otherwise |
+| What it says | `↑ v<latest> · <command>`: `brew upgrade gtunnel` for a Homebrew install once the tap has the version ([update](commands.md#update)), `gtunnel update` otherwise |
 | Where it comes from | the background `update --check` (see [update](commands.md#update)); the TUI starts one when the cache is missing or older than `update_check_interval` (6 hours by default), and re-reads the cache every minute |
 | When the check fails | the same place says `update check failed` in the muted colour, only while no update is showing, until a check succeeds. Silence then means "not known", not "up to date" |
 | Waits on the network | never; it shows what an earlier check already learned, so the first run after a release shows nothing until a check finishes |

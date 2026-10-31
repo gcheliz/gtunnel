@@ -389,7 +389,7 @@ rebuilds only the instance, at the configured type.
 A tunnel whose gcloud keeps dying for a reason gtunnel does not recognise stops instead of
 looping. The supervisor counts runs that died before `min_uptime`; past `max_restarts` of
 them inside `window` it writes `run/<label>.crash` with the last exit reason and ends with the
-exit the service manager leaves alone (0 on macOS, 78 on Linux). The tunnel stays stopped
+exit the service manager leaves alone ([Service lifecycle](architecture.md#service-lifecycle)). The tunnel stays stopped
 until `gtunnel start`, which clears the marker and the count. A run that lasts `min_uptime`
 or longer clears the count, and the time the machine spent asleep counts toward it, so a laptop that sleeps and wakes never adds up to a stop.
 
@@ -399,7 +399,7 @@ still holds a dead session's listener. A restart is the cure, so the supervisor 
 Neither number is configurable.
 When one run prints both a busy line and a network line, the newer line decides: the network wait if the network line is newer, the busy streak if the busy line is.
 
-A run that dies of the network does not count at all: the supervisor waits, using `base_backoff` and `max_backoff`, and starts again however long the outage lasts. Every wait is drawn at random from zero up to its doubling, so the tunnels a wake or an outage failed together do not all retry on the same second. See [What a network outage does](troubleshooting.md#what-a-network-outage-does).
+A run that dies of the network does not count at all: the supervisor waits with `base_backoff` and `max_backoff` and starts again however long the outage lasts ([What a network outage does](troubleshooting.md#what-a-network-outage-does)).
 
 | Key under `[restart]` | Default | Range |
 |---|---|---|
