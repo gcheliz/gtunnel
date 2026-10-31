@@ -53,8 +53,9 @@ pub fn machine_type_mismatch(
     }
     Some(format!(
         "relay instance {vm} is {have} but relay.machine_type is {want}; it is left as it is, \
-         because changing the type needs a stop. Run `gtunnel relay down`, then `gtunnel relay \
-         up`, or stop the instance and run: gcloud compute instances set-machine-type {vm} \
+         because changing the type needs a stop. Run `gtunnel relay up --recreate` to rebuild \
+         the instance at that type, or stop it and run: gcloud compute instances \
+         set-machine-type {vm} \
          --machine-type={want} --zone={zone} --project={project}"
     ))
 }
@@ -1697,8 +1698,8 @@ mod tests {
         assert!(note.contains("e2-small"), "{note}");
         assert!(note.contains("relay.machine_type"), "{note}");
         assert!(note.contains("e2-micro"), "{note}");
-        assert!(note.contains("gtunnel relay down"), "{note}");
-        assert!(note.contains("gtunnel relay up"), "{note}");
+        assert!(note.contains("gtunnel relay up --recreate"), "{note}");
+        assert!(!note.contains("relay down"), "{note}");
         assert!(
             note.contains(
                 "gcloud compute instances set-machine-type gt-dev-relay --machine-type=e2-micro \

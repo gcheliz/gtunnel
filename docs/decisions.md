@@ -139,10 +139,10 @@ gtunnel allocates the port. It never opens or closes a firewall rule for one.
 A broader VPC rule would let anyone who knows the relay address and a port reach the
 forwarded service directly, skipping the load balancer and, with `--private`, the IAP sign-in
 in front of it. gtunnel does not answer that by managing VPC rules, which would mean a tool
-that silently widens or narrows a VPC. The relay's startup script installs an `nftables`
-table on the VM that drops `30000-30999` from every source but the load balancer's ranges, so
-the guard travels with the VM and the VPC stays the operator's. Documented in
-[commands.md](commands.md#the-relays-firewall-is-yours-to-close).
+that silently widens or narrows a VPC. The relay's startup script installs a
+table on the VM that drops the tunnel ports from every source but the load balancer, so
+the guard travels with the VM and the VPC stays the operator's. The current rule is in
+[Expose mode](architecture.md#expose-mode).
 
 ## 9. Linux releases are static musl binaries
 
@@ -398,8 +398,8 @@ because it holds nothing.
 
 **Status:** Accepted, 2026-10-28, amended 2026-10-28 (the supervisor stops a job that spends its restart budget, #229), amended 2026-10-30 (a network outage is waited out, never counted, #370)
 
-A tunnel's supervisor runs gcloud once and exits with gcloud's status. Restarting it is the
-service manager's job, with fixed settings, and gtunnel does not speak `sd_notify` (#209).
+A tunnel's supervisor runs gcloud once and exits with gcloud's status, or 1 when gcloud exits 0
+without being asked to stop (#428). Restarting it is the service manager's job, with fixed settings, and gtunnel does not speak `sd_notify` (#209).
 
 | Platform | Settings | What they do |
 |---|---|---|
@@ -408,7 +408,7 @@ service manager's job, with fixed settings, and gtunnel does not speak `sd_notif
 
 | Question | Answer |
 |---|---|
-| A failure that restarting cannot fix | Expired credentials exit 0 on macOS and 78 on Linux, the one status each manager leaves alone, and write `run/<label>.auth` (#193) |
+| A failure that restarting cannot fix | Expired credentials exit with the one status each manager leaves alone ([Service lifecycle](architecture.md#service-lifecycle)) and write `run/<label>.auth` (#193) |
 | A transient failure, such as a dropped network or VPN | A network or timeout exit is retried until the network returns, with a growing wait and no limit (the network amendment below). Any other fast failure is retried within the restart budget of the amendment below; 5 s never reaches systemd's default start limit of 5 starts in 10 s |
 | When the tunnel is ready | `run/<label>.ready`, written once gcloud logs that it is listening; `start` waits for it and `list` reads it on both platforms |
 
@@ -418,14 +418,15 @@ never logs its listener is killed at `TimeoutStartSec` instead of staying up. It
 reopening when a client reads systemd readiness rather than the ready file.
 
 The cost: a failure that is permanent but not about credentials, such as a wrong instance
-name, is retried every 5 or 10 s until the restart budget stops it (amendment below).
+name, is retried after the manager's 5 or 10 s plus a wait drawn from zero up to a doubling
+ceiling (#411), until the restart budget stops it (amendment below).
 
 ### Amendment: the supervisor stops a job that spends its restart budget
 
 Restarting is still the service manager's job, but a tunnel whose gcloud keeps failing for a
 reason gtunnel does not recognise no longer loops forever. The supervisor counts fast
 failures and, over budget, stops the job the way an expired credential does: it writes
-`run/<label>.crash` with the last exit reason and exits 0 on macOS or 78 on Linux. The
+`run/<label>.crash` with the last exit reason and exits with the same status ([Service lifecycle](architecture.md#service-lifecycle)). The
 tunnel then stays stopped until `gtunnel start`, which clears the marker and the count.
 The supervisor never retries by itself after it stops, and `gtunnel watch` skips a job that
 carries the marker. Credential expiry still wins: its marker and exit are unchanged. The five
@@ -451,7 +452,7 @@ An outage says nothing about a tunnel, so neither the supervisor nor the watchdo
 
 | Question | Answer |
 |---|---|
-| A supervisor exit whose newest classified line is `Network` or `Timeout` | Spends none of the restart budget and never writes `run/<label>.crash`. It waits a random time from zero up to 10 s, the ceiling doubling to 300 s (the `[restart]` backoff settings), then exits with gcloud's status so the service manager starts it again |
+| A supervisor exit whose newest classified line is `Network` or `Timeout` | Spends none of the restart budget and never writes `run/<label>.crash`. It waits a random time below a doubling ceiling (the `[restart]` backoff settings; the current numbers are in [What a network outage does](troubleshooting.md#what-a-network-outage-does)), then exits with gcloud's status so the service manager starts it again |
 | Where the count lives | `run/<label>.netfails`, beside the restart history. A run that lived `min_uptime` starts it over; `start` and `delete` remove it |
 | A login or key failure printed in the same run | The stop-class line wins: the marker, the exit and the single failure that parks are unchanged (#193) |
 | What the watchdog does first | One bounded connect to `tunnel.cloudproxy.app:443` per pass. If it fails, every tunnel is `Unknown` for that pass: no breaker moves and no lifecycle event is emitted |
@@ -461,7 +462,7 @@ An outage says nothing about a tunnel, so neither the supervisor nor the watchdo
 
 The cost: a captive portal accepts the connection to IAP and fails later, so the gate reads
 it as reachable and the tunnels are judged as usual. A permanent fault that prints a network
-line, such as a wrong hostname behind a DNS error, is retried every 5 minutes instead of
+line, such as a wrong hostname behind a DNS error, is retried at the longest wait instead of
 being parked.
 
 ## 21. An instance's zone is looked up, not asked for

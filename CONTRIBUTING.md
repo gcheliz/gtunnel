@@ -161,7 +161,13 @@ One topic, one file. If a doc for your topic exists, add a section to it rather 
 starting a second file.
 
 The recordings in `docs/` are generated from the [VHS](https://github.com/charmbracelet/vhs)
-tapes in [docs/tapes](docs/tapes) with `vhs docs/tapes/<name>.tape`.
+tapes in [docs/tapes](docs/tapes):
+
+| Step | Command |
+|---|---|
+| Build the binary the tapes put first on `PATH` | `cargo build --release` |
+| Record one tape | `vhs docs/tapes/<name>.tape` |
+| `demo-mcp` only | needs `jq` on `PATH` |
 
 ### Placeholders, always
 

@@ -4,7 +4,7 @@
 
 | Version | Supported |
 |---|---|
-| Latest 0.2.x release | Yes |
+| Latest 0.3.x release | Yes |
 | Anything older | No; upgrade to the latest release |
 
 Only the latest release gets fixes. gtunnel is a single binary with no server
@@ -32,10 +32,10 @@ Knowing what is and is not at stake usually narrows a report quickly.
 
 | | |
 |---|---|
-| Credentials | None are stored: every call takes a fresh token from `gcloud auth print-access-token` ([why](docs/decisions.md#1-gtunnel-stores-no-credential)) |
+| Credentials | None are stored: API calls take a token from `gcloud auth print-access-token`, held in memory and reused until 5 minutes before it expires, capped by `gcp.token_ttl` ([why](docs/decisions.md#1-gtunnel-stores-no-credential)) |
 | On disk | `config.toml` and `tunnels.toml` (accounts, projects, zones, tunnel definitions), launchd plists or systemd units, and logs. No secret is written to any of them |
 | Network | gtunnel does not implement the transport. An Access tunnel runs `gcloud compute start-iap-tunnel`, a `--via` tunnel `gcloud compute ssh --tunnel-through-iap -- -N -L`, and a public tunnel the same command with `-R` to the relay instance |
-| In GCP | Access mode creates nothing. Public mode creates a relay instance, a load balancer, a certificate map, DNS records and firewall rules, and the relay drops its tunnel ports from every source but the load balancer. `doctor --fix` removes only leftovers it can prove are its own ([Leftovers](docs/troubleshooting.md#leftovers)) |
+| In GCP | Access mode creates nothing. Public mode creates a relay instance, a load balancer, a certificate map, DNS records and firewall rules, and the relay drops its tunnel ports from every source but the load balancer ([how](docs/architecture.md#expose-mode)). `doctor --fix` removes only leftovers it can prove are its own ([Leftovers](docs/troubleshooting.md#leftovers)) |
 
 A tunnel's local port is reachable by anything on the machine that can open a
 socket. That is what a forwarded port is, not a defect, but it is worth

@@ -26,8 +26,9 @@ The service runs:
 
 ```
 gcloud compute start-iap-tunnel <instance> <remote-port> \
-  --local-host-port=localhost:<local-port> --zone=<zone> --verbosity=info \
-  [--project ...] [--impersonate-service-account ...]
+  --local-host-port=localhost:<local-port> --zone=<zone> \
+  --configuration=<configuration> --project=<project> --verbosity=info \
+  [--impersonate-service-account ...]
 ```
 
 `--verbosity=info` makes a working tunnel say so, because gcloud's per-connection lines are
@@ -48,7 +49,8 @@ forward from the far side. It is a different gcloud command, not a flag:
 
 ```
 gcloud compute ssh <instance> --zone=<zone> --tunnel-through-iap --quiet \
-  --verbosity=info [--project ...] -- \
+  --configuration=<configuration> --project=<project> --verbosity=info \
+  [--impersonate-service-account ...] -- \
   -N -o ConnectTimeout=30 -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 \
   -o ServerAliveCountMax=3 \
   -o LogLevel=DEBUG -L <local-port>:<host>:<remote-port>
@@ -89,9 +91,12 @@ reconnect in a loop and a slow upload fails with a 502 or 504. GCP closes every 
 The tunnel process runs:
 
 ```
-gcloud compute ssh <relay-instance> --zone=<zone> --tunnel-through-iap --quiet -- \
+gcloud compute ssh <relay-instance> --zone=<zone> --tunnel-through-iap --quiet \
+  --configuration=<configuration> --project=<project> --verbosity=info \
+  [--impersonate-service-account ...] -- \
   -N -o ConnectTimeout=30 -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 \
-  -o ServerAliveCountMax=3 -R 0.0.0.0:<relay-port>:localhost:<local-port>
+  -o ServerAliveCountMax=3 \
+  -o LogLevel=DEBUG -R 0.0.0.0:<relay-port>:localhost:<local-port>
 ```
 
 Without `ExitOnForwardFailure=yes`, SSH stays up after the remote bind fails and the tunnel
@@ -105,9 +110,8 @@ after a laptop sleeps or changes network the relay keeps the dead session's list
 two hours, and the reconnect fails with `remote port forwarding failed`. With the probes sshd
 drops a silent session in about 30 seconds and the port is free again.
 
-Until then the supervisor retries after a random 7.5 to 15 seconds and does not spend the restart
-budget on that failure, for up to 5 minutes from the first one. After that each failure counts
-like any other. `relay up` waits for the startup script to print `gtunnel-relay-ready` on the serial
+Until then the supervisor retries without spending the restart budget, for a bounded time
+([The restart budget](configuration.md#the-restart-budget) has the wait). `relay up` waits for the startup script to print `gtunnel-relay-ready` on the serial
 console before it returns, so an `expose` straight after it never binds on loopback only.
 
 The bind is on every interface because the load balancer connects to the relay's internal
@@ -117,7 +121,8 @@ the load balancer's ranges (`130.211.0.0/22`, `35.191.0.0/16`). It is what keeps
 meaningful: a VM in the same VPC cannot reach a tunnel's relay port directly, even under a
 rule such as `default-allow-internal`, so IAP sign-in is not skipped. The table is rewritten
 on every run of the script, which `relay up` applies to an existing relay too. It does not
-cover SSH on port 22, which only IAP reaches.
+cover SSH on port 22, which only IAP reaches. It protects the relay VM only and does not replace
+reviewing the network's other rules.
 
 Every relay resource that has a wanted shape is converged, not only created: `relay up` reads
 the health check, each backend service and the relay's startup script, and writes only what
@@ -180,7 +185,7 @@ about to be deleted. It never touches the Cloud DNS managed zone, which is yours
 | Concern | Decision |
 |---|---|
 | Supervision | launchd on macOS, systemd `--user` on Linux. Both restart on failure. The supervisor answers a stop at once, during its restart backoff too. When gcloud exits it stops the rest of gcloud's process group (ssh, the IAP proxy), and a supervisor that was killed leaves its group's id beside the ready file for the next one to end, so nothing is left holding the port |
-| Retries after a wake or a login | A wake, a login or the end of an outage fails every tunnel at the same moment, and a fixed doubling would keep them failing together, each retry a `gcloud` start that reads the credential store and asks Google for a token. So nothing waits a fixed time. The supervisor's restart and network waits and the breaker's restart schedule are each drawn from zero up to their doubling (`src/daemon/backoff.rs`, one function for all three). A supervisor that launchd or systemd started on its own waits a random 0-3 s before its first `gcloud`; one started by `gtunnel start` or the watchdog skips that wait, told apart by `run/<label>.asked`, which `start` writes and the supervisor deletes. The watchdog pauses a random 0-2 s before each restart in a pass, ahead of the stop so the tunnel is not down for it, and before each tunnel it starts after a renewed login; `gtunnel start --auth-expired` and the MCP tool have a person waiting and do not pause. The TUI keeps one client per account for the session, so a round over several public tunnels fetches one token |
+| Retries after a wake or a login | A wake, a login or the end of an outage fails every tunnel at the same moment, and a fixed doubling would keep them failing together, each retry a `gcloud` start that reads the credential store and asks Google for a token. So nothing waits a fixed time. The supervisor's restart and network waits and the breaker's restart schedule are each drawn from zero up to their doubling (`src/daemon/backoff.rs`, one function for all three); the network wait's numbers are in [What a network outage does](troubleshooting.md#what-a-network-outage-does). A supervisor that launchd or systemd started on its own waits a random 0-3 s before its first `gcloud`; one started by `gtunnel start` or the watchdog skips that wait, told apart by `run/<label>.asked`, which `start` writes and the supervisor deletes. The watchdog pauses a random 0-2 s before each restart in a pass, ahead of the stop so the tunnel is not down for it, and before each tunnel it starts after a renewed login; `gtunnel start --auth-expired` and the MCP tool have a person waiting and do not pause. The TUI keeps one client per account for the session, so a round over several public tunnels fetches one token |
 | Reboot | Auto-start is per tunnel; off by default, toggled with `A` in the TUI or `autostart`. How each platform holds it is under [Service lifecycle](#service-lifecycle) |
 | Wedged tunnels | Supervision only catches a process that exits. A tunnel that stays up and refuses connections is caught instead by one watchdog job for the whole machine, which wakes every 30s by default (`watch.interval`), makes one pass over every tunnel and exits. It is an interval job rather than a supervised one precisely because it is supposed to exit every time |
 | PATH | A daemon does not inherit a shell, so gcloud's directory is written into the unit. Without it the service dies at every start |
@@ -199,7 +204,7 @@ One diagram for both platforms: the shape is the same and only the manager diffe
 
 ![Service lifecycle: gtunnel add records the tunnel in tunnels.toml (name, account, target, local port), gtunnel start or s in the TUI writes the definition labelled com.gtunnel.ACCOUNT.NAME, then on macOS launchctl bootstrap loads CONFIG/agents/LABEL.plist and on Linux systemctl --user start loads ~/.config/systemd/user/LABEL.service; both run the gcloud child process, which on any other non-zero exit is restarted by KeepAlive or Restart=on-failure RestartSec=5, while credentials expired leaves it Stays down with run/LABEL.auth and auth expired until gtunnel start clears it; A toggles auto-start, which on macOS is ~/Library/LaunchAgents/LABEL.plist starting at login and on Linux is systemctl --user enable plus loginctl enable-linger](images/architecture/gtunnel-service-lifecycle.png)
 
-A restart cannot renew a login, so a supervisor that sees gcloud die of `Reauthentication required` (or of a denied impersonation, an invalid key or a missing configuration) stops the loop and leaves `run/<label>.auth` behind, holding the failure's name (`login-expired`, `impersonation-denied`, ...), which keeps `list` on `auth expired` or `credentials refused` after the log goes quiet. It exits 0 on macOS, where `KeepAlive` restarts every non-zero exit, and 78 on Linux, which the unit lists in `RestartPreventExitStatus`. `gtunnel start`, and the supervisor itself, clear the marker.
+A restart cannot renew a login, so a supervisor that sees gcloud die of `Reauthentication required` (or of a denied impersonation, an invalid key or a missing configuration) stops the loop and leaves `run/<label>.auth` behind, holding the failure's name (`login-expired`, `impersonation-denied`, ...), which keeps `list` on `auth expired` or `credentials refused` after the log goes quiet. It exits 0 on macOS, where `KeepAlive` restarts every non-zero exit, and 78 on Linux, which the unit lists in `RestartPreventExitStatus`. `gtunnel start`, and the supervisor itself, clear the marker. A supervisor that spends its [restart budget](configuration.md#the-restart-budget) writes `run/<label>.crash` instead and exits the same way.
 
 The opposite case is a gcloud that exits 0 without being asked to stop. `launchd` (`SuccessfulExit:false`) and `systemd` (`Restart=on-failure`) read 0 as finished, and on macOS 0 is also the park code above, so the tunnel would stay down with nothing in the log. The supervisor logs `gcloud exited 0 on its own, restarting` and exits 1, which is outside `RestartPreventExitStatus` and does not spend the restart budget. A stop that `stop`, `delete` or a signal asked for still ends the job.
 

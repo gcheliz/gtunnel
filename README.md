@@ -54,7 +54,7 @@ brew install gcheliz/tap/gtunnel
 [latest release](https://github.com/gcheliz/gtunnel/releases/latest):
 
 ```
-VERSION="v0.3.21"
+VERSION="v0.3.22"
 F="gtunnel-macos-arm64-${VERSION}.tar.gz"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F.sha256"
@@ -62,7 +62,7 @@ shasum -a 256 -c "$F.sha256" && tar -xzf "$F" && sudo mv gtunnel /usr/local/bin/
 ```
 
 Other machines, `cargo install`, the build attestation and upgrades (`gtunnel update` for a download or cargo install): [docs/usage.md](docs/usage.md#4-install-gtunnel).
-There is no `cargo install gtunnel`: that crates.io name is an unrelated crate. Run `gtunnel doctor` next.
+The crates.io `gtunnel` is an unrelated crate ([install](docs/usage.md#4-install-gtunnel)). Run `gtunnel doctor` next.
 
 ## Quick start
 

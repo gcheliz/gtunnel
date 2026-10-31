@@ -30,8 +30,8 @@ a working install, so installation problems come first.
 
 ### `cargo install gtunnel` installed something else
 
-`gtunnel` on crates.io is an unrelated tcp-over-grpc proxy by another author, published in
-2022. Installing it is harmless but leaves two foreign binaries behind:
+The crates.io `gtunnel` is another author's crate ([Install gtunnel](usage.md#4-install-gtunnel)).
+Installing it is harmless but leaves two foreign binaries behind:
 
 ```
 $ ls ~/.cargo/bin
@@ -84,12 +84,11 @@ from a checkout behind `main` does this, and nothing is broken.
 `git pull && cargo install --path .` from a clone, or
 `cargo install --git https://github.com/gcheliz/gtunnel --force` from the repository.
 
-### A service or `gtunnel_run` fails after an update, with `(deleted)` in the program path
+### A service or `gtunnel_run_tunnel` fails after an update, with `(deleted)` in the program path
 
-On Linux a process that outlives an update still runs the replaced file, and the kernel names
-it `/path/gtunnel (deleted)`. gtunnel drops that suffix and, when a Homebrew `opt` or `bin`
-path or a `PATH` entry reaches the same file, writes that stable path instead of the versioned
-Cellar one. A unit written by an older version still carries the bad path:
+On Linux a process that outlives an update still runs the replaced file under a suffixed
+name. gtunnel writes a stable path instead ([update](commands.md#update)). A unit written by
+an older version still carries the bad path:
 `gtunnel restart <name>` rewrites it, and a restart of the TUI or MCP server clears the rest.
 
 ### `gtunnel: command not found` right after installing
@@ -175,7 +174,7 @@ emptied when its tunnel starts, so a line in it was written by the process runni
 | `4004` | IAP asked gcloud to reauthenticate; gcloud resumes the session on its own | Nothing, unless it repeats: then check the account's credentials with `gtunnel doctor` |
 | `Unable to reconnect within` | gcloud gave up reconnecting to IAP after 15 minutes and the clients on the tunnel were cut | Restart the tunnel; see [Limits](architecture.md#limits) |
 | `Address already in use` | Another process holds the local port | `gtunnel doctor`, or set `--local-port` |
-| `remote port forwarding failed` | The relay still holds the listener of a session that is gone, usually after the laptop slept or changed network. The supervisor retries every 7.5 to 15 seconds for 5 minutes without spending the restart budget; an updated relay drops the dead session in about 30 seconds | Wait. If it lasts minutes, run `gtunnel relay up`: a relay created before the keepalive settings existed gets them from it. `gtunnel restart` does not help |
+| `remote port forwarding failed` | The relay still holds the listener of a session that is gone, usually after the laptop slept or changed network. The supervisor retries for a bounded time without spending the [restart budget](configuration.md#the-restart-budget); an updated relay drops the dead session in about 30 seconds | Wait. If it lasts minutes, run `gtunnel relay up`: a relay created before the keepalive settings existed gets them from it. `gtunnel restart` does not help |
 | `gcloud exited 0 on its own, restarting` | gcloud ended without being asked to, so the tunnel was down. The supervisor reports it as a failure (exit 1) so the service manager starts it again, and it does not spend the restart budget | Nothing, unless it repeats: then read the lines above it in the log for why gcloud keeps quitting |
 | `Too many open files` | The tunnel ran out of file descriptors | `gtunnel doctor` names the process holding them, see below |
 | `consider installing NumPy` | gcloud's Python has no NumPy | See NumPy below |
