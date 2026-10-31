@@ -30,6 +30,9 @@ pub struct Instance {
     // The short name (`e2-micro`), not the URL the API returns, so it compares
     // with the setting. None when the API did not say.
     pub machine_type: Option<String>,
+    // RFC 3339, as the API returns it. The relay's boot disk is made in the
+    // same call as the instance, so this is also the age of its image.
+    pub creation_timestamp: Option<String>,
 }
 
 impl Instance {
@@ -58,6 +61,8 @@ struct RawInstance {
     metadata: RawMetadata,
     #[serde(default, rename = "machineType")]
     machine_type: Option<String>,
+    #[serde(default, rename = "creationTimestamp")]
+    creation_timestamp: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -118,6 +123,7 @@ impl RawInstance {
                 .machine_type
                 .as_deref()
                 .map(|u| last_segment(u).to_string()),
+            creation_timestamp: self.creation_timestamp,
         }
     }
 }
@@ -1945,6 +1951,7 @@ mod tests {
             metadata,
             metadata_fingerprint: Some("fp-meta".to_string()),
             machine_type: None,
+            creation_timestamp: None,
         }
     }
 

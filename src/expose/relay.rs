@@ -22,6 +22,9 @@ pub struct RelayUpOptions {
     pub network: String,
     pub managed_zone: String,
     pub machine_type: String,
+    // Rebuild the VM from the current image family. The only way to patch a
+    // relay that has no route to the package mirrors.
+    pub recreate: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -325,6 +328,7 @@ pub async fn relay_up(
     ensure_firewall(client, project, &lb_health_check_firewall(&names, network)).await?;
 
     let existing_vm = compute::get_instance(client, project, zone, &names.relay_vm).await?;
+    let mut rebuilt = false;
     let vm_change = match &existing_vm {
         None => {
             let op = compute::insert_relay_instance(
@@ -339,6 +343,26 @@ pub async fn relay_up(
             .await?;
             client.wait_operation(&op).await?;
             await_relay_ready(client, project, zone, &names.relay_vm, 0).await;
+            Reconciled::Created
+        }
+        Some(_) if opts.recreate => {
+            // Deleting first frees the name; the instance group drops a
+            // deleted member by itself, so it is joined again below
+            let gone = compute::delete_instance(client, project, zone, &names.relay_vm).await;
+            drop_resource(client, &format!("relay instance {}", names.relay_vm), gone).await?;
+            let op = compute::insert_relay_instance(
+                client,
+                project,
+                zone,
+                &names.relay_vm,
+                network,
+                RELAY_TAG,
+                &opts.machine_type,
+            )
+            .await?;
+            client.wait_operation(&op).await?;
+            await_relay_ready(client, project, zone, &names.relay_vm, 0).await;
+            rebuilt = true;
             Reconciled::Created
         }
         Some(vm) => {
@@ -376,7 +400,18 @@ pub async fn relay_up(
         compute::get_instance_group(client, project, zone, &names.instance_group).await?;
     let group_url = match group_url {
         Some(url) => {
-            step(false, &format!("instance group {}", names.instance_group));
+            if rebuilt {
+                let op = compute::add_instance_to_group(
+                    client,
+                    project,
+                    zone,
+                    &names.instance_group,
+                    &names.relay_vm,
+                )
+                .await?;
+                client.wait_operation(&op).await?;
+            }
+            step(rebuilt, &format!("instance group {}", names.instance_group));
             url
         }
         None => {
@@ -1017,6 +1052,7 @@ mod tests {
             network: "default".to_string(),
             managed_zone: "example".to_string(),
             machine_type: "e2-micro".to_string(),
+            recreate: false,
         }
     }
 
@@ -1101,6 +1137,7 @@ mod tests {
             network: "default".to_string(),
             managed_zone: "example".to_string(),
             machine_type: "e2-micro".to_string(),
+            recreate: false,
         };
         let cfg = relay_up(&client(&server), &account(), &opts)
             .await
@@ -1110,6 +1147,71 @@ mod tests {
         assert_eq!(cfg.default_domain, "dev.example.com");
         assert_eq!(requests(&server, "POST", "/instances").await, 0);
         assert_eq!(requests(&server, "POST", "/global/firewalls").await, 2);
+    }
+
+    #[tokio::test]
+    async fn relay_up_recreate_deletes_and_reinserts_the_instance() {
+        let server = MockServer::start().await;
+        // The rebuilt VM is waited on through its serial console
+        Mock::given(method("GET"))
+            .and(path_regex(r".*/serialPort"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "contents": "startup-script: gtunnel-relay-ready\n",
+                "next": 40
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path_regex(r".*/instances/gt-dev-relay"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "name": "op-1",
+                "status": "DONE"
+            })))
+            .mount(&server)
+            .await;
+        relay_mocks(&server).await;
+        let opts = RelayUpOptions {
+            recreate: true,
+            ..options()
+        };
+
+        relay_up(&client(&server), &account(), &opts)
+            .await
+            .expect("relay up --recreate");
+
+        let log = server.received_requests().await.unwrap_or_default();
+        let position = |verb: &str, needle: &str| {
+            log.iter().position(|r| {
+                r.method.as_str().eq_ignore_ascii_case(verb) && r.url.path().contains(needle)
+            })
+        };
+        assert_eq!(
+            requests(&server, "DELETE", "/instances/gt-dev-relay").await,
+            1
+        );
+        assert_eq!(requests(&server, "POST", "/instances").await, 1);
+        assert!(
+            position("DELETE", "/instances/").expect("delete")
+                < position("POST", "/instances").expect("insert"),
+            "the name is free only after the delete"
+        );
+        // Nothing the recreate is not about is deleted
+        assert_eq!(requests(&server, "DELETE", "/instanceGroups").await, 0);
+        assert_eq!(requests(&server, "DELETE", "/forwardingRules").await, 0);
+        assert_eq!(requests(&server, "DELETE", "/sslCertificates").await, 0);
+        assert_eq!(requests(&server, "POST", "/addInstances").await, 1);
+    }
+
+    #[tokio::test]
+    async fn relay_up_without_recreate_never_deletes_the_instance() {
+        let server = relay_server().await;
+
+        relay_up(&client(&server), &account(), &options())
+            .await
+            .expect("relay up");
+
+        assert_eq!(requests(&server, "DELETE", "/instances").await, 0);
+        assert_eq!(requests(&server, "POST", "/addInstances").await, 0);
     }
 
     // Idempotence is "no request when everything matches": creating nothing is
