@@ -874,6 +874,14 @@ watchdog or `mcp`). Setting `enabled = true` afterwards stays on.
 | TUI, notifications on, no watchdog installed | says `notifications need the watchdog when the TUI is closed: gtunnel watch install` once, installs nothing. With notifications off it says nothing |
 | A tunnel never seen before | recorded silently, so the first pass does not announce every state |
 
+| Platform | How a notification is delivered |
+|---|---|
+| macOS | `terminal-notifier` when installed, otherwise `osascript`, which ships with macOS |
+| Linux | The desktop's notification service on the session D-Bus (`org.freedesktop.Notifications`), which every desktop environment runs; nothing to install. `notify-send` is tried when the bus call fails |
+
+A command waits up to 5 seconds for its notification before it exits, so a watchdog pass
+delivers what it announces. See [Notifications do not appear](troubleshooting.md#notifications-do-not-appear).
+
 ## doctor
 
 Reports what gtunnel can see without changing anything.

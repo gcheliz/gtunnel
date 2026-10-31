@@ -640,6 +640,16 @@ loginctl enable-linger $USER
 A service that starts and dies at once is almost always PATH: gtunnel writes gcloud's
 directory into the unit, and `gtunnel restart <name>` rewrites it after gcloud moves.
 
+## Notifications do not appear
+
+Notifications are off until turned on (`N` in the TUI). With them on, only the watchdog notifies
+while the TUI is closed, so `gtunnel watch install` must have run.
+
+| Platform | What delivery needs | Check |
+|---|---|---|
+| macOS | `osascript`, part of macOS. Notifications for Script Editor (or `terminal-notifier`) allowed in System Settings, Notifications | `osascript -e 'display notification "test"'` |
+| Linux | A session D-Bus and a notification service on it: every desktop environment runs one; a bare window manager needs one such as `dunst` or `mako`. No package is needed for gtunnel itself | `busctl --user list \| grep org.freedesktop.Notifications` |
+
 ## Cost
 
 Access mode creates nothing and costs nothing beyond egress.

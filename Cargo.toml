@@ -38,6 +38,11 @@ libc = "0.2"
 humantime = "2"
 clap_complete = { version = "4.6.11", features = ["unstable-dynamic"] }
 
+# Desktop notifications over the session bus, so a Linux desktop needs no
+# notify-send. The tokio backend reuses the runtime crate already built.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "6.2", default-features = false, features = ["tokio"] }
+
 [dev-dependencies]
 wiremock = "0.6"
 tempfile = "3"
