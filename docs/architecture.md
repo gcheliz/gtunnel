@@ -26,8 +26,9 @@ The service runs:
 
 ```
 gcloud compute start-iap-tunnel <instance> <remote-port> \
-  --local-host-port=localhost:<local-port> --zone=<zone> --verbosity=info \
-  [--project ...] [--impersonate-service-account ...]
+  --local-host-port=localhost:<local-port> --zone=<zone> \
+  --configuration=<configuration> --project=<project> --verbosity=info \
+  [--impersonate-service-account ...]
 ```
 
 `--verbosity=info` makes a working tunnel say so, because gcloud's per-connection lines are
@@ -48,7 +49,8 @@ forward from the far side. It is a different gcloud command, not a flag:
 
 ```
 gcloud compute ssh <instance> --zone=<zone> --tunnel-through-iap --quiet \
-  --verbosity=info [--project ...] -- \
+  --configuration=<configuration> --project=<project> --verbosity=info \
+  [--impersonate-service-account ...] -- \
   -N -o ConnectTimeout=30 -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 \
   -o ServerAliveCountMax=3 \
   -o LogLevel=DEBUG -L <local-port>:<host>:<remote-port>
@@ -89,9 +91,12 @@ reconnect in a loop and a slow upload fails with a 502 or 504. GCP closes every 
 The tunnel process runs:
 
 ```
-gcloud compute ssh <relay-instance> --zone=<zone> --tunnel-through-iap --quiet -- \
+gcloud compute ssh <relay-instance> --zone=<zone> --tunnel-through-iap --quiet \
+  --configuration=<configuration> --project=<project> --verbosity=info \
+  [--impersonate-service-account ...] -- \
   -N -o ConnectTimeout=30 -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 \
-  -o ServerAliveCountMax=3 -R 0.0.0.0:<relay-port>:localhost:<local-port>
+  -o ServerAliveCountMax=3 \
+  -o LogLevel=DEBUG -R 0.0.0.0:<relay-port>:localhost:<local-port>
 ```
 
 Without `ExitOnForwardFailure=yes`, SSH stays up after the remote bind fails and the tunnel

@@ -31,7 +31,7 @@ Type `printf '#!/bin/sh\n/bin/ps "$@" | grep -v start-iap-tunnel || true\n' > "$
 Enter
 Type `printf 'selected_account = "demo"\n[[accounts]]\nname = "demo"\ngcloud_configuration = "demo"\nproject = "example-dev-1a2b"\ndefault_zone = "europe-west1-b"\n' > "$GT/cfg/config.toml"`
 Enter
-Type `export PATH="$PWD/target/release:$GT/bin:$PATH" GTUNNEL_CONFIG_DIR="$GT/cfg" GTUNNEL_NO_NOTIFY=1 PS1="$ " && . docs/tapes/agent.sh`
+Type `export PATH="$PWD/target/release:$GT/bin:$PATH" GTUNNEL_CONFIG_DIR="$GT/cfg" PS1="$ " && . docs/tapes/agent.sh`
 Enter
 # A fresh update cache, so the recording carries no "newer release" hint that
 # would date it

@@ -84,7 +84,7 @@ from a checkout behind `main` does this, and nothing is broken.
 `git pull && cargo install --path .` from a clone, or
 `cargo install --git https://github.com/gcheliz/gtunnel --force` from the repository.
 
-### A service or `gtunnel_run` fails after an update, with `(deleted)` in the program path
+### A service or `gtunnel_run_tunnel` fails after an update, with `(deleted)` in the program path
 
 On Linux a process that outlives an update still runs the replaced file, and the kernel names
 it `/path/gtunnel (deleted)`. gtunnel drops that suffix and, when a Homebrew `opt` or `bin`

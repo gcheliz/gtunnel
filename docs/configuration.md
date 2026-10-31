@@ -381,7 +381,8 @@ machine_type = "e2-small"
 The setting is read when the instance is created and never applied to one that exists: a
 resize needs a stop, and a stop drops every exposed URL until the instance is back. When the
 running relay has another type, `relay up` and `relay status` say so and print the commands
-that change it (see [relay](commands.md#relay)); nothing is stopped for you.
+that change it (see [relay](commands.md#relay)); nothing is stopped for you. `relay up --recreate`
+rebuilds only the instance, at the configured type.
 
 ## The restart budget
 

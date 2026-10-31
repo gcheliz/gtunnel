@@ -398,8 +398,8 @@ because it holds nothing.
 
 **Status:** Accepted, 2026-10-28, amended 2026-10-28 (the supervisor stops a job that spends its restart budget, #229), amended 2026-10-30 (a network outage is waited out, never counted, #370)
 
-A tunnel's supervisor runs gcloud once and exits with gcloud's status. Restarting it is the
-service manager's job, with fixed settings, and gtunnel does not speak `sd_notify` (#209).
+A tunnel's supervisor runs gcloud once and exits with gcloud's status, or 1 when gcloud exits 0
+without being asked to stop (#428). Restarting it is the service manager's job, with fixed settings, and gtunnel does not speak `sd_notify` (#209).
 
 | Platform | Settings | What they do |
 |---|---|---|
@@ -418,7 +418,8 @@ never logs its listener is killed at `TimeoutStartSec` instead of staying up. It
 reopening when a client reads systemd readiness rather than the ready file.
 
 The cost: a failure that is permanent but not about credentials, such as a wrong instance
-name, is retried every 5 or 10 s until the restart budget stops it (amendment below).
+name, is retried after the manager's 5 or 10 s plus a wait drawn from zero up to a doubling
+ceiling (#411), until the restart budget stops it (amendment below).
 
 ### Amendment: the supervisor stops a job that spends its restart budget
 

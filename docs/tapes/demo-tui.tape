@@ -19,7 +19,7 @@ Hide
 # An empty configuration directory: any command gtunnel runs at start-up, such
 # as reinstalling a launchd job that predates the binary, then finds no job of
 # the machine's own to name in the recording or to touch
-Type `export GT=$(mktemp -d) && export PATH="$PWD/target/release:$PATH" GTUNNEL_CONFIG_DIR="$GT" GTUNNEL_NO_NOTIFY=1`
+Type `export GT=$(mktemp -d) && export PATH="$PWD/target/release:$PATH" GTUNNEL_CONFIG_DIR="$GT"`
 Enter
 Type "clear"
 Enter
