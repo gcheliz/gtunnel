@@ -1,3 +1,5 @@
+mod common;
+
 use std::fs;
 use std::process::{Command, Output, Stdio};
 use tempfile::TempDir;
@@ -60,7 +62,6 @@ impl Harness {
 
         let gcloud = root.join("bin/gcloud");
         fs::write(&gcloud, stub).unwrap();
-        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(&gcloud, fs::Permissions::from_mode(0o755)).unwrap();
@@ -157,49 +158,25 @@ fn doctor_json_outputs_valid_array_of_findings() {
     assert!(val.is_array(), "expected json array: {val:?}");
 }
 
-// A run record as `gtunnel run` writes it. The pid decides whether the run
-// counts as live, so the caller picks one that is or is not.
-// Started now, and the start time is returned: a run whose TTL had long passed
-// is one `list` stops, so a fixture that means "live" must not be expired.
+// Started now, and the start time is returned, for the assertions on expiry
 fn write_run_record(h: &Harness, name: &str, pid: u32, ttl_secs: Option<u64>) -> u64 {
     write_run_record_on(h, name, pid, ttl_secs, 15999)
 }
 
 fn write_run_record_on(h: &Harness, name: &str, pid: u32, ttl_secs: Option<u64>, port: u16) -> u64 {
-    let started_at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    let dir = h.dir.path().join("config/run");
-    fs::create_dir_all(&dir).unwrap();
-    let ttl = ttl_secs
-        .map(|t| format!(r#","ttl_secs":{t}"#))
-        .unwrap_or_default();
-    fs::write(
-        dir.join(format!("demo-{name}.json")),
-        format!(
-            r#"{{"name":"{name}","account_name":"demo","pid":{pid},"started_at":{started_at},
-"spec":{{"mode":"access","target":{{"kind":"instance","instance":"my-vm","zone":"europe-west1-b"}},"remote_port":5432,"local_port":{port}}}{ttl}}}"#
-        ),
-    )
-    .unwrap();
+    let started_at = common::unix_now();
+    let spec = format!(
+        r#"{{"mode":"access","target":{{"kind":"instance","instance":"my-vm","zone":"europe-west1-b"}},"remote_port":5432,"local_port":{port}}}"#
+    );
+    common::write_run_record(h.dir.path(), "demo", name, pid, started_at, ttl_secs, &spec);
     started_at
-}
-
-// Orphaned so it is a live pid that is not this test process
-fn live_pid() -> (std::process::Child, u32) {
-    let child = Command::new("/bin/sleep")
-        .arg("30")
-        .spawn()
-        .expect("spawn sleep");
-    let pid = child.id();
-    (child, pid)
 }
 
 #[test]
 fn a_live_run_is_listed_in_json_with_its_expiry() {
     let h = Harness::new();
-    let (mut sleeper, pid) = live_pid();
+    let mut sleeper = common::sleeper();
+    let pid = sleeper.id();
     let started_at = write_run_record(&h, "scratch", pid, Some(120));
     let out = h.run(&["list", "--json"]);
     let _ = sleeper.kill();
@@ -227,7 +204,8 @@ fn a_live_run_is_listed_in_json_with_its_expiry() {
 #[test]
 fn a_run_without_a_ttl_has_no_expires_at() {
     let h = Harness::new();
-    let (mut sleeper, pid) = live_pid();
+    let mut sleeper = common::sleeper();
+    let pid = sleeper.id();
     write_run_record(&h, "scratch", pid, None);
     let out = h.run(&["list", "--json"]);
     let _ = sleeper.kill();
@@ -257,7 +235,8 @@ fn a_dead_run_record_is_not_listed() {
 #[test]
 fn a_live_run_is_listed_in_the_text_table() {
     let h = Harness::new();
-    let (mut sleeper, pid) = live_pid();
+    let mut sleeper = common::sleeper();
+    let pid = sleeper.id();
     write_run_record(&h, "scratch", pid, None);
     let out = h.run(&["list"]);
     let _ = sleeper.kill();
@@ -274,7 +253,8 @@ fn a_live_run_is_listed_in_the_text_table() {
 #[test]
 fn a_live_run_with_a_ttl_says_when_it_stops() {
     let h = Harness::new();
-    let (mut sleeper, pid) = live_pid();
+    let mut sleeper = common::sleeper();
+    let pid = sleeper.id();
     write_run_record(&h, "scratch", pid, Some(120));
     let out = h.run(&["list"]);
     let _ = sleeper.kill();
@@ -428,7 +408,8 @@ fn answering_port() -> u16 {
 fn a_running_run_carries_its_local_port_and_the_probes_health() {
     let h = Harness::new();
     let port = answering_port();
-    let (mut sleeper, pid) = live_pid();
+    let mut sleeper = common::sleeper();
+    let pid = sleeper.id();
     write_run_record_on(&h, "scratch", pid, None, port);
     let out = h.run(&["list", "--json"]);
     let _ = sleeper.kill();

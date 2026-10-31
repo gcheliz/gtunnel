@@ -71,6 +71,18 @@ pub enum TunnelSpec {
     },
 }
 
+impl TunnelSpec {
+    /// The port this machine listens on, which only an access tunnel has: an
+    /// expose tunnel listens on the relay. On the spec, not the tunnel, because
+    /// a record and a bare spec both reach for it and a tunnel can delegate.
+    pub fn local_port(&self) -> Option<u16> {
+        match self {
+            TunnelSpec::Access { local_port, .. } => Some(*local_port),
+            TunnelSpec::Expose { .. } => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersistentTunnel {
     pub name: String,
@@ -396,10 +408,7 @@ impl TunnelState {
     pub fn used_local_ports(&self) -> HashSet<u16> {
         self.tunnels
             .iter()
-            .filter_map(|t| match &t.spec {
-                TunnelSpec::Access { local_port, .. } => Some(*local_port),
-                _ => None,
-            })
+            .filter_map(|t| t.spec.local_port())
             .collect()
     }
 

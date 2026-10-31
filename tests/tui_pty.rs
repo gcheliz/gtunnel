@@ -5,7 +5,6 @@
 //! so they cannot see a key that never reaches the app, a panic on resize, or
 //! a terminal left on the alternate screen after `q`. These tests exist for
 //! exactly those, and for nothing about layout.
-#![cfg(unix)]
 
 use portable_pty::{native_pty_system, CommandBuilder, ExitStatus, MasterPty, PtySize};
 use std::io::{Read, Write};

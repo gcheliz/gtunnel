@@ -8,7 +8,7 @@
 
 mod common;
 
-use common::{poll, Harness, BOUND};
+use common::{alive, poll, Harness, BOUND};
 use std::fs;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -45,12 +45,6 @@ gcloud_configuration = "work"
 project = "example-dev-1a2b"
 default_zone = "europe-west1-b"
 "#;
-
-fn alive(pid: i32) -> bool {
-    // SAFETY: signal 0 sends nothing; the pid was read from the stub's own
-    // file and is positive.
-    unsafe { libc::kill(pid, 0) == 0 }
-}
 
 impl Harness {
     // No tunnels.toml: these runs are ephemeral and save nothing

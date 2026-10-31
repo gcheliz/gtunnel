@@ -313,17 +313,10 @@ pub async fn ensure_route(client: &GcpClient, acct: &Account, t: &PersistentTunn
 mod tests {
     use super::*;
     use crate::config::{Account, DomainConfig};
-    use crate::gcp::{Endpoints, GcpClient, TokenSource};
+    use crate::gcp::GcpClient;
     use crate::state::{PersistentTunnel, TunnelSpec};
     use wiremock::matchers::{method, path_regex};
     use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    fn client(server: &MockServer) -> GcpClient {
-        GcpClient::new(
-            TokenSource::Static("tok".to_string()),
-            Endpoints::single(&server.uri()),
-        )
-    }
 
     // A fingerprint conflict means someone else wrote first; going straight
     // back to read races them again at the same instant
@@ -478,7 +471,7 @@ mod tests {
             .await;
         base_mocks(&server).await;
 
-        ensure_route(&client(&server), &account(), &tunnel())
+        ensure_route(&GcpClient::for_mock(&server), &account(), &tunnel())
             .await
             .expect("ensure route");
 
@@ -499,7 +492,7 @@ mod tests {
             local_port: 15432,
         };
 
-        ensure_route(&client(&server), &account(), &t)
+        ensure_route(&GcpClient::for_mock(&server), &account(), &t)
             .await
             .expect("ensure route");
 
@@ -526,9 +519,14 @@ mod tests {
             .await;
         base_mocks(&server).await;
 
-        add_route(&client(&server), &account(), &expose(), &tunnel())
-            .await
-            .expect("add route");
+        add_route(
+            &GcpClient::for_mock(&server),
+            &account(),
+            &expose(),
+            &tunnel(),
+        )
+        .await
+        .expect("add route");
 
         assert_eq!(count(&server, "GET", "/urlMaps/").await, 2);
         assert_eq!(count(&server, "PUT", "/urlMaps/").await, 2);
@@ -544,9 +542,14 @@ mod tests {
         let server = MockServer::start().await;
         base_mocks(&server).await;
 
-        let err = add_route(&client(&server), &account(), &expose(), &tunnel())
-            .await
-            .expect_err("should refuse");
+        let err = add_route(
+            &GcpClient::for_mock(&server),
+            &account(),
+            &expose(),
+            &tunnel(),
+        )
+        .await
+        .expect_err("should refuse");
         assert_eq!(
             err.to_string(),
             "the relay for 'dev' is being torn down; try again after relay down finishes"
@@ -563,9 +566,14 @@ mod tests {
             .await;
         base_mocks(&server).await;
 
-        let err = add_route(&client(&server), &account(), &expose(), &tunnel())
-            .await
-            .expect_err("should give up");
+        let err = add_route(
+            &GcpClient::for_mock(&server),
+            &account(),
+            &expose(),
+            &tunnel(),
+        )
+        .await
+        .expect_err("should give up");
         assert!(err.to_string().contains("fingerprint"), "{err}");
         assert_eq!(count(&server, "PUT", "/urlMaps/").await, 5);
     }
@@ -579,9 +587,14 @@ mod tests {
             .await;
         base_mocks(&server).await;
 
-        add_route(&client(&server), &account(), &expose(), &tunnel())
-            .await
-            .expect("add route");
+        add_route(
+            &GcpClient::for_mock(&server),
+            &account(),
+            &expose(),
+            &tunnel(),
+        )
+        .await
+        .expect("add route");
 
         assert_eq!(count(&server, "POST", "/rrsets").await, 1);
         assert_eq!(count(&server, "POST", "/backendServices").await, 1);
@@ -599,9 +612,14 @@ mod tests {
             .await;
         base_mocks(&server).await;
 
-        add_route(&client(&server), &account(), &expose(), &tunnel())
-            .await
-            .expect("add route");
+        add_route(
+            &GcpClient::for_mock(&server),
+            &account(),
+            &expose(),
+            &tunnel(),
+        )
+        .await
+        .expect("add route");
 
         let lists: Vec<_> = server
             .received_requests()
@@ -646,9 +664,14 @@ mod tests {
             .await;
         base_mocks(&server).await;
 
-        let err = remove_route(&client(&server), &account(), &expose(), &tunnel())
-            .await
-            .expect_err("should fail");
+        let err = remove_route(
+            &GcpClient::for_mock(&server),
+            &account(),
+            &expose(),
+            &tunnel(),
+        )
+        .await
+        .expect_err("should fail");
         let message = format!("{err:#}");
         assert!(
             message.contains("500") || message.contains("backend error"),
@@ -684,9 +707,14 @@ mod tests {
         if let TunnelSpec::Expose { private: p, .. } = &mut private.spec {
             *p = true;
         }
-        add_route(&client(&server), &account(), &expose(), &private)
-            .await
-            .expect("add route");
+        add_route(
+            &GcpClient::for_mock(&server),
+            &account(),
+            &expose(),
+            &private,
+        )
+        .await
+        .expect("add route");
 
         assert_eq!(
             count(&server, "PATCH", "/backendServices/gt-dev-api").await,
@@ -715,9 +743,14 @@ mod tests {
             .await;
         base_mocks(&server).await;
 
-        add_route(&client(&server), &account(), &expose(), &tunnel())
-            .await
-            .expect("add route");
+        add_route(
+            &GcpClient::for_mock(&server),
+            &account(),
+            &expose(),
+            &tunnel(),
+        )
+        .await
+        .expect("add route");
 
         assert_eq!(count(&server, "PATCH", "/backendServices").await, 0);
     }
@@ -758,7 +791,7 @@ mod tests {
             .await;
         base_mocks(&server).await;
 
-        ensure_route(&client(&server), &account(), &tunnel())
+        ensure_route(&GcpClient::for_mock(&server), &account(), &tunnel())
             .await
             .expect("first call");
         assert_eq!(count(&server, "PATCH", "/backendServices/").await, 1);
@@ -772,7 +805,7 @@ mod tests {
         let body: serde_json::Value = serde_json::from_slice(&patch.body).expect("json");
         assert_eq!(body["timeoutSec"], 3600);
 
-        ensure_route(&client(&server), &account(), &tunnel())
+        ensure_route(&GcpClient::for_mock(&server), &account(), &tunnel())
             .await
             .expect("second call");
         assert_eq!(

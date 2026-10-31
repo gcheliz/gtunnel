@@ -552,10 +552,6 @@ pub fn parse_lsof_holders(text: &str, port: u16, exclude: Option<u32>) -> Vec<Ho
 }
 
 /// [`parse_lsof_holders`] against the machine, excluding this process.
-///
-/// The watchdog is its consumer and lands with the breaker; until then only
-/// the parser above is exercised, which is where the judgement lives.
-#[allow(dead_code)]
 pub fn holders_for_port(port: u16) -> Vec<Holder> {
     lsof_listing()
         .map(|text| parse_lsof_holders(&text, port, Some(std::process::id())))
@@ -1568,7 +1564,6 @@ ssh      2150     you    7u  IPv4 0x6              0t0  TCP 127.0.0.1:5432 (LIST
         register_probe("localhost:8443", 50000);
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_listing_is_read_whatever_the_exit_status_was() {
         use std::os::unix::process::ExitStatusExt;

@@ -184,7 +184,11 @@ fn ledger_path(dir: &Path) -> PathBuf {
     dir.join("lifecycle.json")
 }
 
-fn now_secs() -> u64 {
+/// Seconds since the epoch, with a clock set before 1970 reading as zero: every
+/// caller compares ages, and an age that saturates is safer than one that
+/// panics. One copy, because five had already drifted in how they spelled the
+/// fallback.
+pub(crate) fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())

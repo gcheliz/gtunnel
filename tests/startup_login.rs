@@ -52,7 +52,6 @@ impl Harness {
 
         let gcloud = root.join("bin/gcloud");
         fs::write(&gcloud, STUB).unwrap();
-        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(&gcloud, fs::Permissions::from_mode(0o755)).unwrap();

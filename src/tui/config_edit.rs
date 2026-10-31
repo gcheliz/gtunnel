@@ -389,29 +389,17 @@ impl std::fmt::Display for Changed {
 
 impl std::error::Error for Changed {}
 
-#[cfg(unix)]
 fn set_mode(path: &Path, mode: u32) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
         .with_context(|| format!("Failed to set the mode of {}", path.display()))
 }
 
-#[cfg(not(unix))]
-fn set_mode(_path: &Path, _mode: u32) -> Result<()> {
-    Ok(())
-}
-
-#[cfg(unix)]
 fn mode_of(path: &Path) -> Option<u32> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::metadata(path)
         .ok()
         .map(|m| m.permissions().mode() & 0o777)
-}
-
-#[cfg(not(unix))]
-fn mode_of(_path: &Path) -> Option<u32> {
-    None
 }
 
 /// Replaces `path` with the staged copy in one rename, if `path` is still what
@@ -461,7 +449,9 @@ pub fn commit(staged: &Staged, path: &Path) -> Result<()> {
         .and_then(|f| f.sync_all())
         .with_context(|| format!("Failed to flush {}", staged.path.display()))?;
     std::fs::rename(&staged.path, path)
-        .with_context(|| format!("Failed to replace {}", path.display()))
+        .with_context(|| format!("Failed to replace {}", path.display()))?;
+    crate::fsutil::sync_parent(path);
+    Ok(())
 }
 
 /// Removes the staged copy. A copy that is already gone is not an error: the

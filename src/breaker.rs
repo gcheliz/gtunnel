@@ -504,7 +504,6 @@ mod persist_tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "").unwrap();
 
-        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
@@ -539,7 +538,6 @@ mod persist_tests {
     // previous file whole, where a direct write would have emptied it.
     #[test]
     fn a_write_interrupted_partway_leaves_the_previous_file_intact() {
-        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let _dir = TempConfigDir::new();

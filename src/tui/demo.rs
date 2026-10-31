@@ -253,10 +253,7 @@ impl App {
         app.used_ports = demo_entries()
             .into_iter()
             .chain(staging_entries())
-            .filter_map(|e| match e.tunnel.spec {
-                TunnelSpec::Access { local_port, .. } => Some(local_port),
-                _ => None,
-            })
+            .filter_map(|e| e.tunnel.spec.local_port())
             .collect();
         app.load_demo_account();
         // The header's rule carries an available update; a fixed version, so the

@@ -8,6 +8,7 @@ use crate::daemon;
 use crate::expose::naming::{hostname_for, Names};
 use crate::expose::{relay, routes};
 use crate::gcp::{certmanager, dns, GcpClient};
+use crate::lifecycle::now_secs;
 use crate::state::{validate_tunnel_name, PersistentTunnel, TunnelSpec, TunnelState, TunnelStatus};
 
 // What the relay costs before anyone agrees to create it
@@ -259,13 +260,6 @@ fn new_expose_tunnel(
             private,
         },
     }
-}
-
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
 }
 
 /// Claim the name and the relay port, build the route, then make the claim a

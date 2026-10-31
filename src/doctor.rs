@@ -9,6 +9,7 @@ use crate::expose::routes;
 use crate::gcp::compute::{BackendService, NamedPort, UrlMap};
 use crate::gcp::dns::RecordSet;
 use crate::gcp::{certmanager, compute, dns, gcloud, iap, GcpClient};
+use crate::lifecycle::now_secs;
 use crate::probe::Holder;
 use crate::state::{local_port_is_free, AccessTarget, PersistentTunnel, TunnelSpec, TunnelState};
 
@@ -1014,13 +1015,6 @@ pub async fn run_doctor(
         );
     }
     out
-}
-
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
 }
 
 /// Reservations old enough that the `expose` which made them is not coming

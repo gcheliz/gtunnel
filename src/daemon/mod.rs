@@ -464,8 +464,7 @@ pub fn platform_label(account: &str, name: &str) -> String {
     systemd::unit_for(account, name)
 }
 
-// The platform backend every command calls; consumers land in Task 10
-#[allow(unused_imports)]
+// The platform backend every command calls
 #[cfg(target_os = "macos")]
 pub use launchd::{
     install, install_watchdog, restart, runtime_info, set_auto_start, start, status,
@@ -473,7 +472,6 @@ pub use launchd::{
     write_definition,
 };
 
-#[allow(unused_imports)]
 #[cfg(not(target_os = "macos"))]
 pub use systemd::{
     install, install_watchdog, restart, runtime_info, set_auto_start, start, status,

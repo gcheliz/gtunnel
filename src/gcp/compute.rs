@@ -1521,13 +1521,6 @@ mod tests {
         assert_eq!(pruned[0].name, "gt-default");
     }
 
-    fn client(server: &MockServer) -> crate::gcp::GcpClient {
-        crate::gcp::GcpClient::new(
-            crate::gcp::TokenSource::Static("tok".to_string()),
-            crate::gcp::Endpoints::single(&server.uri()),
-        )
-    }
-
     #[tokio::test]
     async fn list_instances_flattens_the_aggregated_list() {
         let server = MockServer::start().await;
@@ -1551,7 +1544,9 @@ mod tests {
             .mount(&server)
             .await;
 
-        let got = list_instances(&client(&server), "p").await.expect("list");
+        let got = list_instances(&GcpClient::for_mock(&server), "p")
+            .await
+            .expect("list");
         assert_eq!(got.len(), 2);
         assert_eq!(got[0].name, "bastion");
         assert_eq!(got[0].zone, "europe-west1-b");
@@ -1582,7 +1577,9 @@ mod tests {
             .mount(&server)
             .await;
 
-        let got = list_instances(&client(&server), "p").await.expect("list");
+        let got = list_instances(&GcpClient::for_mock(&server), "p")
+            .await
+            .expect("list");
         let bastion = &got[0];
         let node = &got[1];
         assert_eq!(bastion.name, "bastion");
@@ -1658,7 +1655,9 @@ mod tests {
             .mount(&server)
             .await;
 
-        let got = list_instances(&client(&server), "p").await.expect("list");
+        let got = list_instances(&GcpClient::for_mock(&server), "p")
+            .await
+            .expect("list");
         let names: Vec<&str> = got.iter().map(|i| i.name.as_str()).collect();
         assert_eq!(names, vec!["alpha", "middle", "zeta"]);
     }
@@ -1680,7 +1679,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let got = find_instances(&client(&server), "p", "bastion")
+        let got = find_instances(&GcpClient::for_mock(&server), "p", "bastion")
             .await
             .expect("find");
         let zones: Vec<&str> = got.iter().map(|i| i.zone.as_str()).collect();
@@ -1702,7 +1701,9 @@ mod tests {
             })))
             .mount(&server)
             .await;
-        let zones = list_zones(&client(&server), "p").await.expect("zones");
+        let zones = list_zones(&GcpClient::for_mock(&server), "p")
+            .await
+            .expect("zones");
         assert_eq!(zones, vec!["europe-west1-b", "us-central1-a"]);
     }
 
@@ -1713,7 +1714,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(404))
             .mount(&server)
             .await;
-        let got = get_instance(&client(&server), "p", "europe-west1-b", "nope")
+        let got = get_instance(&GcpClient::for_mock(&server), "p", "europe-west1-b", "nope")
             .await
             .expect("call");
         assert!(got.is_none());
@@ -1759,7 +1760,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let got = reconcile_health_check(&client(&server), "p", "gt-dev-hc")
+        let got = reconcile_health_check(&GcpClient::for_mock(&server), "p", "gt-dev-hc")
             .await
             .expect("reconcile");
 
@@ -1782,7 +1783,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let got = reconcile_health_check(&client(&server), "p", "gt-dev-hc")
+        let got = reconcile_health_check(&GcpClient::for_mock(&server), "p", "gt-dev-hc")
             .await
             .expect("reconcile");
 
@@ -1805,7 +1806,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let got = reconcile_health_check(&client(&server), "p", "gt-dev-hc")
+        let got = reconcile_health_check(&GcpClient::for_mock(&server), "p", "gt-dev-hc")
             .await
             .expect("reconcile");
 
@@ -1837,7 +1838,7 @@ mod tests {
         let want = BackendSettings::new(false);
 
         let got = reconcile_backend_service(
-            &client(&server),
+            &GcpClient::for_mock(&server),
             "p",
             "gt-dev-api",
             &want,
@@ -1862,7 +1863,7 @@ mod tests {
         let want = BackendSettings::new(true);
 
         let got = reconcile_backend_service(
-            &client(&server),
+            &GcpClient::for_mock(&server),
             "p",
             "gt-dev-api",
             &want,
@@ -1896,7 +1897,7 @@ mod tests {
             .await;
 
         insert_backend_service(
-            &client(&server),
+            &GcpClient::for_mock(&server),
             "p",
             "gt-dev-api",
             "gt-api",
@@ -1958,7 +1959,7 @@ mod tests {
             .await;
 
         let got = reconcile_relay_instance(
-            &client(&server),
+            &GcpClient::for_mock(&server),
             "p",
             "europe-west1-b",
             &instance(Some("#!/bin/bash\necho old\n")),
@@ -2070,7 +2071,7 @@ mod tests {
             })))
             .mount(&server)
             .await;
-        let chunk = serial_output(&client(&server), "p", "z", "vm", 42)
+        let chunk = serial_output(&GcpClient::for_mock(&server), "p", "z", "vm", 42)
             .await
             .expect("serial");
         assert!(chunk.contents.contains(RELAY_READY_MARKER));
@@ -2086,7 +2087,7 @@ mod tests {
             .await;
 
         insert_relay_instance(
-            &client(&server),
+            &GcpClient::for_mock(&server),
             "example-dev-1a2b",
             "europe-west1-b",
             "gt-dev-relay",
@@ -2112,7 +2113,7 @@ mod tests {
         let server = MockServer::start().await;
 
         let got = reconcile_relay_instance(
-            &client(&server),
+            &GcpClient::for_mock(&server),
             "p",
             "europe-west1-b",
             &instance(Some(RELAY_STARTUP_SCRIPT)),
@@ -2136,10 +2137,14 @@ mod tests {
             .mount(&server)
             .await;
 
-        let got =
-            reconcile_relay_instance(&client(&server), "p", "europe-west1-b", &instance(None))
-                .await
-                .expect("reconcile");
+        let got = reconcile_relay_instance(
+            &GcpClient::for_mock(&server),
+            "p",
+            "europe-west1-b",
+            &instance(None),
+        )
+        .await
+        .expect("reconcile");
 
         assert_eq!(got, Reconciled::Updated);
     }
@@ -2162,10 +2167,15 @@ mod tests {
             .mount(&server)
             .await;
 
-        let got = get_instance(&client(&server), "p", "europe-west1-b", "gt-dev-relay")
-            .await
-            .expect("call")
-            .expect("instance");
+        let got = get_instance(
+            &GcpClient::for_mock(&server),
+            "p",
+            "europe-west1-b",
+            "gt-dev-relay",
+        )
+        .await
+        .expect("call")
+        .expect("instance");
 
         assert_eq!(got.metadata_fingerprint.as_deref(), Some("fp-9"));
         assert_eq!(got.startup_script(), Some("#!/bin/bash\n"));
@@ -2193,7 +2203,9 @@ mod tests {
             .mount(&server)
             .await;
 
-        let got = list_firewalls(&client(&server), "p").await.expect("list");
+        let got = list_firewalls(&GcpClient::for_mock(&server), "p")
+            .await
+            .expect("list");
         let names: Vec<&str> = got.iter().map(|f| f.name.as_str()).collect();
         assert_eq!(names, vec!["early", "late"]);
     }
@@ -2219,7 +2231,9 @@ mod tests {
             .mount(&server)
             .await;
 
-        let got = list_instances(&client(&server), "p").await.expect("list");
+        let got = list_instances(&GcpClient::for_mock(&server), "p")
+            .await
+            .expect("list");
         let names: Vec<&str> = got.iter().map(|i| i.name.as_str()).collect();
         assert_eq!(names, vec!["early", "late"]);
     }
@@ -2248,7 +2262,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let got = find_instances(&client(&server), "p", "bastion")
+        let got = find_instances(&GcpClient::for_mock(&server), "p", "bastion")
             .await
             .expect("find");
         assert_eq!(got.len(), 2);
@@ -2280,9 +2294,11 @@ mod tests {
                 .await;
         }
 
-        let zones = list_zones(&client(&server), "p").await.expect("zones");
+        let zones = list_zones(&GcpClient::for_mock(&server), "p")
+            .await
+            .expect("zones");
         assert_eq!(zones, vec!["a-early", "a-late"]);
-        let backends = list_backend_services(&client(&server), "p")
+        let backends = list_backend_services(&GcpClient::for_mock(&server), "p")
             .await
             .expect("backends");
         let names: Vec<&str> = backends.iter().map(|b| b.name.as_str()).collect();
@@ -2314,9 +2330,14 @@ mod tests {
             .mount(&server)
             .await;
 
-        let got = backend_services_on_group(&client(&server), "p", "europe-west1-b", "gt-dev-ig")
-            .await
-            .expect("holders");
+        let got = backend_services_on_group(
+            &GcpClient::for_mock(&server),
+            "p",
+            "europe-west1-b",
+            "gt-dev-ig",
+        )
+        .await
+        .expect("holders");
         let names: Vec<&str> = got.iter().map(|h| h.name.as_str()).collect();
         assert_eq!(names, vec!["handmade"]);
     }
@@ -2328,7 +2349,7 @@ mod tests {
             .mount(&server)
             .await;
         insert_relay_instance(
-            &client(&server),
+            &GcpClient::for_mock(&server),
             "p",
             "europe-west1-b",
             "gt-dev-relay",
@@ -2376,10 +2397,15 @@ mod tests {
             .mount(&server)
             .await;
 
-        let got = get_instance(&client(&server), "p", "europe-west1-b", "gt-dev-relay")
-            .await
-            .expect("call")
-            .expect("instance");
+        let got = get_instance(
+            &GcpClient::for_mock(&server),
+            "p",
+            "europe-west1-b",
+            "gt-dev-relay",
+        )
+        .await
+        .expect("call")
+        .expect("instance");
 
         assert_eq!(got.machine_type.as_deref(), Some("e2-small"));
     }
