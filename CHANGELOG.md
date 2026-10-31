@@ -3,6 +3,42 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.3.20](https://github.com/gcheliz/gtunnel/compare/v0.3.19...v0.3.20) - 2026-10-31
+
+### Added
+
+- *(relay)* flag an old relay image and rebuild it with relay up --recreate ([#426](https://github.com/gcheliz/gtunnel/pull/426))
+
+## [0.3.19](https://github.com/gcheliz/gtunnel/compare/v0.3.18...v0.3.19) - 2026-10-31
+
+### Fixed
+
+- *(supervise)* restart a tunnel whose gcloud exits 0 on its own ([#428](https://github.com/gcheliz/gtunnel/pull/428))
+
+## [0.3.18](https://github.com/gcheliz/gtunnel/compare/v0.3.17...v0.3.18) - 2026-10-30
+
+### Fixed
+
+- *(supervise)* count the time a run spent across a sleep ([#425](https://github.com/gcheliz/gtunnel/pull/425))
+
+## [0.3.17](https://github.com/gcheliz/gtunnel/compare/v0.3.16...v0.3.17) - 2026-10-30
+
+### Fixed
+
+- *(update)* wait for the Homebrew tap before telling brew users to upgrade ([#424](https://github.com/gcheliz/gtunnel/pull/424))
+
+## [0.3.16](https://github.com/gcheliz/gtunnel/compare/v0.3.15...v0.3.16) - 2026-10-30
+
+### Fixed
+
+- *(tui)* drop restart samples stamped after a clock that stepped back ([#422](https://github.com/gcheliz/gtunnel/pull/422))
+
+## [0.3.15](https://github.com/gcheliz/gtunnel/compare/v0.3.14...v0.3.15) - 2026-10-30
+
+### Fixed
+
+- *(tunnel)* bound the ssh handshake with ConnectTimeout ([#421](https://github.com/gcheliz/gtunnel/pull/421))
+
 ## [0.3.14](https://github.com/gcheliz/gtunnel/compare/v0.3.13...v0.3.14) - 2026-10-30
 
 ### Fixed

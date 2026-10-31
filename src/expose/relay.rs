@@ -22,6 +22,9 @@ pub struct RelayUpOptions {
     pub network: String,
     pub managed_zone: String,
     pub machine_type: String,
+    // Rebuild the VM from the current image family. The only way to patch a
+    // relay that has no route to the package mirrors.
+    pub recreate: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -325,6 +328,7 @@ pub async fn relay_up(
     ensure_firewall(client, project, &lb_health_check_firewall(&names, network)).await?;
 
     let existing_vm = compute::get_instance(client, project, zone, &names.relay_vm).await?;
+    let mut rebuilt = false;
     let vm_change = match &existing_vm {
         None => {
             let op = compute::insert_relay_instance(
@@ -339,6 +343,26 @@ pub async fn relay_up(
             .await?;
             client.wait_operation(&op).await?;
             await_relay_ready(client, project, zone, &names.relay_vm, 0).await;
+            Reconciled::Created
+        }
+        Some(_) if opts.recreate => {
+            // Deleting first frees the name; the instance group drops a
+            // deleted member by itself, so it is joined again below
+            let gone = compute::delete_instance(client, project, zone, &names.relay_vm).await;
+            drop_resource(client, &format!("relay instance {}", names.relay_vm), gone).await?;
+            let op = compute::insert_relay_instance(
+                client,
+                project,
+                zone,
+                &names.relay_vm,
+                network,
+                RELAY_TAG,
+                &opts.machine_type,
+            )
+            .await?;
+            client.wait_operation(&op).await?;
+            await_relay_ready(client, project, zone, &names.relay_vm, 0).await;
+            rebuilt = true;
             Reconciled::Created
         }
         Some(vm) => {
@@ -376,7 +400,18 @@ pub async fn relay_up(
         compute::get_instance_group(client, project, zone, &names.instance_group).await?;
     let group_url = match group_url {
         Some(url) => {
-            step(false, &format!("instance group {}", names.instance_group));
+            if rebuilt {
+                let op = compute::add_instance_to_group(
+                    client,
+                    project,
+                    zone,
+                    &names.instance_group,
+                    &names.relay_vm,
+                )
+                .await?;
+                client.wait_operation(&op).await?;
+            }
+            step(rebuilt, &format!("instance group {}", names.instance_group));
             url
         }
         None => {
@@ -1017,6 +1052,7 @@ mod tests {
             network: "default".to_string(),
             managed_zone: "example".to_string(),
             machine_type: "e2-micro".to_string(),
+            recreate: false,
         }
     }
 
@@ -1101,6 +1137,7 @@ mod tests {
             network: "default".to_string(),
             managed_zone: "example".to_string(),
             machine_type: "e2-micro".to_string(),
+            recreate: false,
         };
         let cfg = relay_up(&client(&server), &account(), &opts)
             .await
@@ -1110,6 +1147,71 @@ mod tests {
         assert_eq!(cfg.default_domain, "dev.example.com");
         assert_eq!(requests(&server, "POST", "/instances").await, 0);
         assert_eq!(requests(&server, "POST", "/global/firewalls").await, 2);
+    }
+
+    #[tokio::test]
+    async fn relay_up_recreate_deletes_and_reinserts_the_instance() {
+        let server = MockServer::start().await;
+        // The rebuilt VM is waited on through its serial console
+        Mock::given(method("GET"))
+            .and(path_regex(r".*/serialPort"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "contents": "startup-script: gtunnel-relay-ready\n",
+                "next": 40
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path_regex(r".*/instances/gt-dev-relay"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "name": "op-1",
+                "status": "DONE"
+            })))
+            .mount(&server)
+            .await;
+        relay_mocks(&server).await;
+        let opts = RelayUpOptions {
+            recreate: true,
+            ..options()
+        };
+
+        relay_up(&client(&server), &account(), &opts)
+            .await
+            .expect("relay up --recreate");
+
+        let log = server.received_requests().await.unwrap_or_default();
+        let position = |verb: &str, needle: &str| {
+            log.iter().position(|r| {
+                r.method.as_str().eq_ignore_ascii_case(verb) && r.url.path().contains(needle)
+            })
+        };
+        assert_eq!(
+            requests(&server, "DELETE", "/instances/gt-dev-relay").await,
+            1
+        );
+        assert_eq!(requests(&server, "POST", "/instances").await, 1);
+        assert!(
+            position("DELETE", "/instances/").expect("delete")
+                < position("POST", "/instances").expect("insert"),
+            "the name is free only after the delete"
+        );
+        // Nothing the recreate is not about is deleted
+        assert_eq!(requests(&server, "DELETE", "/instanceGroups").await, 0);
+        assert_eq!(requests(&server, "DELETE", "/forwardingRules").await, 0);
+        assert_eq!(requests(&server, "DELETE", "/sslCertificates").await, 0);
+        assert_eq!(requests(&server, "POST", "/addInstances").await, 1);
+    }
+
+    #[tokio::test]
+    async fn relay_up_without_recreate_never_deletes_the_instance() {
+        let server = relay_server().await;
+
+        relay_up(&client(&server), &account(), &options())
+            .await
+            .expect("relay up");
+
+        assert_eq!(requests(&server, "DELETE", "/instances").await, 0);
+        assert_eq!(requests(&server, "POST", "/addInstances").await, 0);
     }
 
     // Idempotence is "no request when everything matches": creating nothing is
@@ -1212,6 +1314,7 @@ mod tests {
     // them silently, so it refuses and names them
     #[tokio::test]
     async fn relay_down_refuses_while_expose_tunnels_exist() {
+        let _cfg = crate::config::testing::TempConfigDir::new();
         let server = relay_server().await;
         let mut config = Config {
             selected_account: "dev".to_string(),
@@ -1313,6 +1416,7 @@ mod tests {
     // local state never listed; the group cannot go while it points there
     #[tokio::test]
     async fn relay_down_deletes_an_orphaned_backend_before_the_group() {
+        let _cfg = crate::config::testing::TempConfigDir::new();
         // Mocks match in mount order, so the specific ones go first
         let server = MockServer::start().await;
         group_guarded_deletes(&server, "gt-dev-orphan").await;
@@ -1350,6 +1454,7 @@ mod tests {
     // instead of deleting the group under it
     #[tokio::test]
     async fn relay_down_waits_for_a_route_that_is_being_built() {
+        let _cfg = crate::config::testing::TempConfigDir::new();
         let dir = tempfile::tempdir().unwrap();
         super::super::lock::TEST_DIR.with(|d| *d.borrow_mut() = Some(dir.path().to_path_buf()));
         let route = super::super::lock::route_guard("dev").unwrap();
@@ -1395,6 +1500,7 @@ mod tests {
     // before the first delete: the relay is still a working relay
     #[tokio::test]
     async fn relay_down_stops_before_any_delete_on_a_backend_it_did_not_create() {
+        let _cfg = crate::config::testing::TempConfigDir::new();
         let server = MockServer::start().await;
         group_guarded_deletes(&server, "gt-dev-handmade").await;
         list_backends(
@@ -1427,6 +1533,59 @@ mod tests {
         assert!(!message.contains("unrelated"), "{message}");
         let paths = deleted(&server.received_requests().await.unwrap_or_default());
         assert!(paths.is_empty(), "{paths:?}");
+    }
+
+    // The teardown reads the run records of the config dir it is given, so a
+    // test that owns the dir sees its own records and nobody else's
+    #[tokio::test]
+    async fn relay_down_sees_only_the_run_records_of_its_own_config_dir() {
+        let _cfg = crate::config::testing::TempConfigDir::new();
+        let server = relay_server().await;
+        let mut state = TunnelState::default();
+
+        // An empty dir: nothing serves, so the teardown goes through
+        relay_down(
+            &client(&server),
+            &dev_config(),
+            &account(),
+            &mut state,
+            false,
+        )
+        .await
+        .expect("an empty run directory must not block relay down");
+
+        // One live public run of the same account, saved here: it is named
+        crate::ephemeral::EphemeralRecord {
+            name: "gt-own".to_string(),
+            account_name: "dev".to_string(),
+            pid: std::process::id(),
+            spec: TunnelSpec::Expose {
+                local_target: "3000".to_string(),
+                domain: "dev.example.com".to_string(),
+                hostname: "gt-own.dev.example.com".to_string(),
+                relay_port: 30008,
+                private: false,
+            },
+            started_at: 1_700_000_000,
+            ttl_secs: None,
+            pid_start: None,
+            owner_pid: None,
+            owner_start: None,
+        }
+        .save()
+        .expect("save");
+        let err = relay_down(
+            &client(&server),
+            &dev_config(),
+            &account(),
+            &mut state,
+            false,
+        )
+        .await
+        .expect_err("a live run refuses");
+        let message = err.to_string();
+        assert!(message.contains("gt-own (gtunnel run)"), "{message}");
+        assert!(!message.contains("gt-live"), "{message}");
     }
 
     // The relay of a running tunnel is not ours to stop: a resize needs a stop,

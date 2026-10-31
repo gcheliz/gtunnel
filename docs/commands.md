@@ -542,7 +542,7 @@ to reach ACTIVE; `relay status` shows the state.
 ## relay
 
 ```text
-gtunnel relay up [--zone Z] [--network N] [--managed-zone M]
+gtunnel relay up [--zone Z] [--network N] [--managed-zone M] [--recreate] [-y]
 gtunnel relay status
 gtunnel relay down [--force] [-y]
 ```
@@ -579,6 +579,12 @@ A relay that already matches receives no write. If re-running the script fails, 
 the `gcloud compute ssh` command to run by hand: the metadata is already written, so a second
 `up` finds nothing to change. `doctor` reports a relay whose startup script or health check is
 out of date.
+
+`up --recreate` deletes the relay instance and inserts a new one from the current image family,
+then waits for readiness as above and puts the instance back in its group. It is the only way to
+patch the VM (see [Limits](architecture.md#limits)). Every exposed URL is down while it runs, so it
+asks first; `-y` skips the question. The load balancer, certificate and DNS are not touched.
+`doctor` suggests it when the instance is more than 90 days old.
 
 ```console,ignore
 $ gtunnel relay up
@@ -1007,7 +1013,11 @@ Run `gtunnel update` to install.
 ```
 
 A format sample from a downloaded binary; versions differ per run. A Homebrew install names
-`brew upgrade gtunnel` instead. On the latest release the second line is
+`brew upgrade gtunnel` instead, and only once the Homebrew tap offers the new version: a Homebrew
+install reads the version from the tap formula, not from the release, because brew cannot
+upgrade to a release the formula does not name yet. Until the tap catches up the check says the
+release exists and brew will offer it later, and the hint stays silent. If the formula cannot be
+read, the command is `brew update && brew upgrade gtunnel`. On the latest release the second line is
 `gtunnel v<version> is already the latest version.`
 
 Every other command prints a one-line hint when a cached check found a newer version: see

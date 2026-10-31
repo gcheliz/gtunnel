@@ -26,6 +26,7 @@ pub async fn cmd_relay_up(
     zone: Option<&str>,
     network: &str,
     managed_zone: Option<&str>,
+    recreate: bool,
     assume_yes: bool,
 ) -> Result<()> {
     let (_, acct) = resolve(account)?;
@@ -40,7 +41,19 @@ pub async fn cmd_relay_up(
     println!("Relay for account '{}' in {zone}:", acct.name);
     let machine_type = crate::settings::current().relay_machine_type;
     println!("  {}", relay_cost_line(&machine_type));
-    if !confirm("Create it?", assume_yes)? {
+    if recreate {
+        println!(
+            "  --recreate deletes the relay VM and builds a new one from the current image \
+             family. Every exposed URL is down until it is ready; the load balancer, \
+             certificate and DNS are left alone."
+        );
+    }
+    let question = if recreate {
+        "Delete and rebuild it?"
+    } else {
+        "Create it?"
+    };
+    if !confirm(question, assume_yes)? {
         println!("Cancelled");
         return Ok(());
     }
@@ -50,6 +63,7 @@ pub async fn cmd_relay_up(
         network: network.to_string(),
         managed_zone,
         machine_type,
+        recreate,
     };
     let expose = relay::relay_up(&client, &acct, &opts).await?;
     update_config(|config| {

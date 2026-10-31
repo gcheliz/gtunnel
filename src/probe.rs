@@ -175,6 +175,11 @@ pub struct RestartWatch {
 
 impl RestartWatch {
     pub fn observe(&mut self, now: SystemTime, restarts: u32) -> bool {
+        // A sample stamped after `now` means the wall clock stepped back. Its
+        // age cannot be measured, so pruning would skip it and the pre-jump
+        // baseline would stay pinned until the clock caught up; like a lower
+        // count, it belongs to a timeline that no longer exists
+        self.samples.retain(|(at, _)| *at <= now);
         // A lower count means the service was reinstalled: the old samples
         // belong to a run that no longer exists
         if self
@@ -1851,6 +1856,18 @@ LISTEN 0      128    127.0.0.1:15432     0.0.0.0:*
                     "{name} at {secs}s"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn a_clock_that_stepped_back_does_not_pin_the_baseline() {
+        let mut watch = RestartWatch::default();
+        assert!(!watch.observe(t(10_000), 0));
+        assert!(!watch.observe(t(10_000), 0));
+        // The wall clock stepped back an hour: restarts since then are spread
+        // over thirty minutes of the new clock, not a loop against the old baseline
+        for (secs, restarts) in [(6_400, 1), (7_000, 2), (7_600, 3)] {
+            assert!(!watch.observe(t(secs), restarts), "at {secs}s");
         }
     }
 
