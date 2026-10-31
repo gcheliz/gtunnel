@@ -3,6 +3,17 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.3.23](https://github.com/gcheliz/gtunnel/compare/v0.3.22...v0.3.23) - 2026-10-31
+
+### Changed
+
+- drop dead items and non-Unix branches, share the duplicated helpers ([#446](https://github.com/gcheliz/gtunnel/pull/446))
+
+### Documentation
+
+- keep each rule in full in one place ([#445](https://github.com/gcheliz/gtunnel/pull/445))
+- correct statements the code no longer matches ([#444](https://github.com/gcheliz/gtunnel/pull/444))
+
 ## [0.3.22](https://github.com/gcheliz/gtunnel/compare/v0.3.21...v0.3.22) - 2026-10-31
 
 ### Fixed
