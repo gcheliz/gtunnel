@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.3.26](https://github.com/gcheliz/gtunnel/compare/v0.3.25...v0.3.26) - 2026-10-31
+
+### Fixed
+
+- *(doctor)* report when desktop notifications cannot be delivered ([#452](https://github.com/gcheliz/gtunnel/pull/452))
+
 ## [0.3.25](https://github.com/gcheliz/gtunnel/compare/v0.3.24...v0.3.25) - 2026-10-31
 
 ### Fixed
