@@ -625,6 +625,19 @@ fn mcp_stdio_parse_error_returns_parse_error() {
     assert_eq!(resp["error"]["code"], -32700); // PARSE_ERROR
 }
 
+#[test]
+fn mcp_stdio_valid_json_that_is_not_a_request_returns_invalid_request() {
+    let h = Harness::new();
+    // Valid JSON with an id and no method: the text parsed, the request did not
+    let (stdout, stderr, success) = h.run_mcp_pipe("{\"jsonrpc\":\"2.0\",\"id\":1}\n");
+    assert!(success, "stderr: {stderr}");
+
+    let line = stdout.lines().next().expect("response line");
+    let resp: serde_json::Value = serde_json::from_str(line).expect("valid json response");
+    assert_eq!(resp["error"]["code"], -32600); // INVALID_REQUEST
+    assert_eq!(resp["id"], 1);
+}
+
 // Every line of stdout is a frame: a stray `println!` from a command core would
 // break the client's parser, so one that is not a JSON-RPC 2.0 object fails here
 fn frames(stdout: &str) -> Vec<serde_json::Value> {

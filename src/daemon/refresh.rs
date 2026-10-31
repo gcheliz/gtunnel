@@ -14,6 +14,7 @@ use anyhow::{Context, Result};
 use crate::state::{PersistentTunnel, TunnelState, TunnelStatus};
 
 use super::ServiceSpec;
+use crate::version::{parse_version, Version};
 
 /// Everything the refresh does to the outside world, so the order of those
 /// effects is asserted without a service manager. The live implementation is
@@ -210,18 +211,6 @@ fn local_port(t: &PersistentTunnel) -> Option<u16> {
         // An expose tunnel listens on the relay, not here
         crate::state::TunnelSpec::Expose { .. } => None,
     }
-}
-
-type Version = (u64, u64, u64);
-
-/// A version as three numbers, so `0.2.100` is above `0.2.67`. A pre-release or
-/// build suffix is ignored, and anything that is not three numbers is `None`,
-/// which the refresh reads as unstamped and overwrites.
-fn parse_version(text: &str) -> Option<Version> {
-    let core = text.split(['-', '+']).next()?;
-    let mut parts = core.split('.').map(|p| p.parse::<u64>().ok());
-    let version = (parts.next()??, parts.next()??, parts.next()??);
-    parts.next().is_none().then_some(version)
 }
 
 /// What the stamp says about an installed definition, given whether its shape

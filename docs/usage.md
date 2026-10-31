@@ -92,7 +92,7 @@ Specify the release version and substitute your machine's file: `gtunnel-macos-a
 `gtunnel-macos-intel`, `gtunnel-linux-amd64` or `gtunnel-linux-arm64`.
 
 ```text
-VERSION="v0.3.20"
+VERSION="v0.3.21"
 F="gtunnel-macos-arm64-${VERSION}.tar.gz"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F"
 curl -fsSLO "https://github.com/gcheliz/gtunnel/releases/download/${VERSION}/$F.sha256"
@@ -104,7 +104,7 @@ so they run on any glibc.
 
 ```console
 $ gtunnel --version
-gtunnel 0.3.20
+gtunnel 0.3.21
 
 ```
 
@@ -463,7 +463,7 @@ check itself. On a Homebrew install:
 
 ```console,ignore
 $ gtunnel list
-gtunnel v9.9.9 is available (current: v0.3.20). Run `brew upgrade gtunnel`.
+gtunnel v9.9.9 is available (current: v0.3.21). Run `brew upgrade gtunnel`.
 ```
 
 ## The TUI
@@ -769,6 +769,7 @@ CLI's `--json` errors carry. Only a call the server cannot act on is a JSON-RPC 
 | A missing or mistyped parameter, a `local_port` outside 1 to 65535, an instance, zone or host that gcloud would read as an option | `error.code` -32602 |
 | A tool name the server does not have | `error.code` -32601 |
 | A line that is not JSON | `error.code` -32700 |
+| A line that is JSON but not a request, such as one with no `method` | `error.code` -32600, with the request's `id` when it has one |
 | A notification (`notifications/...`) | No reply at all, as JSON-RPC requires |
 
 ```text
