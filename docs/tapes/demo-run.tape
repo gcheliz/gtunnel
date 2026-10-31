@@ -1,7 +1,7 @@
 # An ephemeral tunnel with a stop time: `run --ttl`, the list that shows it,
 # Ctrl+C, and the empty list it leaves.
 #
-# The hidden preamble is demo-access.tape's: a throwaway account in a temporary
+# The hidden preamble sets up a throwaway account in a temporary
 # directory and a stand-in `gcloud` on PATH, so the recording needs no GCP
 # project. An Access `run` resolves the instance in the account's default zone
 # without a Compute lookup, so the stand-in is enough. Every line gtunnel prints
