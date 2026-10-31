@@ -126,7 +126,7 @@ gtunnel prints `gtunnel: reinstalled N services to match this version`. `gtunnel
 does the same for one tunnel.
 
 The binary a service names is the stable path to it, not the versioned Homebrew Cellar directory
-that `brew upgrade` deletes, and a `gtunnel_run` started by the MCP server uses the same path.
+that `brew upgrade` deletes, and a `gtunnel_run_tunnel` started by the MCP server uses the same path.
 
 ```console,ignore
 $ rm ~/.cargo/bin/gtunnel
@@ -391,7 +391,7 @@ The step needs `gtunnel` on its `PATH` ([Getting set up](#getting-set-up)). Read
 | `add` | Add a persistent Access tunnel | read |
 | `expose` | Publish a local service at `https://<name>.<domain>` | write |
 | `run` | Ephemeral tunnel in the foreground, gone on Ctrl+C | read, or write with `--public` |
-| `start` / `stop` / `restart` | Service control | write, for an Expose tunnel only |
+| `start` / `stop` / `restart` | Service control | write for an Expose tunnel on `start` and `restart`; `stop` makes no GCP call |
 | `autostart` | Turn start-at-login on or off for a tunnel | no |
 | `logs` | Read a tunnel's log, or a live run's | no |
 | `list` | Every tunnel, managed or not | no |
@@ -417,7 +417,7 @@ token that cannot be minted, including an expired refresh token, counts as logge
 
 | Checks the login | Skips the check |
 |---|---|
-| `gtunnel` (the TUI), `add -s`, `add` without `--zone`, `expose`, `run`, `start`, `stop`, `restart`, `move`, `zones`, `domains`, `relay` | `account`, `add --zone` or `--dest-group` (without `-s`), `delete`, `rename`, `autostart`, `logs`, `list`, `zones default`, `domains default`, `domains add`, `doctor`, `watch`, `reset`, `demo`, `update`, `mcp` |
+| `gtunnel` (the TUI), `add -s`, `add` without `--zone`, `expose`, `run`, `start`, `restart`, `move`, `zones`, `domains`, `relay` | `init`, `account`, `add --zone` or `--dest-group` (without `-s`), `start --auth-expired`, `stop`, `delete`, `rename`, `autostart`, `logs`, `list`, `zones default`, `domains default`, `domains add`, `doctor`, `watch`, `reset`, `demo`, `update`, `completions`, `mcp` |
 
 `doctor` skips it because it reports broken credentials as a finding; `init` has no account
 yet, so it runs the same check itself before it lists projects and zones; a prompt would corrupt `mcp`'s JSON-RPC on stdin and stdout. Background services run

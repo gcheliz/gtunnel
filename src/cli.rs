@@ -339,19 +339,19 @@ source and --to the destination."
     // Report leftovers and misconfiguration gtunnel can see
     #[command(about = "Report leftovers and misconfiguration gtunnel can see")]
     Doctor {
-        // Remove what it finds instead of just reporting it
-        #[arg(long, help = "Remove what it finds instead of just reporting it")]
+        // Remove what it finds instead of only reporting it
+        #[arg(long, help = "Remove what it finds instead of only reporting it")]
         fix: bool,
 
         // Skip the confirmation prompt when using --fix
         #[arg(short, long, help = "Skip the confirmation prompt when using --fix")]
         yes: bool,
 
-        // Check every configured account, not just the selected one
+        // Check every configured account, not only the selected one
         #[arg(
             short,
             long,
-            help = "Check every configured account, not just the selected one"
+            help = "Check every configured account, not only the selected one"
         )]
         all: bool,
 

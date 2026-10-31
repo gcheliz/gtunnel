@@ -110,7 +110,7 @@ service account to impersonate, and the relay once one exists; never a credentia
 ```text
 gtunnel add <NAME> <INSTANCE:PORT> [-z ZONE] [--local-port N] [-s]
 gtunnel add <NAME> <HOST:PORT> --via INSTANCE [-z ZONE] [--local-port N] [-s]
-gtunnel add <NAME> <HOST:PORT> --dest-group G --region R --network N [-s]
+gtunnel add <NAME> <HOST:PORT> --dest-group G --region R [--network N] [-s]
 ```
 
 | Flag | Effect |
@@ -119,6 +119,8 @@ gtunnel add <NAME> <HOST:PORT> --dest-group G --region R --network N [-s]
 | `--local-port` | Fixed local port; otherwise one is allocated from 15000-15999, stable per name, skipping any a saved tunnel or a live run holds |
 | `--via` | Reach a host the instance can reach, rather than a port of the instance |
 | `--dest-group` | Target an IAP destination group instead of an instance |
+| `--region` | Region of the destination group; required with `--dest-group` |
+| `--network` | VPC network of the destination group; `default` when omitted |
 | `-s`, `--start` | Install the service and start it immediately |
 
 `--help` says what each value is and shows a placeholder to copy:
@@ -272,7 +274,7 @@ gtunnel run bastion:5432 --ttl 30m       # stops itself after 30 minutes
 | `--local-port` | The checks `add` makes, plus every live run of every account: refused when a tunnel or run already owns the port, when something on the machine listens on it, and for `0` |
 | `--ttl` | Counted on the wall clock, so time asleep counts: a laptop that wakes past the stop time ends the run within a second |
 | Stopping | Ctrl+C, SIGTERM, SIGHUP, the TTL and gcloud exiting all end the same way: SIGTERM to gcloud and its children, up to 2 seconds, then SIGKILL |
-| Exit code | `0` when Ctrl+C, SIGTERM, SIGHUP or the TTL stopped it. When gcloud ends the run by itself, gcloud's own code (`1` when it has none, or exits 0), so `gtunnel run ... && ./migrate` does not go on after a tunnel that failed to open |
+| Exit code | `0` when Ctrl+C, SIGTERM, SIGHUP or the TTL stopped it. When gcloud ends the run by itself, gcloud's own code, or `1` when gcloud has none or exited 0, so `gtunnel run ... && ./migrate` does not go on after a tunnel that failed to open |
 | A second Ctrl+C | While the route is being removed, a second Ctrl+C (or SIGTERM, SIGHUP) abandons that at once and exits `130`. The route and the record stay: it prints that the route was left, and `gtunnel doctor --fix` or the next watchdog pass removes it |
 | Output | A run keeps its tunnel when its output goes away (`gtunnel run ... \| head -1`, a closed terminal): it stops printing and runs on until a signal or the TTL |
 | Its process dies | A `kill -9` leaves gcloud forwarding, so the record names the run's own process as well as gcloud's. The next `gtunnel list` or watchdog pass stops a run whose process is gone or whose TTL has passed, removes its route and its record, and says so on stderr |
@@ -446,7 +448,7 @@ dev: login still not usable, 2 waiting. Run `gcloud auth login`
 `add -s` and `restart` start the tunnel the same way, so a tunnel `add -s` could not start is
 still added and the command exits 1.
 
-`logs -f` follows, printing each line once even while the tunnel writes. `restart` rewrites the service file before starting, so it also picks up
+`logs` prints the last 50 lines, or `-n N` (`--lines`); `logs -f` prints them, then follows, printing each line once even while the tunnel writes. `restart` rewrites the service file before starting, so it also picks up
 an edited target. Starting a tunnel empties its log first, so what the pane shows belongs to
 the run in front of you; `L` in the TUI clears the selected tunnel's log without restarting it. `delete` removes the relay route first, then the service, then the record and the log.
 
@@ -606,7 +608,7 @@ anything:
 
 ```console,ignore
 $ gtunnel relay up
-  ! relay instance gt-dev-relay is e2-small but relay.machine_type is e2-micro; it is left as it is, because changing the type needs a stop. Run `gtunnel relay down`, then `gtunnel relay up`, or stop the instance and run: gcloud compute instances set-machine-type gt-dev-relay --machine-type=e2-micro --zone=europe-west1-b --project=example-dev-1a2b
+  ! relay instance gt-dev-relay is e2-small but relay.machine_type is e2-micro; it is left as it is, because changing the type needs a stop. Run `gtunnel relay up --recreate` to rebuild the instance at that type, or stop it and run: gcloud compute instances set-machine-type gt-dev-relay --machine-type=e2-micro --zone=europe-west1-b --project=example-dev-1a2b
   · relay instance gt-dev-relay (exists)
 ```
 
@@ -658,7 +660,7 @@ $ gtunnel account list
 ```text
 gtunnel account add <name> --configuration <gcloud-configuration> [--project P] [--zone Z] [--credential-file PATH]
 gtunnel account edit <name> [--project P] [--zone Z] [--credential-file PATH]
-gtunnel account remove <name>
+gtunnel account remove <name> [-y]
 ```
 
 `add` reads the project and default zone from an existing gcloud configuration. Given
@@ -780,16 +782,17 @@ Nothing, the first time: one failed check is a slow moment, two in a row is a pr
 | Failed check | What the watchdog does | Then waits |
 |---|---|---|
 | 1st | Counts it | |
-| 2nd in a row | Trips: from here this is a problem, not a blip | 10s |
-| The first one after that wait | Restart 1 | 20s |
-| The first one after that wait | Restart 2 | 40s |
-| The first one after that wait | Restart 3 | 80s |
+| 2nd in a row | Trips: from here this is a problem, not a blip | up to 10s |
+| The first one after that wait | Restart 1 | up to 20s |
+| The first one after that wait | Restart 2 | up to 40s |
+| The first one after that wait | Restart 3 | up to 80s |
 | The first one after that wait | Restart 4 | |
 | The one after restart 4 | Stops it, with a line in the log saying why | |
 
 | Fact | Detail |
 |---|---|
-| A failed check inside a wait | does nothing; at a 30s interval the earliest stop is six minutes after the first failed check |
+| Each wait | drawn at random from zero up to the figure shown, so tunnels that failed together do not restart in lockstep |
+| A failed check inside a wait | does nothing; at a 30s interval the stop comes between four and a half and six minutes after the first failed check |
 | Two passing checks in a row | clear the breaker; so does stopping the tunnel yourself |
 | After the stop | the log says what the watchdog saw and who held the connections. Nothing restarts it: the next pass forgets it. `gtunnel start <name>` brings it back, and the ladder starts over |
 | A tunnel you stop or park while a check is running | is left alone: the pass reads its state again before acting on what it saw |
@@ -1056,7 +1059,7 @@ The install is read from where the file really is, so a symlink does not hide it
 | `/usr/local/bin/gtunnel` linked into `/usr/local/Cellar/gtunnel/<version>/` (Intel Homebrew), or the Linuxbrew equivalent | Points at `brew upgrade gtunnel`; touches nothing |
 | A symlink you made, such as `~/bin/gtunnel` | Replaces the file it points to and keeps the symlink; `gtunnel.old` sits beside that file |
 
-Services, the watchdog and `gtunnel_run` name the binary by a stable path: a trailing
+Services, the watchdog and `gtunnel_run_tunnel` name the binary by a stable path: a trailing
 ` (deleted)` that Linux appends after an update is dropped, and when `/opt/homebrew/bin`,
 `/usr/local/bin`, a Homebrew `opt/gtunnel/bin` or a `PATH` entry reaches the same file, that path
 is used instead of the versioned Cellar one that `brew upgrade` removes.
@@ -1083,7 +1086,8 @@ child process. The tools and the client setup are in [The native MCP Server](usa
 ## Errors and exit codes
 
 Success exits 0. A failure has a kind, and the kind decides the exit code: branch on the code,
-or on `error.kind` under `--json`, never on the text. The failure is one line on stderr
+or on `error.kind` under `--json`, never on the text. A [`run`](#run) that gcloud ends exits with
+gcloud's code instead, and a second Ctrl+C during its teardown exits `130`. The failure is one line on stderr
 beginning `Error:`; a start that did not come up keeps its `✗` lines on stdout with no `Error:`
 line.
 

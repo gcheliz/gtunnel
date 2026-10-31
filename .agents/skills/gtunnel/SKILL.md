@@ -80,7 +80,7 @@ The `<service>` suffix only tells apart several instances of one platform in one
 
 ### 1. Direct Compute Instance
 ```bash
-gtunnel add db bastion:5432 -z europe-west1-b
+gtunnel add db bastion:5432
 ```
 The zone is looked up from the instance name; pass `-z <zone>` only when the same name exists in several zones (the tool then fails asking for it).
 
