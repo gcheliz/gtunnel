@@ -2,3 +2,7 @@
 /.superpowers
 /docs/plans/
 .env
+
+# Local gate and PR-draft output, never committed
+/gate.log
+/PR_BODY.md
