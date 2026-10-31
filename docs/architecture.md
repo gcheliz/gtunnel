@@ -239,6 +239,7 @@ names where it comes from.
 | A tunnel through a GCP instance carries every connection over one WebSocket, kept busy by `ServerAliveInterval=30` | gtunnel, `src/tunnel.rs` (the command shown under [Jump tunnels](#jump-tunnels)) |
 | Every tunable setting resolves in one place: a variable beats `config.toml`, which beats the default | gtunnel, `src/settings.rs`; [Settings the environment can override](configuration.md#settings-the-environment-can-override) |
 | A gcloud that keeps dying before `min_uptime` stops its job after `max_restarts` fast failures | gtunnel, `src/restart_budget.rs`; [The restart budget](configuration.md#the-restart-budget) |
+| The relay VM boots from an image family once and is never patched. With no external IP it reaches no package mirror unless the VPC has Cloud NAT, and a kernel update still needs a reboot. `relay up --recreate` rebuilds the VM and drops every exposed URL while it runs; `doctor` flags a relay older than 90 days | gtunnel, `src/gcp/compute.rs`, `src/doctor.rs`; [relay](commands.md#relay) |
 
 The two shapes pay differently.
 

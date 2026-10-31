@@ -292,6 +292,7 @@ pub async fn run(args: Cli) -> Result<()> {
                 zone,
                 network,
                 managed_zone,
+                recreate,
                 yes,
             } => {
                 commands::expose::cmd_relay_up(
@@ -299,6 +300,7 @@ pub async fn run(args: Cli) -> Result<()> {
                     zone.as_deref(),
                     &network,
                     managed_zone.as_deref(),
+                    recreate,
                     yes,
                 )
                 .await
