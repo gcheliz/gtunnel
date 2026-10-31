@@ -988,13 +988,6 @@ struct RawBackendRef {
     group: String,
 }
 
-#[derive(Deserialize)]
-struct RawHolderList {
-    #[serde(default)]
-    items: Vec<RawHolder>,
-}
-
-// TODO: page this through get_all once list calls paginate (#375)
 // Matched on the path tail: the link is a full URL whose host is the API
 // endpoint, which differs between production and the test fake
 pub async fn backend_services_on_group(
@@ -1007,10 +1000,9 @@ pub async fn backend_services_on_group(
         "{}/projects/{project}/global/backendServices",
         client.endpoints.compute
     );
-    let raw: RawHolderList = client.get(&url).await?;
+    let raw: Vec<RawHolder> = client.get_all(&url, "items").await?;
     let tail = format!("/zones/{zone}/instanceGroups/{group}");
     Ok(raw
-        .items
         .into_iter()
         .filter(|b| b.backends.iter().any(|r| r.group.ends_with(&tail)))
         .map(|b| GroupHolder {
@@ -2295,6 +2287,38 @@ mod tests {
             .expect("backends");
         let names: Vec<&str> = backends.iter().map(|b| b.name.as_str()).collect();
         assert_eq!(names, vec!["gt-a-early", "gt-a-late"]);
+    }
+
+    #[tokio::test]
+    async fn a_backend_on_the_group_found_only_on_the_second_page_is_returned() {
+        use wiremock::matchers::query_param;
+        let server = MockServer::start().await;
+        let group = format!(
+            "{}/projects/p/zones/europe-west1-b/instanceGroups/gt-dev-ig",
+            server.uri()
+        );
+        Mock::given(method("GET"))
+            .and(path("/projects/p/global/backendServices"))
+            .and(query_param("pageToken", "page-2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [{"name": "handmade", "backends": [{"group": group}]}]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/projects/p/global/backendServices"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [{"name": "unrelated", "backends": [{"group": "x/zones/z/instanceGroups/other"}]}],
+                "nextPageToken": "page-2"
+            })))
+            .mount(&server)
+            .await;
+
+        let got = backend_services_on_group(&client(&server), "p", "europe-west1-b", "gt-dev-ig")
+            .await
+            .expect("holders");
+        let names: Vec<&str> = got.iter().map(|h| h.name.as_str()).collect();
+        assert_eq!(names, vec!["handmade"]);
     }
 
     async fn relay_instance_body(machine_type: &str) -> serde_json::Value {
