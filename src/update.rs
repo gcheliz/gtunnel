@@ -2,6 +2,9 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 pub const REPO: &str = "gcheliz/gtunnel";
+// brew installs from this repository's formula, not from the release, so it is
+// the source of truth for what a Homebrew user can actually upgrade to
+const TAP_REPO: &str = "gcheliz/homebrew-tap";
 
 fn parse_version(v: &str) -> (u64, u64, u64) {
     let parts: Vec<u64> = v
@@ -28,6 +31,11 @@ struct UpdateCache {
     // existed has none, and reads as "never failed"
     #[serde(default)]
     failed_at: Option<u64>,
+    // What the tap formula offers, when the last Homebrew check could read it.
+    // None is "not read": a binary install never asks, a failed read leaves it
+    // empty, and a cache from before this field has none
+    #[serde(default)]
+    tap_version: Option<String>,
 }
 
 fn cache_path() -> Option<PathBuf> {
@@ -59,6 +67,7 @@ fn record_failure(now: u64) {
             latest_version: String::new(),
             checked_at: 0,
             failed_at: Some(now),
+            tap_version: None,
         },
     };
     let _ = write_cache(&cache);
@@ -89,6 +98,40 @@ async fn fetch_latest_version() -> Result<String> {
     let status = response.status().as_u16();
     let body: serde_json::Value = response.json().await.unwrap_or(serde_json::Value::Null);
     parse_latest_tag(status, &body)
+}
+
+// The formula carries no `version` line: brew reads it from the url, so this
+// does too. All four urls are rewritten in one commit, so the first is enough
+fn parse_formula_version(formula: &str) -> Option<String> {
+    let rest = formula.split("/releases/download/v").nth(1)?;
+    let version: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    let valid = version.split('.').count() == 3
+        && version
+            .split('.')
+            .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()));
+    valid.then_some(version)
+}
+
+async fn fetch_tap_version() -> Result<String> {
+    let url = format!("https://api.github.com/repos/{TAP_REPO}/contents/Formula/gtunnel.rb");
+    let response = crate::http::client_builder()
+        .build()
+        .context("Failed to build the HTTP client")?
+        .get(&url)
+        .header("User-Agent", user_agent())
+        .header("Accept", "application/vnd.github.raw+json")
+        .send()
+        .await
+        .context("Failed to reach the GitHub API")?;
+    let status = response.status().as_u16();
+    let body = response.text().await.unwrap_or_default();
+    if status != 200 {
+        anyhow::bail!("The GitHub API answered {status} for the tap formula");
+    }
+    parse_formula_version(&body).context("The tap formula names no release version")
 }
 
 // Split from the request so every answer GitHub can give has a message the
@@ -134,14 +177,29 @@ enum InstallMethod {
     Binary(PathBuf),
 }
 
-// What to tell someone whose copy a package manager owns, or None when the binary is
-// ours to replace.
-fn upgrade_hint(method: &InstallMethod) -> Option<String> {
-    match method {
-        InstallMethod::Homebrew => {
-            Some("gtunnel was installed with Homebrew. Run:\n  brew upgrade gtunnel".to_string())
+// Says what a Homebrew user can do now, which is not always what the release
+// says: until the tap job writes the formula, brew answers "already up to date"
+#[allow(clippy::print_stderr)]
+fn report_homebrew(current: &str, release: &str, tap: Option<&str>, check_only: bool) {
+    match notice_for(current, release, tap, &InstallMethod::Homebrew) {
+        Some(notice) if check_only => {
+            eprintln!("Update available: v{current} -> v{}", notice.latest);
+            eprintln!("\nRun `{}` to install.", notice.command);
         }
-        InstallMethod::Binary(_) => None,
+        Some(notice) => {
+            eprintln!("Update available: v{current} -> v{}", notice.latest);
+            eprintln!(
+                "\ngtunnel was installed with Homebrew. Run:\n  {}",
+                notice.command
+            );
+        }
+        None => match tap {
+            Some(tap) if is_newer(current, release) => eprintln!(
+                "gtunnel v{release} is released, but the Homebrew tap still offers v{tap}. \
+                 brew will offer it once the tap catches up."
+            ),
+            _ => eprintln!("gtunnel v{current} is already the latest version."),
+        },
     }
 }
 
@@ -245,33 +303,38 @@ pub async fn cmd_update(check_only: bool, rollback: bool) -> Result<()> {
         }
     };
 
+    let homebrew = matches!(detect_install_method(), Ok(InstallMethod::Homebrew));
+    let tap_version = if homebrew {
+        fetch_tap_version().await.ok()
+    } else {
+        None
+    };
+
     let _ = write_cache(&UpdateCache {
         latest_version: latest.clone(),
         checked_at: now_secs(),
         failed_at: None,
+        tap_version: tap_version.clone(),
     });
+
+    if homebrew {
+        report_homebrew(current, &latest, tap_version.as_deref(), check_only);
+        return Ok(());
+    }
 
     if !is_newer(current, &latest) {
         eprintln!("gtunnel v{current} is already the latest version.");
         return Ok(());
     }
     eprintln!("Update available: v{current} -> v{latest}");
-    let method = detect_install_method()?;
+    let InstallMethod::Binary(exe) = detect_install_method()? else {
+        unreachable!("Homebrew returned above")
+    };
     if check_only {
-        eprintln!("\nRun `{}` to install.", install_command(&method));
+        eprintln!("\nRun `gtunnel update` to install.");
         return Ok(());
     }
-
-    match upgrade_hint(&method) {
-        Some(hint) => eprintln!("\n{hint}"),
-        None => {
-            let InstallMethod::Binary(exe) = method else {
-                unreachable!("only a downloaded binary has no upgrade hint")
-            };
-            perform_update(&exe, &latest).await?
-        }
-    }
-    Ok(())
+    perform_update(&exe, &latest).await
 }
 
 /// What the TUI and the CLI both say when a newer release is cached. One type
@@ -283,16 +346,31 @@ pub struct UpdateNotice {
 }
 
 // Pure so the install method and the versions are arguments, not the test
-// runner's own path and Cargo.toml
-fn notice_for(current: &str, latest: &str, method: &InstallMethod) -> Option<UpdateNotice> {
+// runner's own path and Cargo.toml. A Homebrew install is judged by the tap,
+// because brew cannot upgrade to a release the formula does not name yet. With
+// no tap reading the release is the best guess, and `brew update` first is the
+// command that works whether or not the tap moved
+fn notice_for(
+    current: &str,
+    release: &str,
+    tap: Option<&str>,
+    method: &InstallMethod,
+) -> Option<UpdateNotice> {
+    let (latest, command) = match (method, tap) {
+        (InstallMethod::Homebrew, Some(tap)) => (tap, install_command(method)),
+        (InstallMethod::Homebrew, None) => (release, BREW_REFRESH_COMMAND),
+        (InstallMethod::Binary(_), _) => (release, install_command(method)),
+    };
     if !is_newer(current, latest) {
         return None;
     }
     Some(UpdateNotice {
         latest: latest.trim_start_matches('v').to_string(),
-        command: install_command(method),
+        command,
     })
 }
+
+const BREW_REFRESH_COMMAND: &str = "brew update && brew upgrade gtunnel";
 
 // What installs a newer version for this copy: Homebrew owns its own files, so
 // `gtunnel update` there only redirects to brew
@@ -310,6 +388,7 @@ pub fn available_update() -> Option<UpdateNotice> {
     notice_for(
         env!("CARGO_PKG_VERSION"),
         &cache.latest_version,
+        cache.tap_version.as_deref(),
         &detect_install_method().ok()?,
     )
 }
@@ -856,6 +935,7 @@ mod tests {
             latest_version: "9.9.9".to_string(),
             checked_at: 1,
             failed_at: None,
+            tap_version: None,
         });
         assert!(
             !temp.path().exists(),
@@ -868,7 +948,6 @@ mod tests {
         let exe = PathBuf::from("/Users/you/.cargo/bin/gtunnel");
         let method = detect_install_method_from_path(&exe);
         assert!(matches!(method, InstallMethod::Binary(_)));
-        assert!(upgrade_hint(&method).is_none());
     }
 
     #[test]
@@ -878,8 +957,10 @@ mod tests {
             detect_install_method_from_path(&exe),
             InstallMethod::Homebrew
         ));
-        let hint = upgrade_hint(&InstallMethod::Homebrew).expect("homebrew carries a hint");
-        assert!(hint.contains("brew upgrade gtunnel"));
+        assert_eq!(
+            install_command(&InstallMethod::Homebrew),
+            "brew upgrade gtunnel"
+        );
     }
 
     #[cfg(unix)]
@@ -979,14 +1060,6 @@ mod tests {
     }
 
     #[test]
-    fn a_downloaded_binary_updates_itself_rather_than_printing_a_hint() {
-        assert!(upgrade_hint(&InstallMethod::Binary(PathBuf::from(
-            "/usr/local/bin/gtunnel"
-        )))
-        .is_none());
-    }
-
-    #[test]
     fn the_checksum_line_is_read_from_the_published_file() {
         let version = env!("CARGO_PKG_VERSION");
         let line = format!("abc123  gtunnel-macos-arm64-v{version}.tar.gz\n");
@@ -998,14 +1071,14 @@ mod tests {
     fn a_newer_cached_version_is_a_notice_with_the_install_command() {
         let binary = InstallMethod::Binary(PathBuf::from("/usr/local/bin/gtunnel"));
         assert_eq!(
-            notice_for("0.1.0", "9.9.9", &binary),
+            notice_for("0.1.0", "9.9.9", None, &binary),
             Some(UpdateNotice {
                 latest: "9.9.9".to_string(),
                 command: "gtunnel update"
             })
         );
         assert_eq!(
-            notice_for("0.1.0", "9.9.9", &InstallMethod::Homebrew)
+            notice_for("0.1.0", "9.9.9", Some("9.9.9"), &InstallMethod::Homebrew)
                 .expect("a newer version is a notice")
                 .command,
             "brew upgrade gtunnel"
@@ -1014,7 +1087,8 @@ mod tests {
 
     #[test]
     fn the_cli_hint_names_the_command_for_the_install_method() {
-        let brew = notice_for("0.2.38", "9.9.9", &InstallMethod::Homebrew).expect("newer");
+        let brew =
+            notice_for("0.2.38", "9.9.9", Some("9.9.9"), &InstallMethod::Homebrew).expect("newer");
         assert_eq!(
             hint_line("0.2.38", &brew),
             "gtunnel v9.9.9 is available (current: v0.2.38). Run `brew upgrade gtunnel`."
@@ -1022,6 +1096,7 @@ mod tests {
         let binary = notice_for(
             "0.2.38",
             "9.9.9",
+            None,
             &InstallMethod::Binary(PathBuf::from("/x")),
         )
         .expect("newer");
@@ -1045,8 +1120,14 @@ mod tests {
 
     #[test]
     fn the_current_or_an_older_version_is_no_notice() {
-        assert_eq!(notice_for("1.2.3", "1.2.3", &InstallMethod::Homebrew), None);
-        assert_eq!(notice_for("1.2.3", "1.2.2", &InstallMethod::Homebrew), None);
+        assert_eq!(
+            notice_for("1.2.3", "1.2.3", Some("1.2.3"), &InstallMethod::Homebrew),
+            None
+        );
+        assert_eq!(
+            notice_for("1.2.3", "1.2.2", Some("1.2.2"), &InstallMethod::Homebrew),
+            None
+        );
     }
 
     fn cache_at(checked_at: u64, failed_at: Option<u64>) -> UpdateCache {
@@ -1054,6 +1135,7 @@ mod tests {
             latest_version: "9.9.9".to_string(),
             checked_at,
             failed_at,
+            tap_version: None,
         }
     }
 
@@ -1112,10 +1194,79 @@ mod tests {
             latest_version: String::new(),
             checked_at: 0,
             failed_at: Some(500),
+            tap_version: None,
         };
         assert!(check_failed(&blank));
         let binary = InstallMethod::Binary(PathBuf::from("/usr/local/bin/gtunnel"));
-        assert_eq!(notice_for("0.1.0", &blank.latest_version, &binary), None);
+        assert_eq!(
+            notice_for("0.1.0", &blank.latest_version, None, &binary),
+            None
+        );
+    }
+
+    // Copied from the template `bump-tap-formula.py` rewrites: no `version` line,
+    // so the version is the one in the url
+    const FORMULA: &str = r#"class Gtunnel < Formula
+  desc "TUI-first CLI for GCP IAP tunnels and public URLs via a GCP relay"
+  homepage "https://github.com/gcheliz/gtunnel"
+  license "MIT"
+
+  on_macos do
+    on_arm do
+      url "https://github.com/gcheliz/gtunnel/releases/download/v0.3.12/gtunnel-macos-arm64-v0.3.12.tar.gz"
+      sha256 "b5714c5c9b89d88a5db88b3065f4cbc48205419dc23a432cedb8ff98982d7775"
+    end
+  end
+end
+"#;
+
+    #[test]
+    fn the_tap_version_is_read_from_the_formula_url() {
+        assert_eq!(parse_formula_version(FORMULA).as_deref(), Some("0.3.12"));
+        assert_eq!(
+            parse_formula_version("class Gtunnel < Formula\nend\n"),
+            None
+        );
+        assert_eq!(
+            parse_formula_version(r#"url "https://x/releases/download/vnext/a.tar.gz""#),
+            None
+        );
+    }
+
+    #[test]
+    fn a_homebrew_install_waits_for_the_tap() {
+        let binary = InstallMethod::Binary(PathBuf::from("/usr/local/bin/gtunnel"));
+        // Released as 0.3.13, the formula still says 0.3.12
+        assert_eq!(
+            notice_for("0.3.12", "0.3.13", Some("0.3.12"), &InstallMethod::Homebrew),
+            None
+        );
+        let notice = notice_for("0.3.12", "0.3.13", Some("0.3.12"), &binary).expect("a release");
+        assert_eq!(notice.latest, "0.3.13");
+        assert_eq!(notice.command, "gtunnel update");
+        // Once the tap has it, brew is told
+        let brew = notice_for("0.3.12", "0.3.13", Some("0.3.13"), &InstallMethod::Homebrew)
+            .expect("the tap caught up");
+        assert_eq!(brew.command, "brew upgrade gtunnel");
+    }
+
+    #[test]
+    fn an_unreadable_tap_falls_back_to_refreshing_brew() {
+        let notice = notice_for("0.3.12", "0.3.13", None, &InstallMethod::Homebrew)
+            .expect("the release is the best guess");
+        assert_eq!(notice.latest, "0.3.13");
+        assert_eq!(notice.command, "brew update && brew upgrade gtunnel");
+        assert_eq!(
+            notice_for("0.3.13", "0.3.13", None, &InstallMethod::Homebrew),
+            None
+        );
+    }
+
+    #[test]
+    fn a_cache_from_before_the_tap_was_read_has_no_tap_version() {
+        let old = r#"{"latest_version":"1.2.3","checked_at":1700000000}"#;
+        let cache: UpdateCache = serde_json::from_str(old).expect("an old cache parses");
+        assert_eq!(cache.tap_version, None);
     }
 
     // A stub that answers `--version` the way the real binary does, or fails
