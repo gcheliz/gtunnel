@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.3.18](https://github.com/gcheliz/gtunnel/compare/v0.3.17...v0.3.18) - 2026-10-30
+
+### Fixed
+
+- *(supervise)* count the time a run spent across a sleep ([#425](https://github.com/gcheliz/gtunnel/pull/425))
+
 ## [0.3.17](https://github.com/gcheliz/gtunnel/compare/v0.3.16...v0.3.17) - 2026-10-30
 
 ### Fixed
