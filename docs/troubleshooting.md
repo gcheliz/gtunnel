@@ -650,6 +650,19 @@ while the TUI is closed, so `gtunnel watch install` must have run.
 | macOS | `osascript`, part of macOS. Notifications for Script Editor (or `terminal-notifier`) allowed in System Settings, Notifications | `osascript -e 'display notification "test"'` |
 | Linux | A session D-Bus and a notification service on it: every desktop environment runs one; a bare window manager needs one such as `dunst` or `mako`. No package is needed for gtunnel itself | `busctl --user list \| grep org.freedesktop.Notifications` |
 
+`gtunnel doctor` runs these checks while notifications are on (see [doctor](commands.md#doctor)).
+A notification that could not be delivered leaves one line on stderr when the command ends,
+naming each notifier tried; for the watchdog that is its log, `<config>/logs/watchdog.log`
+(`gtunnel watch status` prints the path). Captured in a Linux container with no session bus:
+
+```console,ignore
+notification not delivered: session bus: failed to connect to `unix:path=/run/user/0/bus`: No such file or directory (os error 2); notify-send: not installed
+```
+
+A session bus started by the X session rather than by systemd (`dbus-launch`) is invisible to
+the watchdog's user unit. `doctor` names it; the fix is
+`systemctl --user import-environment DBUS_SESSION_BUS_ADDRESS`, run once per login.
+
 ## Cost
 
 Access mode creates nothing and costs nothing beyond egress.

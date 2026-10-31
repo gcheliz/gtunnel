@@ -943,6 +943,18 @@ account ci:
   ! Account 'ci': credential_file ~/ci-key.json is not an absolute path, so a service cannot resolve it. Run `gtunnel account edit ci --credential-file <absolute path>`, or `--credential-file ""` to clear it
 ```
 
+With notifications on, `doctor` also checks that this machine can show one, machine-wide and
+never fixed for you: on macOS that `osascript` runs, on Linux that a session D-Bus answers, that
+something on it owns `org.freedesktop.Notifications`, and that the watchdog's systemd user
+environment reaches the same bus. Captured in a Linux container with a session bus and no
+notification service:
+
+```console,ignore
+$ gtunnel doctor
+gtunnel:
+  ! Desktop notifications are on but cannot be shown: nothing on the session D-Bus owns org.freedesktop.Notifications; every desktop environment runs a notification service, and a bare window manager needs one such as dunst or mako
+```
+
 | Flag | Effect |
 |---|---|
 | `--fix` | Fix what can be fixed safely |
