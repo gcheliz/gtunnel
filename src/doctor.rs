@@ -202,6 +202,11 @@ pub enum Finding {
         tunnel: String,
         variable: String,
     },
+    // Notifications are on and this machine cannot show one. Report only: the
+    // missing piece is the desktop's, never gtunnel's to install.
+    NotifierUnavailable {
+        reason: String,
+    },
 }
 
 impl Finding {
@@ -408,6 +413,9 @@ impl Finding {
                  notices. Run `gtunnel watch install` to check every {}s",
                 crate::settings::current().watch_interval.as_secs()
             ),
+            Finding::NotifierUnavailable { reason } => {
+                format!("Desktop notifications are on but cannot be shown: {reason}")
+            }
         }
     }
 }
@@ -606,6 +614,19 @@ fn unreadable_record_findings(
 
 pub fn watchdog_finding(installed: bool, tunnels: usize) -> Option<Finding> {
     (!installed && tunnels > 0).then_some(Finding::WatchdogMissing)
+}
+
+/// Asked only with notifications on: off, a machine with no notifier is fine.
+pub fn notifier_finding(
+    enabled: bool,
+    probe: impl FnOnce() -> Result<(), String>,
+) -> Option<Finding> {
+    if !enabled {
+        return None;
+    }
+    probe()
+        .err()
+        .map(|reason| Finding::NotifierUnavailable { reason })
 }
 
 /// Services installed on this machine that no record in `tunnels.toml` owns.
@@ -971,6 +992,20 @@ pub async fn run_doctor(
         crate::daemon::watchdog_installed().await,
         state.tunnels.len(),
     ) {
+        out.push((String::new(), finding));
+    }
+
+    // The check blocks, on a process or on a runtime of its own, so it leaves
+    // this one's worker thread
+    let enabled = crate::settings::current().notifications;
+    let probe = if enabled {
+        tokio::task::spawn_blocking(crate::notify::check)
+            .await
+            .unwrap_or(Ok(()))
+    } else {
+        Ok(())
+    };
+    if let Some(finding) = notifier_finding(enabled, || probe) {
         out.push((String::new(), finding));
     }
 
@@ -2553,6 +2588,29 @@ mod tests {
         // No tunnels, nothing to watch: an install with nothing in it yet is
         // not a machine missing its watchdog
         assert_eq!(watchdog_finding(false, 0), None);
+    }
+
+    #[test]
+    fn a_missing_notifier_is_reported_only_with_notifications_on() {
+        let missing = || Err("no session bus".to_string());
+        assert_eq!(
+            notifier_finding(true, missing),
+            Some(Finding::NotifierUnavailable {
+                reason: "no session bus".into()
+            })
+        );
+        assert_eq!(notifier_finding(true, || Ok(())), None);
+        assert_eq!(
+            notifier_finding(false, || panic!("not probed when off")),
+            None
+        );
+        let f = Finding::NotifierUnavailable { reason: "x".into() };
+        assert!(!f.fixable(), "the missing piece is the desktop's");
+        assert!(
+            f.describe().contains("cannot be shown: x"),
+            "{}",
+            f.describe()
+        );
     }
 
     fn expected(labels: &[&str]) -> HashSet<String> {
