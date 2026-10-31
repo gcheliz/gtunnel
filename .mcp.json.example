@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "gtunnel": {
-      "command": "gtunnel",
-      "args": ["mcp"]
-    }
-  }
-}
