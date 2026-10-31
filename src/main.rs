@@ -16,4 +16,5 @@ async fn main() {
     if let Err(e) = dispatch::run(args).await {
         dispatch::exit_with(&e, json);
     }
+    dispatch::finish();
 }

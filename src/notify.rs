@@ -49,6 +49,53 @@ fn spawn_chain(chain: Vec<Step>) -> std::thread::JoinHandle<()> {
     })
 }
 
+/// The chains still delivering, so the process can wait for them before it
+/// exits.
+///
+/// The watchdog is a oneshot job: its pass ends milliseconds after it
+/// announces, and systemd (and launchd) kill whatever the job left running,
+/// a `notify-send` already spawned included. The change is in the ledger as
+/// announced by then, so a dropped chain is an alert lost for good.
+struct Pending(std::sync::Mutex<Vec<std::thread::JoinHandle<()>>>);
+
+impl Pending {
+    const fn new() -> Self {
+        Pending(std::sync::Mutex::new(Vec::new()))
+    }
+
+    fn track(&self, handle: std::thread::JoinHandle<()>) {
+        let mut pending = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        // The TUI runs for hours; a finished chain is not kept for its exit
+        pending.retain(|h| !h.is_finished());
+        pending.push(handle);
+    }
+
+    /// Waits for every chain, all of them within `bound` together: a notifier
+    /// that hangs must not hold the exit, so one still running is abandoned.
+    fn flush_within(&self, bound: std::time::Duration) {
+        let pending = std::mem::take(&mut *self.0.lock().unwrap_or_else(|e| e.into_inner()));
+        let deadline = std::time::Instant::now() + bound;
+        for handle in pending {
+            while !handle.is_finished() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            if handle.is_finished() {
+                let _ = handle.join();
+            }
+        }
+    }
+}
+
+static PENDING: Pending = Pending::new();
+
+/// Lets the notifications already sent finish before the process exits.
+///
+/// Called where the process ends, never from the TUI loop, which must not
+/// wait on a notifier.
+pub fn flush() {
+    PENDING.flush_within(crate::proc::NOTIFY_BOUND);
+}
+
 // Best effort: a desktop without a notifier is not an error. Every caller
 // reaches the desktop through here, so this is the one place the guard lives.
 // `notifications.enabled` or `GTUNNEL_NOTIFICATIONS` (or the older
@@ -59,11 +106,11 @@ pub fn notify(title: &str, body: &str) {
     if !crate::settings::current().notifications {
         return;
     }
-    let _ = spawn_chain(vec![
+    PENDING.track(spawn_chain(vec![
         Step::new("terminal-notifier", &["-title", title, "-message", body]),
         Step::new("osascript", &["-e", &osascript_body(title, body)]),
         Step::new("notify-send", &[title, body]),
-    ]);
+    ]));
 }
 
 /// What lifecycle code talks to, so a test can assert on what would have been
@@ -103,5 +150,49 @@ mod tests {
             started.elapsed()
         );
         handle.join().unwrap();
+    }
+
+    #[test]
+    fn flush_waits_for_a_chain_that_is_still_delivering() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("delivered");
+        let script = format!("sleep 0.3; touch '{}'", marker.display());
+        let pending = Pending::new();
+        pending.track(spawn_chain(vec![Step::new("sh", &["-c", &script])]));
+        assert!(!marker.exists(), "the chain had not run yet");
+        pending.flush_within(std::time::Duration::from_secs(5));
+        assert!(marker.exists(), "flush returned before the chain finished");
+    }
+
+    #[test]
+    fn flush_abandons_a_chain_that_outlives_the_bound() {
+        let pending = Pending::new();
+        pending.track(spawn_chain(vec![Step::new("sleep", &["3"])]));
+        let started = std::time::Instant::now();
+        pending.flush_within(std::time::Duration::from_millis(200));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "flush waited {:?} past its bound",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn flush_with_nothing_pending_returns_at_once() {
+        let started = std::time::Instant::now();
+        Pending::new().flush_within(std::time::Duration::from_secs(5));
+        assert!(started.elapsed() < std::time::Duration::from_millis(100));
+    }
+
+    #[test]
+    fn a_finished_chain_is_not_kept() {
+        let pending = Pending::new();
+        let done = spawn_chain(vec![Step::new("true", &[])]);
+        while !done.is_finished() {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        pending.track(done);
+        pending.track(spawn_chain(vec![Step::new("true", &[])]));
+        assert_eq!(pending.0.lock().unwrap().len(), 1);
     }
 }
