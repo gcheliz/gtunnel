@@ -9,6 +9,24 @@ use crate::state::{
     TunnelSpec,
 };
 
+/// `gcloud compute ssh <instance> --zone=<zone> --tunnel-through-iap --quiet`,
+/// the start of every command that reaches a VM over IAP ssh. The names are
+/// checked here and not by each caller because they land in argv: one that
+/// starts with a dash is read by gcloud as a flag, and the relay's startup
+/// rerun was the one caller that did not check.
+pub fn iap_ssh_prefix(instance: &str, zone: &str) -> Result<Vec<String>> {
+    validate_instance_name(instance)?;
+    validate_zone(zone)?;
+    Ok(vec![
+        "compute".to_string(),
+        "ssh".to_string(),
+        instance.to_string(),
+        format!("--zone={zone}"),
+        "--tunnel-through-iap".to_string(),
+        "--quiet".to_string(),
+    ])
+}
+
 // Flags every gcloud invocation carries, so a tunnel never depends on which
 // gcloud configuration happens to be active in the shell
 pub fn gcloud_common(acct: &Account, level: LogLevel) -> Result<Vec<String>> {
@@ -62,14 +80,7 @@ pub fn access_argv(acct: &Account, t: &PersistentTunnel, level: LogLevel) -> Res
         host,
     } = target
     {
-        let mut argv = vec![
-            "compute".to_string(),
-            "ssh".to_string(),
-            instance.clone(),
-            format!("--zone={zone}"),
-            "--tunnel-through-iap".to_string(),
-            "--quiet".to_string(),
-        ];
+        let mut argv = iap_ssh_prefix(instance, zone)?;
         argv.extend(gcloud_common(acct, level)?);
         argv.push("--".to_string());
         argv.extend(ssh_forward_options(level, "-L"));
@@ -159,17 +170,7 @@ pub fn expose_argv(
         }
     };
     let normalized = normalize_local_target(local_target)?;
-    validate_instance_name(&ex.relay_instance)?;
-    validate_zone(&ex.relay_zone)?;
-
-    let mut argv = vec![
-        "compute".to_string(),
-        "ssh".to_string(),
-        ex.relay_instance.clone(),
-        format!("--zone={}", ex.relay_zone),
-        "--tunnel-through-iap".to_string(),
-        "--quiet".to_string(),
-    ];
+    let mut argv = iap_ssh_prefix(&ex.relay_instance, &ex.relay_zone)?;
     argv.extend(gcloud_common(acct, level)?);
     argv.push("--".to_string());
     argv.extend(ssh_forward_options(level, "-R"));

@@ -64,14 +64,11 @@ pub async fn supervise(
     let prog = &argv[0];
     let args = &argv[1..];
 
-    #[cfg(unix)]
     let mut cmd = {
         let mut c = Command::new(prog);
         c.process_group(0);
         c
     };
-    #[cfg(not(unix))]
-    let mut cmd = Command::new(prog);
 
     // A login that was renewed since the last run must not keep naming itself
     if let Some(file) = &auth_marker {
@@ -135,7 +132,6 @@ pub async fn supervise(
         .spawn()
         .with_context(|| format!("Failed to spawn {prog}"))?;
 
-    #[cfg(unix)]
     if let (Some(file), Some(pid)) = (&group_file, child.id()) {
         record_group(file, pid);
     }
@@ -173,7 +169,6 @@ pub async fn supervise(
     });
 
     let mut asked_to_stop = false;
-    #[cfg(unix)]
     let status = {
         let pgid = child.id().map(|id| id as i32);
         let status = tokio::select! {
@@ -202,9 +197,6 @@ pub async fn supervise(
         }
         status
     };
-
-    #[cfg(not(unix))]
-    let status = child.wait().await.context("failed to wait on child")?;
 
     // Bounded: a member that outlived the sweep, or sits in another group,
     // still holds the pipes open, and a join with no end is a supervisor that
@@ -356,14 +348,11 @@ const PIPE_DRAIN: Duration = Duration::from_secs(2);
 /// Every way this process is asked to stop, as one stream that outlives the
 /// child. See the note at its creation for why it must not be made per wait.
 struct Stops {
-    #[cfg(unix)]
     term: tokio::signal::unix::Signal,
-    #[cfg(unix)]
     int: tokio::signal::unix::Signal,
 }
 
 impl Stops {
-    #[cfg(unix)]
     fn new() -> Result<Self> {
         use tokio::signal::unix::{signal, SignalKind};
         Ok(Self {
@@ -372,22 +361,11 @@ impl Stops {
         })
     }
 
-    #[cfg(not(unix))]
-    fn new() -> Result<Self> {
-        Ok(Self {})
-    }
-
-    #[cfg(unix)]
     async fn next(&mut self) {
         tokio::select! {
             _ = self.term.recv() => {}
             _ = self.int.recv() => {}
         }
-    }
-
-    #[cfg(not(unix))]
-    async fn next(&mut self) {
-        let _ = tokio::signal::ctrl_c().await;
     }
 }
 
@@ -399,7 +377,6 @@ pub(crate) fn group_file_beside(ready: &std::path::Path) -> PathBuf {
 
 /// Write the group id and the leader's start token. The id alone is not
 /// enough to signal later: after a reboot the number may belong to anything.
-#[cfg(unix)]
 fn record_group(file: &std::path::Path, pgid: u32) {
     let token = crate::proc::start_token(pgid).unwrap_or_default();
     if let Some(parent) = file.parent() {
@@ -415,7 +392,6 @@ fn record_group(file: &std::path::Path, pgid: u32) {
 /// cannot be handed to another process while any member remains, so a group
 /// that still answers is the old one.
 async fn sweep_stale_group(file: &std::path::Path) {
-    #[cfg(unix)]
     {
         let Ok(text) = std::fs::read_to_string(file) else {
             return;
@@ -442,8 +418,6 @@ async fn sweep_stale_group(file: &std::path::Path) {
         }
         crate::proc::signal_group(pgid, libc::SIGKILL);
     }
-    #[cfg(not(unix))]
-    let _ = file;
 }
 
 /// A start asked for by a person or by the watchdog, written by `daemon::start`

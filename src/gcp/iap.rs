@@ -50,16 +50,9 @@ pub async fn can_tunnel_dest_group(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gcp::{Endpoints, GcpClient, TokenSource};
+    use crate::gcp::GcpClient;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    fn client(server: &MockServer) -> GcpClient {
-        GcpClient::new(
-            TokenSource::Static("tok".to_string()),
-            Endpoints::single(&server.uri()),
-        )
-    }
 
     #[tokio::test]
     async fn can_tunnel_instance_is_true_when_the_permission_is_echoed() {
@@ -74,7 +67,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let ok = can_tunnel_instance(&client(&server), "p", "europe-west1-b", "db")
+        let ok = can_tunnel_instance(&GcpClient::for_mock(&server), "p", "europe-west1-b", "db")
             .await
             .expect("call");
         assert!(ok);
@@ -88,7 +81,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let ok = can_tunnel_instance(&client(&server), "p", "europe-west1-b", "db")
+        let ok = can_tunnel_instance(&GcpClient::for_mock(&server), "p", "europe-west1-b", "db")
             .await
             .expect("call");
         assert!(!ok);
@@ -107,7 +100,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let ok = can_tunnel_dest_group(&client(&server), "p", "europe-west1", "db")
+        let ok = can_tunnel_dest_group(&GcpClient::for_mock(&server), "p", "europe-west1", "db")
             .await
             .expect("call");
         assert!(ok);

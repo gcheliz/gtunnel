@@ -313,6 +313,16 @@ impl GcpClient {
         }
     }
 
+    /// A client for a wiremock server with the static token `tok`, which is the
+    /// one thing every API module's tests were pasting for themselves.
+    #[cfg(test)]
+    pub fn for_mock(server: &wiremock::MockServer) -> Self {
+        Self::new(
+            TokenSource::Static("tok".to_string()),
+            Endpoints::single(&server.uri()),
+        )
+    }
+
     pub fn poll_interval(&self) -> Duration {
         self.poll_interval
     }
@@ -749,26 +759,19 @@ mod tests {
         name: String,
     }
 
-    fn client(server: &MockServer) -> GcpClient {
-        GcpClient::new(
-            TokenSource::Static("tok-123".to_string()),
-            Endpoints::single(&server.uri()),
-        )
-    }
-
     #[tokio::test]
     async fn get_sends_the_bearer_token_and_parses_json() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/thing"))
-            .and(header("authorization", "Bearer tok-123"))
+            .and(header("authorization", "Bearer tok"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "name": "gt-dev-relay"
             })))
             .mount(&server)
             .await;
 
-        let got: Thing = client(&server)
+        let got: Thing = GcpClient::for_mock(&server)
             .get(&format!("{}/thing", server.uri()))
             .await
             .expect("get");
@@ -785,7 +788,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let err = client(&server)
+        let err = GcpClient::for_mock(&server)
             .get::<Thing>(&format!("{}/thing", server.uri()))
             .await
             .expect_err("should fail");
@@ -804,7 +807,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let err = client(&server)
+        let err = GcpClient::for_mock(&server)
             .get::<Thing>(&format!("{}/thing", server.uri()))
             .await
             .expect_err("should fail");
@@ -821,7 +824,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let err = client(&server)
+        let err = GcpClient::for_mock(&server)
             .get::<Thing>(&format!("{}/thing", server.uri()))
             .await
             .expect_err("should fail");
@@ -838,7 +841,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let out = client(&server)
+        let out = GcpClient::for_mock(&server)
             .delete(&format!("{}/thing", server.uri()))
             .await;
         assert!(out.is_err(), "the client surfaces 404; callers decide");
@@ -904,7 +907,10 @@ mod tests {
             error: None,
             done: None,
         };
-        client(&server).wait_operation(&op).await.expect("wait");
+        GcpClient::for_mock(&server)
+            .wait_operation(&op)
+            .await
+            .expect("wait");
         let hits = server.received_requests().await.expect("requests").len();
         assert_eq!(hits, 2, "should poll until DONE");
     }
@@ -931,7 +937,7 @@ mod tests {
             error: None,
             done: None,
         };
-        let err = client(&server)
+        let err = GcpClient::for_mock(&server)
             .wait_operation(&op)
             .await
             .expect_err("should fail");
@@ -951,7 +957,10 @@ mod tests {
             error: None,
             done: Some(true),
         };
-        client(&server).wait_operation(&op).await.expect("wait");
+        GcpClient::for_mock(&server)
+            .wait_operation(&op)
+            .await
+            .expect("wait");
         assert!(
             server
                 .received_requests()
@@ -989,7 +998,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let got: Thing = client(&server)
+        let got: Thing = GcpClient::for_mock(&server)
             .get(&format!("{}/thing", server.uri()))
             .await
             .expect("the second attempt should win");
@@ -1005,7 +1014,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let err = client(&server)
+        let err = GcpClient::for_mock(&server)
             .get::<Thing>(&format!("{}/thing", server.uri()))
             .await
             .expect_err("four failures are a failure");
@@ -1035,7 +1044,7 @@ mod tests {
                 .mount(&server)
                 .await;
 
-            let out = client(&server)
+            let out = GcpClient::for_mock(&server)
                 .get::<Thing>(&format!("{}/thing", server.uri()))
                 .await;
             assert_eq!(out.is_ok(), retried, "status {code}: {out:?}");
@@ -1050,7 +1059,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let out = client(&server)
+        let out = GcpClient::for_mock(&server)
             .post::<_, Thing>(
                 &format!("{}/thing", server.uri()),
                 &serde_json::json!({"a": 1}),
@@ -1234,7 +1243,7 @@ mod tests {
                 .respond_with(ResponseTemplate::new(200).set_body_string(body))
                 .mount(&server)
                 .await;
-            let out = client(&server)
+            let out = GcpClient::for_mock(&server)
                 .delete(&format!("{}/thing", server.uri()))
                 .await;
             match expect {
@@ -1295,7 +1304,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let got: Vec<Thing> = client(&server)
+        let got: Vec<Thing> = GcpClient::for_mock(&server)
             .get_all(&format!("{}/things", server.uri()), "items")
             .await
             .expect("get_all");
@@ -1324,7 +1333,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let got: Vec<Thing> = client(&server)
+        let got: Vec<Thing> = GcpClient::for_mock(&server)
             .get_all(&format!("{}/things?filter=x", server.uri()), "items")
             .await
             .expect("get_all");
@@ -1343,7 +1352,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let err = client(&server)
+        let err = GcpClient::for_mock(&server)
             .get_all::<Thing>(&format!("{}/things", server.uri()), "items")
             .await
             .expect_err("a list that never ends is an error");
@@ -1373,7 +1382,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let got: Vec<(String, Thing)> = client(&server)
+        let got: Vec<(String, Thing)> = GcpClient::for_mock(&server)
             .get_all_scoped(&format!("{}/agg", server.uri()), "items")
             .await
             .expect("scoped");

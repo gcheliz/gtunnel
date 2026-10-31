@@ -1,6 +1,6 @@
 mod common;
 
-use common::Harness;
+use common::{alive, sleeper, Harness};
 use std::fs;
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -839,28 +839,22 @@ const EXPOSE_SPEC: &str = r#"{"mode":"expose","local_target":"localhost:8080","d
 /// passed, so a fixture that means "live" cannot be dated in 2023.
 fn run_started() -> u64 {
     static STARTED: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-    *STARTED.get_or_init(|| {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-    })
+    *STARTED.get_or_init(common::unix_now)
 }
 
 /// A run record as `gtunnel run` writes it, for a pid the test owns. No start
 /// token, so liveness is judged by the pid alone, as for a record written
 /// before the token existed.
 fn write_run_record(h: &Harness, account: &str, name: &str, pid: u32, spec_json: &str) {
-    let dir = h.dir.path().join("config/run");
-    fs::create_dir_all(&dir).unwrap();
-    fs::write(
-        dir.join(format!("{account}-{name}.json")),
-        format!(
-            r#"{{"name":"{name}","account_name":"{account}","pid":{pid},"started_at":{},"ttl_secs":300,"spec":{spec_json}}}"#,
-            run_started()
-        ),
-    )
-    .unwrap();
+    common::write_run_record(
+        h.dir.path(),
+        account,
+        name,
+        pid,
+        run_started(),
+        Some(300),
+        spec_json,
+    );
 }
 
 /// Send one `tools/call` and return its `result`.
@@ -926,16 +920,7 @@ fn record_gone(h: &Harness, name: &str) -> bool {
 }
 
 fn pid_alive(pid: u64) -> bool {
-    Command::new("/bin/kill")
-        .args(["-0", &pid.to_string()])
-        .stderr(Stdio::null())
-        .status()
-        .unwrap()
-        .success()
-}
-
-fn sleeper() -> std::process::Child {
-    Command::new("/bin/sleep").arg("30").spawn().expect("sleep")
+    alive(i32::try_from(pid).expect("a pid fits in i32"))
 }
 
 fn reap(mut child: std::process::Child) {

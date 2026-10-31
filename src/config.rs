@@ -379,19 +379,13 @@ impl RestartConfig {
         &self,
         env: &dyn Fn(&str) -> Option<String>,
     ) -> Result<crate::restart_budget::Budget> {
-        // An exported-but-empty variable is how a shell spells unset. The
-        // source is named in every error: the value may come from a profile
-        // the reader is not looking at.
+        // The empty-variable rule, the error wording and the zero check are
+        // `settings`', so a duration reads the same whichever page owns it.
         let var = |key: &str| {
             let name = format!("GTUNNEL_RESTART_{}", key.to_uppercase());
-            env(&name)
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty())
-                .map(|v| (name, v))
+            settings::var(env, &name).map(|v| (name, v))
         };
-        let bad = |source: &str, why: String| -> anyhow::Error {
-            GtunnelError::usage(format!("{source}: {why}")).into()
-        };
+        let bad = settings::bad;
         let max_restarts = match var("max_restarts") {
             Some((name, raw)) => raw
                 .parse::<i64>()
@@ -408,12 +402,7 @@ impl RestartConfig {
         let duration = |key: &str, file: &str| -> Result<std::time::Duration> {
             let (source, raw) =
                 var(key).unwrap_or_else(|| (format!("[restart] {key}"), file.to_string()));
-            let d = humantime::parse_duration(&raw)
-                .map_err(|e| bad(&source, format!("'{raw}' is not a duration ({e})")))?;
-            if d.is_zero() {
-                return Err(bad(&source, format!("'{raw}' must be longer than zero")));
-            }
-            Ok(d)
+            settings::parse_duration(&source, &raw)
         };
         let window = duration("window", &self.window)?;
         let min_uptime = duration("min_uptime", &self.min_uptime)?;
@@ -2004,7 +1993,6 @@ mod tests {
             let mut cfg = Config::default();
             cfg.add_account(account("dev")).expect("add");
             save_config(&cfg).expect("save");
-            #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
                 let mode = std::fs::metadata(config_path().unwrap())

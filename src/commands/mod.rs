@@ -431,7 +431,7 @@ mod tests {
     mod zone_lookup {
         use super::super::*;
         use crate::error::{kind_of, ErrorKind};
-        use crate::gcp::{Endpoints, GcpClient, TokenSource};
+        use crate::gcp::GcpClient;
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -445,13 +445,6 @@ mod tests {
                 credential_file: None,
                 expose: None,
             }
-        }
-
-        fn client(server: &MockServer) -> GcpClient {
-            GcpClient::new(
-                TokenSource::Static("tok".to_string()),
-                Endpoints::single(&server.uri()),
-            )
         }
 
         async fn answering(zones: &[&str]) -> MockServer {
@@ -479,9 +472,15 @@ mod tests {
         #[tokio::test]
         async fn one_match_gives_its_zone_with_no_flag_and_no_default() {
             let server = answering(&["europe-west4-a"]).await;
-            let got = resolve_instance_zone(&client(&server), &acct(""), None, "bastion", false)
-                .await
-                .expect("resolved");
+            let got = resolve_instance_zone(
+                &GcpClient::for_mock(&server),
+                &acct(""),
+                None,
+                "bastion",
+                false,
+            )
+            .await
+            .expect("resolved");
             assert_eq!(got.zone, "europe-west4-a");
             assert!(got.verified, "the lookup already proved it exists");
         }
@@ -490,7 +489,7 @@ mod tests {
         async fn the_flag_is_used_without_asking_the_api() {
             let server = MockServer::start().await;
             let got = resolve_instance_zone(
-                &client(&server),
+                &GcpClient::for_mock(&server),
                 &acct("europe-west1-b"),
                 Some("us-central1-a"),
                 "bastion",
@@ -507,10 +506,16 @@ mod tests {
         #[tokio::test]
         async fn two_zones_are_a_usage_error_naming_both() {
             let server = answering(&["us-central1-a", "europe-west1-b"]).await;
-            let err = resolve_instance_zone(&client(&server), &acct(""), None, "bastion", false)
-                .await
-                .err()
-                .expect("ambiguous");
+            let err = resolve_instance_zone(
+                &GcpClient::for_mock(&server),
+                &acct(""),
+                None,
+                "bastion",
+                false,
+            )
+            .await
+            .err()
+            .expect("ambiguous");
             assert_eq!(kind_of(&err).exit_code(), 2);
             let msg = format!("{err:#}");
             assert!(
@@ -526,7 +531,7 @@ mod tests {
         async fn no_such_instance_is_not_found_and_names_the_project() {
             let server = answering(&[]).await;
             let err = resolve_instance_zone(
-                &client(&server),
+                &GcpClient::for_mock(&server),
                 &acct("europe-west1-b"),
                 None,
                 "bastion",
@@ -553,7 +558,7 @@ mod tests {
                 .mount(&server)
                 .await;
             let got = resolve_instance_zone(
-                &client(&server),
+                &GcpClient::for_mock(&server),
                 &acct("europe-west1-b"),
                 None,
                 "bastion",
@@ -576,7 +581,7 @@ mod tests {
                 .mount(&server)
                 .await;
             let err = resolve_instance_zone(
-                &client(&server),
+                &GcpClient::for_mock(&server),
                 &acct("europe-west1-b"),
                 None,
                 "bastion",
@@ -598,10 +603,16 @@ mod tests {
                 .respond_with(ResponseTemplate::new(403))
                 .mount(&server)
                 .await;
-            let err = resolve_instance_zone(&client(&server), &acct(""), None, "bastion", false)
-                .await
-                .err()
-                .expect("no zone");
+            let err = resolve_instance_zone(
+                &GcpClient::for_mock(&server),
+                &acct(""),
+                None,
+                "bastion",
+                false,
+            )
+            .await
+            .err()
+            .expect("no zone");
             assert!(format!("{err:#}").contains("Pass --zone"), "{err:#}");
             assert!(err.downcast_ref::<ZoneUnresolved>().is_some());
         }

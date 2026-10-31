@@ -70,6 +70,55 @@ pub fn poll(bound: Duration, mut done: impl FnMut() -> bool) -> bool {
     }
 }
 
+/// Whether `pid` names a live process. Signal 0 sends nothing, so a pid that was
+/// read from a stub's own file or from a child the test made is only looked at.
+pub fn alive(pid: i32) -> bool {
+    // SAFETY: signal 0 sends nothing; every caller passes a pid it owns.
+    unsafe { libc::kill(pid, 0) == 0 }
+}
+
+/// A process that outlives the test body and is not the test process, for a
+/// run record that must read as live. The caller kills and waits for it.
+pub fn sleeper() -> Child {
+    Command::new("/bin/sleep").arg("30").spawn().expect("sleep")
+}
+
+pub fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock after 1970")
+        .as_secs()
+}
+
+/// A run record as `gtunnel run` writes it, under `<root>/config/run`. The pid
+/// decides whether the run counts as live, so the caller picks one that is or
+/// is not; with no start token, liveness is the pid alone, as for a record
+/// written before the token existed. `started_at` is the caller's because a
+/// run whose TTL has passed is one `list` stops, and a fixture that means
+/// "live" must not be expired.
+pub fn write_run_record(
+    root: &Path,
+    account: &str,
+    name: &str,
+    pid: u32,
+    started_at: u64,
+    ttl_secs: Option<u64>,
+    spec_json: &str,
+) {
+    let dir = root.join("config/run");
+    fs::create_dir_all(&dir).unwrap();
+    let ttl = ttl_secs
+        .map(|t| format!(r#","ttl_secs":{t}"#))
+        .unwrap_or_default();
+    fs::write(
+        dir.join(format!("{account}-{name}.json")),
+        format!(
+            r#"{{"name":"{name}","account_name":"{account}","pid":{pid},"started_at":{started_at},"spec":{spec_json}{ttl}}}"#
+        ),
+    )
+    .unwrap();
+}
+
 pub struct Harness {
     pub dir: TempDir,
     envs: Vec<(String, String)>,
@@ -102,7 +151,6 @@ impl Harness {
         for (name, body) in stubs {
             let path = root.join("bin").join(name);
             fs::write(&path, body).unwrap();
-            #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
                 fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();

@@ -10,6 +10,7 @@ use tokio::process::Command;
 use crate::config::config_dir;
 use crate::expose::routes;
 use crate::gcp::{gcloud, GcpClient};
+use crate::lifecycle::now_secs;
 use crate::state::{
     allocate_port, check_local_port, local_port_is_free, AccessTarget, PersistentTunnel,
     TunnelSpec, TunnelState, ACCESS_PORT_BASE, ACCESS_PORT_SPAN, RELAY_PORT_BASE, RELAY_PORT_SPAN,
@@ -437,13 +438,6 @@ pub fn generated_name() -> String {
     format!("gt-{suffix}")
 }
 
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
 // Every record counts, alive or not: a record is removed only once its relay
 // route is gone, so a dead one's port must not be handed to a new tunnel that
 // would then share the old hostname's named port
@@ -563,14 +557,12 @@ pub fn check_run_name(state: &TunnelState, account: &str, name: &str) -> Result<
 /// route is being created has to take the same exit as one that arrives later,
 /// and until a handler exists the default action ends gtunnel and leaves gcloud,
 /// which is in its own process group, running.
-#[cfg(unix)]
 struct StopSignals {
     int: tokio::signal::unix::Signal,
     term: tokio::signal::unix::Signal,
     hup: tokio::signal::unix::Signal,
 }
 
-#[cfg(unix)]
 impl StopSignals {
     fn register() -> Result<Self> {
         use tokio::signal::unix::{signal, SignalKind};
@@ -588,20 +580,6 @@ impl StopSignals {
             _ = self.term.recv() => {}
             _ = self.hup.recv() => {}
         }
-    }
-}
-
-#[cfg(not(unix))]
-struct StopSignals;
-
-#[cfg(not(unix))]
-impl StopSignals {
-    fn register() -> Result<Self> {
-        Ok(Self)
-    }
-
-    async fn next(&mut self) {
-        let _ = tokio::signal::ctrl_c().await;
     }
 }
 

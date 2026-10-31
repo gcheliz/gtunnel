@@ -202,16 +202,9 @@ pub async fn delete_certificate_map_entry(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gcp::{Endpoints, GcpClient, TokenSource};
+    use crate::gcp::GcpClient;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    fn client(server: &MockServer) -> GcpClient {
-        GcpClient::new(
-            TokenSource::Static("tok".to_string()),
-            Endpoints::single(&server.uri()),
-        )
-    }
 
     #[tokio::test]
     async fn ensure_dns_authorization_returns_the_existing_cname() {
@@ -232,9 +225,14 @@ mod tests {
             .mount(&server)
             .await;
 
-        let auth = ensure_dns_authorization(&client(&server), "p", "gt-dev", "dev.example.com")
-            .await
-            .expect("auth");
+        let auth = ensure_dns_authorization(
+            &GcpClient::for_mock(&server),
+            "p",
+            "gt-dev",
+            "dev.example.com",
+        )
+        .await
+        .expect("auth");
         assert_eq!(auth.cname_name, "_acme-challenge.dev.example.com.");
         assert_eq!(auth.cname_data, "1234.authorize.certificatemanager.goog.");
     }
@@ -251,7 +249,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let state = certificate_state(&client(&server), "p", "gt-dev")
+        let state = certificate_state(&GcpClient::for_mock(&server), "p", "gt-dev")
             .await
             .expect("state");
         assert_eq!(state, "PROVISIONING");
@@ -267,7 +265,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let state = certificate_state(&client(&server), "p", "gt-dev")
+        let state = certificate_state(&GcpClient::for_mock(&server), "p", "gt-dev")
             .await
             .expect("state");
         assert_eq!(state, "MISSING");
@@ -319,7 +317,7 @@ mod tests {
                 .mount(&server)
                 .await;
 
-            delete(&client(&server)).await.expect(what);
+            delete(&GcpClient::for_mock(&server)).await.expect(what);
             let seen: Vec<String> = server
                 .received_requests()
                 .await
@@ -344,7 +342,7 @@ mod tests {
             })))
             .mount(&server)
             .await;
-        delete_certificate(&client(&server), "p", "a")
+        delete_certificate(&GcpClient::for_mock(&server), "p", "a")
             .await
             .expect("already gone");
     }

@@ -469,12 +469,6 @@ pub enum Group {
 }
 
 impl Group {
-    /// The order the help page stacks the groups in. Spelled out beside the enum
-    /// and not derived from it, because the page's reading order is a design
-    /// choice and a new variant should have to be placed on purpose.
-    #[allow(dead_code)]
-    pub const ALL: [Group; 4] = [Group::Tunnel, Group::List, Group::UrlAndLog, Group::Program];
-
     /// The heading as the design sets it: upper case and phrased as what the
     /// group acts on, so the page reads as a list of objects and not of verbs.
     pub fn heading(self) -> &'static str {
@@ -2379,7 +2373,9 @@ pub fn footer_line_with_flash(
     Line::from(spans)
 }
 
-#[allow(dead_code)]
+/// The footer without a flash, which is how the layout tests read it; the
+/// renderer always has a flash slot to pass, so only tests call this.
+#[cfg(test)]
 pub fn footer_line(
     width: u16,
     selected: Option<(TunnelStatus, TunnelKind)>,

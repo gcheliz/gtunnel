@@ -629,7 +629,7 @@ async fn visit(
     // The port is both what the probe dials and what `lsof` is asked about
     // later, so it is read once. An Expose tunnel has none: nothing local
     // listens, so there is nothing here to probe.
-    let Some(port) = local_port(tunnel) else {
+    let Some(port) = tunnel.spec.local_port() else {
         return Ok(());
     };
     let addr = format!("127.0.0.1:{port}");
@@ -804,13 +804,6 @@ fn row_for(rows: &mut persist::BreakerFile, key: String, len: u64) -> &mut Row {
         log_len: len,
         ..Row::default()
     })
-}
-
-fn local_port(tunnel: &PersistentTunnel) -> Option<u16> {
-    match &tunnel.spec {
-        crate::state::TunnelSpec::Access { local_port, .. } => Some(*local_port),
-        crate::state::TunnelSpec::Expose { .. } => None,
-    }
 }
 
 /// `gtunnel watch`. One pass and out, which is what the agent invokes, or a

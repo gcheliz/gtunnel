@@ -99,16 +99,9 @@ pub async fn delete_record_set(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gcp::{Endpoints, GcpClient, TokenSource};
+    use crate::gcp::GcpClient;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    fn client(server: &MockServer) -> GcpClient {
-        GcpClient::new(
-            TokenSource::Static("tok".to_string()),
-            Endpoints::single(&server.uri()),
-        )
-    }
 
     #[tokio::test]
     async fn list_managed_zones_parses_name_and_dns_name() {
@@ -123,7 +116,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let zones = list_managed_zones(&client(&server), "p")
+        let zones = list_managed_zones(&GcpClient::for_mock(&server), "p")
             .await
             .expect("zones");
         assert_eq!(zones.len(), 1);
@@ -151,7 +144,7 @@ mod tests {
             ttl: 300,
             rrdatas: vec!["34.1.2.3".to_string()],
         };
-        create_record_set(&client(&server), "p", "example-dev", &record)
+        create_record_set(&GcpClient::for_mock(&server), "p", "example-dev", &record)
             .await
             .expect("create");
     }
@@ -167,7 +160,7 @@ mod tests {
             .await;
 
         delete_record_set(
-            &client(&server),
+            &GcpClient::for_mock(&server),
             "p",
             "example-dev",
             "api.dev.example.com.",
@@ -200,7 +193,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let got = list_record_sets(&client(&server), "p", "example-dev")
+        let got = list_record_sets(&GcpClient::for_mock(&server), "p", "example-dev")
             .await
             .expect("list");
         assert!(got.iter().any(|r| r.name == "late.dev.example.com."));
@@ -222,7 +215,7 @@ mod tests {
             .await;
 
         let got = find_record_set(
-            &client(&server),
+            &GcpClient::for_mock(&server),
             "p",
             "example-dev",
             "api.dev.example.com.",
@@ -241,9 +234,15 @@ mod tests {
             .mount(&server)
             .await;
 
-        let got = find_record_set(&client(&server), "p", "example-dev", "x.example.com.", "A")
-            .await
-            .expect("find");
+        let got = find_record_set(
+            &GcpClient::for_mock(&server),
+            "p",
+            "example-dev",
+            "x.example.com.",
+            "A",
+        )
+        .await
+        .expect("find");
         assert_eq!(got, None);
     }
 }

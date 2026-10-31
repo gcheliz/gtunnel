@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
+use crate::lifecycle::now_secs;
 use crate::version::parse_version;
 
 pub const REPO: &str = "gcheliz/gtunnel";
@@ -65,13 +66,6 @@ fn record_failure(now: u64) {
         },
     };
     let _ = write_cache(&cache);
-}
-
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 fn user_agent() -> String {
@@ -474,7 +468,6 @@ fn sha256_hex(bytes: &[u8]) -> String {
 // Fails if the path already exists, so a pre-created directory is never used
 fn create_private_dir(path: &Path) -> Result<()> {
     let mut builder = std::fs::DirBuilder::new();
-    #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;
         builder.mode(0o700);
@@ -666,7 +659,6 @@ fn install_staged(
     version: &str,
     timeout: std::time::Duration,
 ) -> Result<()> {
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(new_bin, std::fs::Permissions::from_mode(0o755))?;
@@ -720,27 +712,18 @@ fn cmd_rollback() -> Result<()> {
 }
 
 fn replace_binary(new_bin: &Path, exe_path: &Path) -> Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(new_bin, std::fs::Permissions::from_mode(0o755))?;
-        if std::fs::rename(new_bin, exe_path).is_ok() {
-            return Ok(());
-        }
-        copy_beside_then_swap(new_bin, exe_path)
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(new_bin, std::fs::Permissions::from_mode(0o755))?;
+    if std::fs::rename(new_bin, exe_path).is_ok() {
+        return Ok(());
     }
-    #[cfg(not(unix))]
-    {
-        let _ = (new_bin, exe_path);
-        anyhow::bail!("Self-update works on macOS and Linux only")
-    }
+    copy_beside_then_swap(new_bin, exe_path)
 }
 
 // The download sits on another volume. Copying onto exe_path would truncate
 // the inode the kernel has mapped and signed, and a rewritten signed binary
 // is killed at its next launch on macOS. Stage the copy beside the target,
 // same volume, and swap the directory entry instead
-#[cfg(unix)]
 fn copy_beside_then_swap(new_bin: &Path, exe_path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let dir = exe_path
@@ -770,7 +753,6 @@ impl Drop for TempDirGuard {
 mod tests {
     use super::*;
 
-    #[cfg(unix)]
     #[test]
     fn replacing_across_volumes_gives_the_target_a_new_inode_and_never_writes_the_old_one() {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -795,7 +777,6 @@ mod tests {
         assert_eq!(names, 3, "a staged copy was left behind");
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_failed_swap_returns_the_error_and_leaves_the_target_alone() {
         let dir = tempfile::tempdir().unwrap();
@@ -885,7 +866,6 @@ mod tests {
         assert_ne!(first.0, second.0, "two runs must not collide");
         assert!(first.0.is_dir());
 
-        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let mode = std::fs::metadata(&first.0).unwrap().permissions().mode();
@@ -962,7 +942,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn an_intel_homebrew_symlink_into_the_cellar_is_detected_as_homebrew() {
         let dir = tempfile::tempdir().unwrap();
@@ -1003,7 +982,6 @@ mod tests {
         assert_eq!(stripped, PathBuf::from("/usr/bin/gtunnel"));
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_symlinked_install_is_updated_through_its_target_and_the_symlink_survives() {
         let dir = tempfile::tempdir().unwrap();
@@ -1035,7 +1013,6 @@ mod tests {
         assert!(!link_dir.join("gtunnel.old").exists());
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_linuxbrew_cellar_path_is_rewritten_to_the_opt_path_that_reaches_the_same_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -1269,7 +1246,6 @@ end
     }
 
     // A stub that answers `--version` the way the real binary does, or fails
-    #[cfg(unix)]
     fn stub(dir: &Path, name: &str, script: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let path = dir.join(name);
@@ -1280,7 +1256,6 @@ end
 
     const SMOKE: std::time::Duration = std::time::Duration::from_secs(10);
 
-    #[cfg(unix)]
     #[test]
     fn a_staged_binary_that_fails_its_version_check_is_not_swapped_in() {
         let dir = tempfile::tempdir().unwrap();
@@ -1298,7 +1273,6 @@ end
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_staged_binary_that_reports_another_version_is_not_swapped_in() {
         let dir = tempfile::tempdir().unwrap();
@@ -1308,7 +1282,6 @@ end
         assert!(std::fs::read_to_string(&exe).unwrap().contains("1.0.0"));
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_staged_binary_that_hangs_on_its_version_check_is_killed_and_refused() {
         let dir = tempfile::tempdir().unwrap();
@@ -1327,7 +1300,6 @@ end
         assert!(std::fs::read_to_string(&exe).unwrap().contains("1.0.0"));
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_successful_update_leaves_the_previous_binary_as_gtunnel_old() {
         let dir = tempfile::tempdir().unwrap();
@@ -1344,7 +1316,6 @@ end
         assert_eq!(names.len(), 2, "a staged copy was left behind: {names:?}");
     }
 
-    #[cfg(unix)]
     #[test]
     fn rollback_restores_the_backup_and_is_refused_when_there_is_none() {
         let dir = tempfile::tempdir().unwrap();

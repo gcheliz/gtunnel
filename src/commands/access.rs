@@ -909,7 +909,7 @@ impl ListRowJson {
             unmanaged: false,
             run: false,
             expires_at: None,
-            local_port: access_port(&tunnel.spec),
+            local_port: tunnel.spec.local_port(),
             health: if status == TunnelStatus::Running {
                 // built before its probe lands, which then overwrites it
                 "unknown"
@@ -988,13 +988,6 @@ pub(crate) fn stopped_failure(tunnel: &PersistentTunnel) -> Option<Failure> {
 pub(crate) fn stopped_for_budget(tunnel: &PersistentTunnel) -> Option<String> {
     let label = daemon::platform_label(&tunnel.account_name, &tunnel.name);
     daemon::crash_reason_in(&crate::config::config_dir().ok()?, &label)
-}
-
-fn access_port(spec: &TunnelSpec) -> Option<u16> {
-    match spec {
-        TunnelSpec::Access { local_port, .. } => Some(*local_port),
-        TunnelSpec::Expose { .. } => None,
-    }
 }
 
 /// The round trip of a probe of a local tunnel port, or `None` without an

@@ -167,14 +167,12 @@ pub fn output_within_blocking_with_input(
 /// under launchd's ExitTimeOut (20 s by default) and systemd's TimeoutStopSec
 /// (90 s), or the init system kills the supervisor first and the SIGKILL below
 /// never reaches the group. A plain const: no caller needs to tune it.
-#[cfg(unix)]
 pub const STOP_GRACE: Duration = Duration::from_secs(2);
 
 /// Send `signal` to every member of process group `pgid`. The one
 /// `kill(-pgid, sig)` site, so the guard against a non-positive id (which
 /// would signal every process of the user, or our own group) lives once.
 /// ESRCH is ignored: a group that is gone is the outcome being asked for.
-#[cfg(unix)]
 pub fn signal_group(pgid: i32, signal: libc::c_int) {
     if pgid <= 0 {
         return;
@@ -184,7 +182,6 @@ pub fn signal_group(pgid: i32, signal: libc::c_int) {
     unsafe { libc::kill(-pgid, signal) };
 }
 
-#[cfg(unix)]
 pub fn group_alive(pgid: i32) -> bool {
     // SAFETY: signal 0 sends nothing; pgid is checked positive by the caller.
     pgid > 0 && unsafe { libc::kill(-pgid, 0) } == 0
@@ -204,7 +201,6 @@ pub fn group_alive(pgid: i32) -> bool {
 /// Takes the child and its group, not the signal, so a test can stop a child
 /// of its own without signalling the test process. Correct after the caller's
 /// own `child.wait()` already reaped the child: the status is cached.
-#[cfg(unix)]
 pub async fn stop_group(
     child: &mut tokio::process::Child,
     pgid: Option<i32>,
@@ -533,7 +529,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     mod stopping {
         use super::super::*;
         use std::os::unix::process::ExitStatusExt;

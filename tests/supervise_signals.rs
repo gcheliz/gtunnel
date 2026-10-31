@@ -5,30 +5,15 @@
 // Every wait is a bounded poll on the condition; a sleep never stands in for
 // one, so a slow machine costs time and not a flake.
 
+mod common;
+
+use common::{alive, poll};
 use std::fs;
 use std::io::Read;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 const BOUND: Duration = Duration::from_secs(15);
-
-fn poll(bound: Duration, mut done: impl FnMut() -> bool) -> bool {
-    let deadline = Instant::now() + bound;
-    loop {
-        if done() {
-            return true;
-        }
-        if Instant::now() >= deadline {
-            return false;
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    }
-}
-
-fn alive(pid: i32) -> bool {
-    // SAFETY: signal 0 sends nothing; the pid was read from a child we made.
-    unsafe { libc::kill(pid, 0) == 0 }
-}
 
 struct Supervisor {
     child: Child,

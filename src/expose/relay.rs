@@ -92,15 +92,8 @@ const STARTUP_RERUN_COMMAND: &str = "sudo google_metadata_script_runner startup"
 const STARTUP_RERUN_BOUND: std::time::Duration = std::time::Duration::from_secs(120);
 
 pub fn startup_rerun_argv(acct: &Account, zone: &str, vm: &str) -> Result<Vec<String>> {
-    let mut argv = vec![
-        "compute".to_string(),
-        "ssh".to_string(),
-        vm.to_string(),
-        format!("--zone={zone}"),
-        "--tunnel-through-iap".to_string(),
-        "--quiet".to_string(),
-        format!("--command={STARTUP_RERUN_COMMAND}"),
-    ];
+    let mut argv = crate::tunnel::iap_ssh_prefix(vm, zone)?;
+    argv.push(format!("--command={STARTUP_RERUN_COMMAND}"));
     argv.extend(crate::tunnel::gcloud_common(
         acct,
         crate::loglevel::current(),
@@ -849,7 +842,7 @@ pub async fn relay_down(
 mod tests {
     use super::*;
     use crate::config::{Account, Config, ExposeConfig};
-    use crate::gcp::{Endpoints, GcpClient, TokenSource};
+    use crate::gcp::GcpClient;
     use crate::state::{PersistentTunnel, TunnelSpec, TunnelState};
     use wiremock::matchers::{method, path_regex};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -917,13 +910,6 @@ mod tests {
             live_public_runs(&records, "dev"),
             vec!["gt-live".to_string()]
         );
-    }
-
-    fn client(server: &MockServer) -> GcpClient {
-        GcpClient::new(
-            TokenSource::Static("tok".to_string()),
-            Endpoints::single(&server.uri()),
-        )
     }
 
     fn account() -> Account {
@@ -1091,7 +1077,7 @@ mod tests {
         ])
         .await;
         let ready = wait_relay_ready(
-            &client(&server),
+            &GcpClient::for_mock(&server),
             "p",
             "z",
             "vm",
@@ -1117,7 +1103,7 @@ mod tests {
             .mount(&server)
             .await;
         let ready = wait_relay_ready(
-            &client(&server),
+            &GcpClient::for_mock(&server),
             "p",
             "z",
             "vm",
@@ -1139,7 +1125,7 @@ mod tests {
             machine_type: "e2-micro".to_string(),
             recreate: false,
         };
-        let cfg = relay_up(&client(&server), &account(), &opts)
+        let cfg = relay_up(&GcpClient::for_mock(&server), &account(), &opts)
             .await
             .expect("relay up");
 
@@ -1175,7 +1161,7 @@ mod tests {
             ..options()
         };
 
-        relay_up(&client(&server), &account(), &opts)
+        relay_up(&GcpClient::for_mock(&server), &account(), &opts)
             .await
             .expect("relay up --recreate");
 
@@ -1206,7 +1192,7 @@ mod tests {
     async fn relay_up_without_recreate_never_deletes_the_instance() {
         let server = relay_server().await;
 
-        relay_up(&client(&server), &account(), &options())
+        relay_up(&GcpClient::for_mock(&server), &account(), &options())
             .await
             .expect("relay up");
 
@@ -1219,7 +1205,7 @@ mod tests {
     #[tokio::test]
     async fn relay_up_sends_no_write_to_a_resource_that_already_matches() {
         let server = relay_server().await;
-        relay_up(&client(&server), &account(), &options())
+        relay_up(&GcpClient::for_mock(&server), &account(), &options())
             .await
             .expect("relay up");
 
@@ -1252,7 +1238,7 @@ mod tests {
             .await;
         relay_mocks(&server).await;
 
-        relay_up(&client(&server), &account(), &options())
+        relay_up(&GcpClient::for_mock(&server), &account(), &options())
             .await
             .expect("relay up");
 
@@ -1285,7 +1271,7 @@ mod tests {
             .await;
         relay_mocks(&server).await;
 
-        relay_up(&client(&server), &account(), &options())
+        relay_up(&GcpClient::for_mock(&server), &account(), &options())
             .await
             .expect("relay up");
 
@@ -1307,6 +1293,23 @@ mod tests {
             "--impersonate-service-account=sa@example.com",
         ] {
             assert!(argv.iter().any(|a| a == want), "{want} missing in {argv:?}");
+        }
+    }
+
+    #[test]
+    fn the_startup_rerun_refuses_an_instance_or_zone_that_would_read_as_a_flag() {
+        let acct = account();
+        for (zone, vm) in [
+            ("europe-west1-b", "--project=other"),
+            ("--zone=x", "gt-dev-relay"),
+            ("europe-west1-b", "bad name"),
+        ] {
+            let err = startup_rerun_argv(&acct, zone, vm)
+                .expect_err("a name that is not a name must not reach gcloud");
+            assert!(
+                format!("{err:#}").contains("Invalid"),
+                "{zone} {vm}: {err:#}"
+            );
         }
     }
 
@@ -1338,9 +1341,15 @@ mod tests {
             })
             .expect("add");
 
-        let err = relay_down(&client(&server), &config, &account(), &mut state, false)
-            .await
-            .expect_err("should refuse");
+        let err = relay_down(
+            &GcpClient::for_mock(&server),
+            &config,
+            &account(),
+            &mut state,
+            false,
+        )
+        .await
+        .expect_err("should refuse");
         let message = err.to_string();
         assert!(message.contains("api"), "{message}");
         assert_eq!(requests(&server, "DELETE", "/").await, 0);
@@ -1433,7 +1442,7 @@ mod tests {
 
         let mut state = TunnelState::default();
         relay_down(
-            &client(&server),
+            &GcpClient::for_mock(&server),
             &dev_config(),
             &account(),
             &mut state,
@@ -1467,7 +1476,7 @@ mod tests {
 
         let mut state = TunnelState::default();
         relay_down(
-            &client(&server),
+            &GcpClient::for_mock(&server),
             &dev_config(),
             &account(),
             &mut state,
@@ -1489,7 +1498,7 @@ mod tests {
         let _teardown = super::super::lock::teardown_guard("dev").unwrap();
         let server = relay_server().await;
 
-        let err = relay_up(&client(&server), &account(), &options())
+        let err = relay_up(&GcpClient::for_mock(&server), &account(), &options())
             .await
             .expect_err("should refuse");
         assert!(err.to_string().contains("being torn down"), "{err}");
@@ -1519,7 +1528,7 @@ mod tests {
 
         let mut state = TunnelState::default();
         let err = relay_down(
-            &client(&server),
+            &GcpClient::for_mock(&server),
             &dev_config(),
             &account(),
             &mut state,
@@ -1563,7 +1572,7 @@ mod tests {
 
         let mut state = TunnelState::default();
         let err = relay_down(
-            &client(&server),
+            &GcpClient::for_mock(&server),
             &dev_config(),
             &account(),
             &mut state,
@@ -1588,7 +1597,7 @@ mod tests {
 
         // An empty dir: nothing serves, so the teardown goes through
         relay_down(
-            &client(&server),
+            &GcpClient::for_mock(&server),
             &dev_config(),
             &account(),
             &mut state,
@@ -1618,7 +1627,7 @@ mod tests {
         .save()
         .expect("save");
         let err = relay_down(
-            &client(&server),
+            &GcpClient::for_mock(&server),
             &dev_config(),
             &account(),
             &mut state,
@@ -1660,7 +1669,7 @@ mod tests {
     #[tokio::test]
     async fn relay_up_does_not_resize_a_relay_whose_machine_type_differs() {
         let server = relay_of_type("e2-small").await;
-        relay_up(&client(&server), &account(), &options())
+        relay_up(&GcpClient::for_mock(&server), &account(), &options())
             .await
             .expect("relay up");
 
@@ -1714,7 +1723,7 @@ mod tests {
     #[tokio::test]
     async fn relay_status_reports_the_machine_type_the_relay_runs() {
         let server = relay_of_type("e2-small").await;
-        let status = relay_status(&client(&server), &account())
+        let status = relay_status(&GcpClient::for_mock(&server), &account())
             .await
             .expect("status");
         assert_eq!(status.machine_type.as_deref(), Some("e2-small"));

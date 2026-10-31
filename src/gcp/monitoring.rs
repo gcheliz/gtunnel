@@ -153,16 +153,9 @@ fn urlencode(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gcp::{Endpoints, GcpClient, TokenSource};
+    use crate::gcp::GcpClient;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    fn client(server: &MockServer) -> GcpClient {
-        GcpClient::new(
-            TokenSource::Static("tok".to_string()),
-            Endpoints::single(&server.uri()),
-        )
-    }
 
     #[tokio::test]
     async fn lb_request_stats_sums_each_response_class() {
@@ -187,7 +180,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let stats = lb_request_stats(&client(&server), "p", "gt-dev-api", 60)
+        let stats = lb_request_stats(&GcpClient::for_mock(&server), "p", "gt-dev-api", 60)
             .await
             .expect("stats");
         assert_eq!(stats.total, 12);
@@ -203,7 +196,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let stats = lb_request_stats(&client(&server), "p", "gt-dev-api", 60)
+        let stats = lb_request_stats(&GcpClient::for_mock(&server), "p", "gt-dev-api", 60)
             .await
             .expect("stats");
         assert_eq!(stats.total, 0);

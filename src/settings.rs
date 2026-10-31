@@ -362,7 +362,7 @@ pub struct Resolved {
 pub type EnvFn<'a> = &'a dyn Fn(&str) -> Option<String>;
 
 /// An exported-but-empty variable is how a shell spells unset.
-fn var(env: EnvFn, name: &str) -> Option<String> {
+pub(crate) fn var(env: EnvFn, name: &str) -> Option<String> {
     env(name)
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
@@ -370,11 +370,11 @@ fn var(env: EnvFn, name: &str) -> Option<String> {
 
 // The source is named in every error: the value may come from a shell profile
 // the reader is not looking at, and a file value from a key they forgot.
-fn bad(source: &str, why: String) -> anyhow::Error {
+pub(crate) fn bad(source: &str, why: String) -> anyhow::Error {
     GtunnelError::usage(format!("{source}: {why}")).into()
 }
 
-fn parse_duration(source: &str, raw: &str) -> Result<Duration> {
+pub(crate) fn parse_duration(source: &str, raw: &str) -> Result<Duration> {
     let d = humantime::parse_duration(raw).map_err(|e| {
         bad(
             source,

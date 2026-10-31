@@ -50,13 +50,6 @@ mod tests {
     use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    fn client(server: &MockServer) -> GcpClient {
-        GcpClient::new(
-            crate::gcp::TokenSource::Static("tok".to_string()),
-            crate::gcp::Endpoints::single(&server.uri()),
-        )
-    }
-
     #[tokio::test]
     async fn list_projects_returns_active_projects_sorted_by_id() {
         let server = MockServer::start().await;
@@ -85,7 +78,9 @@ mod tests {
             .mount(&server)
             .await;
 
-        let got = list_projects(&client(&server)).await.expect("list");
+        let got = list_projects(&GcpClient::for_mock(&server))
+            .await
+            .expect("list");
         let ids: Vec<&str> = got.iter().map(|p| p.project_id.as_str()).collect();
         assert_eq!(
             ids,
@@ -109,7 +104,9 @@ mod tests {
             .mount(&server)
             .await;
 
-        let err = list_projects(&client(&server)).await.expect_err("cap");
+        let err = list_projects(&GcpClient::for_mock(&server))
+            .await
+            .expect_err("cap");
         assert!(format!("{err:#}").contains("50 pages"), "{err:#}");
         let seen = server.received_requests().await.expect("recorded").len();
         assert_eq!(seen, 50);
@@ -129,7 +126,9 @@ mod tests {
             .mount(&server)
             .await;
 
-        let got = list_projects(&client(&server)).await.expect("list");
+        let got = list_projects(&GcpClient::for_mock(&server))
+            .await
+            .expect("list");
         let ids: Vec<&str> = got.iter().map(|p| p.project_id.as_str()).collect();
         assert_eq!(ids, vec!["example-dev-1a2b"]);
     }
@@ -145,7 +144,9 @@ mod tests {
             .mount(&server)
             .await;
 
-        let err = list_projects(&client(&server)).await.expect_err("403");
+        let err = list_projects(&GcpClient::for_mock(&server))
+            .await
+            .expect_err("403");
         assert!(format!("{err:#}").contains("403"), "{err:#}");
     }
 }

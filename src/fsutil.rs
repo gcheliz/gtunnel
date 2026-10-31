@@ -31,7 +31,6 @@ fn next_poll(wait: Duration) -> Duration {
 fn open_private(path: &Path) -> std::io::Result<File> {
     let mut options = OpenOptions::new();
     options.write(true).create(true).truncate(false);
-    #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
@@ -78,8 +77,7 @@ fn write_via(path: &Path, text: &str, temp: &Path) -> Result<()> {
 // after it can otherwise bring back the old file. The new file is already
 // whole and in place, so a failure here (a filesystem that cannot fsync a
 // directory) is not worth failing the write for
-fn sync_parent(path: &Path) {
-    #[cfg(unix)]
+pub(crate) fn sync_parent(path: &Path) {
     if let Some(dir) = path.parent() {
         let dir = if dir.as_os_str().is_empty() {
             Path::new(".")
@@ -90,8 +88,6 @@ fn sync_parent(path: &Path) {
             let _ = handle.sync_all();
         }
     }
-    #[cfg(not(unix))]
-    let _ = path;
 }
 
 /// Holds an advisory lock on a file until dropped. The lock is on a file of
@@ -171,7 +167,6 @@ mod tests {
         assert_eq!(leftovers, 1, "a temp file was left behind");
     }
 
-    #[cfg(unix)]
     #[test]
     fn an_atomic_write_is_owner_only() {
         use std::os::unix::fs::PermissionsExt;

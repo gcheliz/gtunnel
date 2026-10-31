@@ -147,7 +147,7 @@ pub async fn refresh(host: &impl ServiceHost, tunnels: &[PersistentTunnel]) -> O
             let live = matches!(status, TunnelStatus::Running | TunnelStatus::Error);
             // An errored job serves nobody, and a pending restart has already
             // cost the connections; only a running job has clients to spare
-            let clients = match (status, local_port(t)) {
+            let clients = match (status, t.spec.local_port()) {
                 (TunnelStatus::Running, Some(port)) if !pending => host.connections(port),
                 _ => 0,
             };
@@ -203,14 +203,6 @@ pub async fn refresh(host: &impl ServiceHost, tunnels: &[PersistentTunnel]) -> O
         }
     };
     out
-}
-
-fn local_port(t: &PersistentTunnel) -> Option<u16> {
-    match &t.spec {
-        crate::state::TunnelSpec::Access { local_port, .. } => Some(*local_port),
-        // An expose tunnel listens on the relay, not here
-        crate::state::TunnelSpec::Expose { .. } => None,
-    }
 }
 
 /// What the stamp says about an installed definition, given whether its shape

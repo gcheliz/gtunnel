@@ -4,7 +4,6 @@ use std::time::Duration;
 
 use crate::ephemeral::{generated_name, list_ephemeral, signalable, EphemeralRecord};
 use crate::error::{ErrorKind, GtunnelError};
-use crate::state::TunnelSpec;
 
 /// An agent opens a tunnel and may never come back to close it, so the
 /// lifetime is a required input and has a ceiling, not a default. Eight hours
@@ -263,10 +262,7 @@ pub async fn launch(account: &str, req: &RunRequest) -> anyhow::Result<Value> {
 
 pub(super) fn describe(record: &EphemeralRecord) -> Value {
     let tunnel = record.as_tunnel();
-    let local_port = match &record.spec {
-        TunnelSpec::Access { local_port, .. } => Some(*local_port),
-        TunnelSpec::Expose { .. } => None,
-    };
+    let local_port = record.spec.local_port();
     json!({
         "name": record.name,
         "account": record.account_name,

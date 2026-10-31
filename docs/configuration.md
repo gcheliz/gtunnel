@@ -416,7 +416,7 @@ that makes the file's other keys inconsistent is refused like any bad value:
 ```console
 $ GTUNNEL_RESTART_WINDOW=soon gtunnel list
 ? 2
-Error: GTUNNEL_RESTART_WINDOW: 'soon' is not a duration (expected number at 0)
+Error: GTUNNEL_RESTART_WINDOW: 'soon' is not a duration like 30s or 1m (expected number at 0)
 
 ```
 
