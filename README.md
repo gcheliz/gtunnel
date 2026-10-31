@@ -62,7 +62,7 @@ shasum -a 256 -c "$F.sha256" && tar -xzf "$F" && sudo mv gtunnel /usr/local/bin/
 ```
 
 Other machines, `cargo install`, the build attestation and upgrades (`gtunnel update` for a download or cargo install): [docs/usage.md](docs/usage.md#4-install-gtunnel).
-There is no `cargo install gtunnel`: that crates.io name is an unrelated crate. Run `gtunnel doctor` next.
+The crates.io `gtunnel` is an unrelated crate ([install](docs/usage.md#4-install-gtunnel)). Run `gtunnel doctor` next.
 
 ## Quick start
 

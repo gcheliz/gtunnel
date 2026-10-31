@@ -638,12 +638,10 @@ opens nothing.
 
 The rules and their sources are in [What GCP needs](gcp.md#firewall-rules-relay-up-creates).
 
-A public tunnel forwards with `ssh -R 0.0.0.0:<relay-port>:<local target>`, so the port listens
-on every interface of the relay. The relay's startup script adds an `nftables` rule that drops
-`30000-30999` from every source but the load balancer, so a VM in the same VPC cannot skip the
-load balancer or the `--private` IAP sign-in even under an allow-all rule. A relay created
-before that script existed gets it from the next `gtunnel relay up`. The rule protects the
-relay VM only; it does not replace reviewing the network's other rules.
+A public tunnel's port listens on every interface of the relay, and the relay drops it from
+every source but the load balancer, so `--private` holds under an allow-all rule. The guard,
+and what it does not cover, is in [Expose mode](architecture.md#expose-mode). The network's
+other rules are yours to review.
 
 ## account
 

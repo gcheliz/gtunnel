@@ -85,7 +85,7 @@ creates no further rule. Resource names are in
 | `gt-<acct>-lb-hc` | `tcp:30000-30999`, the relay ports | `130.211.0.0/22` and `35.191.0.0/16`, the load balancer and its health checkers |
 
 A 502 with no error in the log usually means the second rule is missing:
-[IAP firewall](troubleshooting.md#iap-firewall). A broader rule on the same network does not skip the load balancer: the relay drops `30000-30999` from every other source itself ([The relay's firewall is yours to close](commands.md#the-relays-firewall-is-yours-to-close)).
+[IAP firewall](troubleshooting.md#iap-firewall). A broader rule on the same network does not skip the load balancer: the relay drops its tunnel ports from every other source itself ([Expose mode](architecture.md#expose-mode)).
 
 ## CI
 
