@@ -609,18 +609,41 @@ pub fn config_dir() -> Result<PathBuf> {
     if let Ok(dir) = std::env::var("GTUNNEL_CONFIG_DIR") {
         return Ok(PathBuf::from(dir));
     }
-    let home = dirs::home_dir().context("Could not determine home directory")?;
+    // A unit test that holds no TempConfigDir would otherwise read and write
+    // the developer's real configuration; as in expose/lock.rs, it gets one
+    // private directory per process under the temp dir instead
+    #[cfg(test)]
+    {
+        static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        let dir = DIR.get_or_init(|| {
+            let dir = std::env::temp_dir().join(format!("gtunnel-test-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).expect("create the per-process test config dir");
+            dir
+        });
+        Ok(dir.clone())
+    }
+    #[cfg(not(test))]
+    {
+        let home = dirs::home_dir().context("Could not determine home directory")?;
+        Ok(resolve_config_dir(&home, dirs::config_dir().as_deref()))
+    }
+}
+
+/// Split from `config_dir` so the choice between `~/.gtunnel` and the legacy
+/// directory can be tested against temp directories, now that a unit test can
+/// no longer reach the real home to exercise it.
+fn resolve_config_dir(home: &std::path::Path, legacy_base: Option<&std::path::Path>) -> PathBuf {
     let dot_gtunnel = home.join(".gtunnel");
     if dot_gtunnel.exists() {
-        return Ok(dot_gtunnel);
+        return dot_gtunnel;
     }
-    if let Some(base) = dirs::config_dir() {
+    if let Some(base) = legacy_base {
         let legacy = base.join("gtunnel");
         if legacy.exists() {
-            return Ok(legacy);
+            return legacy;
         }
     }
-    Ok(dot_gtunnel)
+    dot_gtunnel
 }
 
 pub fn config_path() -> Result<PathBuf> {
@@ -992,6 +1015,22 @@ fn locked_config_update<T>(
 #[cfg(test)]
 pub mod testing {
     pub(crate) static CONFIG_DIR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Runs `f` with the variable removed and the lock held, then restores it.
+    /// For the one test that asks what `config_dir()` answers when nothing set
+    /// the variable, which is the case every test without a guard is in.
+    pub fn without_config_dir_var<R>(f: impl FnOnce() -> R) -> R {
+        let _guard = CONFIG_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var_os("GTUNNEL_CONFIG_DIR");
+        // SAFETY: CONFIG_DIR_LOCK is held through the guard above.
+        unsafe { std::env::remove_var("GTUNNEL_CONFIG_DIR") };
+        let out = f();
+        if let Some(p) = prev {
+            // SAFETY: CONFIG_DIR_LOCK is still held.
+            unsafe { std::env::set_var("GTUNNEL_CONFIG_DIR", p) };
+        }
+        out
+    }
 
     pub struct TempConfigDir {
         // Held to keep the directory alive for the test's lifetime, and read
@@ -1915,25 +1954,48 @@ mod tests {
     }
 
     #[test]
-    fn config_dir_prefers_dot_gtunnel_under_home() {
+    fn an_unset_config_dir_variable_never_resolves_under_the_home_directory() {
+        let dir = testing::without_config_dir_var(|| config_dir().expect("config_dir"));
         if let Some(home) = dirs::home_dir() {
-            let dot_gtunnel = home.join(".gtunnel");
-            if dot_gtunnel.exists() {
-                let guard = testing::CONFIG_DIR_LOCK
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
-                let prev = std::env::var_os("GTUNNEL_CONFIG_DIR");
-                // SAFETY: CONFIG_DIR_LOCK is held through the guard above.
-                unsafe { std::env::remove_var("GTUNNEL_CONFIG_DIR") };
-                let dir = config_dir().expect("config_dir");
-                if let Some(p) = prev {
-                    // SAFETY: CONFIG_DIR_LOCK is held through the guard above.
-                    unsafe { std::env::set_var("GTUNNEL_CONFIG_DIR", p) };
-                }
-                drop(guard);
-                assert_eq!(dir, dot_gtunnel);
-            }
+            assert!(
+                !dir.starts_with(&home),
+                "{} is under the real home {}",
+                dir.display(),
+                home.display()
+            );
         }
+        assert!(
+            dir.starts_with(std::env::temp_dir()),
+            "{} is not under the temp dir",
+            dir.display()
+        );
+    }
+
+    #[test]
+    fn config_dir_prefers_dot_gtunnel_under_home() {
+        let home = tempfile::tempdir().unwrap();
+        let base = tempfile::tempdir().unwrap();
+        std::fs::create_dir(home.path().join(".gtunnel")).unwrap();
+        std::fs::create_dir(base.path().join("gtunnel")).unwrap();
+        let dir = resolve_config_dir(home.path(), Some(base.path()));
+        assert_eq!(dir, home.path().join(".gtunnel"));
+    }
+
+    #[test]
+    fn config_dir_falls_back_to_the_legacy_directory_when_dot_gtunnel_is_absent() {
+        let home = tempfile::tempdir().unwrap();
+        let base = tempfile::tempdir().unwrap();
+        std::fs::create_dir(base.path().join("gtunnel")).unwrap();
+        let dir = resolve_config_dir(home.path(), Some(base.path()));
+        assert_eq!(dir, base.path().join("gtunnel"));
+    }
+
+    #[test]
+    fn config_dir_defaults_to_dot_gtunnel_when_neither_exists() {
+        let home = tempfile::tempdir().unwrap();
+        let base = tempfile::tempdir().unwrap();
+        let dir = resolve_config_dir(home.path(), Some(base.path()));
+        assert_eq!(dir, home.path().join(".gtunnel"));
     }
 
     #[test]

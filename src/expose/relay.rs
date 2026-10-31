@@ -1314,6 +1314,7 @@ mod tests {
     // them silently, so it refuses and names them
     #[tokio::test]
     async fn relay_down_refuses_while_expose_tunnels_exist() {
+        let _cfg = crate::config::testing::TempConfigDir::new();
         let server = relay_server().await;
         let mut config = Config {
             selected_account: "dev".to_string(),
@@ -1415,6 +1416,7 @@ mod tests {
     // local state never listed; the group cannot go while it points there
     #[tokio::test]
     async fn relay_down_deletes_an_orphaned_backend_before_the_group() {
+        let _cfg = crate::config::testing::TempConfigDir::new();
         // Mocks match in mount order, so the specific ones go first
         let server = MockServer::start().await;
         group_guarded_deletes(&server, "gt-dev-orphan").await;
@@ -1452,6 +1454,7 @@ mod tests {
     // instead of deleting the group under it
     #[tokio::test]
     async fn relay_down_waits_for_a_route_that_is_being_built() {
+        let _cfg = crate::config::testing::TempConfigDir::new();
         let dir = tempfile::tempdir().unwrap();
         super::super::lock::TEST_DIR.with(|d| *d.borrow_mut() = Some(dir.path().to_path_buf()));
         let route = super::super::lock::route_guard("dev").unwrap();
@@ -1497,6 +1500,7 @@ mod tests {
     // before the first delete: the relay is still a working relay
     #[tokio::test]
     async fn relay_down_stops_before_any_delete_on_a_backend_it_did_not_create() {
+        let _cfg = crate::config::testing::TempConfigDir::new();
         let server = MockServer::start().await;
         group_guarded_deletes(&server, "gt-dev-handmade").await;
         list_backends(
@@ -1529,6 +1533,59 @@ mod tests {
         assert!(!message.contains("unrelated"), "{message}");
         let paths = deleted(&server.received_requests().await.unwrap_or_default());
         assert!(paths.is_empty(), "{paths:?}");
+    }
+
+    // The teardown reads the run records of the config dir it is given, so a
+    // test that owns the dir sees its own records and nobody else's
+    #[tokio::test]
+    async fn relay_down_sees_only_the_run_records_of_its_own_config_dir() {
+        let _cfg = crate::config::testing::TempConfigDir::new();
+        let server = relay_server().await;
+        let mut state = TunnelState::default();
+
+        // An empty dir: nothing serves, so the teardown goes through
+        relay_down(
+            &client(&server),
+            &dev_config(),
+            &account(),
+            &mut state,
+            false,
+        )
+        .await
+        .expect("an empty run directory must not block relay down");
+
+        // One live public run of the same account, saved here: it is named
+        crate::ephemeral::EphemeralRecord {
+            name: "gt-own".to_string(),
+            account_name: "dev".to_string(),
+            pid: std::process::id(),
+            spec: TunnelSpec::Expose {
+                local_target: "3000".to_string(),
+                domain: "dev.example.com".to_string(),
+                hostname: "gt-own.dev.example.com".to_string(),
+                relay_port: 30008,
+                private: false,
+            },
+            started_at: 1_700_000_000,
+            ttl_secs: None,
+            pid_start: None,
+            owner_pid: None,
+            owner_start: None,
+        }
+        .save()
+        .expect("save");
+        let err = relay_down(
+            &client(&server),
+            &dev_config(),
+            &account(),
+            &mut state,
+            false,
+        )
+        .await
+        .expect_err("a live run refuses");
+        let message = err.to_string();
+        assert!(message.contains("gt-own (gtunnel run)"), "{message}");
+        assert!(!message.contains("gt-live"), "{message}");
     }
 
     // The relay of a running tunnel is not ours to stop: a resize needs a stop,
