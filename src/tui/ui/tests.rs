@@ -2325,20 +2325,12 @@ fn below_121_columns_the_list_stacks_above_the_other_panes() {
     let buffer = screen(&app, 80, 30);
     let rows = text_of(&buffer);
     let list_y = rows.iter().position(|r| r.contains("TUNNELS (")).unwrap();
-    // Stacked, Details folds into one line under the list
-    let summary_y = rows
-        .iter()
-        .position(|r| r.contains(" running \u{b7} "))
-        .unwrap();
-    assert!(summary_y > list_y, "the summary must sit below the list");
-    assert_eq!(
-        summary_y,
-        bottom_border_row(&rows),
-        "the summary is the list's bottom border"
-    );
+    // Stacked, Details is under the list, in the column Metrics sits in;
+    // never beside the list
+    let details_y = rows.iter().position(|r| r.contains("DETAILS")).unwrap();
     assert!(
-        !rows.iter().any(|r| r.contains("DETAILS")),
-        "no Details pane"
+        details_y > bottom_border_row(&rows),
+        "Details must sit below the list"
     );
     // the list's frame spans the terminal, and no second pane shares its row
     assert_eq!(buffer[(0, list_y as u16 - 1)].symbol(), "\u{256d}");
@@ -3832,16 +3824,63 @@ fn the_stacked_heights_always_add_up_to_the_work_area() {
 }
 
 #[test]
-fn from_80_columns_logs_and_metrics_share_a_row_at_sixty_forty() {
+fn from_80_columns_metrics_sits_beside_logs_at_the_width_its_figures_need() {
     let area = ratatui::layout::Rect::new(0, 5, 80, 10);
     let split = ui::bottom_split(area);
     assert!(!split.strip);
     assert_eq!((split.logs.width, split.metrics.width), (48, 32));
     assert_eq!(split.logs.x + split.logs.width, split.metrics.x);
     assert_eq!((split.logs.height, split.metrics.height), (10, 10));
-    // 100 columns: the same share
-    let wide = ui::bottom_split(ratatui::layout::Rect::new(0, 0, 100, 8));
-    assert_eq!((wide.logs.width, wide.metrics.width), (60, 40));
+    // Wider, the columns Metrics has no use for go to Logs, whose lines wrap
+    // without them: at 40 percent of 104 columns Metrics was three short
+    // lines over an empty pane while every log line broke in two
+    let wide = ui::bottom_split(ratatui::layout::Rect::new(0, 0, 104, 8));
+    assert_eq!((wide.logs.width, wide.metrics.width), (72, 32));
+}
+
+#[test]
+fn a_pane_title_too_long_for_its_row_is_cut_between_words_with_a_mark() {
+    assert_eq!(ui::fit_words("Logs: db", 20), "Logs: db");
+    assert_eq!(
+        ui::fit_words("Logs: db \u{2014} notifications need the watchdog", 30),
+        "Logs: db \u{2014} notifications need\u{2026}"
+    );
+    // A first word wider than the row is cut inside it, still marked
+    assert_eq!(ui::fit_words("Logs: kubernetes-prod", 10), "Logs:\u{2026}");
+    assert_eq!(ui::fit_words("kubernetes-prod", 10), "kubernete\u{2026}");
+    assert_eq!(ui::fit_words("anything", 0), "");
+}
+
+#[test]
+fn the_logs_title_never_runs_to_the_border_mid_word() {
+    let mut app = App::new("dev");
+    app.entries = vec![TunnelEntry::new(
+        access("kubernetes-prod", 8444),
+        TunnelStatus::Running,
+        TunnelKind::Managed,
+    )];
+    app.set_offer("notifications need the watchdog when the TUI is closed: gtunnel watch install");
+    let buffer = screen(&app, 104, 37);
+    let row = (0..buffer.area.height)
+        .map(|y| row_chars(&buffer, y).into_iter().collect::<String>())
+        .find(|r| r.contains("LOGS: KUBERNETES-PROD"))
+        .expect("the logs title");
+    let title = row
+        .split('\u{2502}')
+        .nth(1)
+        .expect("inside the border")
+        .trim();
+    let kept = title
+        .strip_suffix('\u{2026}')
+        .expect("a cut title is marked");
+    let full =
+        "LOGS: KUBERNETES-PROD \u{2014} NOTIFICATIONS NEED THE WATCHDOG WHEN THE TUI IS CLOSED";
+    assert!(full.starts_with(kept), "{row}");
+    assert_eq!(
+        full[kept.len()..].chars().next(),
+        Some(' '),
+        "cut mid-word: {row}"
+    );
 }
 
 #[test]
@@ -4390,4 +4429,79 @@ fn the_log_pane_does_not_tell_a_credential_file_account_to_log_in() {
     let keyed = text_of(&screen(&app, 160, 40)).join("\n");
     assert!(keyed.contains("credential file"), "{keyed}");
     assert!(!keyed.contains("Run: gcloud auth login"), "{keyed}");
+}
+
+// Stacked, from 80 columns, Details is the top of the column Metrics sits in
+// when the column holds all of it and still leaves Metrics a figure row: the
+// summary on the list's border was a cut-down Details, read sideways
+#[test]
+fn a_tall_stacked_layout_puts_details_over_metrics_in_one_column() {
+    let buffer = screen(&App::new_demo(), 104, 37);
+    let rows = text_of(&buffer);
+    let all = joined(&rows);
+    let at = |label: &str| {
+        rows.iter()
+            .enumerate()
+            .find_map(|(y, r)| r.find(label).map(|b| (y, r[..b].chars().count())))
+            .unwrap_or_else(|| panic!("no {label}\n{all}"))
+    };
+    let (details_y, details_x) = at("DETAILS");
+    let (metrics_y, metrics_x) = at("METRICS");
+    let (logs_y, _) = at("LOGS: DB");
+    assert_eq!(details_x, metrics_x, "one column\n{all}");
+    assert_eq!(
+        details_y, logs_y,
+        "Details tops the column, beside Logs\n{all}"
+    );
+    assert!(metrics_y > details_y, "Metrics under Details\n{all}");
+    // Details whole: its last rows are on screen
+    assert!(all.contains("started by"), "{all}");
+    // and the list's border is a border again
+    assert!(!all.contains(" running \u{b7} "), "no summary line\n{all}");
+    let border = bottom_border_row(&rows);
+    assert!(
+        rows[border]
+            .chars()
+            .skip(1)
+            .take(102)
+            .all(|c| c == '\u{2500}'),
+        "{all}"
+    );
+}
+
+#[test]
+fn the_details_column_needs_room_for_all_of_details_and_a_figure_row() {
+    // Details wants 9 rows; Metrics' least is its frame, title and a row
+    assert_eq!(ui::column_heights(20, 9), Some((9, 11)));
+    assert_eq!(ui::column_heights(13, 9), Some((9, 4)));
+    assert_eq!(ui::column_heights(12, 9), None);
+    assert_eq!(ui::column_heights(0, 9), None);
+}
+
+// In the 32-column stacked Details a host broke as `private-cluster-b` over
+// `astion:22`: a word too long for the column breaks after its punctuation
+#[test]
+fn a_word_too_long_for_the_value_column_breaks_after_its_punctuation() {
+    let values = |rows: Vec<ratatui::text::Line<'_>>| -> Vec<String> {
+        rows.iter()
+            .map(|r| row_text(r)[11..].trim_end().to_string())
+            .collect()
+    };
+    assert_eq!(
+        values(ui::wrap_detail(
+            "target",
+            "private-cluster-bastion:22 (europe-west1-b)",
+            28
+        )),
+        ["private-cluster-", "bastion:22", "(europe-west1-b)"]
+    );
+    assert_eq!(
+        values(ui::wrap_detail("project", "holded-app-dev-a612", 28)),
+        ["holded-app-dev-", "a612"]
+    );
+    // nothing to break after: the column's edge, as before
+    assert_eq!(
+        values(ui::wrap_detail("name", "abcdefghijklmnopqrstuvwxyz", 28)),
+        ["abcdefghijklmnopq", "rstuvwxyz"]
+    );
 }
