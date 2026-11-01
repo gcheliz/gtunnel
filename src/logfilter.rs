@@ -5,7 +5,8 @@
 //!   channel bookkeeping lines (`debug1: channel free`, `debug1: kex`, etc.).
 //! - `gcloud compute start-iap-tunnel` emits routine per-connection notices (`INFO: [N]`)
 //!   and a known teardown traceback (`AttributeError: 'NoneType' object has no attribute 'close'`)
-//!   when a probe or client disconnects.
+//!   when a probe or client disconnects, and an `ERROR` with a traceback when a
+//!   local client resets its socket; the latter becomes the close line.
 //!
 //! This module classifies and filters those lines, timestamping the kept lines.
 
@@ -44,6 +45,9 @@ pub struct ConnEvent {
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Phase {
     Open,
+    /// The local client reset its socket: it crashed or aborted, while the
+    /// tunnel itself stayed up. The close that follows says so.
+    Reset,
     Close,
 }
 
@@ -117,6 +121,9 @@ pub fn classify(line: &str) -> Line {
         && let Some((id, tail)) = rest.split_once("] ")
     {
         return classify_iap(id, tail);
+    }
+    if let Some(reset) = classify_iap_reset(trimmed) {
+        return reset;
     }
     if trimmed == "client_loop: send disconnect: Broken pipe" {
         return Line::Drop;
@@ -202,6 +209,24 @@ fn classify_iap(id: &str, tail: &str) -> Line {
     Line::Keep(format!("INFO: [{id}] {tail}"))
 }
 
+/// gcloud's `ERROR: [N] Error during local connection to [...]: [Errno 104]
+/// Connection reset by peer`: the client on the local port went away abruptly.
+/// Read as a connection event, not an error, because the tunnel is unharmed.
+fn classify_iap_reset(line: &str) -> Option<Line> {
+    let (id, tail) = line.strip_prefix("ERROR: [")?.split_once("] ")?;
+    if !tail.starts_with("Error during local connection to ")
+        || !tail.contains("Connection reset by peer")
+    {
+        return None;
+    }
+    let n = id.parse::<i64>().ok().filter(|n| *n >= 0)?;
+    Some(Line::Conn(ConnEvent {
+        id: format!("iap-{n}"),
+        source: parse_python_addr(tail),
+        phase: Phase::Reset,
+    }))
+}
+
 /// Whether a line is logged verbatim. What a traceback's own lines are held
 /// to; connection events never occur inside one.
 pub fn keep(line: &str) -> bool {
@@ -281,6 +306,7 @@ struct OpenConn {
     source: Option<SocketAddr>,
     said: bool,
     probe: bool,
+    reset: bool,
 }
 
 /// Pairs each connection's open with its close and writes the one normalised
@@ -437,6 +463,9 @@ impl Correlator {
                 out.push(format_line(raw.trim()));
             }
             Line::Conn(ev) => {
+                if ev.phase == Phase::Reset && self.level == LogLevel::Debug {
+                    out.push(format_line(raw.trim()));
+                }
                 if self.level != LogLevel::Quiet {
                     self.conn(ev, now, &mut out);
                 }
@@ -467,8 +496,14 @@ impl Correlator {
                         source: ev.source,
                         said: false,
                         probe,
+                        reset: false,
                     },
                 );
+            }
+            Phase::Reset => {
+                if let Some(h) = self.open.get_mut(&ev.id) {
+                    h.reset = true;
+                }
             }
             Phase::Close => {
                 let held = self.open.remove(&ev.id);
@@ -482,6 +517,13 @@ impl Correlator {
                 {
                     self.say(out, open_text(&ev.id, h.source), now);
                 }
+                // A reset is said outright: gcloud prints it as an ERROR with a
+                // traceback, which read as the tunnel failing
+                let (how, still_up) = if held.as_ref().is_some_and(|h| h.reset) {
+                    ("reset by the client", ", the tunnel is still up")
+                } else {
+                    ("closed", "")
+                };
                 let after = held
                     .map(|h| {
                         format!(
@@ -492,7 +534,7 @@ impl Correlator {
                     .unwrap_or_default();
                 self.say(
                     out,
-                    format!("gtunnel: conn {}{from} closed{after}", ev.id),
+                    format!("gtunnel: conn {}{from} {how}{after}{still_up}", ev.id),
                     now,
                 );
             }
@@ -564,6 +606,21 @@ impl Filter {
         Self::default()
     }
 
+    /// Whether the buffered traceback is one gcloud prints for something that
+    /// is not a failure: its WebSocket teardown, or a local client resetting
+    /// its socket. The reset's traceback stays at debug; the close line
+    /// already says what happened.
+    fn swallowed(&self, level: LogLevel) -> bool {
+        let buf = &self.traceback_buf;
+        let teardown = buf.iter().any(|l| {
+            l.contains("iap_tunnel_lightweight_websocket")
+                || l.contains("iap_tunnel_websocket_helper")
+        });
+        let client_reset = buf.iter().any(|l| l.contains("in RunReceiveLocalData"))
+            && buf.iter().any(|l| l.starts_with("ConnectionResetError:"));
+        teardown || (client_reset && level != LogLevel::Debug)
+    }
+
     pub fn process_line(&mut self, line: &str, conn: &mut Correlator) -> Vec<String> {
         let trimmed = line.trim_end_matches(&['\r', '\n'][..]);
         if self.in_traceback {
@@ -574,6 +631,7 @@ impl Filter {
                 || trimmed.is_empty()
                 || trimmed.starts_with("OSError:")
                 || trimmed.starts_with("AttributeError:")
+                || trimmed.starts_with("ConnectionResetError:")
                 || trimmed.starts_with("TypeError:")
                 || trimmed.starts_with("ValueError:")
             {
@@ -583,12 +641,8 @@ impl Filter {
 
             // End of traceback encountered
             self.in_traceback = false;
-            let is_iap_teardown = self.traceback_buf.iter().any(|l| {
-                l.contains("iap_tunnel_lightweight_websocket")
-                    || l.contains("iap_tunnel_websocket_helper")
-            });
             let mut out = Vec::new();
-            if !is_iap_teardown {
+            if !self.swallowed(conn.level) {
                 for tb_line in self.traceback_buf.drain(..) {
                     if keep(&tb_line) {
                         out.push(format_line(&tb_line));
@@ -611,14 +665,10 @@ impl Filter {
         conn.feed(trimmed, Instant::now())
     }
 
-    pub fn flush_eof(&mut self) -> Vec<String> {
+    pub fn flush_eof(&mut self, level: LogLevel) -> Vec<String> {
         if self.in_traceback {
             self.in_traceback = false;
-            let is_iap_teardown = self.traceback_buf.iter().any(|l| {
-                l.contains("iap_tunnel_lightweight_websocket")
-                    || l.contains("iap_tunnel_websocket_helper")
-            });
-            if !is_iap_teardown {
+            if !self.swallowed(level) {
                 return self
                     .traceback_buf
                     .drain(..)
@@ -677,7 +727,8 @@ pub async fn pump<R: AsyncBufRead + Unpin, W: Write>(
         let lines = filter.process_line(&line_str, &mut lock(&conn));
         emit(lines, out);
     }
-    emit(filter.flush_eof(), out);
+    let level = lock(&conn).level;
+    emit(filter.flush_eof(level), out);
     Ok(())
 }
 
@@ -1264,5 +1315,85 @@ INFO: [0] Received WebSocket Close message [9: 9].
         c.feed("Could not resolve host: oauth2.googleapis.com", t0);
         assert_eq!(c.outage_failure(t0), Some(Failure::Network));
         assert_eq!(c.stopping_failure(t0), Some(Failure::LoginExpired));
+    }
+
+    // What gcloud prints when the local client dies mid-transfer: a crashed
+    // MongoDB Compass renderer took its SSH socket down with a reset
+    const IAP_RESET: &str = "ERROR: [7] Error during local connection to [('127.0.0.1', 54321)]: [Errno 104] Connection reset by peer";
+    const IAP_RESET_TRACEBACK: &str = r#"Traceback (most recent call last):
+  File "/usr/lib/google-cloud-sdk/lib/googlecloudsdk/command_lib/compute/iap_tunnel.py", line 814, in RunReceiveLocalData
+    data = conn.recv(utils.SUBPROTOCOL_MAX_DATA_FRAME_SIZE)
+ConnectionResetError: [Errno 104] Connection reset by peer"#;
+
+    fn reset_session() -> String {
+        format!("{IAP_OPEN}\n{IAP_RESET}\n{IAP_RESET_TRACEBACK}\n{IAP_CLOSE}\n")
+    }
+
+    async fn pump_at(level: LogLevel, input: &str) -> String {
+        let mut out = Vec::new();
+        pump(
+            Cursor::new(input.as_bytes()),
+            &mut out,
+            Correlator::new(level).share(),
+        )
+        .await
+        .expect("pump");
+        String::from_utf8(out).expect("utf8")
+    }
+
+    #[test]
+    fn a_client_reset_is_said_on_the_close_line_as_the_clients_doing() {
+        let t0 = Instant::now();
+        let mut c = Correlator::new(LogLevel::Info);
+        let mut out = run(&mut c, &[IAP_OPEN], t0);
+        out.extend(c.feed(IAP_RESET, t0 + Duration::from_secs(360)));
+        out.extend(c.feed(IAP_CLOSE, t0 + Duration::from_millis(360_200)));
+        assert_eq!(
+            bodies(&out),
+            vec![
+                "gtunnel: conn iap-7 open",
+                "gtunnel: conn iap-7 from 127.0.0.1:54321 reset by the client after 360.2s, \
+                 the tunnel is still up",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_client_reset_leaves_no_error_or_traceback_at_info() {
+        let output = pump_at(LogLevel::Info, &reset_session()).await;
+        assert!(output.contains("reset by the client"), "{output}");
+        assert!(!output.contains("ERROR"), "{output}");
+        assert!(!output.contains("Traceback"), "{output}");
+        assert!(!output.contains("ConnectionResetError"), "{output}");
+        assert!(!output.contains("RunReceiveLocalData"), "{output}");
+    }
+
+    #[tokio::test]
+    async fn debug_keeps_gclouds_own_lines_for_a_client_reset() {
+        let output = pump_at(LogLevel::Debug, &reset_session()).await;
+        assert!(output.contains("reset by the client"), "{output}");
+        assert!(output.contains("Error during local connection"), "{output}");
+        assert!(output.contains("RunReceiveLocalData"), "{output}");
+        assert!(output.contains("ConnectionResetError"), "{output}");
+    }
+
+    #[tokio::test]
+    async fn a_reset_traceback_from_anywhere_else_is_kept() {
+        let input = "Traceback (most recent call last):\n  File \"script.py\", line 10, in <module>\nConnectionResetError: [Errno 104] Connection reset by peer\n";
+        let output = pump_at(LogLevel::Info, input).await;
+        assert!(output.contains("Traceback"), "{output}");
+        assert!(output.contains("ConnectionResetError"), "{output}");
+    }
+
+    // The tunnel is fine; the watchdog, the breaker and the supervisor's exit
+    // reading must not take a client's crash for an outage
+    #[test]
+    fn a_client_reset_is_no_failure() {
+        let t0 = Instant::now();
+        assert_eq!(Failure::from_line(IAP_RESET), None);
+        let mut c = Correlator::new(LogLevel::Info);
+        run(&mut c, &[IAP_OPEN, IAP_RESET, IAP_CLOSE], t0);
+        assert_eq!(c.outage_failure(t0), None);
+        assert_eq!(c.stopping_failure(t0), None);
     }
 }
