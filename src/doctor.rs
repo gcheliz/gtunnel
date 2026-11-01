@@ -61,7 +61,13 @@ pub enum Finding {
         path: String,
         problem: CredentialFileProblem,
     },
-    NumpyMissing,
+    // `writable`: pip can install into gcloud's own site-packages, so no
+    // `--user`. `site_packages`: gcloud runs its Python with them, so no
+    // variable is needed for a --user install to be seen
+    NumpyMissing {
+        writable: bool,
+        site_packages: bool,
+    },
     // The tunnel's own log carries gcloud's NumPy warning, so this tunnel was
     // started by a gcloud whose Python has no NumPy: the probe above asks
     // the gcloud on PATH, and a service can run another
@@ -269,9 +275,25 @@ impl Finding {
                      --credential-file <absolute path>`, or `--credential-file \"\"` to clear it"
                 ),
             },
-            Finding::NumpyMissing => format!(
-                "gcloud's Python is missing numpy, which makes IAP tunnels slow. {NUMPY_ADVICE}"
-            ),
+            Finding::NumpyMissing {
+                writable,
+                site_packages,
+            } => {
+                let user = if *writable { "" } else { " --user" };
+                let variable = if *site_packages {
+                    String::new()
+                } else {
+                    " gcloud runs that Python without site packages, so also export \
+                     `CLOUDSDK_PYTHON_SITEPACKAGES=1` and `gtunnel restart` each running tunnel \
+                     so its service carries it."
+                        .to_string()
+                };
+                format!(
+                    "gcloud's Python is missing numpy, which makes IAP tunnels slow. Install it: \
+                     `$(gcloud info --format=\"value(basic.python_location)\") -m pip install{user} \
+                     numpy`.{variable}"
+                )
+            }
             Finding::NumpyWarned { tunnel } => format!(
                 "Tunnel '{tunnel}': gcloud warned that it runs without NumPy, which slows large \
                  transfers over IAP. {NUMPY_ADVICE}, then `gtunnel restart {tunnel}`"
@@ -429,12 +451,14 @@ pub fn out_of_descriptors(log: &str) -> bool {
 
 // Google's own fix (IAP TCP forwarding, "Increasing the TCP upload
 // bandwidth"). gcloud bundles a Python of its own, so the system's NumPy does
-// not count, and the variable lets that Python see packages installed for it.
-// Both halves are needed: the install alone leaves gcloud ignoring it. The
-// variable is one the service definition already carries, so a restart picks
-// it up.
+// not count. A package install of the SDK leaves that Python root-owned, so
+// `--user` is the form that works without sudo; the bundled Python reads user
+// site-packages by itself, and only a Python gcloud runs with `-S` needs the
+// variable. The variable is one the service definition already carries, so a
+// restart picks it up. Only gcloud before 591 prints the warning this goes with
 const NUMPY_ADVICE: &str = "Install numpy into gcloud's Python: \
-    `$(gcloud info --format=\"value(basic.python_location)\") -m pip install numpy`, and set \
+    `$(gcloud info --format=\"value(basic.python_location)\") -m pip install --user numpy`, and \
+    if `gcloud info --format=\"value(basic.site_packages)\"` says False, set \
     `CLOUDSDK_PYTHON_SITEPACKAGES=1`";
 
 pub fn numpy_warned(tunnel: &str, log: &str) -> Option<Finding> {
@@ -923,20 +947,53 @@ pub fn find_expose_orphans(
 }
 
 // Everything gtunnel can see about one account, without changing anything
-// `gcloud info` prints one value per line, and an unset location is blank
-pub fn python_location(stdout: &str) -> Option<String> {
-    let line = stdout.lines().next()?.trim();
-    (!line.is_empty()).then(|| line.to_string())
+/// The Python gcloud runs, as `gcloud info` reports it, and whether it runs
+/// it with site packages. Without them gcloud's wrapper passes `-S`, and a
+/// NumPy installed with `--user` is not seen. The bundled Python turns them
+/// on by itself, which is why a --user install works there with no variable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GcloudPython {
+    pub path: String,
+    pub site_packages: bool,
 }
+
+// `value(basic.python_location,basic.site_packages)` prints the two on one
+// line, tab-separated, the boolean spelled as Python spells it. An unset
+// location is blank
+pub fn gcloud_python(stdout: &str) -> Option<GcloudPython> {
+    let line = stdout.lines().next()?;
+    let mut fields = line.split('\t');
+    let path = fields.next()?.trim();
+    if path.is_empty() {
+        return None;
+    }
+    Some(GcloudPython {
+        path: path.to_string(),
+        site_packages: fields.next().is_some_and(|f| f.trim() == "True"),
+    })
+}
+
+/// What the NumPy check learned. `writable` is whether pip can install into
+/// that Python's own site-packages, which decides the advice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NumpyCheck {
+    pub missing: bool,
+    pub writable: bool,
+    pub site_packages: bool,
+}
+
+// One run answers both: the first line says whether pip's target directory
+// is writable, the exit says whether numpy imports
+const NUMPY_PROBE: &str = "import os, sysconfig\n\
+print(os.access(sysconfig.get_paths()['purelib'], os.W_OK))\n\
+import numpy";
 
 // Without numpy gcloud falls back to a pure-Python socket loop, and an IAP
 // tunnel runs several times slower. A probe that cannot run reports nothing:
 // a finding nobody can act on is worse than silence
-async fn numpy_is_missing() -> bool {
-    let Some(gcloud_path) = gcloud::find_gcloud() else {
-        return false;
-    };
-    numpy_is_missing_at(
+async fn numpy_check() -> Option<NumpyCheck> {
+    let gcloud_path = gcloud::find_gcloud()?;
+    numpy_check_at(
         &gcloud_path,
         crate::proc::GCLOUD_BOUND,
         crate::proc::LOCAL_TOOL_BOUND,
@@ -948,31 +1005,44 @@ async fn numpy_is_missing() -> bool {
 // the JSON-RPC stream, and a gcloud that hangs would hold every later tool
 // call behind this one. Running out of time is the same as not being able to
 // run: no finding, because the check never learned the answer.
-async fn numpy_is_missing_at(
+async fn numpy_check_at(
     gcloud_path: &std::path::Path,
     gcloud_bound: std::time::Duration,
     python_bound: std::time::Duration,
-) -> bool {
+) -> Option<NumpyCheck> {
     let mut info = tokio::process::Command::new(gcloud_path);
-    info.args(["info", "--format=value(basic.python_location)"])
-        .stdin(std::process::Stdio::null());
-    let Ok(info) = crate::proc::output_within(info, gcloud_bound, "gcloud info").await else {
-        return false;
-    };
+    info.args([
+        "info",
+        "--format=value(basic.python_location,basic.site_packages)",
+    ])
+    .stdin(std::process::Stdio::null());
+    let info = crate::proc::output_within(info, gcloud_bound, "gcloud info")
+        .await
+        .ok()?;
     if !info.status.success() {
-        return false;
+        return None;
     }
-    let Some(python) = python_location(&String::from_utf8_lossy(&info.stdout)) else {
-        return false;
-    };
-    let mut probe = tokio::process::Command::new(python);
+    let python = gcloud_python(&String::from_utf8_lossy(&info.stdout))?;
+    // The question asked of the Python the way gcloud runs it
+    let mut probe = tokio::process::Command::new(&python.path);
+    if !python.site_packages {
+        probe.arg("-S");
+    }
     probe
-        .args(["-c", "import numpy"])
+        .args(["-c", NUMPY_PROBE])
         .stdin(std::process::Stdio::null());
-    match crate::proc::output_within(probe, python_bound, "python import numpy").await {
-        Ok(out) => !out.status.success(),
-        Err(_) => false,
-    }
+    let out = crate::proc::output_within(probe, python_bound, "python import numpy")
+        .await
+        .ok()?;
+    let writable = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()
+        .is_some_and(|l| l.trim() == "True");
+    Some(NumpyCheck {
+        missing: !out.status.success(),
+        writable,
+        site_packages: python.site_packages,
+    })
 }
 
 pub async fn run_doctor(
@@ -984,8 +1054,16 @@ pub async fn run_doctor(
 
     if gcloud::find_gcloud().is_none() {
         out.push((String::new(), Finding::GcloudMissing));
-    } else if numpy_is_missing().await {
-        out.push((String::new(), Finding::NumpyMissing));
+    } else if let Some(check) = numpy_check().await
+        && check.missing
+    {
+        out.push((
+            String::new(),
+            Finding::NumpyMissing {
+                writable: check.writable,
+                site_packages: check.site_packages,
+            },
+        ));
     }
 
     if let Some(finding) = watchdog_finding(
@@ -2451,7 +2529,10 @@ mod tests {
                 path: "/secrets/ci-key.json".to_string(),
                 problem: CredentialFileProblem::UnknownType("authorized_user".to_string()),
             },
-            Finding::NumpyMissing,
+            Finding::NumpyMissing {
+                writable: false,
+                site_packages: true,
+            },
             Finding::NumpyWarned {
                 tunnel: "db".to_string(),
             },
@@ -3117,6 +3198,117 @@ mod tests {
         );
     }
 
+    // `value(basic.python_location,basic.site_packages)` prints the two
+    // tab-separated; gcloud spells the boolean as Python does
+    #[test]
+    fn gclouds_python_and_its_site_packages_are_read_from_one_line() {
+        assert_eq!(
+            gcloud_python("/opt/sdk/python3\tTrue\n"),
+            Some(GcloudPython {
+                path: "/opt/sdk/python3".to_string(),
+                site_packages: true,
+            })
+        );
+        assert_eq!(
+            gcloud_python("/usr/bin/python3\tFalse\n").map(|p| p.site_packages),
+            Some(false)
+        );
+        assert_eq!(gcloud_python("\n"), None);
+    }
+
+    // A fake gcloud naming a fake Python that records its arguments, so the
+    // check is seen asking the question the way gcloud would run that Python
+    fn fake_sdk(site_packages: bool, python_body: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let python = dir.path().join("python3");
+        std::fs::write(
+            &python,
+            format!(
+                "#!/bin/sh\necho \"$@\" > {}/args\n{python_body}\n",
+                dir.path().display()
+            ),
+        )
+        .expect("write");
+        let gcloud = dir.path().join("gcloud");
+        let flag = if site_packages { "True" } else { "False" };
+        std::fs::write(
+            &gcloud,
+            format!(
+                "#!/bin/sh\nprintf '%s\\t{flag}\\n' '{}'\n",
+                python.display()
+            ),
+        )
+        .expect("write");
+        for f in [&python, &gcloud] {
+            std::fs::set_permissions(f, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        }
+        (dir, gcloud)
+    }
+
+    #[tokio::test]
+    async fn without_site_packages_the_numpy_check_runs_python_as_gcloud_does() {
+        // gcloud's wrapper adds -S when site packages are off, so a NumPy
+        // installed with --user is invisible to it and must be to the check
+        let (dir, gcloud) = fake_sdk(false, "echo False; exit 1");
+        let bound = std::time::Duration::from_secs(5);
+        let check = numpy_check_at(&gcloud, bound, bound).await;
+        assert_eq!(
+            check,
+            Some(NumpyCheck {
+                missing: true,
+                writable: false,
+                site_packages: false
+            })
+        );
+        let args = std::fs::read_to_string(dir.path().join("args")).expect("args");
+        assert!(args.starts_with("-S "), "{args}");
+
+        let (dir, gcloud) = fake_sdk(true, "echo True; exit 0");
+        let check = numpy_check_at(&gcloud, bound, bound).await;
+        assert_eq!(
+            check,
+            Some(NumpyCheck {
+                missing: false,
+                writable: true,
+                site_packages: true
+            })
+        );
+        let args = std::fs::read_to_string(dir.path().join("args")).expect("args");
+        assert!(!args.contains("-S"), "{args}");
+    }
+
+    // The advice is the command that works on this machine: `--user` only
+    // where pip cannot write gcloud's own site-packages (a root-owned package
+    // install), the variable only where gcloud runs its Python without them
+    #[test]
+    fn the_numpy_advice_fits_the_python_it_is_for() {
+        let text = |writable, site_packages| {
+            Finding::NumpyMissing {
+                writable,
+                site_packages,
+            }
+            .describe()
+        };
+        let root_owned = text(false, true);
+        assert!(
+            root_owned.contains("pip install --user numpy"),
+            "{root_owned}"
+        );
+        assert!(
+            !root_owned.contains("CLOUDSDK_PYTHON_SITEPACKAGES"),
+            "{root_owned}"
+        );
+        let no_site = text(true, false);
+        assert!(no_site.contains("pip install numpy"), "{no_site}");
+        assert!(!no_site.contains("--user"), "{no_site}");
+        assert!(
+            no_site.contains("CLOUDSDK_PYTHON_SITEPACKAGES=1"),
+            "{no_site}"
+        );
+        assert!(no_site.contains("gtunnel restart"), "{no_site}");
+    }
+
     #[tokio::test]
     async fn a_gcloud_that_hangs_ends_the_numpy_check_within_its_bound() {
         use std::os::unix::fs::PermissionsExt;
@@ -3127,8 +3319,8 @@ mod tests {
 
         let bound = std::time::Duration::from_millis(300);
         let began = std::time::Instant::now();
-        let missing = numpy_is_missing_at(&fake, bound, bound).await;
-        assert!(!missing, "a check that timed out reports no finding");
+        let check = numpy_check_at(&fake, bound, bound).await;
+        assert_eq!(check, None, "a check that timed out reports no finding");
         assert!(
             began.elapsed() < std::time::Duration::from_secs(5),
             "took {:?}",

@@ -586,22 +586,33 @@ Without NumPy, gcloud's IAP tunnel falls back to a pure-Python socket loop and r
 times slower. gcloud bundles its own Python, so the system's NumPy does not count.
 
 ```
-$(gcloud info --format="value(basic.python_location)") -m pip install numpy
+$(gcloud info --format="value(basic.python_location)") -m pip install --user numpy
+```
+
+`--user` is for an SDK installed from a package (`/usr/lib/google-cloud-sdk` on Debian and
+Ubuntu), whose Python is owned by root; drop it if pip can write to that Python's own
+site-packages. gcloud's bundled Python reads your user site-packages by itself. A Python that
+gcloud runs without site packages does not, and needs the variable too:
+
+```
+gcloud info --format="value(basic.site_packages)"   # False: the variable is needed
 export CLOUDSDK_PYTHON_SITEPACKAGES=1
 ```
 
-That is Google's fix and both steps are needed. A service takes the variable from your shell
-when it is written, so `gtunnel restart <name>` after exporting it. `doctor` also reports a
-tunnel whose own log carries gcloud's `consider installing NumPy` warning.
+A service takes the variable from your shell when it is written, so `gtunnel restart <name>`
+after exporting it.
+
+`doctor` asks gcloud which Python it runs and whether with site packages, then imports NumPy
+the same way, and its advice says whether `--user` and the variable apply. gcloud before 591
+also printed `consider installing NumPy` in a tunnel's log, and `doctor` still reports a tunnel
+whose log carries it; gcloud 591 prints nothing, so a log without that line proves nothing.
 
 To see what `doctor` sees:
 
 ```
 PY=$(gcloud info --format="value(basic.python_location)")
-"$PY" -c "import numpy; print(numpy.__version__)"
+"$PY" -c "import numpy; print(numpy.__version__)"   # add -S if site_packages is False
 ```
-
-A non-zero exit from that second line is exactly the condition `doctor` reports.
 
 ## Services
 
