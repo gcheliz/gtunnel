@@ -820,8 +820,15 @@ fn pane_noted(f: &mut Frame, area: Rect, title: &str, note: &str, border: Option
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Min(0)])
         .split(padded);
+    // The note is what the reader acts on, so the title gives way to it
+    let note_cells = if note.is_empty() {
+        0
+    } else {
+        note.chars().count() + 2
+    };
+    let title_cells = (padded.width as usize).saturating_sub(note_cells);
     let mut heading = vec![Span::styled(
-        title.to_uppercase(),
+        fit_words(&title.to_uppercase(), title_cells),
         Style::default()
             .fg(theme::MUTED)
             .add_modifier(Modifier::BOLD),
@@ -875,8 +882,10 @@ const LIST_MAX_PERCENT: u16 = 40;
 /// Metrics would be a column too narrow to hold its figures, so it becomes a
 /// strip and Logs keeps the width.
 pub const BESIDE_FROM: u16 = 80;
-/// Logs' share of the width when Metrics sits beside it, in percent.
-const LOGS_PERCENT: u16 = 60;
+/// Metrics' width when it sits beside Logs: its figures in two rows and a
+/// chart, which is all it holds. The rest goes to Logs, whose lines wrap
+/// without it; a share of the width gave Metrics columns it left empty.
+const METRICS_BESIDE: u16 = 32;
 
 /// How a stacked work area is cut: the list, and what is left for Logs and
 /// Metrics.
@@ -884,8 +893,8 @@ const LOGS_PERCENT: u16 = 60;
 /// The list is sized to its entries so a short list does not hold rows empty,
 /// but never above `LIST_MAX_PERCENT` of the height or below `LIST_MIN_ROWS`;
 /// past the cap it scrolls. The selected tunnel's summary has no row of its
-/// own: it is drawn on the list's bottom border, so the row it used to take
-/// goes to the panes that have something to scroll.
+/// own: it is Details in the Metrics column, or when that column is too short,
+/// a line on the list's bottom border, so it never costs the panes a row.
 pub fn stacked_heights(total: u16, entries: usize) -> (u16, u16) {
     let wanted = u16::try_from(entries.max(1))
         .unwrap_or(u16::MAX)
@@ -904,14 +913,14 @@ pub struct Bottom {
     pub strip: bool,
 }
 
-/// Cuts the area under the summary. From `BESIDE_FROM` columns Logs is the
-/// left 60 percent and Metrics the rest, both the full height. Narrower, Logs
+/// Cuts the area under the summary. From `BESIDE_FROM` columns Metrics is the
+/// right `METRICS_BESIDE` columns and Logs the rest, both the full height. Narrower, Logs
 /// takes the width and Metrics is one row under it: the figures and the chart
 /// in the row that is left, because a chart dropped to make room is the one
 /// thing the pane exists to show.
 pub fn bottom_split(area: Rect) -> Bottom {
     if area.width >= BESIDE_FROM {
-        let logs_width = area.width * LOGS_PERCENT / 100;
+        let logs_width = area.width.saturating_sub(METRICS_BESIDE);
         let cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Length(logs_width), Constraint::Min(0)])
@@ -935,27 +944,50 @@ pub fn bottom_split(area: Rect) -> Bottom {
 }
 
 fn render_stacked(f: &mut Frame, app: &App, area: Rect) {
-    let entry = app.selected_entry();
     let (list, rest) = stacked_heights(area.height, app.entries.len());
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(list), Constraint::Length(rest)])
         .split(area);
-    render_tunnels(f, app, rows[0], entry);
-    if entry.is_none() {
+    let Some(entry) = app.selected_entry() else {
         // Nothing selected, so nothing to summarise or measure
+        render_tunnels(f, app, rows[0], None);
         render_logs(f, app, rows[1]);
         return;
-    }
+    };
     let bottom = bottom_split(rows[1]);
+    let column = if bottom.strip {
+        None
+    } else {
+        let width = pane_text_width(bottom.metrics.width);
+        let details = detail_lines(entry, app.project(), width).len() as u16 + DETAILS_CHROME;
+        column_heights(bottom.metrics.height, details)
+    };
+    // With Details in the column, the border has nothing left to summarise
+    render_tunnels(f, app, rows[0], column.is_none().then_some(entry));
     if bottom.logs.height >= LOGS_STACKED_MIN {
         render_logs(f, app, bottom.logs);
     }
     if bottom.strip {
         render_metrics_strip(f, app, bottom.metrics);
+    } else if let Some((details, metrics)) = column {
+        let cut = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(details), Constraint::Length(metrics)])
+            .split(bottom.metrics);
+        render_details(f, app, cut[0]);
+        render_metrics(f, app, cut[1], true);
     } else {
         render_metrics(f, app, bottom.metrics, true);
     }
+}
+
+/// Splits the stacked Metrics column between Details over it and Metrics, or
+/// `None` when it cannot hold all of Details and still leave Metrics a row of
+/// figures. Details cut short would hide the rows it is there for, so a short
+/// column keeps the one-line summary on the list's border instead.
+pub fn column_heights(avail: u16, details: u16) -> Option<(u16, u16)> {
+    (details > 0 && avail >= details + METRICS_MIN).then(|| (details, avail - details))
 }
 
 /// A Logs pane shorter than this is a frame around nothing, and the rows go
@@ -1116,6 +1148,32 @@ fn fit(text: &str, width: usize) -> String {
             format!("{head}\u{2026}")
         }
     }
+}
+
+/// Cuts a title to `width` cells between words, marking the cut. A title cut
+/// mid-word at the border reads as a typo; `fit` is the fallback when even the
+/// first word does not fit.
+pub fn fit_words(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text.to_string();
+    }
+    let mut kept = String::new();
+    for word in text.split(' ') {
+        let next = if kept.is_empty() {
+            word.to_string()
+        } else {
+            format!("{kept} {word}")
+        };
+        // the mark takes a cell
+        if next.chars().count() + 1 > width {
+            break;
+        }
+        kept = next;
+    }
+    if kept.is_empty() {
+        return fit(text, width);
+    }
+    format!("{}\u{2026}", kept.trim_end())
 }
 
 /// A row with an op running. One cell, like the status symbols it replaces.
@@ -1655,9 +1713,16 @@ fn wrap_words(text: &str, width: usize) -> Vec<String> {
         if used > 0 {
             rows.push(std::mem::take(&mut row));
         }
+        // A word wider than the row breaks after the last punctuation that
+        // fits, so a host reads `private-cluster-` over `bastion:22`; only a
+        // word with none breaks at the edge
         let mut rest: Vec<char> = word.chars().collect();
         while rest.len() > width {
-            rows.push(rest.drain(..width).collect());
+            let cut = rest[..width]
+                .iter()
+                .rposition(|c| matches!(c, '-' | '.' | ':' | '/' | '_'))
+                .map_or(width, |i| i + 1);
+            rows.push(rest.drain(..cut).collect());
         }
         used = rest.len();
         row = rest.into_iter().collect();
