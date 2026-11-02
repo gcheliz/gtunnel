@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.3.33](https://github.com/gcheliz/gtunnel/compare/v0.3.32...v0.3.33) - 2026-11-02
+
+### Fixed
+
+- *(logs)* a SOCKS greeting that asks for nowhere leaves no line ([#479](https://github.com/gcheliz/gtunnel/pull/479))
+
 ## [0.3.32](https://github.com/gcheliz/gtunnel/compare/v0.3.31...v0.3.32) - 2026-11-02
 
 ### Added
