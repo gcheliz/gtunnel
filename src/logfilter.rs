@@ -101,6 +101,10 @@ fn ssh_channel(body: &str) -> Option<(&str, &str)> {
 /// - Everything else (errors, warnings, real tracebacks) is kept.
 pub fn classify(line: &str) -> Line {
     let trimmed = line.trim();
+    // A blank line is what a traceback leaves behind; it says nothing alone
+    if trimmed.is_empty() {
+        return Line::Drop;
+    }
     if trimmed.starts_with("debug2:") || trimmed.starts_with("debug3:") {
         return Line::Drop;
     }
@@ -201,8 +205,12 @@ fn classify_iap(id: &str, tail: &str) -> Line {
     if tail.contains("Received WebSocket Close message [4") {
         return Line::Keep(format!("INFO: [{id}] {tail}"));
     }
+    // What gcloud prints as a closed session's WebSocket winds down: the
+    // close itself is kept above, and these add nothing to it
     if tail.contains("Received WebSocket Close")
         || tail.contains("Error while receiving from WebSocket")
+        || tail.contains("Error while processing Data message")
+        || tail.contains("while sending to client")
         || tail.contains("Bad file descriptor")
     {
         return Line::Drop;
@@ -226,6 +234,28 @@ fn classify_iap_reset(line: &str) -> Option<Line> {
         source: parse_python_addr(tail),
         phase: Phase::Reset,
     }))
+}
+
+/// The connection a `[N] Received WebSocket Close message [4010: ...]` line
+/// names, as the correlator keys it.
+fn target_closed(line: &str) -> Option<String> {
+    let (id, tail) = line.trim().strip_prefix("INFO: [")?.split_once("] ")?;
+    tail.contains("Received WebSocket Close message [4010:")
+        .then(|| format!("iap-{id}"))
+}
+
+/// The last line of a Python traceback: an exception's name, dotted or not,
+/// and its message. `websocket._exceptions.WebSocketConnectionClosedException`
+/// matched none of the names listed once, so it ended the traceback and was
+/// kept as a line of its own.
+fn is_exception_line(line: &str) -> bool {
+    let name = line.split_once(':').map_or(line, |(n, _)| n);
+    let last = name.rsplit('.').next().unwrap_or(name);
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+        && (last.ends_with("Error") || last.ends_with("Exception"))
 }
 
 /// Whether a line is logged verbatim. What a traceback's own lines are held
@@ -310,6 +340,8 @@ struct OpenConn {
     n: Option<u64>,
     probe: bool,
     reset: bool,
+    /// IAP closed the session with 4010: the target hung up, not the client
+    by_target: bool,
 }
 
 /// Pairs each connection's open with its close and writes the one normalised
@@ -464,7 +496,14 @@ impl Correlator {
         }
         match classify(raw) {
             Line::Drop => {}
-            Line::Keep(text) => out.push(format_line(&text)),
+            Line::Keep(text) => {
+                if let Some(id) = target_closed(raw)
+                    && let Some(h) = self.open.get_mut(&id)
+                {
+                    h.by_target = true;
+                }
+                out.push(format_line(&text));
+            }
             Line::Ready { port } => {
                 self.mark_ready(port);
                 out.push(format_line(raw.trim()));
@@ -504,6 +543,7 @@ impl Correlator {
                         n: None,
                         probe,
                         reset: false,
+                        by_target: false,
                     },
                 );
             }
@@ -531,10 +571,10 @@ impl Correlator {
                 };
                 // A reset is said outright: gcloud prints it as an ERROR with a
                 // traceback, which read as the tunnel failing
-                let (how, still_up) = if held.as_ref().is_some_and(|h| h.reset) {
-                    ("reset by the client", ", the tunnel is still up")
-                } else {
-                    ("closed", "")
+                let (how, still_up) = match &held {
+                    Some(h) if h.reset => ("reset by the client", ", the tunnel is still up"),
+                    Some(h) if h.by_target => ("closed by the target", ""),
+                    _ => ("closed", ""),
                 };
                 let after = held
                     .map(|h| {
@@ -669,6 +709,7 @@ impl Filter {
                 || trimmed.starts_with("ConnectionResetError:")
                 || trimmed.starts_with("TypeError:")
                 || trimmed.starts_with("ValueError:")
+                || is_exception_line(trimmed)
             {
                 self.traceback_buf.push(trimmed.to_string());
                 return Vec::new();
@@ -1502,6 +1543,68 @@ ConnectionResetError: [Errno 104] Connection reset by peer"#;
                 "gtunnel: conn 1 (iap-7) open",
                 "gtunnel: conn 1 (iap-7) from 127.0.0.1:54321 closed after 12.0s",
             ]
+        );
+    }
+
+    // A 4010 is IAP saying the target hung up: on a bastion's port 22, sshd
+    // dropping a client that stopped answering its keepalives (#458)
+    const IAP_4010: &str =
+        "INFO: [7] Received WebSocket Close message [4010: 'destination read failed'].";
+
+    #[test]
+    fn a_4010_close_is_kept_and_the_close_line_says_the_target_ended_it() {
+        let t0 = Instant::now();
+        let mut c = Correlator::new(LogLevel::Info);
+        let mut out = run(&mut c, &[IAP_OPEN], t0);
+        out.extend(c.feed(IAP_4010, t0 + Duration::from_secs(593)));
+        out.extend(c.feed(IAP_CLOSE, t0 + Duration::from_millis(593_300)));
+        assert_eq!(
+            bodies(&out),
+            vec![
+                "gtunnel: conn 1 open",
+                IAP_4010,
+                "gtunnel: conn 1 from 127.0.0.1:54321 closed by the target after 593.3s",
+            ]
+        );
+        // The session was the client's; the tunnel is fine
+        assert_eq!(Failure::from_line(IAP_4010), None);
+        assert_eq!(c.outage_failure(t0), None);
+    }
+
+    // What followed the 4010 in the incident's log: gcloud's follow-ons, a
+    // traceback ending in a dotted exception name the filter did not know,
+    // and the blank lines after it
+    #[tokio::test]
+    async fn gclouds_teardown_after_a_closed_session_leaves_nothing_at_info() {
+        let input = "INFO: [192] Error [[Errno 32] Broken pipe] while sending to client.
+INFO: [224] Error while processing Data message.
+Traceback (most recent call last):
+  File \"/usr/lib/google-cloud-sdk/lib/googlecloudsdk/api_lib/compute/iap_tunnel_websocket_helper.py\", line 227, in _OnData
+    self._on_data(binary_data)
+  File \"/usr/lib/google-cloud-sdk/lib/googlecloudsdk/api_lib/compute/iap_tunnel_lightweight_websocket.py\", line 312, in _throw_on_non_retriable_exception
+    raise websocket_exceptions.WebSocketConnectionClosedException(
+websocket._exceptions.WebSocketConnectionClosedException: Connection closed while waiting for retry.
+
+
+Listening on port [2222].
+";
+        let output = pump_at(LogLevel::Info, input).await;
+        assert_eq!(
+            bodies(&output.lines().map(str::to_string).collect::<Vec<_>>()),
+            vec!["Listening on port [2222]."],
+            "{output}"
+        );
+    }
+
+    // A real exception with a dotted name, outside gcloud's teardown, is kept
+    #[tokio::test]
+    async fn a_dotted_exception_outside_the_teardown_is_kept_whole() {
+        let input = "Traceback (most recent call last):\n  File \"script.py\", line 3, in <module>\npkg.errors.CustomError: something broke\n";
+        let output = pump_at(LogLevel::Info, input).await;
+        assert!(output.contains("Traceback"), "{output}");
+        assert!(
+            output.contains("pkg.errors.CustomError: something broke"),
+            "{output}"
         );
     }
 }
