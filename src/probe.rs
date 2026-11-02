@@ -743,11 +743,13 @@ pub async fn collect_metrics(
     t: &PersistentTunnel,
     include_lb: bool,
     peaks: Option<&HashMap<u16, u64>>,
+    probe: bool,
 ) -> TunnelMetrics {
     let label = daemon::platform_label(&t.account_name, &t.name);
     let status = daemon::status(&label).await;
     let runtime = daemon::runtime_info(&label).await;
-    measure(cfg, t, include_lb, status, runtime, peaks, &Trail::of(t)).await
+    let trail = Trail::of(t);
+    measure(cfg, t, include_lb, status, runtime, peaks, &trail, probe).await
 }
 
 // An unmanaged tunnel has no service to ask: discovery saw the process, and
@@ -758,8 +760,9 @@ pub async fn collect_unmanaged(
     t: &PersistentTunnel,
     pid: u32,
     peaks: Option<&HashMap<u16, u64>>,
+    probe: bool,
 ) -> TunnelMetrics {
-    collect_unmanaged_at(cfg, t, pid, peaks, &Trail::of(t)).await
+    collect_unmanaged_at(cfg, t, pid, peaks, &Trail::of(t), probe).await
 }
 
 // The trail is a parameter so a test can hand it a log and a marker of its own
@@ -770,12 +773,23 @@ pub(crate) async fn collect_unmanaged_at(
     pid: u32,
     peaks: Option<&HashMap<u16, u64>>,
     trail: &Trail,
+    probe: bool,
 ) -> TunnelMetrics {
     let runtime = daemon::RuntimeInfo {
         pid: Some(pid),
         restarts: 0,
     };
-    measure(cfg, t, false, TunnelStatus::Running, runtime, peaks, trail).await
+    measure(
+        cfg,
+        t,
+        false,
+        TunnelStatus::Running,
+        runtime,
+        peaks,
+        trail,
+        probe,
+    )
+    .await
 }
 
 // One tunnel's load balancer traffic. The client is a parameter so a round can
@@ -791,6 +805,9 @@ async fn lb_stats(
         .ok()
 }
 
+// `probe` false reads what costs nothing (uptime, restarts, clients) and
+// leaves the latency and the verdict to the last round that probed
+#[allow(clippy::too_many_arguments)]
 async fn measure(
     cfg: &Config,
     t: &PersistentTunnel,
@@ -799,6 +816,7 @@ async fn measure(
     runtime: daemon::RuntimeInfo,
     peaks: Option<&HashMap<u16, u64>>,
     trail: &Trail,
+    probe: bool,
 ) -> TunnelMetrics {
     let mut metrics = TunnelMetrics {
         restarts: runtime.restarts,
@@ -819,6 +837,9 @@ async fn measure(
             metrics.active_connections = blocking(move || connections_for(peaks.as_ref(), port))
                 .await
                 .unwrap_or(0);
+            if !probe {
+                return metrics;
+            }
             let addr = format!("127.0.0.1:{local_port}");
             let answer = probe_access_port(t.is_socks(), &addr, TCP_TIMEOUT, &trail.log).await;
             metrics.health = Some(classify_probe(answer, &trail.log, trail.marker.as_deref()));

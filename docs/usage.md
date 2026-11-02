@@ -614,7 +614,10 @@ The list is a table with a `NAME  MODE  URL` header. A legacy name with an accou
 (`k8s-dev` under `dev`) shows without it. The naming rule is
 [Naming a tunnel](commands.md#naming-a-tunnel).
 
-Metrics redraws every 5 seconds. Its `active` is the most client connections the local port
+Metrics redraws every 5 seconds. A direct tunnel's latency is measured every 5 seconds only
+while its row is selected and no client is connected: each measurement is an IAP connection to
+the instance, so an unselected idle tunnel is measured every 30 seconds and a busy one keeps its
+last figure. Its `active` is the most client connections the local port
 carried since the last redraw, sampled twice a second, because a `kubectl` call holds its
 socket for only a few hundred milliseconds. The count is for the screen only: the tunnel's log
 records each connection with its source port
