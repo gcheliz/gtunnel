@@ -258,6 +258,7 @@ Shapes, not a transcript:
 | Jump (`--via`), forward up | `Local forwarding listening on 127.0.0.1 port 8443.` | ssh |
 | Access, a client connects | `gtunnel: conn 4 open` (or `conn 4 open from 127.0.0.1:54321` when the tool names the client at once) | gtunnel, from the tool's own line |
 | Access, a client leaves | `gtunnel: conn 4 from 127.0.0.1:54321 closed after 12.4s` | gtunnel, from the tool's own line |
+| SOCKS, a client leaves | `gtunnel: conn 4 from 127.0.0.1:54321 to db.internal:27017 closed after 12.4s` | gtunnel, from ssh's channel lines |
 | Access, a client aborts | `gtunnel: conn 4 from 127.0.0.1:54321 reset by the client after 360.2s, the tunnel is still up` | gtunnel, from gcloud's `Connection reset by peer` |
 | Access, a burst | `gtunnel: conn ... 240 more in the last minute` | gtunnel |
 | Expose, forward up | `debug1: Remote connections from 0.0.0.0:30001 forwarded to local address 127.0.0.1:3000` | ssh |

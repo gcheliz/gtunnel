@@ -337,6 +337,10 @@ pub fn all_tools() -> Vec<ToolDefinition> {
                         "type": "string",
                         "description": "Instance to forward from via ssh (bastion jump)"
                     },
+                    "socks": {
+                        "type": "boolean",
+                        "description": "Run a SOCKS5 proxy through the instance named by target (INSTANCE, or INSTANCE:22); the client picks each destination. Not with via or dest_group"
+                    },
                     "zone": {
                         "type": "string",
                         "description": "Compute zone of the instance (looked up from the instance name when omitted)"
@@ -691,7 +695,11 @@ async fn run_status(run: &crate::ephemeral::EphemeralRecord) -> ToolCallResult {
     let log = super::run::run_log_path(&run.account_name, &run.name).unwrap_or_default();
     let (local_port, probe_latency_ms) = match &run.spec {
         TunnelSpec::Access { local_port, .. } => {
-            (Some(*local_port), probe_local(*local_port, &log).await)
+            // `run` makes no SOCKS tunnel
+            (
+                Some(*local_port),
+                probe_local(*local_port, &log, false).await,
+            )
         }
         TunnelSpec::Expose { .. } => (None, None),
     };
@@ -816,7 +824,7 @@ pub async fn execute_tool(
             let probe_latency_ms = if status == TunnelStatus::Running {
                 if let TunnelSpec::Access { local_port, .. } = &t.spec {
                     // No log to read means a silent close is taken as an answer
-                    probe_local(*local_port, &t.log_path().unwrap_or_default()).await
+                    probe_local(*local_port, &t.log_path().unwrap_or_default(), t.is_socks()).await
                 } else {
                     None
                 }
@@ -892,6 +900,7 @@ pub async fn execute_tool(
             let dest_group = get_str("dest_group");
             let region = get_str("region");
             let network = get_str("network");
+            let socks = get_bool("socks");
             let start = get_bool("start");
             let account = get_str("account");
 
@@ -904,6 +913,7 @@ pub async fn execute_tool(
                 dest_group,
                 region,
                 network,
+                socks,
                 start,
             };
             req.validate()

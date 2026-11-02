@@ -75,6 +75,8 @@ pub struct AddRequest<'a> {
     pub dest_group: Option<&'a str>,
     pub region: Option<&'a str>,
     pub network: Option<&'a str>,
+    /// A SOCKS proxy through `target`, which is then the instance alone
+    pub socks: bool,
     pub start: bool,
 }
 
@@ -85,6 +87,18 @@ impl AddRequest<'_> {
     /// the API. The MCP server maps this error to Invalid params.
     pub fn validate(&self) -> Result<()> {
         validate_tunnel_name(self.name)?;
+        if self.socks {
+            if self.via.is_some() || self.dest_group.is_some() {
+                return Err(GtunnelError::usage(
+                    "A SOCKS tunnel names its instance as the target, without --via or --dest-group",
+                )
+                .into());
+            }
+            if let Some(zone) = self.zone {
+                validate_zone(zone)?;
+            }
+            return validate_instance_name(&socks_instance(self.target)?);
+        }
         let (host, _) = parse_access_target(self.target)?;
         if let Some(zone) = self.zone {
             validate_zone(zone)?;
@@ -97,6 +111,20 @@ impl AddRequest<'_> {
             (None, Some(_)) => validate_host(&host),
             (None, None) => validate_instance_name(&host),
         }
+    }
+}
+
+/// The instance a SOCKS tunnel goes through: its name, or its name and its
+/// ssh port, which is the only port such a tunnel uses.
+pub fn socks_instance(target: &str) -> Result<String> {
+    match target.rsplit_once(':') {
+        None => Ok(target.to_string()),
+        Some((instance, "22")) => Ok(instance.to_string()),
+        Some(_) => Err(GtunnelError::usage(format!(
+            "A SOCKS tunnel goes through the instance's ssh port: give the instance alone, not \
+             '{target}'"
+        ))
+        .into()),
     }
 }
 
@@ -122,6 +150,7 @@ async fn save_tunnel(account: Option<&str>, req: &AddRequest<'_>, can_ask: bool)
         dest_group,
         region,
         network,
+        socks,
         ..
     } = *req;
     req.validate()?;
@@ -139,8 +168,23 @@ async fn save_tunnel(account: Option<&str>, req: &AddRequest<'_>, can_ask: bool)
     early.check_label(&acct.name, name)?;
     crate::ephemeral::check_name_free_of_runs(&acct.name, name)?;
 
-    let (host, remote_port) = parse_access_target(target)?;
     let mut warnings = Vec::new();
+    if socks {
+        let instance = socks_instance(target)?;
+        let zone = instance_zone(&acct, zone, &instance, can_ask, &mut warnings).await?;
+        let access_target = AccessTarget::Socks { instance, zone };
+        return save_access(
+            &config,
+            &acct,
+            name,
+            access_target,
+            22,
+            local_port,
+            warnings,
+        )
+        .await;
+    }
+    let (host, remote_port) = parse_access_target(target)?;
     let access_target = match (dest_group, via) {
         // The instance is what gtunnel checks exists; the host behind it is
         // reachable from there or it is not, which only the tunnel can tell
@@ -169,6 +213,28 @@ async fn save_tunnel(account: Option<&str>, req: &AddRequest<'_>, can_ask: bool)
         }
     };
 
+    save_access(
+        &config,
+        &acct,
+        name,
+        access_target,
+        remote_port,
+        local_port,
+        warnings,
+    )
+    .await
+}
+
+// The record and its service, once the target is known
+async fn save_access(
+    config: &crate::config::Config,
+    acct: &Account,
+    name: &str,
+    access_target: AccessTarget,
+    remote_port: u16,
+    local_port: Option<u16>,
+    warnings: Vec<String>,
+) -> Result<Added> {
     // The port choice reads the saved ports, so it belongs under the same lock
     // as the save; the gcloud checks above are outside it
     let tunnel = TunnelState::update(|state| {
@@ -180,7 +246,7 @@ async fn save_tunnel(account: Option<&str>, req: &AddRequest<'_>, can_ask: bool)
         Ok(tunnel)
     })?;
 
-    let spec = daemon::service_spec(&config, &tunnel)?;
+    let spec = daemon::service_spec(config, &tunnel)?;
     daemon::install(&spec).await?;
     Ok(Added {
         name: tunnel.name.clone(),
@@ -292,6 +358,7 @@ pub async fn cmd_add(
     dest_group: Option<&str>,
     region: Option<&str>,
     network: Option<&str>,
+    socks: bool,
     start: bool,
 ) -> Result<()> {
     let req = AddRequest {
@@ -303,6 +370,7 @@ pub async fn cmd_add(
         dest_group,
         region,
         network,
+        socks,
         start,
     };
     let can_ask = crate::gcp::gcloud::is_interactive();
@@ -993,8 +1061,13 @@ pub(crate) fn stopped_for_budget(tunnel: &PersistentTunnel) -> Option<String> {
 /// The round trip of a probe of a local tunnel port, or `None` without an
 /// answer. `log` is read to tell a refusal from a silent close; no log to read
 /// means a silent close is taken as an answer.
-pub(crate) async fn probe_local(local_port: u16, log: &std::path::Path) -> Option<u128> {
-    crate::probe::probe_tunnel(
+pub(crate) async fn probe_local(
+    local_port: u16,
+    log: &std::path::Path,
+    socks: bool,
+) -> Option<u128> {
+    crate::probe::probe_access_port(
+        socks,
         &format!("127.0.0.1:{local_port}"),
         crate::settings::current().list_probe_timeout,
         log,
@@ -1034,13 +1107,14 @@ pub(crate) fn health_word(
 pub async fn list_rows_json(acct: &Account, include_unmanaged: bool) -> Result<Vec<ListRowJson>> {
     let state = TunnelState::load()?;
     let mut rows = Vec::new();
-    // (row index, local port, log) of every running row that has a port
+    // (row index, local port, log, SOCKS) of every running row that has a port
     let mut probes = Vec::new();
     for tunnel in state.tunnels_for_account(&acct.name) {
         let status = tunnel_status(tunnel).await;
         let row = ListRowJson::declared(tunnel, status);
         if let (TunnelStatus::Running, Some(port)) = (status, row.local_port) {
-            probes.push((rows.len(), port, tunnel.log_path().unwrap_or_default()));
+            let log = tunnel.log_path().unwrap_or_default();
+            probes.push((rows.len(), port, log, tunnel.is_socks()));
         }
         rows.push(row);
     }
@@ -1048,7 +1122,7 @@ pub async fn list_rows_json(acct: &Account, include_unmanaged: bool) -> Result<V
         let row = ListRowJson::from_run(&run);
         if let Some(port) = row.local_port {
             let log = crate::mcp::run::run_log_path(&run.account_name, &run.name);
-            probes.push((rows.len(), port, log.unwrap_or_default()));
+            probes.push((rows.len(), port, log.unwrap_or_default(), false));
         }
         rows.push(row);
     }
@@ -1059,9 +1133,9 @@ pub async fn list_rows_json(acct: &Account, include_unmanaged: bool) -> Result<V
     }
 
     let mut set = tokio::task::JoinSet::new();
-    for (index, port, log) in probes {
+    for (index, port, log, socks) in probes {
         set.spawn(async move {
-            let latency = probe_local(port, &log).await;
+            let latency = probe_local(port, &log, socks).await;
             (index, health_word(true, latency, true, &log))
         });
     }
@@ -1875,8 +1949,42 @@ mod tests {
             dest_group: Some("group"),
             region: Some("europe-west1"),
             network: None,
+            socks: false,
             start: false,
         };
         req.validate().expect("no zone is asked for");
+    }
+
+    // A SOCKS tunnel's target is the instance, bare or with its ssh port; a
+    // host behind it, `--via` or a destination group is a different tunnel
+    #[test]
+    fn a_socks_add_names_only_its_instance() {
+        let req = |target, via, dest_group| AddRequest {
+            name: "db",
+            target,
+            via,
+            zone: None,
+            local_port: None,
+            dest_group,
+            region: None,
+            network: None,
+            socks: true,
+            start: false,
+        };
+        req("bastion", None, None)
+            .validate()
+            .expect("a bare instance");
+        req("bastion:22", None, None)
+            .validate()
+            .expect("the instance and its ssh port");
+        assert!(
+            req("bastion:5432", None, None).validate().is_err(),
+            "a port other than ssh's"
+        );
+        assert!(req("-oProxyCommand=id", None, None).validate().is_err());
+        assert!(req("bastion", Some("x"), None).validate().is_err());
+        assert!(req("bastion", None, Some("g")).validate().is_err());
+        assert_eq!(socks_instance("bastion").expect("bare"), "bastion");
+        assert_eq!(socks_instance("bastion:22").expect("ssh port"), "bastion");
     }
 }

@@ -244,8 +244,8 @@ psql -h localhost -p 15432
 
 `--local-port` pins the port; without it the port is derived from the name, in 15000-15999.
 `-s` installs and starts the user service, so the tunnel outlives the terminal.
-[add](commands.md#add) covers the three target shapes: an instance port, a host behind `--via`, and an
-IAP destination group.
+[add](commands.md#add) covers the four target shapes: an instance port, a host behind `--via`, an
+IAP destination group, and a SOCKS proxy through an instance (`--socks`).
 
 Publishing a local service needs a Cloud DNS managed zone and a one-off relay per account:
 `gtunnel relay up --managed-zone <zone>` ([relay](commands.md#relay)), then [expose](commands.md#expose).
@@ -266,18 +266,21 @@ gtunnel has two modes. Everything else is a choice inside one of them.
 In `tunnels.toml` the mode is `mode = "access"` or `mode = "expose"`
 ([configuration.md](configuration.md#tunnelstoml)).
 
-### Three kinds of Access target
+### Kinds of Access target
 
-An Access tunnel reaches its target one of three ways. The kind is `[tunnels.spec.target] kind`.
+An Access tunnel reaches its target one of four ways. The kind is `[tunnels.spec.target] kind`.
 
 | Kind | Flag | Engine | Ready line in the log | Needs |
 |---|---|---|---|---|
 | `instance` | none, `INSTANCE:PORT` | `start-iap-tunnel INSTANCE PORT` | `Listening on port` | The target port open to `35.235.240.0/20` |
 | `jump` | `--via INSTANCE` | `compute ssh INSTANCE --tunnel-through-iap -- -N -L` | `Local forwarding listening on 127.0.0.1 port N` | ssh to the instance, and port 22 open to `35.235.240.0/20` |
 | `dest_group` | `--dest-group G` | `start-iap-tunnel HOST PORT --dest-group` | `Listening on port` | An IAP destination group in the account's project |
+| `socks` | `--socks`, `INSTANCE` | `compute ssh INSTANCE --tunnel-through-iap -- -N -D` | `Local forwarding listening on 127.0.0.1 port N` | As `jump`, and a client that speaks SOCKS5 |
 
-`jump` is the one that differs: the forward is made by ssh on the instance, so the host
-behind it can be anything the instance reaches, such as a private GKE control plane. Every
+`jump` and `socks` are the ones that differ: the forward is made by ssh on the instance, so the
+host behind it can be anything the instance reaches, such as a private GKE control plane. A
+`socks` tunnel names no host at all: the client asks for each one, and its name is resolved on
+the instance's side. Every
 kind also needs `roles/iap.tunnelResourceAccessor`
 ([IAM](troubleshooting.md#iam), [firewall](troubleshooting.md#iap-firewall)).
 
