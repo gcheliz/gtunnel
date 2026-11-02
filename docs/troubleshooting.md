@@ -173,6 +173,7 @@ emptied when its tunnel starts, so a line in it was written by the process runni
 | `watch status` says installed, and the watchdog log shows nothing every interval | The watchdog definition names a binary that no longer exists (a versioned path after an upgrade) | Run any gtunnel command: it rewrites the watchdog and prints `gtunnel: reinstalled com.gtunnel.watchdog` (`gtunnel-watchdog` on Linux). `gtunnel watch install` does the same by hand |
 | `4004` | IAP asked gcloud to reauthenticate; gcloud resumes the session on its own | Nothing, unless it repeats: then check the account's credentials with `gtunnel doctor` |
 | `Unable to reconnect within` | gcloud gave up reconnecting to IAP after 15 minutes and the clients on the tunnel were cut | Restart the tunnel; see [Limits](architecture.md#limits) |
+| `reset by the client ..., the tunnel is still up` | The program on the local port closed its socket abruptly, usually because it crashed or was killed mid-transfer. The tunnel did not fail and was not restarted. At `debug` the log also shows gcloud's own `Connection reset by peer` traceback | Look at the client, not the tunnel. A MongoDB Compass renderer that runs out of memory on a large schema sample or diagram does this: sample fewer documents or fewer collections, and reconnect |
 | `Address already in use` | Another process holds the local port | `gtunnel doctor`, or set `--local-port` |
 | `remote port forwarding failed` | The relay still holds the listener of a session that is gone, usually after the laptop slept or changed network. The supervisor retries for a bounded time without spending the [restart budget](configuration.md#the-restart-budget); an updated relay drops the dead session in about 30 seconds | Wait. If it lasts minutes, run `gtunnel relay up`: a relay created before the keepalive settings existed gets them from it. `gtunnel restart` does not help |
 | `gcloud exited 0 on its own, restarting` | gcloud ended without being asked to, so the tunnel was down. The supervisor reports it as a failure (exit 1) so the service manager starts it again, and it does not spend the restart budget | Nothing, unless it repeats: then read the lines above it in the log for why gcloud keeps quitting |
@@ -255,6 +256,7 @@ Shapes, not a transcript:
 | Jump (`--via`), forward up | `Local forwarding listening on 127.0.0.1 port 8443.` | ssh |
 | Access, a client connects | `gtunnel: conn iap-4 open` (or `conn ssh-3 open from 127.0.0.1:54321` when the tool names the client at once) | gtunnel, from the tool's own line |
 | Access, a client leaves | `gtunnel: conn iap-4 from 127.0.0.1:54321 closed after 12.4s` | gtunnel, from the tool's own line |
+| Access, a client aborts | `gtunnel: conn iap-4 from 127.0.0.1:54321 reset by the client after 360.2s, the tunnel is still up` | gtunnel, from gcloud's `Connection reset by peer` |
 | Access, a burst | `gtunnel: conn ... 240 more in the last minute` | gtunnel |
 | Expose, forward up | `debug1: Remote connections from 0.0.0.0:30001 forwarded to local address 127.0.0.1:3000` | ssh |
 | Expose, a visitor arrives | `debug1: client_request_forwarded_tcpip: listen 0.0.0.0 port 30001, originator ...` | ssh |
@@ -586,22 +588,33 @@ Without NumPy, gcloud's IAP tunnel falls back to a pure-Python socket loop and r
 times slower. gcloud bundles its own Python, so the system's NumPy does not count.
 
 ```
-$(gcloud info --format="value(basic.python_location)") -m pip install numpy
+$(gcloud info --format="value(basic.python_location)") -m pip install --user numpy
+```
+
+`--user` is for an SDK installed from a package (`/usr/lib/google-cloud-sdk` on Debian and
+Ubuntu), whose Python is owned by root; drop it if pip can write to that Python's own
+site-packages. gcloud's bundled Python reads your user site-packages by itself. A Python that
+gcloud runs without site packages does not, and needs the variable too:
+
+```
+gcloud info --format="value(basic.site_packages)"   # False: the variable is needed
 export CLOUDSDK_PYTHON_SITEPACKAGES=1
 ```
 
-That is Google's fix and both steps are needed. A service takes the variable from your shell
-when it is written, so `gtunnel restart <name>` after exporting it. `doctor` also reports a
-tunnel whose own log carries gcloud's `consider installing NumPy` warning.
+A service takes the variable from your shell when it is written, so `gtunnel restart <name>`
+after exporting it.
+
+`doctor` asks gcloud which Python it runs and whether with site packages, then imports NumPy
+the same way, and its advice says whether `--user` and the variable apply. gcloud before 591
+also printed `consider installing NumPy` in a tunnel's log, and `doctor` still reports a tunnel
+whose log carries it; gcloud 591 prints nothing, so a log without that line proves nothing.
 
 To see what `doctor` sees:
 
 ```
 PY=$(gcloud info --format="value(basic.python_location)")
-"$PY" -c "import numpy; print(numpy.__version__)"
+"$PY" -c "import numpy; print(numpy.__version__)"   # add -S if site_packages is False
 ```
-
-A non-zero exit from that second line is exactly the condition `doctor` reports.
 
 ## Services
 
