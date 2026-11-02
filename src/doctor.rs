@@ -2624,7 +2624,7 @@ mod tests {
         );
         let text = finding.describe();
         assert!(text.contains("'k8s'"), "{text}");
-        assert!(text.contains("-m pip install numpy"), "{text}");
+        assert!(text.contains("-m pip install --user numpy"), "{text}");
         assert!(text.contains("CLOUDSDK_PYTHON_SITEPACKAGES=1"), "{text}");
         assert!(text.contains("gtunnel restart k8s"), "{text}");
         assert!(!finding.fixable());
