@@ -240,7 +240,7 @@ names where it comes from.
 | A session is dropped after one hour of inactivity | Same page |
 | `start-iap-tunnel` opens one WebSocket and one thread per local TCP connection, with no cap; the listen backlog is 128 | gcloud 590, `command_lib/compute/iap_tunnel.py` |
 | A dropped WebSocket is retried from 1.5 s up to 20 s apart, for up to 15 minutes | gcloud 590, `api_lib/compute/iap_tunnel_websocket.py` |
-| Close code `4004` means IAP wants reauthentication; the session resumes | gcloud 590, `api_lib/compute/iap_tunnel_websocket_helper.py` |
+| Close code `4004` means IAP wants reauthentication; the session resumes. Every other close ends it: `4010` is the target hanging up (IAP FAQ: "connection closed by destination") | gcloud 591, `api_lib/compute/iap_tunnel_websocket_helper.py`; Google Cloud, IAP FAQ |
 | A tunnel through a GCP instance carries every connection over one WebSocket, kept busy by `ServerAliveInterval=30` | gtunnel, `src/tunnel.rs` (the command shown under [Jump tunnels](#jump-tunnels)) |
 | Every tunable setting resolves in one place: a variable beats `config.toml`, which beats the default | gtunnel, `src/settings.rs`; [Settings the environment can override](configuration.md#settings-the-environment-can-override) |
 | A gcloud that keeps dying before `min_uptime` stops its job after `max_restarts` fast failures | gtunnel, `src/restart_budget.rs`; [The restart budget](configuration.md#the-restart-budget) |
