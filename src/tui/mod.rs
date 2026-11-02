@@ -1180,11 +1180,32 @@ mod tests;
 mod stop_tests {
     use super::*;
 
+    const ALONE: &str = "GTUNNEL_TEST_SIGNAL_ALONE";
+    const THIS_TEST: &str =
+        "tui::stop_tests::a_termination_signal_ends_the_loop_instead_of_the_process";
+
     // Raised at the process, as `pkill gtunnel` and a closing terminal do. The
     // handler Stop installs is what keeps the default action from killing the
     // test run, so reaching the assertion is part of the proof.
+    //
+    // A signal reaches every handler in the process, and the supervisor tests
+    // running beside this one read a SIGTERM as a stop and cut their child
+    // short (#460). So the signal is raised in a copy of the test binary that
+    // runs this test and nothing else.
     #[tokio::test]
     async fn a_termination_signal_ends_the_loop_instead_of_the_process() {
+        if std::env::var_os(ALONE).is_none() {
+            let out = std::process::Command::new(std::env::current_exe().expect("test binary"))
+                .args(["--exact", THIS_TEST, "--test-threads=1"])
+                .env(ALONE, "1")
+                .output()
+                .expect("run the test alone");
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            assert!(out.status.success(), "{stdout}");
+            // A filter that matched nothing would pass with nothing proved
+            assert!(stdout.contains("1 passed"), "{stdout}");
+            return;
+        }
         for signal in [libc::SIGTERM, libc::SIGHUP] {
             let (_tx, mut rx) = mpsc::unbounded_channel::<Msg>();
             let mut stop = Stop::new().expect("register");
