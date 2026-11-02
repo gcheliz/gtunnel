@@ -18,8 +18,8 @@ use crate::error::GtunnelError;
 use crate::expose::routes;
 use crate::gcp::GcpClient;
 use crate::probe::{
-    classify_probe, collect_metrics, collect_unmanaged, http_probe, probe_tunnel, HealthStatus,
-    Trail, TCP_TIMEOUT,
+    classify_probe, collect_metrics, collect_unmanaged, http_probe, probe_access_port,
+    HealthStatus, Trail, TCP_TIMEOUT,
 };
 use crate::state::{
     check_local_port, local_port_is_free, AccessTarget, PersistentTunnel, TunnelSpec, TunnelState,
@@ -270,7 +270,8 @@ async fn probe_health_at(tunnel: &PersistentTunnel, trail: &Trail) -> HealthStat
                 return HealthStatus::Unknown;
             }
             let addr = format!("127.0.0.1:{local_port}");
-            let answer = probe_tunnel(&addr, TCP_HEALTH_TIMEOUT, &trail.log).await;
+            let answer =
+                probe_access_port(tunnel.is_socks(), &addr, TCP_HEALTH_TIMEOUT, &trail.log).await;
             classify_probe(answer, &trail.log, trail.marker.as_deref())
         }
         TunnelSpec::Expose { hostname, .. } => http_probe(&format!("https://{hostname}")).await,
@@ -502,7 +503,8 @@ fn select_account(name: &str) -> Result<String> {
 // that host as the target and the instance as the way to it, while a tunnel to
 // the instance's own port names the instance
 pub fn add_arguments(new: &NewTunnel) -> (String, Option<String>) {
-    if new.host.trim().is_empty() {
+    // A SOCKS tunnel names the instance alone; the client names the rest
+    if new.mode == TunnelMode::Socks || new.host.trim().is_empty() {
         (format!("{}:{}", new.instance, new.remote_port), None)
     } else {
         (
@@ -516,7 +518,7 @@ pub fn add_arguments(new: &NewTunnel) -> (String, Option<String>) {
 // build a relay route, so the TUI calls them rather than keeping a second copy
 async fn create(new: &NewTunnel) -> Result<String> {
     match new.mode {
-        TunnelMode::Access => {
+        TunnelMode::Access | TunnelMode::Socks => {
             let (target, via) = add_arguments(new);
             let added = crate::commands::access::add_tunnel_with(
                 Some(&new.account),
@@ -530,6 +532,7 @@ async fn create(new: &NewTunnel) -> Result<String> {
                     dest_group: None,
                     region: None,
                     network: None,
+                    socks: new.mode == TunnelMode::Socks,
                     start: true,
                 },
                 true,

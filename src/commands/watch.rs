@@ -645,9 +645,14 @@ async fn visit(
     };
     // The probe reads the log to tell a refused tunnel from a quiet service
     let log_path = tunnel.log_path()?;
-    let probe_ok = probe::probe_tunnel(&addr, settings.watch_probe_timeout, &log_path)
-        .await
-        .is_some();
+    let probe_ok = probe::probe_access_port(
+        tunnel.is_socks(),
+        &addr,
+        settings.watch_probe_timeout,
+        &log_path,
+    )
+    .await
+    .is_some();
 
     let len = std::fs::metadata(&log_path).map_or(0, |m| m.len());
 

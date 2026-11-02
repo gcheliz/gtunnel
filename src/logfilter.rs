@@ -40,6 +40,10 @@ pub struct ConnEvent {
     pub id: String,
     pub source: Option<SocketAddr>,
     pub phase: Phase,
+    /// A SOCKS client's channel, which goes wherever the client asks
+    pub dynamic: bool,
+    /// Where the channel went, as `free:` names it
+    pub dest: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -161,18 +165,31 @@ fn classify_ssh(body: &str) -> Line {
     let source = tail
         .split_once("connect from ")
         .and_then(|(_, r)| parse_host_port(r));
-    // `new direct-tcpip [...]` from OpenSSH 9, `new [direct-tcpip]` from 8.9
-    let phase = if tail.starts_with("new direct-tcpip") || tail.starts_with("new [direct-tcpip]") {
+    // `new direct-tcpip [...]` from OpenSSH 9, `new [direct-tcpip]` from 8.9;
+    // a SOCKS client's channel opens as `dynamic-tcpip` and closes as the rest
+    let dynamic = tail.starts_with("new [dynamic-tcpip]") || tail.starts_with("new dynamic-tcpip");
+    let phase = if dynamic
+        || tail.starts_with("new direct-tcpip")
+        || tail.starts_with("new [direct-tcpip]")
+    {
         Phase::Open
     } else if tail.starts_with("free: direct-tcpip") {
         Phase::Close
     } else {
         return Line::Drop;
     };
+    // `listening port 1080 for db.internal port 27017, connect from ...`
+    let dest = tail
+        .split_once(" for ")
+        .and_then(|(_, r)| r.split_once(", connect from"))
+        .and_then(|(d, _)| d.rsplit_once(" port "))
+        .map(|(host, port)| format!("{host}:{port}"));
     Line::Conn(ConnEvent {
         id: format!("ssh-{id}"),
         source,
         phase,
+        dynamic,
+        dest,
     })
 }
 
@@ -185,6 +202,8 @@ fn classify_iap(id: &str, tail: &str) -> Line {
                 id: format!("iap-{n}"),
                 source: None,
                 phase: Phase::Open,
+                dynamic: false,
+                dest: None,
             }),
             None => Line::Drop,
         };
@@ -195,6 +214,8 @@ fn classify_iap(id: &str, tail: &str) -> Line {
                 id: format!("iap-{n}"),
                 source: parse_python_addr(tail),
                 phase: Phase::Close,
+                dynamic: false,
+                dest: None,
             }),
             None => Line::Drop,
         };
@@ -233,6 +254,8 @@ fn classify_iap_reset(line: &str) -> Option<Line> {
         id: format!("iap-{n}"),
         source: parse_python_addr(tail),
         phase: Phase::Reset,
+        dynamic: false,
+        dest: None,
     }))
 }
 
@@ -339,6 +362,7 @@ struct OpenConn {
     /// None while the open is held back, so a probe never takes a number.
     n: Option<u64>,
     probe: bool,
+    dynamic: bool,
     reset: bool,
     /// IAP closed the session with 4010: the target hung up, not the client
     by_target: bool,
@@ -542,6 +566,7 @@ impl Correlator {
                         source: ev.source,
                         n: None,
                         probe,
+                        dynamic: ev.dynamic,
                         reset: false,
                         by_target: false,
                     },
@@ -558,7 +583,14 @@ impl Correlator {
                 if held.as_ref().is_some_and(|h| h.probe) || self.is_probe(source) {
                     return;
                 }
-                let from = source.map(|s| format!(" from {s}")).unwrap_or_default();
+                let mut from = source.map(|s| format!(" from {s}")).unwrap_or_default();
+                // A SOCKS client went where it asked; a jump tunnel's channel
+                // only ever goes where the tunnel does, so that is not repeated
+                if held.as_ref().is_some_and(|h| h.dynamic)
+                    && let Some(dest) = &ev.dest
+                {
+                    from.push_str(&format!(" to {dest}"));
+                }
                 let n = match held.as_ref().map(|h| (h.n, h.source)) {
                     Some((Some(n), _)) => n,
                     Some((None, opened_from)) => {
@@ -1606,5 +1638,29 @@ Listening on port [2222].
             output.contains("pkg.errors.CustomError: something broke"),
             "{output}"
         );
+    }
+
+    // OpenSSH 8.9's lines for one SOCKS client: the channel opens as
+    // `dynamic-tcpip`, and its close names where the client went (#457)
+    const SOCKS_NEW: &str = "debug1: channel 1: new [dynamic-tcpip]";
+    const SOCKS_FREE: &str = "debug1: channel 1: free: direct-tcpip: listening port 1080 for db.internal port 27017, connect from 127.0.0.1 port 44878 to 127.0.0.1 port 1080, nchannels 2";
+
+    #[test]
+    fn a_socks_client_is_a_connection_and_its_close_says_where_it_went() {
+        let t0 = Instant::now();
+        let mut c = Correlator::new(LogLevel::Info).with_backend(Backend::Ssh);
+        let mut out = run(&mut c, &[SOCKS_NEW], t0);
+        out.extend(c.feed(SOCKS_FREE, t0 + Duration::from_secs(12)));
+        assert_eq!(
+            bodies(&out),
+            vec![
+                "gtunnel: conn 1 open",
+                "gtunnel: conn 1 from 127.0.0.1:44878 to db.internal:27017 closed after 12.0s",
+            ]
+        );
+        // A jump tunnel's destination is the tunnel's own, so it is not repeated
+        let mut c = Correlator::new(LogLevel::Info).with_backend(Backend::Ssh);
+        let out = run(&mut c, &[SSH_NEW_89, SSH_FREE_89], t0);
+        assert!(!bodies(&out)[1].contains(" to "), "{out:?}");
     }
 }

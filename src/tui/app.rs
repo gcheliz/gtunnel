@@ -272,6 +272,8 @@ pub enum TunnelMode {
     #[default]
     Access,
     Public,
+    // A SOCKS proxy through an instance: no host and no remote port to ask
+    Socks,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -512,6 +514,15 @@ impl InputMode {
     /// a public URL three.
     pub fn step(&self, mode: TunnelMode) -> Option<(u8, u8)> {
         let access = mode == TunnelMode::Access;
+        if mode == TunnelMode::Socks {
+            return match self {
+                InputMode::AddName => Some((1, 3)),
+                InputMode::AddInstance => Some((2, 3)),
+                InputMode::AddLocalPort => Some((3, 3)),
+                InputMode::AddZone => Some((4, 4)),
+                _ => None,
+            };
+        }
         match self {
             InputMode::AccountConfiguration | InputMode::AccountConfigurationPick => Some((1, 2)),
             InputMode::AccountName => Some((2, 2)),
@@ -2329,6 +2340,10 @@ impl App {
                 self.draft.mode = TunnelMode::Access;
                 self.input_mode = InputMode::AddName;
             }
+            KeyCode::Char('3') => {
+                self.draft.mode = TunnelMode::Socks;
+                self.input_mode = InputMode::AddName;
+            }
             KeyCode::Char('2') => {
                 if !self.has_relay {
                     self.cancel_dialog();
@@ -2664,7 +2679,7 @@ impl App {
                 self.draft_error = None;
                 self.draft.name = name;
                 self.input_mode = match self.draft.mode {
-                    TunnelMode::Access => {
+                    TunnelMode::Access | TunnelMode::Socks => {
                         self.want_instances = true;
                         self.list_loading = Some("instances");
                         self.instance_selected = 0;
@@ -2897,7 +2912,15 @@ impl App {
                 self.draft_error = None;
                 self.clear_list_failure();
                 self.input.clear();
-                self.input_mode = InputMode::AddJumpHost;
+                self.input_mode = if self.draft.mode == TunnelMode::Socks {
+                    // The proxy goes through the instance's ssh port, and the
+                    // client names every destination: only the local port is left
+                    self.draft.remote_port = 22;
+                    self.draft.local_port = self.suggested_local_port(&self.draft.name);
+                    InputMode::AddLocalPort
+                } else {
+                    InputMode::AddJumpHost
+                };
             }
             _ => {}
         }

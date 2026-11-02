@@ -319,7 +319,8 @@ impl RenameOps for LiveOps {
             TunnelSpec::Access {
                 target:
                     AccessTarget::Instance { instance, zone }
-                    | AccessTarget::Jump { instance, zone, .. },
+                    | AccessTarget::Jump { instance, zone, .. }
+                    | AccessTarget::Socks { instance, zone },
                 ..
             } => {
                 let found =

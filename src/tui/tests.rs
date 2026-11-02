@@ -3392,3 +3392,35 @@ fn leaving_the_terminal_releases_exactly_what_entering_took() {
     assert!(off.contains("?1006l") && off.contains("?1000l"), "{off:?}");
     assert!(!off.contains("?1003l"), "{off:?}");
 }
+
+// The third choice: a proxy through an instance, so it asks the name, the
+// instance and the local port, and sends a SOCKS add (#457)
+#[test]
+fn a_socks_tunnel_is_added_in_three_steps() {
+    let mut app = app_with_two();
+    app.default_zone = "europe-west1-b".to_string();
+    keys(&mut app, "a3");
+    assert_eq!(app.input_mode, InputMode::AddName);
+    assert_eq!(app.draft.mode, TunnelMode::Socks);
+    assert_eq!(app.input_mode.step(TunnelMode::Socks), Some((1, 3)));
+    keys(&mut app, "mongo\n");
+    assert_eq!(app.input_mode, InputMode::AddInstance);
+    assert_eq!(app.input_mode.step(TunnelMode::Socks), Some((2, 3)));
+    app.instances_failed("gcloud exited 1");
+    keys(&mut app, "bastion\n");
+    assert_eq!(
+        app.input_mode,
+        InputMode::AddLocalPort,
+        "no host and no remote port"
+    );
+    assert_eq!(app.input_mode.step(TunnelMode::Socks), Some((3, 3)));
+    assert_eq!(app.draft.remote_port, 22, "the instance's ssh port");
+    match keys(&mut app, "\n") {
+        Some(Op::Create(draft)) => {
+            assert_eq!(draft.mode, TunnelMode::Socks);
+            assert_eq!(draft.instance, "bastion");
+            assert!(draft.host.is_empty());
+        }
+        other => panic!("expected a create, got {other:?}"),
+    }
+}

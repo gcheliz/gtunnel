@@ -1689,7 +1689,8 @@ pub fn empty_log_note(spec: &TunnelSpec, status: TunnelStatus) -> &'static str {
     let jumps = matches!(
         spec,
         TunnelSpec::Access {
-            target: crate::state::AccessTarget::Jump { .. },
+            target: crate::state::AccessTarget::Jump { .. }
+                | crate::state::AccessTarget::Socks { .. },
             ..
         }
     );
@@ -3191,6 +3192,10 @@ fn render_choose_mode(f: &mut Frame) {
         &[
             ("1", "Access - forward a remote port to localhost over IAP"),
             ("2", "Public - publish a local service at an HTTPS URL"),
+            (
+                "3",
+                "SOCKS - a proxy through an instance; the client picks each host",
+            ),
         ],
     );
 }
@@ -3391,6 +3396,7 @@ fn render_prompt(f: &mut Frame, app: &App, mode: InputMode) {
     let title = match app.draft.mode {
         TunnelMode::Access => "New access tunnel",
         TunnelMode::Public => "New public URL",
+        TunnelMode::Socks => "New SOCKS tunnel",
     };
     let title = match mode {
         InputMode::EditTarget => "Edit",
