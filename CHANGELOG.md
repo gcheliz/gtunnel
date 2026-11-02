@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.3.34](https://github.com/gcheliz/gtunnel/compare/v0.3.33...v0.3.34) - 2026-11-02
+
+### Fixed
+
+- time a SOCKS tunnel's latency through to the instance, and chart small steady samples ([#481](https://github.com/gcheliz/gtunnel/pull/481))
+
 ## [0.3.33](https://github.com/gcheliz/gtunnel/compare/v0.3.32...v0.3.33) - 2026-11-02
 
 ### Fixed
