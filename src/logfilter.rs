@@ -173,7 +173,9 @@ fn classify_ssh(body: &str) -> Line {
         || tail.starts_with("new [direct-tcpip]")
     {
         Phase::Open
-    } else if tail.starts_with("free: direct-tcpip") {
+    } else if tail.starts_with("free: direct-tcpip") || tail.starts_with("free: dynamic-tcpip") {
+        // `dynamic-tcpip` is a SOCKS client that never asked for a
+        // destination, the health probe's greeting among them
         Phase::Close
     } else {
         return Line::Drop;
@@ -579,6 +581,15 @@ impl Correlator {
             }
             Phase::Close => {
                 let held = self.open.remove(&ev.id);
+                // A SOCKS greeting that asked for nowhere before its open was
+                // written reached nothing: the health probe, or a client that
+                // gave up at once. Once the open is on the page it gets its close
+                if held
+                    .as_ref()
+                    .is_some_and(|h| h.dynamic && h.n.is_none() && ev.dest.is_none())
+                {
+                    return;
+                }
                 let source = ev.source.or(held.as_ref().and_then(|h| h.source));
                 if held.as_ref().is_some_and(|h| h.probe) || self.is_probe(source) {
                     return;
@@ -1662,5 +1673,33 @@ Listening on port [2222].
         let mut c = Correlator::new(LogLevel::Info).with_backend(Backend::Ssh);
         let out = run(&mut c, &[SSH_NEW_89, SSH_FREE_89], t0);
         assert!(!bodies(&out)[1].contains(" to "), "{out:?}");
+    }
+
+    // A SOCKS client that greets and never asks for a destination, which is
+    // all the health probe does, closes as `free: dynamic-tcpip`; its open was
+    // left unpaired in the log (#478)
+    const SOCKS_GREETED_FREE: &str = "debug1: channel 1: free: dynamic-tcpip, nchannels 2";
+
+    #[test]
+    fn a_socks_greeting_that_asks_for_nothing_writes_no_line() {
+        let t0 = Instant::now();
+        let mut c = Correlator::new(LogLevel::Info).with_backend(Backend::Ssh);
+        let mut out = run(&mut c, &[SOCKS_NEW], t0);
+        out.extend(c.feed(SOCKS_GREETED_FREE, t0 + Duration::from_millis(20)));
+        out.extend(c.tick(t0 + Duration::from_secs(5)));
+        assert!(out.is_empty(), "{out:?}");
+    }
+
+    #[test]
+    fn a_socks_client_that_lingered_and_asked_for_nothing_is_still_closed() {
+        let t0 = Instant::now();
+        let mut c = Correlator::new(LogLevel::Info).with_backend(Backend::Ssh);
+        let mut out = run(&mut c, &[SOCKS_NEW], t0);
+        out.extend(c.tick(t0 + Duration::from_secs(3)));
+        out.extend(c.feed(SOCKS_GREETED_FREE, t0 + Duration::from_secs(4)));
+        assert_eq!(
+            bodies(&out),
+            vec!["gtunnel: conn 1 open", "gtunnel: conn 1 closed after 4.0s"]
+        );
     }
 }
