@@ -275,6 +275,16 @@ pub fn diagnose_log_line(line: &str, credential_file: bool) -> Option<String> {
              repeats, check the account's credentials (run: gtunnel doctor).",
         ),
         (
+            "[4010:",
+            "The target closed this connection, not the tunnel. On an SSH port this is usually \
+             sshd dropping a client that stopped answering its keepalives (a frozen or crashed \
+             client): check the client, and the instance's auth.log.",
+        ),
+        (
+            "[4047:",
+            "The instance does not exist or is stopped. Start it, or check its name and zone.",
+        ),
+        (
             "Unable to reconnect within",
             "gcloud gave up reconnecting to IAP after 15 minutes; clients on this tunnel were \
              cut. See Limits in docs/architecture.md.",
@@ -828,6 +838,24 @@ mod tests {
     }
 
     // Review Focus 1 and 3: the log is the only place these failures surface
+    // The two close codes the IAP FAQ lists that had no hint (#458)
+    #[test]
+    fn a_4010_points_at_the_client_and_a_4047_at_the_instance() {
+        let hint = diagnose_log_line(
+            "INFO: [7] Received WebSocket Close message [4010: 'destination read failed'].",
+            false,
+        )
+        .expect("a 4010 hint");
+        assert!(hint.contains("keepalive"), "{hint}");
+        assert!(hint.contains("auth.log"), "{hint}");
+        let hint = diagnose_log_line(
+            "Error while connecting [4047: 'instance not found'].",
+            false,
+        )
+        .expect("a 4047 hint");
+        assert!(hint.contains("stopped"), "{hint}");
+    }
+
     #[test]
     fn diagnose_log_line_explains_the_failures_users_hit() {
         let cases = [
