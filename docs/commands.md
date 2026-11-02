@@ -464,8 +464,8 @@ is open. The source port is the client's local port, so it names the process:
 `lsof -nP -iTCP:54321` finds it while it is open, and the timestamp beside it afterwards.
 
 ```text
-2026-10-27T10:15:02Z gtunnel: conn iap-7 open
-2026-10-27T10:15:14Z gtunnel: conn iap-7 from 127.0.0.1:54321 closed after 12.0s
+2026-10-27T10:15:02Z gtunnel: conn 7 open
+2026-10-27T10:15:14Z gtunnel: conn 7 from 127.0.0.1:54321 closed after 12.0s
 ```
 
 | Rule | Why |
@@ -476,7 +476,8 @@ is open. The source port is the client's local port, so it names the process:
 | A jump tunnel counts only ssh channels, an instance tunnel only IAP connections | a jump tunnel's ssh rides on gcloud's own IAP connection to the bastion, which is the tunnel and never closes |
 | `quiet` writes none | and ssh and gcloud print none at that level either |
 | Only the supervisor writes them | the TUI never appends to a tunnel's log, so two open TUIs, or none, give the same log |
-| They come from the tools' own lines | the supervisor reads gcloud's `[N] Connecting with URL` and `[N] Client closed connection from [...]`, and ssh's `channel N: new` and `channel N: free: ... connect from H port P`, and pairs them by id |
+| They come from the tools' own lines | the supervisor reads gcloud's `[N] Connecting with URL` and `[N] Client closed connection from [...]`, and ssh's `channel N: new` (`new [direct-tcpip]` on OpenSSH 8.9) and `channel N: free: ... connect from H port P`, and pairs them by id |
+| The number is gtunnel's: 1, 2, 3 in the order clients are written, the same on both backends | the tools' ids are no use to a reader: gcloud's count the probes the log hides, so they jump, and ssh reuses its channel numbers. Either way the client is one TCP connection to the local port: an instance tunnel gives each its own IAP connection, a jump tunnel carries each as an ssh channel inside its one IAP connection to the bastion. At `debug` the tool's id follows the number, `conn 7 (iap-95)` or `conn 7 (ssh-2)`, to find its raw lines |
 | A tunnel gtunnel does not manage gets none | it has no log here |
 
 Starting a public tunnel re-creates a missing backend, host rule, named port or DNS record, so

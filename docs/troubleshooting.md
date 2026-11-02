@@ -254,9 +254,9 @@ Shapes, not a transcript:
 |---|---|---|
 | Access, listener up | `Listening on port [15432].` | gcloud |
 | Jump (`--via`), forward up | `Local forwarding listening on 127.0.0.1 port 8443.` | ssh |
-| Access, a client connects | `gtunnel: conn iap-4 open` (or `conn ssh-3 open from 127.0.0.1:54321` when the tool names the client at once) | gtunnel, from the tool's own line |
-| Access, a client leaves | `gtunnel: conn iap-4 from 127.0.0.1:54321 closed after 12.4s` | gtunnel, from the tool's own line |
-| Access, a client aborts | `gtunnel: conn iap-4 from 127.0.0.1:54321 reset by the client after 360.2s, the tunnel is still up` | gtunnel, from gcloud's `Connection reset by peer` |
+| Access, a client connects | `gtunnel: conn 4 open` (or `conn 4 open from 127.0.0.1:54321` when the tool names the client at once) | gtunnel, from the tool's own line |
+| Access, a client leaves | `gtunnel: conn 4 from 127.0.0.1:54321 closed after 12.4s` | gtunnel, from the tool's own line |
+| Access, a client aborts | `gtunnel: conn 4 from 127.0.0.1:54321 reset by the client after 360.2s, the tunnel is still up` | gtunnel, from gcloud's `Connection reset by peer` |
 | Access, a burst | `gtunnel: conn ... 240 more in the last minute` | gtunnel |
 | Expose, forward up | `debug1: Remote connections from 0.0.0.0:30001 forwarded to local address 127.0.0.1:3000` | ssh |
 | Expose, a visitor arrives | `debug1: client_request_forwarded_tcpip: listen 0.0.0.0 port 30001, originator ...` | ssh |

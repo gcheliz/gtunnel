@@ -157,7 +157,8 @@ fn classify_ssh(body: &str) -> Line {
     let source = tail
         .split_once("connect from ")
         .and_then(|(_, r)| parse_host_port(r));
-    let phase = if tail.starts_with("new direct-tcpip") {
+    // `new direct-tcpip [...]` from OpenSSH 9, `new [direct-tcpip]` from 8.9
+    let phase = if tail.starts_with("new direct-tcpip") || tail.starts_with("new [direct-tcpip]") {
         Phase::Open
     } else if tail.starts_with("free: direct-tcpip") {
         Phase::Close
@@ -304,7 +305,9 @@ impl RateCap {
 struct OpenConn {
     at: Instant,
     source: Option<SocketAddr>,
-    said: bool,
+    /// gtunnel's number for the client, given when its first line is written.
+    /// None while the open is held back, so a probe never takes a number.
+    n: Option<u64>,
     probe: bool,
     reset: bool,
 }
@@ -326,6 +329,9 @@ pub struct Correlator {
     /// network caused from one that merely printed a network line earlier
     last_classified: Option<(Instant, crate::failure::Failure)>,
     auth_exit_window: Duration,
+    /// Clients numbered so far. The tools' own ids are no use to a reader:
+    /// gcloud's count the probes the log hides, and ssh reuses its channels.
+    clients: u64,
 }
 
 pub type SharedCorrelator = Arc<Mutex<Correlator>>;
@@ -346,6 +352,7 @@ impl Correlator {
             last_busy: None,
             last_classified: None,
             auth_exit_window: crate::settings::LOGS_AUTH_EXIT_WINDOW,
+            clients: 0,
         }
     }
 
@@ -494,7 +501,7 @@ impl Correlator {
                     OpenConn {
                         at: now,
                         source: ev.source,
-                        said: false,
+                        n: None,
                         probe,
                         reset: false,
                     },
@@ -512,11 +519,16 @@ impl Correlator {
                     return;
                 }
                 let from = source.map(|s| format!(" from {s}")).unwrap_or_default();
-                if let Some(h) = &held
-                    && !h.said
-                {
-                    self.say(out, open_text(&ev.id, h.source), now);
-                }
+                let n = match held.as_ref().map(|h| (h.n, h.source)) {
+                    Some((Some(n), _)) => n,
+                    Some((None, opened_from)) => {
+                        let n = self.number();
+                        let text = open_text(&self.label(n, &ev.id), opened_from);
+                        self.say(out, text, now);
+                        n
+                    }
+                    None => self.number(),
+                };
                 // A reset is said outright: gcloud prints it as an ERROR with a
                 // traceback, which read as the tunnel failing
                 let (how, still_up) = if held.as_ref().is_some_and(|h| h.reset) {
@@ -534,7 +546,10 @@ impl Correlator {
                     .unwrap_or_default();
                 self.say(
                     out,
-                    format!("gtunnel: conn {}{from} {how}{after}{still_up}", ev.id),
+                    format!(
+                        "gtunnel: conn {}{from} {how}{after}{still_up}",
+                        self.label(n, &ev.id)
+                    ),
                     now,
                 );
             }
@@ -545,18 +560,23 @@ impl Correlator {
     /// that ended owes its summary.
     pub fn tick(&mut self, now: Instant) -> Vec<String> {
         let mut out = Vec::new();
-        let mut due: Vec<(String, Option<SocketAddr>)> = self
+        let mut due: Vec<(Instant, String, Option<SocketAddr>)> = self
             .open
-            .iter_mut()
-            .filter(|(_, h)| !h.said && !h.probe && now.saturating_duration_since(h.at) >= HOLD)
-            .map(|(id, h)| {
-                h.said = true;
-                (id.clone(), h.source)
+            .iter()
+            .filter(|(_, h)| {
+                h.n.is_none() && !h.probe && now.saturating_duration_since(h.at) >= HOLD
             })
+            .map(|(id, h)| (h.at, id.clone(), h.source))
             .collect();
+        // Numbered in the order they opened
         due.sort();
-        for (id, source) in due {
-            self.say(&mut out, open_text(&id, source), now);
+        for (_, id, source) in due {
+            let n = self.number();
+            if let Some(h) = self.open.get_mut(&id) {
+                h.n = Some(n);
+            }
+            let text = open_text(&self.label(n, &id), source);
+            self.say(&mut out, text, now);
         }
         if let Some(n) = self.cap.roll(now) {
             out.push(format_line(&format!(
@@ -566,16 +586,31 @@ impl Correlator {
         out
     }
 
+    fn number(&mut self) -> u64 {
+        self.clients += 1;
+        self.clients
+    }
+
+    /// How a line names a client: gtunnel's number, and at debug the tool's own
+    /// id beside it, to find gcloud's or ssh's raw lines for it.
+    fn label(&self, n: u64, id: &str) -> String {
+        if self.level == LogLevel::Debug {
+            format!("{n} ({id})")
+        } else {
+            n.to_string()
+        }
+    }
+
     /// The child is gone: say what is still open, and settle the cap.
     pub fn finish(&mut self) -> Vec<String> {
         self.tick(Instant::now() + HOLD + self.cap.window)
     }
 }
 
-fn open_text(id: &str, source: Option<SocketAddr>) -> String {
+fn open_text(label: &str, source: Option<SocketAddr>) -> String {
     match source {
-        Some(s) => format!("gtunnel: conn {id} open from {s}"),
-        None => format!("gtunnel: conn {id} open"),
+        Some(s) => format!("gtunnel: conn {label} open from {s}"),
+        None => format!("gtunnel: conn {label} open"),
     }
 }
 
@@ -881,8 +916,8 @@ mod tests {
         assert_eq!(
             bodies(&out),
             vec![
-                "gtunnel: conn ssh-2 open",
-                "gtunnel: conn ssh-2 from 127.0.0.1:59453 closed after 1.5s",
+                "gtunnel: conn 1 open",
+                "gtunnel: conn 1 from 127.0.0.1:59453 closed after 1.5s",
             ]
         );
     }
@@ -896,7 +931,7 @@ mod tests {
         let out = c.tick(t0 + Duration::from_secs(3));
         assert_eq!(
             bodies(&out),
-            vec!["gtunnel: conn ssh-4 open from 127.0.0.1:60001"]
+            vec!["gtunnel: conn 1 open from 127.0.0.1:60001"]
         );
     }
 
@@ -910,8 +945,8 @@ mod tests {
         assert_eq!(
             bodies(&out),
             vec![
-                "gtunnel: conn ssh-2 open",
-                "gtunnel: conn ssh-2 from 127.0.0.1:59453 closed after 1.0s"
+                "gtunnel: conn 1 open",
+                "gtunnel: conn 1 from 127.0.0.1:59453 closed after 1.0s"
             ]
         );
         // The other way round: an IAP tunnel has no ssh channels of its own
@@ -926,7 +961,7 @@ mod tests {
         let out = run(&mut c, &[SSH_FREE], Instant::now());
         assert_eq!(
             bodies(&out),
-            vec!["gtunnel: conn ssh-2 from 127.0.0.1:59453 closed"]
+            vec!["gtunnel: conn 1 from 127.0.0.1:59453 closed"]
         );
     }
 
@@ -937,7 +972,7 @@ mod tests {
         run(&mut c, &[IAP_OPEN], t0);
         assert!(c.tick(t0 + Duration::from_millis(500)).is_empty());
         let out = c.tick(t0 + Duration::from_secs(3));
-        assert_eq!(bodies(&out), vec!["gtunnel: conn iap-7 open"]);
+        assert_eq!(bodies(&out), vec!["gtunnel: conn 1 open"]);
         // Once said, it is not said again
         assert!(c.tick(t0 + Duration::from_secs(4)).is_empty());
     }
@@ -965,8 +1000,8 @@ mod tests {
         assert_eq!(
             &b[2..],
             [
-                "gtunnel: conn iap-7 open",
-                "gtunnel: conn iap-7 from 127.0.0.1:54321 closed after 12.0s"
+                "gtunnel: conn 1 open",
+                "gtunnel: conn 1 from 127.0.0.1:54321 closed after 12.0s"
             ]
         );
     }
@@ -1094,10 +1129,10 @@ mod tests {
 
     #[test]
     fn the_connection_line_formats_are_measured_in_cells() {
-        let line = format_line("gtunnel: conn ssh-2 open");
+        let line = format_line("gtunnel: conn 1 open");
         assert_eq!(
             line.chars().count(),
-            "2026-10-27T01:50:00Z ".chars().count() + 25
+            "2026-10-27T01:50:00Z ".chars().count() + "gtunnel: conn 1 open\n".chars().count()
         );
     }
 
@@ -1351,8 +1386,8 @@ ConnectionResetError: [Errno 104] Connection reset by peer"#;
         assert_eq!(
             bodies(&out),
             vec![
-                "gtunnel: conn iap-7 open",
-                "gtunnel: conn iap-7 from 127.0.0.1:54321 reset by the client after 360.2s, \
+                "gtunnel: conn 1 open",
+                "gtunnel: conn 1 from 127.0.0.1:54321 reset by the client after 360.2s, \
                  the tunnel is still up",
             ]
         );
@@ -1395,5 +1430,78 @@ ConnectionResetError: [Errno 104] Connection reset by peer"#;
         run(&mut c, &[IAP_OPEN, IAP_RESET, IAP_CLOSE], t0);
         assert_eq!(c.outage_failure(t0), None);
         assert_eq!(c.stopping_failure(t0), None);
+    }
+
+    // OpenSSH 8.9 (Ubuntu 22.04) prints a forward's open as `new [direct-tcpip]`;
+    // only the newer `new direct-tcpip` was read, so a jump tunnel there logged
+    // its closes with no open and no duration
+    const SSH_NEW_89: &str = "debug1: channel 1: new [direct-tcpip]";
+    const SSH_FREE_89: &str = "debug1: channel 1: free: direct-tcpip: listening port 18999 for 127.0.0.1 port 22, connect from 127.0.0.1 port 37846 to 127.0.0.1 port 18999, nchannels 2";
+
+    #[test]
+    fn openssh_8_9s_open_line_is_read_so_a_jump_close_has_its_duration() {
+        let t0 = Instant::now();
+        let mut c = Correlator::new(LogLevel::Info).with_backend(Backend::Ssh);
+        let mut out = run(&mut c, &[SSH_NEW_89], t0);
+        out.extend(c.feed(SSH_FREE_89, t0 + Duration::from_millis(1500)));
+        assert_eq!(
+            bodies(&out),
+            vec![
+                "gtunnel: conn 1 open",
+                "gtunnel: conn 1 from 127.0.0.1:37846 closed after 1.5s",
+            ]
+        );
+    }
+
+    // gcloud's ids count gtunnel's own probes, which the log hides, so they
+    // jumped (iap-0, then iap-95); ssh reuses its channel numbers, so one log
+    // held `ssh-2` twice. gtunnel numbers the clients it writes about itself,
+    // the same way on both backends
+    #[test]
+    fn clients_are_numbered_in_the_order_they_are_written_on_both_backends() {
+        let t0 = Instant::now();
+        let mut c = Correlator::new(LogLevel::Info);
+        let iap = |n: u32, port: u16| {
+            (
+                format!(
+                    "INFO: [{n}] Connecting with URL ['wss://tunnel.cloudproxy.app/v4/connect']"
+                ),
+                format!("INFO: [{n}] Client closed connection from [('127.0.0.1', {port})]."),
+            )
+        };
+        let (open0, close0) = iap(0, 40001);
+        let (open95, close95) = iap(95, 40002);
+        let mut out = run(&mut c, &[&open0, &close0], t0);
+        out.extend(run(&mut c, &[&open95, &close95], t0));
+        assert_eq!(
+            bodies(&out),
+            vec![
+                "gtunnel: conn 1 open",
+                "gtunnel: conn 1 from 127.0.0.1:40001 closed after 0.0s",
+                "gtunnel: conn 2 open",
+                "gtunnel: conn 2 from 127.0.0.1:40002 closed after 0.0s",
+            ]
+        );
+
+        let mut c = Correlator::new(LogLevel::Info).with_backend(Backend::Ssh);
+        let out = run(&mut c, &[SSH_NEW, SSH_FREE, SSH_NEW, SSH_FREE], t0);
+        let b = bodies(&out);
+        assert!(b[1].starts_with("gtunnel: conn 1 from"), "{b:?}");
+        assert!(b[3].starts_with("gtunnel: conn 2 from"), "{b:?}");
+    }
+
+    #[test]
+    fn debug_names_the_tools_own_id_beside_the_number() {
+        let t0 = Instant::now();
+        let mut c = Correlator::new(LogLevel::Debug);
+        let mut out = run(&mut c, &[IAP_OPEN], t0);
+        out.extend(c.feed(IAP_CLOSE, t0 + Duration::from_secs(12)));
+        assert_eq!(
+            bodies(&out),
+            vec![
+                "gtunnel: conn 1 (iap-7) open",
+                "gtunnel: conn 1 (iap-7) from 127.0.0.1:54321 closed after 12.0s",
+            ]
+        );
     }
 }

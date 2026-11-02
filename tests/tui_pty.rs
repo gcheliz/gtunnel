@@ -339,8 +339,15 @@ fn at_80x24() -> Screen {
     let mut s = Screen::demo();
     s.wait_for("TUNNELS (7)");
     s.resize(24, 80);
+    // Only an 80-column screen closes a pane in column 79: at 100 columns
+    // "LOGS: DB" is already within the first 80, so waiting for it let a key
+    // reach the app before it had laid out, and scrolled, the new size
     s.wait_until("a redraw at 80 columns", |screen| {
-        screen.rows(0, 80).any(|r| r.contains("LOGS: DB"))
+        (0..24).any(|y| {
+            screen
+                .cell(y, 79)
+                .is_some_and(|c| c.contents() == "\u{256e}")
+        }) && screen.rows(0, 80).any(|r| r.contains("LOGS: DB"))
     });
     // a Logs pane scrolled by nothing says nothing about newer lines
     s.press("\x1b[5~");

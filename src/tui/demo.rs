@@ -427,7 +427,7 @@ impl App {
                 next.open = Some((id, port));
                 let at = last + Duration::from_secs(6);
                 format!(
-                    "{} gtunnel: conn iap-{id} open from 127.0.0.1:{port}",
+                    "{} gtunnel: conn {id} open from 127.0.0.1:{port}",
                     humantime::format_rfc3339_seconds(at)
                 )
             }
@@ -435,7 +435,7 @@ impl App {
                 let tenths = CONN_TENTHS[id as usize % CONN_TENTHS.len()];
                 let at = last + Duration::from_secs(tenths.div_ceil(10));
                 format!(
-                    "{} gtunnel: conn iap-{id} from 127.0.0.1:{port} closed after {}.{}s",
+                    "{} gtunnel: conn {id} from 127.0.0.1:{port} closed after {}.{}s",
                     humantime::format_rfc3339_seconds(at),
                     tenths / 10,
                     tenths % 10
@@ -539,11 +539,11 @@ fn demo_log(entry: &TunnelEntry) -> (Vec<String>, Flow) {
     // One finished connection, then as many still open as the metrics count,
     // so the pane and the Metrics line tell the same story
     lines.push(format!(
-        "2026-10-27T09:31:40Z gtunnel: conn iap-1 open from 127.0.0.1:{}",
+        "2026-10-27T09:31:40Z gtunnel: conn 1 open from 127.0.0.1:{}",
         source_port(1)
     ));
     lines.push(format!(
-        "2026-10-27T09:31:52Z gtunnel: conn iap-1 from 127.0.0.1:{} closed after 12.4s",
+        "2026-10-27T09:31:52Z gtunnel: conn 1 from 127.0.0.1:{} closed after 12.4s",
         source_port(1)
     ));
     let held = entry
@@ -553,7 +553,7 @@ fn demo_log(entry: &TunnelEntry) -> (Vec<String>, Flow) {
         .min(2) as u32;
     for id in 2..2 + held {
         lines.push(format!(
-            "2026-10-27T09:33:07Z gtunnel: conn iap-{id} open from 127.0.0.1:{}",
+            "2026-10-27T09:33:07Z gtunnel: conn {id} open from 127.0.0.1:{}",
             source_port(id)
         ));
     }
