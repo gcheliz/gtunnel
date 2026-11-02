@@ -301,33 +301,34 @@ pub const IDLE_PROBE_EVERY: Duration = Duration::from_secs(30);
 /// and one that is idle is probed every round only while it is the selected
 /// row, and otherwise once per [`IDLE_PROBE_EVERY`]. The first verdict is
 /// always owed. A SOCKS tunnel's probe opens no IAP connection but is a session
-/// on the instance's sshd, so it follows the same rule; a jump tunnel's opens
-/// neither, so it keeps every round.
+/// on the instance's sshd, so it is probed every round as the selected row and
+/// once per idle interval otherwise, connected clients or not; a jump tunnel's
+/// opens neither, so it keeps every round.
 pub fn probe_due(entry: &TunnelEntry, selected: bool, now: std::time::Instant) -> bool {
-    // A SOCKS tunnel's probe reaches the instance's sshd too (`probe_socks`)
-    let direct = matches!(
-        entry.tunnel.spec,
-        TunnelSpec::Access {
-            target: crate::state::AccessTarget::Instance { .. }
-                | crate::state::AccessTarget::DestGroup { .. }
-                | crate::state::AccessTarget::Socks { .. },
-            ..
-        }
-    );
+    let target = match &entry.tunnel.spec {
+        TunnelSpec::Access { target, .. } => target,
+        TunnelSpec::Expose { .. } => return true,
+    };
     let Some(checked) = entry.health_at else {
         return true;
     };
-    if !direct {
-        return true;
+    use crate::state::AccessTarget;
+    let due_idle = selected || now.saturating_duration_since(checked) >= IDLE_PROBE_EVERY;
+    match target {
+        // Each probe is a new IAP connection: none while clients are proving it
+        AccessTarget::Instance { .. } | AccessTarget::DestGroup { .. } => {
+            let busy = entry
+                .metrics
+                .as_ref()
+                .is_some_and(|m| m.active_connections > 0);
+            !busy && due_idle
+        }
+        // A CONNECT over the tunnel's own session, no IAP connection, but a
+        // pre-auth line on the instance's sshd. Busy does not stop it: a client
+        // like Compass stays connected for hours, and its chart froze (#482)
+        AccessTarget::Socks { .. } => due_idle,
+        AccessTarget::Jump { .. } => true,
     }
-    if entry
-        .metrics
-        .as_ref()
-        .is_some_and(|m| m.active_connections > 0)
-    {
-        return false;
-    }
-    selected || now.saturating_duration_since(checked) >= IDLE_PROBE_EVERY
 }
 
 // Latency, peak and the chart belong to the port, not to whoever opened it: a

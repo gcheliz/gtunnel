@@ -3503,8 +3503,21 @@ fn a_direct_tunnel_is_probed_only_when_it_has_something_to_learn() {
         local_port: 1080,
     };
     socks.health_at = checked(5);
-    assert!(!ops::probe_due(&socks, true, now), "busy: no probe");
+    // Its probe opens no IAP connection, and a client like Compass stays
+    // connected for hours, so being busy does not stop it: the selected row
+    // is measured every round, the others every idle interval (#482)
+    assert!(ops::probe_due(&socks, true, now), "busy and selected");
+    assert!(
+        !ops::probe_due(&socks, false, now),
+        "busy, not selected, checked 5 s ago"
+    );
+    socks.health_at = checked(ops::IDLE_PROBE_EVERY.as_secs());
+    assert!(
+        ops::probe_due(&socks, false, now),
+        "busy, not selected, checked 30 s ago"
+    );
     socks.metrics = None;
+    socks.health_at = checked(5);
     assert!(ops::probe_due(&socks, true, now), "idle and selected");
     assert!(
         !ops::probe_due(&socks, false, now),
