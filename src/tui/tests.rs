@@ -3424,3 +3424,116 @@ fn a_socks_tunnel_is_added_in_three_steps() {
         other => panic!("expected a create, got {other:?}"),
     }
 }
+
+// Every probe of a direct tunnel is an IAP connection to the instance and a
+// session its target sees: about 720 an hour per tunnel at 5 s. A tunnel with
+// live clients is proving itself, and an idle one nobody is looking at can
+// wait for the watchdog's interval (#459)
+fn direct_db() -> TunnelEntry {
+    TunnelEntry::new(
+        access("db", 15432),
+        TunnelStatus::Running,
+        TunnelKind::Managed,
+    )
+}
+
+fn with_clients(mut entry: TunnelEntry, n: u64) -> TunnelEntry {
+    entry.metrics = Some(crate::probe::TunnelMetrics {
+        active_connections: n,
+        ..Default::default()
+    });
+    entry
+}
+
+#[test]
+fn a_direct_tunnel_is_probed_only_when_it_has_something_to_learn() {
+    let now = Instant::now();
+    let checked = |secs: u64| Some(now - Duration::from_secs(secs));
+
+    // Never checked: the first verdict is owed, clients or not
+    assert!(ops::probe_due(&with_clients(direct_db(), 3), false, now));
+
+    // Live clients: no probe, selected or not
+    let mut busy = with_clients(direct_db(), 3);
+    busy.health_at = checked(5);
+    assert!(!ops::probe_due(&busy, true, now));
+    assert!(!ops::probe_due(&busy, false, now));
+
+    // Idle and selected: every round
+    let mut idle = with_clients(direct_db(), 0);
+    idle.health_at = checked(5);
+    assert!(ops::probe_due(&idle, true, now));
+    // Idle and not selected: once per idle interval
+    assert!(!ops::probe_due(&idle, false, now));
+    idle.health_at = checked(ops::IDLE_PROBE_EVERY.as_secs());
+    assert!(ops::probe_due(&idle, false, now));
+
+    // A jump or SOCKS tunnel's probe opens no IAP connection: every round
+    let mut jump = with_clients(direct_db(), 3);
+    jump.tunnel.spec = crate::state::TunnelSpec::Access {
+        target: crate::state::AccessTarget::Socks {
+            instance: "bastion".to_string(),
+            zone: "europe-west1-b".to_string(),
+        },
+        remote_port: 22,
+        local_port: 1080,
+    };
+    jump.health_at = checked(5);
+    assert!(ops::probe_due(&jump, false, now));
+}
+
+#[test]
+fn a_busy_direct_tunnel_is_measured_without_a_probe_and_owes_none() {
+    let mut app = app_with_two();
+    app.entries[0] = with_clients(direct_db(), 2);
+    app.entries[0].health = HealthStatus::Healthy;
+    app.entries[0].health_at = Some(Instant::now());
+    let mut timers = Timers::due();
+    let polls = plan_probes(&mut app, &mut timers);
+    let round = polls.metrics.expect("a round");
+    let db = round
+        .targets
+        .iter()
+        .find(|t| t.tunnel.name == "db")
+        .expect("still measured: its clients and uptime");
+    assert!(!db.probe, "no probe while clients are connected");
+    assert!(
+        !polls.health.iter().any(|(n, _)| n == "db"),
+        "and the health round does not probe it instead"
+    );
+
+    // The round comes back without a verdict: nothing is owed, and the last
+    // latency and verdict stand
+    app.entries[0].metrics.as_mut().unwrap().latency = Some(Duration::from_millis(250));
+    let generation = round.generation;
+    apply_polled(
+        &mut app,
+        &mut timers,
+        Msg::Metrics(
+            "dev".to_string(),
+            generation,
+            vec![(
+                "db".to_string(),
+                crate::probe::TunnelMetrics {
+                    active_connections: 2,
+                    available: true,
+                    ..Default::default()
+                },
+            )],
+        ),
+    );
+    let db = &app.entries[0];
+    assert!(
+        !db.needs_health_probe,
+        "a skipped probe is not a failed one"
+    );
+    assert_eq!(db.health, HealthStatus::Healthy);
+    assert_eq!(
+        db.metrics.as_ref().and_then(|m| m.latency),
+        Some(Duration::from_millis(250))
+    );
+    assert!(
+        db.history.is_empty(),
+        "the chart gets no sample nobody measured"
+    );
+}
