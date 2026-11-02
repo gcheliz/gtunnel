@@ -1789,6 +1789,15 @@ fn identical_samples_draw_no_full_height_column() {
     assert!(drawn.iter().all(|d| *d < top));
 }
 
+// A SOCKS tunnel's steady 0.3 ms drew nothing: the 10 ms floor of the span
+// left every bar at 1.5% of the height (#480)
+#[test]
+fn a_steady_sub_millisecond_round_trip_still_draws_a_line() {
+    let (drawn, top) = ui::chart_scale(&[300; 30]);
+    assert!(drawn.iter().all(|d| d * 16 >= top), "{drawn:?} of {top}");
+    assert!(drawn.iter().all(|d| *d < top));
+}
+
 #[test]
 fn a_two_millisecond_tunnel_still_draws_a_chart() {
     let samples = [1_500u64, 2_000, 2_500, 9_000, 2_000];
@@ -3468,9 +3477,24 @@ fn a_direct_tunnel_is_probed_only_when_it_has_something_to_learn() {
     idle.health_at = checked(ops::IDLE_PROBE_EVERY.as_secs());
     assert!(ops::probe_due(&idle, false, now));
 
-    // A jump or SOCKS tunnel's probe opens no IAP connection: every round
+    // A jump tunnel's probe opens no IAP connection: every round
     let mut jump = with_clients(direct_db(), 3);
     jump.tunnel.spec = crate::state::TunnelSpec::Access {
+        target: crate::state::AccessTarget::Jump {
+            instance: "bastion".to_string(),
+            zone: "europe-west1-b".to_string(),
+            host: "10.0.0.10".to_string(),
+        },
+        remote_port: 443,
+        local_port: 8443,
+    };
+    jump.health_at = checked(5);
+    assert!(ops::probe_due(&jump, false, now));
+
+    // A SOCKS tunnel's probe reaches the instance's sshd, so it follows the
+    // direct tunnels' cadence (#480)
+    let mut socks = with_clients(direct_db(), 3);
+    socks.tunnel.spec = crate::state::TunnelSpec::Access {
         target: crate::state::AccessTarget::Socks {
             instance: "bastion".to_string(),
             zone: "europe-west1-b".to_string(),
@@ -3478,8 +3502,14 @@ fn a_direct_tunnel_is_probed_only_when_it_has_something_to_learn() {
         remote_port: 22,
         local_port: 1080,
     };
-    jump.health_at = checked(5);
-    assert!(ops::probe_due(&jump, false, now));
+    socks.health_at = checked(5);
+    assert!(!ops::probe_due(&socks, true, now), "busy: no probe");
+    socks.metrics = None;
+    assert!(ops::probe_due(&socks, true, now), "idle and selected");
+    assert!(
+        !ops::probe_due(&socks, false, now),
+        "idle, not selected, checked 5 s ago"
+    );
 }
 
 #[test]

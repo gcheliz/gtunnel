@@ -1989,11 +1989,23 @@ pub fn chart_scale(samples: &[u64]) -> (Vec<u64>, u64) {
     let median = sorted[sorted.len() / 2];
     let floor = median / 2;
     let ceiling = (median * 2).max(floor + CHART_MIN_SPAN_US);
+    let span = ceiling - floor;
+    // A measured sample is never drawn as nothing: under the 10 ms floor of the
+    // span a steady 0.3 ms drew at 1.5% of the height, which a chart of a few
+    // rows rounds away, and the pane read as having no samples
+    let least = span.div_ceil(16);
     let drawn = samples
         .iter()
-        .map(|s| s.saturating_sub(floor).min(ceiling - floor))
+        .map(|s| {
+            let d = s.saturating_sub(floor).min(span);
+            if *s > 0 {
+                d.max(least)
+            } else {
+                d
+            }
+        })
         .collect();
-    (drawn, ceiling - floor)
+    (drawn, span)
 }
 
 /// How many rows these lines occupy once wrapped to `width`. An empty line
