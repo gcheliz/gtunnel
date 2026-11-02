@@ -3,6 +3,17 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.3.30](https://github.com/gcheliz/gtunnel/compare/v0.3.29...v0.3.30) - 2026-11-02
+
+### Added
+
+- *(tui)* say why the Metrics chart is empty, where the chart would be ([#474](https://github.com/gcheliz/gtunnel/pull/474))
+
+### Fixed
+
+- *(logs)* read IAP's 4010 as the target hanging up, and drop the teardown after it ([#475](https://github.com/gcheliz/gtunnel/pull/475))
+- *(logs)* one numbering for client connections, and jump opens on OpenSSH 8.9 ([#473](https://github.com/gcheliz/gtunnel/pull/473))
+
 ## [0.3.29](https://github.com/gcheliz/gtunnel/compare/v0.3.28...v0.3.29) - 2026-11-02
 
 ### Added
