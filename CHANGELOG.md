@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.3.32](https://github.com/gcheliz/gtunnel/compare/v0.3.31...v0.3.32) - 2026-11-02
+
+### Added
+
+- *(tui)* probe a direct tunnel only when it has something to learn ([#477](https://github.com/gcheliz/gtunnel/pull/477))
+
 ## [0.3.31](https://github.com/gcheliz/gtunnel/compare/v0.3.30...v0.3.31) - 2026-11-02
 
 ### Added
