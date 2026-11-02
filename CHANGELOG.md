@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.3.35](https://github.com/gcheliz/gtunnel/compare/v0.3.34...v0.3.35) - 2026-11-02
+
+### Fixed
+
+- *(tui)* keep probing a SOCKS tunnel while its clients are connected ([#483](https://github.com/gcheliz/gtunnel/pull/483))
+
 ## [0.3.34](https://github.com/gcheliz/gtunnel/compare/v0.3.33...v0.3.34) - 2026-11-02
 
 ### Fixed
