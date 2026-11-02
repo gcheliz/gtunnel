@@ -676,7 +676,7 @@ fn apply_polled(app: &mut App, timers: &mut Timers, msg: Msg) {
                         .any(|(n, m)| n == entry.name() && m.health.is_some());
                 entry.needs_health_probe = owed;
             }
-            for (name, m) in metrics {
+            for (name, mut m) in metrics {
                 if let Some(entry) = app.entries.iter_mut().find(|e| e.name() == name) {
                     // Microseconds: a fast hop is a real measurement, and
                     // whole milliseconds would record it as nothing
@@ -696,6 +696,12 @@ fn apply_polled(app: &mut App, timers: &mut Timers, msg: Msg) {
                     {
                         entry.health = settled_health(entry.crash_looping, health);
                         entry.health_at = Some(began);
+                    }
+                    // A round that did not probe has no latency of its own: the
+                    // last measured one stays on screen, as the last verdict
+                    // does, and the chart gets no sample it did not measure
+                    if m.health.is_none() && m.latency.is_none() {
+                        m.latency = entry.metrics.as_ref().and_then(|p| p.latency);
                     }
                     entry.metrics = Some(m);
                 }
@@ -938,9 +944,11 @@ struct Probes {
 fn plan_probes(app: &mut App, timers: &mut Timers) -> Probes {
     let metrics = metrics_round(app, timers);
     if let Some(round) = &metrics {
+        // Only a target this round probes can come back owing a verdict
         timers.metrics_targets = round
             .targets
             .iter()
+            .filter(|t| t.probe)
             .map(|t| t.tunnel.name.clone())
             .collect();
         // The two clocks share a tick, so the tunnels the metrics round covers
@@ -1004,7 +1012,8 @@ fn metrics_round(app: &mut App, timers: &mut Timers) -> Option<MetricsRound> {
     // once it lands would then come round a period later than the health one,
     // for good: the two would never share a tick and every tunnel would be
     // probed twice per period.
-    let targets = ops::metric_targets(&app.entries);
+    let selected = app.selected_entry().map(|e| e.name().to_string());
+    let targets = ops::metric_targets(&app.entries, selected.as_deref(), Instant::now());
     if targets.is_empty() {
         return None;
     }
@@ -1043,10 +1052,16 @@ fn health_round(
         return Vec::new();
     }
     let running = |e: &&mut TunnelEntry| e.status == crate::state::TunnelStatus::Running;
-    // Every running tunnel is probed at once; one slow host must not delay the
-    // rest
+    // Every running tunnel whose probe is due is probed at once; one slow host
+    // must not delay the rest. The same rule as the metrics round, or a probe
+    // that round skipped would come back through this one
+    let selected = app.selected_entry().map(|e| e.name().to_string());
+    let now = Instant::now();
     let mut targets = Vec::new();
     for entry in app.entries.iter_mut().filter(running) {
+        if !ops::probe_due(entry, selected.as_deref() == Some(entry.name()), now) {
+            continue;
+        }
         if entry.health == HealthStatus::Unknown {
             entry.health = HealthStatus::Checking;
         }

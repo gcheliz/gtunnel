@@ -284,12 +284,57 @@ async fn probe_health_at(tunnel: &PersistentTunnel, trail: &Trail) -> HealthStat
 pub struct MetricTarget {
     pub tunnel: PersistentTunnel,
     pub pid: Option<u32>,
+    /// Whether this round probes the port, or only reads what is free to read
+    pub probe: bool,
+}
+
+/// How often an idle direct tunnel that is not the selected row is probed:
+/// the watchdog's interval, so the TUI adds no more than it does.
+pub const IDLE_PROBE_EVERY: Duration = Duration::from_secs(30);
+
+/// Whether a running tunnel's probe is worth what it costs this round.
+///
+/// A direct tunnel's probe is a new IAP connection to the instance, and a
+/// session its target sees: at every round that is about 720 an hour per
+/// tunnel, and on a bastion's port 22 a pre-auth sshd line each. So a direct
+/// tunnel with clients connected is not probed, its clients are proving it;
+/// and one that is idle is probed every round only while it is the selected
+/// row, and otherwise once per [`IDLE_PROBE_EVERY`]. The first verdict is
+/// always owed. A jump or SOCKS tunnel's probe opens no IAP connection, so it
+/// keeps every round.
+pub fn probe_due(entry: &TunnelEntry, selected: bool, now: std::time::Instant) -> bool {
+    let direct = matches!(
+        entry.tunnel.spec,
+        TunnelSpec::Access {
+            target: crate::state::AccessTarget::Instance { .. }
+                | crate::state::AccessTarget::DestGroup { .. },
+            ..
+        }
+    );
+    let Some(checked) = entry.health_at else {
+        return true;
+    };
+    if !direct {
+        return true;
+    }
+    if entry
+        .metrics
+        .as_ref()
+        .is_some_and(|m| m.active_connections > 0)
+    {
+        return false;
+    }
+    selected || now.saturating_duration_since(checked) >= IDLE_PROBE_EVERY
 }
 
 // Latency, peak and the chart belong to the port, not to whoever opened it: a
 // running tunnel is measured whether or not gtunnel manages it, and a row whose
 // port is unknown has nothing to measure.
-pub fn metric_targets(entries: &[TunnelEntry]) -> Vec<MetricTarget> {
+pub fn metric_targets(
+    entries: &[TunnelEntry],
+    selected: Option<&str>,
+    now: std::time::Instant,
+) -> Vec<MetricTarget> {
     entries
         .iter()
         .filter(|e| e.status == TunnelStatus::Running)
@@ -297,6 +342,7 @@ pub fn metric_targets(entries: &[TunnelEntry]) -> Vec<MetricTarget> {
         .map(|e| MetricTarget {
             tunnel: e.tunnel.clone(),
             pid: e.external.as_ref().map(|x| x.pid),
+            probe: probe_due(e, selected == Some(e.name()), now),
         })
         .collect()
 }
@@ -310,8 +356,8 @@ pub async fn collect(
 ) -> Option<crate::probe::TunnelMetrics> {
     let config = load_config().ok()?;
     Some(match target.pid {
-        Some(pid) => collect_unmanaged(&config, &target.tunnel, pid, peaks).await,
-        None => collect_metrics(&config, &target.tunnel, include_lb, peaks).await,
+        Some(pid) => collect_unmanaged(&config, &target.tunnel, pid, peaks, target.probe).await,
+        None => collect_metrics(&config, &target.tunnel, include_lb, peaks, target.probe).await,
     })
 }
 
@@ -939,7 +985,11 @@ mod tests {
             TunnelKind::Managed,
         );
 
-        let targets = metric_targets(&[known, unknown, stopped, running]);
+        let targets = metric_targets(
+            &[known, unknown, stopped, running],
+            None,
+            std::time::Instant::now(),
+        );
         let names: Vec<&str> = targets.iter().map(|t| t.tunnel.name.as_str()).collect();
         assert_eq!(names, vec!["pid-1", "api"], "{names:?}");
         assert_eq!(targets[0].pid, Some(1), "an unmanaged row carries its pid");
@@ -1136,6 +1186,7 @@ mod tests {
                 std::process::id(),
                 None,
                 &probe,
+                true,
             )
             .await
             .health;
