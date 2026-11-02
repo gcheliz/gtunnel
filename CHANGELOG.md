@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.3.29](https://github.com/gcheliz/gtunnel/compare/v0.3.28...v0.3.29) - 2026-11-02
+
+### Added
+
+- *(tui)* fit the stacked panes to what they hold ([#472](https://github.com/gcheliz/gtunnel/pull/472))
+
 ## [0.3.28](https://github.com/gcheliz/gtunnel/compare/v0.3.27...v0.3.28) - 2026-11-02
 
 ### Fixed
