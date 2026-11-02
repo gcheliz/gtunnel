@@ -234,6 +234,40 @@ pub async fn probe_tunnel(addr: &str, timeout: Duration, log_path: &Path) -> Opt
     }
 }
 
+/// The probe for a SOCKS tunnel's port: the SOCKS5 greeting offering no
+/// authentication, answered by accepting it. A SOCKS port sends nothing until
+/// spoken to, so the end-to-end probe would only see it close; and asking for a
+/// destination would open a connection through the instance each time. The
+/// greeting proves gtunnel's ssh is up and serving without leaving this
+/// machine; the session behind it is ssh's to keep (`ServerAliveInterval`).
+pub async fn probe_socks(addr: &str, timeout: Duration) -> Option<Duration> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let began = std::time::Instant::now();
+    let exchange = async {
+        let mut stream = tokio::net::TcpStream::connect(addr).await.ok()?;
+        stream.write_all(&[5, 1, 0]).await.ok()?;
+        let mut reply = [0u8; 2];
+        stream.read_exact(&mut reply).await.ok()?;
+        (reply == [5, 0]).then(|| began.elapsed())
+    };
+    tokio::time::timeout(timeout, exchange).await.ok().flatten()
+}
+
+/// The probe an access tunnel's local port answers: the SOCKS greeting for a
+/// SOCKS tunnel, the end-to-end probe for every other kind.
+pub async fn probe_access_port(
+    socks: bool,
+    addr: &str,
+    timeout: Duration,
+    log_path: &Path,
+) -> Option<Duration> {
+    if socks {
+        probe_socks(addr, timeout).await
+    } else {
+        probe_tunnel(addr, timeout, log_path).await
+    }
+}
+
 /// Where every IAP tunnel ends up: gcloud opens a websocket here, so a host
 /// that cannot reach it cannot run any tunnel.
 pub const IAP_ENDPOINT: &str = "tunnel.cloudproxy.app:443";
@@ -786,7 +820,7 @@ async fn measure(
                 .await
                 .unwrap_or(0);
             let addr = format!("127.0.0.1:{local_port}");
-            let answer = probe_tunnel(&addr, TCP_TIMEOUT, &trail.log).await;
+            let answer = probe_access_port(t.is_socks(), &addr, TCP_TIMEOUT, &trail.log).await;
             metrics.health = Some(classify_probe(answer, &trail.log, trail.marker.as_deref()));
             if let Some(rtt) = answer {
                 metrics.latency = Some(rtt);
@@ -1895,5 +1929,43 @@ LISTEN 0      128    127.0.0.1:15432     0.0.0.0:*
     #[test]
     fn the_gate_dials_the_iap_endpoint_on_the_tls_port() {
         assert_eq!(IAP_ENDPOINT, "tunnel.cloudproxy.app:443");
+    }
+
+    // A SOCKS port says nothing until spoken to, so it is asked the SOCKS5
+    // greeting: no authentication offered, no authentication accepted. The
+    // question never leaves this machine (#457)
+    async fn socks_peer(reply: &'static [u8]) -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            if let Ok((mut s, _)) = listener.accept().await {
+                let mut greeting = [0u8; 3];
+                if s.read_exact(&mut greeting).await.is_ok() && greeting == [5, 1, 0] {
+                    let _ = s.write_all(reply).await;
+                }
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            }
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn a_socks_port_that_accepts_the_greeting_answers() {
+        let addr = socks_peer(&[5, 0]).await;
+        assert!(probe_socks(&addr.to_string(), TCP_TIMEOUT).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_socks_port_that_refuses_or_stays_silent_does_not() {
+        let addr = socks_peer(&[5, 0xff]).await;
+        assert_eq!(probe_socks(&addr.to_string(), TCP_TIMEOUT).await, None);
+        let addr = socks_peer(&[]).await;
+        assert_eq!(
+            probe_socks(&addr.to_string(), Duration::from_millis(300)).await,
+            None
+        );
     }
 }

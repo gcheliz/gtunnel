@@ -111,6 +111,7 @@ service account to impersonate, and the relay once one exists; never a credentia
 gtunnel add <NAME> <INSTANCE:PORT> [-z ZONE] [--local-port N] [-s]
 gtunnel add <NAME> <HOST:PORT> --via INSTANCE [-z ZONE] [--local-port N] [-s]
 gtunnel add <NAME> <HOST:PORT> --dest-group G --region R [--network N] [-s]
+gtunnel add <NAME> <INSTANCE> --socks [-z ZONE] [--local-port N] [-s]
 ```
 
 | Flag | Effect |
@@ -118,6 +119,7 @@ gtunnel add <NAME> <HOST:PORT> --dest-group G --region R [--network N] [-s]
 | `-z`, `--zone` | Zone of the instance. Looked up from the instance name when omitted, see below |
 | `--local-port` | Fixed local port; otherwise one is allocated from 15000-15999, stable per name, skipping any a saved tunnel or a live run holds |
 | `--via` | Reach a host the instance can reach, rather than a port of the instance |
+| `--socks` | Run a SOCKS5 proxy through the instance; the client picks each destination. Not with `--via` or `--dest-group` |
 | `--dest-group` | Target an IAP destination group instead of an instance |
 | `--region` | Region of the destination group; required with `--dest-group` |
 | `--network` | VPC network of the destination group; `default` when omitted |
@@ -133,12 +135,13 @@ Usage: gtunnel add [OPTIONS] <NAME> <TARGET>
 
 Arguments:
   <NAME>    Tunnel name: what it connects to, e.g. postgres
-  <TARGET>  INSTANCE:PORT (GCP instance name, port 22 open), or HOST:PORT with --dest-group or --via, e.g. bastion:5432
+  <TARGET>  INSTANCE:PORT (GCP instance name, port 22 open), HOST:PORT with --dest-group or --via, or INSTANCE with --socks, e.g. bastion:5432
 
 Options:
       --account <ACCOUNT>        Use a specific account (overrides the default)
       --via <VIA>                GCP instance name (port 22 open) to forward from, for a host only it can reach, e.g. bastion
       --log-level <LEVEL>        How much to log: quiet, info or debug (default: info)
+      --socks                    Run a SOCKS5 proxy through the instance (TARGET is the instance); the client picks each destination, e.g. MongoDB Compass's Socks5 option
   -z, --zone <ZONE>              Zone of the instance, e.g. europe-west1-b (default: looked up from the instance)
       --local-port <LOCAL_PORT>  Port on localhost you connect to, e.g. 15432 (allocated automatically when omitted)
       --dest-group <DEST_GROUP>  IAP destination group, for targets that are not a compute instance, e.g. my-group
@@ -207,8 +210,8 @@ failover.
 
 ### Reaching a host behind an instance
 
-The three target kinds, their engines and what each needs are in
-[Concepts](usage.md#three-kinds-of-access-target). Use `instance` for SSH or a database on the
+The target kinds, their engines and what each needs are in
+[Concepts](usage.md#kinds-of-access-target). Use `instance` for SSH or a database on the
 instance itself, `--dest-group` for a host IAP can address directly, and `--via` for the rest.
 
 An IAP TCP forward lands on a port of the instance itself, so a private endpoint behind a
@@ -230,6 +233,31 @@ IP, not `127.0.0.1`:
     server: https://127.0.0.1:8443
     tls-server-name: 10.0.0.10
 ```
+
+### A SOCKS proxy for clients that pick their own host
+
+A client that can use a SOCKS5 proxy (MongoDB Compass, the MongoDB drivers, browsers,
+`curl --socks5-hostname`, most database GUIs) is better served by a `socks` tunnel than by doing
+its own SSH over an `instance` tunnel to port 22:
+
+```text
+gtunnel add db bastion --socks --local-port 1080 -s
+```
+
+In Compass, open the connection's Advanced options, Proxy/SSH, choose Socks5, and give
+`127.0.0.1` and the tunnel's port. Keep the connection string's private hostnames: the proxy
+resolves them on the bastion, so every replica-set member is reached and failover works.
+
+| | Client's own SSH over an `instance` tunnel | `socks` tunnel |
+|---|---|---|
+| Who holds the SSH session | The client | gtunnel's supervised ssh |
+| Client freezes past the server's keepalive budget (sshd `ClientAliveInterval` × `ClientAliveCountMax`) | sshd drops the session; the log shows IAP `4010` | Nothing drops: ssh answers the keepalives |
+| Client crashes and reconnects | A new SSH handshake through a new IAP connection | A new SOCKS request on the session that is already up |
+| Probe | One IAP connection to the instance's sshd per probe | A SOCKS5 greeting answered on this machine |
+| Connections | One IAP connection | Every client shares the one session |
+
+Each client is a line in the log, with where it went:
+`gtunnel: conn 3 from 127.0.0.1:44878 to db.internal:27017 closed after 12.0s`.
 
 ## expose
 

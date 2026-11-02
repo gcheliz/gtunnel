@@ -46,9 +46,10 @@ pub enum Commands {
         #[arg(help = "Tunnel name: what it connects to, e.g. postgres")]
         name: String,
 
-        // INSTANCE:PORT, or HOST:PORT when --dest-group or --via is used
+        // INSTANCE:PORT, HOST:PORT when --dest-group or --via is used, or the
+        // bare INSTANCE with --socks
         #[arg(
-            help = "INSTANCE:PORT (GCP instance name, port 22 open), or HOST:PORT with --dest-group or --via, e.g. bastion:5432"
+            help = "INSTANCE:PORT (GCP instance name, port 22 open), HOST:PORT with --dest-group or --via, or INSTANCE with --socks, e.g. bastion:5432"
         )]
         target: String,
 
@@ -60,6 +61,15 @@ pub enum Commands {
             help = "GCP instance name (port 22 open) to forward from, for a host only it can reach, e.g. bastion"
         )]
         via: Option<String>,
+
+        // A SOCKS proxy through the instance: the client names each host, and
+        // gtunnel's ssh holds the session whatever the client does
+        #[arg(
+            long,
+            conflicts_with_all = ["via", "dest_group"],
+            help = "Run a SOCKS5 proxy through the instance (TARGET is the instance); the client picks each destination, e.g. MongoDB Compass's Socks5 option"
+        )]
+        socks: bool,
 
         // Compute zone of the instance (looked up when omitted)
         #[arg(
@@ -902,6 +912,35 @@ mod tests {
             }
             other => panic!("expected Add, got {other:?}"),
         }
+    }
+
+    // A SOCKS tunnel names only the instance; the client picks the rest
+    #[test]
+    fn add_parses_a_socks_tunnel() {
+        let cli = parse(&[
+            "gtunnel",
+            "add",
+            "db",
+            "bastion",
+            "--socks",
+            "--local-port",
+            "1080",
+        ]);
+        match cli.command.expect("command") {
+            Commands::Add {
+                target, socks, via, ..
+            } => {
+                assert_eq!(target, "bastion");
+                assert!(socks);
+                assert_eq!(via, None);
+            }
+            other => panic!("expected Add, got {other:?}"),
+        }
+        assert!(
+            Cli::try_parse_from(["gtunnel", "add", "db", "bastion", "--socks", "--via", "x"])
+                .is_err(),
+            "--socks and --via name the instance twice"
+        );
     }
 
     // The k9s shape: a private endpoint the bastion can reach, forwarded from

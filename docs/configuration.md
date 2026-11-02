@@ -155,7 +155,12 @@ zone = "europe-west1-b"
 Access, `kind = "jump"`: a host only the instance can reach, forwarded by ssh on the
 instance (`gtunnel add k8s 10.0.0.10:443 --via bastion`). `instance` is the machine ssh runs
 on, `host` is the destination. It also needs ssh to the instance and port 22 open to
-`35.235.240.0/20`; see [Three kinds of Access target](usage.md#three-kinds-of-access-target).
+`35.235.240.0/20`; see [Kinds of Access target](usage.md#kinds-of-access-target).
+
+Access, `kind = "socks"`: a SOCKS5 proxy that ssh runs through the instance
+(`gtunnel add db bastion --socks`). It has an `instance` and a `zone` and no `host`: the client
+names each destination. `remote_port` is the instance's ssh port, 22. A gtunnel older than the
+kind refuses a `tunnels.toml` that holds one.
 
 ```toml
 [tunnels.spec]

@@ -19,7 +19,7 @@ needs them runs.
 ## Access
 
 A local port forwarded to a port on an instance or an IAP destination group
-([the three target kinds](usage.md#three-kinds-of-access-target)).
+([the target kinds](usage.md#kinds-of-access-target)).
 
 | Need | Value | One-off command |
 |---|---|---|

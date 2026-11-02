@@ -87,11 +87,23 @@ pub fn access_argv(acct: &Account, t: &PersistentTunnel, level: LogLevel) -> Res
         argv.push(format!("{local_port}:{host}:{remote_port}"));
         return Ok(argv);
     }
+    // The same command with a dynamic forward: ssh is the SOCKS server, on
+    // localhost only, as an `-L` listener is
+    if let AccessTarget::Socks { instance, zone } = target {
+        let mut argv = iap_ssh_prefix(instance, zone)?;
+        argv.extend(gcloud_common(acct, level)?);
+        argv.push("--".to_string());
+        argv.extend(ssh_forward_options(level, "-D"));
+        argv.push(local_port.to_string());
+        return Ok(argv);
+    }
 
     let mut argv = vec!["compute".to_string(), "start-iap-tunnel".to_string()];
     match target {
         // Answered above, before the IAP forward is built
-        AccessTarget::Jump { .. } => unreachable!("a jump tunnel is an ssh forward"),
+        AccessTarget::Jump { .. } | AccessTarget::Socks { .. } => {
+            unreachable!("a jump or SOCKS tunnel is an ssh forward")
+        }
         AccessTarget::Instance { instance, zone } => {
             argv.push(instance.clone());
             argv.push(remote_port.to_string());
@@ -417,6 +429,32 @@ mod tests {
             local_port: 8443,
         };
         assert!(access_argv(&account(), &t, LogLevel::Quiet).is_err());
+    }
+
+    // The jump command with `-D` and the local port: ssh makes the proxy, and
+    // the client names each destination (#457)
+    #[test]
+    fn a_socks_tunnel_is_an_ssh_dynamic_forward_through_its_instance() {
+        let mut t = jump_tunnel();
+        t.spec = TunnelSpec::Access {
+            target: AccessTarget::Socks {
+                instance: "bastion".to_string(),
+                zone: "europe-west1-b".to_string(),
+            },
+            remote_port: 22,
+            local_port: 1080,
+        };
+        let argv = access_argv(&account(), &t, LogLevel::Info).expect("argv");
+        let jump = access_argv(&account(), &jump_tunnel(), LogLevel::Info).expect("argv");
+        let dash = argv.iter().position(|a| a == "--").expect("--");
+        // Everything up to the forward is the jump tunnel's
+        assert_eq!(argv[..dash], jump[..dash]);
+        assert_eq!(&argv[argv.len() - 2..], ["-D", "1080"]);
+        assert!(!argv.contains(&"-L".to_string()), "{argv:?}");
+        assert!(
+            argv.contains(&"ServerAliveInterval=30".to_string()),
+            "{argv:?}"
+        );
     }
 
     #[test]

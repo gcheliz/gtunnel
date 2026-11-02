@@ -30,8 +30,9 @@ impl TunnelStatus {
 }
 
 // What an Access tunnel points at: a port of a compute instance, a host reached
-// through an IAP destination group, or a host only the instance can reach,
-// forwarded by ssh on the instance with IAP carrying the ssh connection
+// through an IAP destination group, a host only the instance can reach,
+// forwarded by ssh on the instance with IAP carrying the ssh connection, or a
+// SOCKS proxy ssh runs through the instance, where the client names each host
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AccessTarget {
@@ -49,6 +50,12 @@ pub enum AccessTarget {
         instance: String,
         zone: String,
         host: String,
+    },
+    // `ssh -D`: the session, and the keepalives that hold it, are gtunnel's,
+    // whatever the client does. `remote_port` is the instance's ssh port
+    Socks {
+        instance: String,
+        zone: String,
     },
 }
 
@@ -146,6 +153,9 @@ impl PersistentTunnel {
                 AccessTarget::Jump { instance, host, .. } => {
                     format!("{host}:{remote_port} via {instance}")
                 }
+                AccessTarget::Socks { instance, zone } => {
+                    format!("SOCKS via {instance} ({zone})")
+                }
                 AccessTarget::DestGroup { host, group, .. } => {
                     format!("{host}:{remote_port} via dest-group {group}")
                 }
@@ -167,8 +177,20 @@ impl PersistentTunnel {
                 AccessTarget::Instance { .. } => "access",
                 AccessTarget::DestGroup { .. } => "group",
                 AccessTarget::Jump { .. } => "jump",
+                AccessTarget::Socks { .. } => "socks",
             },
         }
+    }
+
+    /// A SOCKS proxy, whose port answers the SOCKS greeting and not a probe
+    pub fn is_socks(&self) -> bool {
+        matches!(
+            self.spec,
+            TunnelSpec::Access {
+                target: AccessTarget::Socks { .. },
+                ..
+            }
+        )
     }
 
     pub fn is_expose(&self) -> bool {
@@ -453,7 +475,7 @@ pub struct UnsupportedTunnel {
 }
 
 const KNOWN_MODES: [&str; 2] = ["access", "expose"];
-const KNOWN_TARGETS: [&str; 3] = ["instance", "dest_group", "jump"];
+const KNOWN_TARGETS: [&str; 4] = ["instance", "dest_group", "jump", "socks"];
 
 // Only a well-formed entry whose discriminator is a string this version does
 // not list counts. Anything else wrong with an entry is a real error and is
@@ -654,6 +676,10 @@ pub fn validate_target(target: &AccessTarget) -> Result<()> {
             validate_instance_name(instance)?;
             validate_zone(zone)?;
             validate_host(host)?;
+        }
+        AccessTarget::Socks { instance, zone } => {
+            validate_instance_name(instance)?;
+            validate_zone(zone)?;
         }
         AccessTarget::DestGroup { host, .. } => validate_host(host)?,
     }
@@ -1431,5 +1457,40 @@ ttl = 30
         TunnelState::update(|_| Ok(())).expect("update");
         let text = std::fs::read_to_string(tunnels_path().unwrap()).unwrap();
         assert!(text.starts_with("schema_version = 1\n"), "{text}");
+    }
+
+    // A SOCKS tunnel is a jump tunnel whose destination the client picks: it
+    // names the instance and nothing behind it (#457)
+    #[test]
+    fn a_socks_tunnel_round_trips_and_names_itself() {
+        let t = PersistentTunnel {
+            name: "db".to_string(),
+            account_name: "dev".to_string(),
+            auto_start: false,
+            spec: TunnelSpec::Access {
+                target: AccessTarget::Socks {
+                    instance: "bastion".to_string(),
+                    zone: "europe-west1-b".to_string(),
+                },
+                remote_port: 22,
+                local_port: 1080,
+            },
+        };
+        let text = toml::to_string(&t).expect("serialize");
+        assert!(text.contains("kind = \"socks\""), "{text}");
+        let back: PersistentTunnel = toml::from_str(&text).expect("parse");
+        assert_eq!(back, t);
+        assert_eq!(t.display_kind(), "socks");
+        // Read the way the app reads tunnels.toml: a kind this version knows
+        // is never set aside as one from a newer gtunnel
+        let file =
+            format!("schema_version = 1\n[[tunnels]]\n{text}").replace("[spec", "[tunnels.spec");
+        assert!(unsupported_in(&file).is_empty(), "{file}");
+        assert_eq!(t.display_target(), "SOCKS via bastion (europe-west1-b)");
+        assert!(validate_target(&AccessTarget::Socks {
+            instance: "-oProxyCommand=id".to_string(),
+            zone: "europe-west1-b".to_string(),
+        })
+        .is_err());
     }
 }

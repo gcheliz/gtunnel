@@ -107,7 +107,9 @@ tunnel points at the bastion and the client holds the destination.
 One tunnel per database would pin a shard hostname that is not guaranteed to be the
 primary, which defeats replica-set failover. The cost is that the user has to know the
 destination URI, which gtunnel does not store for them. How to set it up:
-[Naming a tunnel](commands.md#naming-a-tunnel).
+[Naming a tunnel](commands.md#naming-a-tunnel). A client that speaks SOCKS5 is best given a
+`socks` tunnel, where gtunnel's ssh holds the session instead of the client:
+[A SOCKS proxy](commands.md#a-socks-proxy-for-clients-that-pick-their-own-host).
 
 ## 7. Documentation uses placeholders, never real configuration
 

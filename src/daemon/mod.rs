@@ -354,12 +354,13 @@ fn service_spec_with(
         local_port, target, ..
     } = &t.spec
     {
-        // A jump tunnel's stderr also carries the IAP transport ssh rides on,
-        // which is one long connection and not a client
+        // A jump or SOCKS tunnel's stderr also carries the IAP transport ssh
+        // rides on, which is one long connection and not a client
         args.push("--conns".to_string());
         args.push(
             match target {
-                crate::state::AccessTarget::Jump { .. } => "ssh",
+                crate::state::AccessTarget::Jump { .. }
+                | crate::state::AccessTarget::Socks { .. } => "ssh",
                 _ => "iap",
             }
             .to_string(),

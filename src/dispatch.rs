@@ -201,6 +201,7 @@ pub async fn run(args: Cli) -> Result<()> {
             dest_group,
             region,
             network,
+            socks,
             start,
         }) => {
             commands::access::cmd_add(
@@ -213,6 +214,7 @@ pub async fn run(args: Cli) -> Result<()> {
                 dest_group.as_deref(),
                 region.as_deref(),
                 network.as_deref(),
+                socks,
                 start,
             )
             .await
