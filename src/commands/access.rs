@@ -589,6 +589,19 @@ fn is_quiet(spec: &daemon::ServiceSpec) -> bool {
         .any(|w| w[0] == "--log-level" && w[1] == "quiet")
 }
 
+/// How a start that found the service already running waits: on the port
+/// alone, since only that supervisor can be holding it, and not on the ready
+/// file, which an earlier start may have removed. A tunnel with no fixed port
+/// has nothing more to look at.
+async fn wait_running(label: &str, tunnel: &PersistentTunnel, deadline: Duration) -> Readiness {
+    match &tunnel.spec {
+        TunnelSpec::Access { local_port, .. } if *local_port != 0 => {
+            wait_ready(label, None, Some(*local_port), deadline).await
+        }
+        _ => Readiness::Ready,
+    }
+}
+
 /// Returns once the tunnel is listening, the job has failed, or the deadline
 /// passes: an `Ok` means the tunnel was ready when looked at, not that the
 /// request was sent.
@@ -625,8 +638,17 @@ async fn start_inner(account: Option<&str>, name: &str) -> Result<Started> {
         routes::ensure_route(&client, &acct, &tunnel).await?;
     }
 
-    // A unit written by an older gtunnel is rewritten before it is started
     let spec = daemon::service_spec(&config, &tunnel)?;
+    let deadline = start_deadline();
+    // A start of a tunnel that is already up has nothing to do: going on would
+    // remove the ready file its supervisor wrote once and never writes again,
+    // and then wait the whole deadline for it to come back
+    if daemon::status(&spec.label).await == TunnelStatus::Running {
+        let readiness = wait_running(&spec.label, &tunnel, deadline).await;
+        return started_or_failed(&tunnel, &acct, name, readiness, deadline);
+    }
+
+    // A unit written by an older gtunnel is rewritten before it is started
     daemon::install(&spec).await?;
     // A tunnel that started is started whether or not its log took the line
     let _ = daemon::log_event(
@@ -644,7 +666,6 @@ async fn start_inner(account: Option<&str>, name: &str) -> Result<Started> {
     clear_crash_marker(&spec);
     daemon::start(&spec.label).await?;
 
-    let deadline = start_deadline();
     let readiness = match (&ready_file, &tunnel.spec) {
         (Some(path), TunnelSpec::Access { local_port, .. }) => {
             let port = (is_quiet(&spec) && *local_port != 0).then_some(*local_port);
@@ -659,8 +680,20 @@ async fn start_inner(account: Option<&str>, name: &str) -> Result<Started> {
             }
         }
     };
+    started_or_failed(&tunnel, &acct, name, readiness, deadline)
+}
+
+// What a start answers once it has looked: the tunnel and its URL, or the
+// failure with the newest hint its log gives
+fn started_or_failed(
+    tunnel: &PersistentTunnel,
+    acct: &Account,
+    name: &str,
+    readiness: Readiness,
+    deadline: Duration,
+) -> Result<Started> {
     if readiness != Readiness::Ready {
-        let found = last_hint(&tunnel, acct.credential_file.is_some())?;
+        let found = last_hint(tunnel, acct.credential_file.is_some())?;
         let logged = found.as_ref().and_then(|(_, failure)| *failure);
         let hint = match (found.map(|(hint, _)| hint), readiness) {
             (Some(hint), _) => Some(hint),
@@ -673,7 +706,7 @@ async fn start_inner(account: Option<&str>, name: &str) -> Result<Started> {
         // The marker is the supervisor's own word that it stopped for
         // credentials; the log diagnosis is the same finding read from the
         // text when no marker was written
-        let kind = stopped_failure(&tunnel)
+        let kind = stopped_failure(tunnel)
             .or(logged)
             .map_or(ErrorKind::Internal, Failure::kind);
         return Err(StartFailed {
@@ -1566,6 +1599,39 @@ mod tests {
     fn a_run_row_is_never_stopped() {
         let row = ListRowJson::from_run(&live_run("scratch", "dev", 15999));
         assert_eq!(row.health, "unknown");
+    }
+
+    #[tokio::test]
+    async fn a_running_tunnel_is_ready_once_its_port_answers_without_a_ready_file() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut tunnel = access_tunnel();
+        if let TunnelSpec::Access { local_port, .. } = &mut tunnel.spec {
+            *local_port = listener.local_addr().unwrap().port();
+        }
+        let began = std::time::Instant::now();
+        let got = wait_running("com.gtunnel.test.running", &tunnel, Duration::from_secs(5)).await;
+        assert_eq!(got, Readiness::Ready);
+        assert!(began.elapsed() < Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn a_running_tunnel_whose_port_never_answers_times_out() {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let mut tunnel = access_tunnel();
+        if let TunnelSpec::Access { local_port, .. } = &mut tunnel.spec {
+            *local_port = port;
+        }
+        let got = wait_running(
+            "com.gtunnel.test.running",
+            &tunnel,
+            Duration::from_millis(400),
+        )
+        .await;
+        assert_eq!(got, Readiness::TimedOut);
     }
 
     fn access_tunnel() -> PersistentTunnel {
