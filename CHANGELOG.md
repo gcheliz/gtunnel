@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.3.27](https://github.com/gcheliz/gtunnel/compare/v0.3.26...v0.3.27) - 2026-11-02
+
+### Fixed
+
+- *(doctor)* check NumPy the way gcloud runs its Python, and advise what works ([#464](https://github.com/gcheliz/gtunnel/pull/464))
+
 ## [0.3.26](https://github.com/gcheliz/gtunnel/compare/v0.3.25...v0.3.26) - 2026-10-31
 
 ### Fixed
