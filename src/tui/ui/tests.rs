@@ -4505,3 +4505,25 @@ fn a_word_too_long_for_the_value_column_breaks_after_its_punctuation() {
         ["abcdefghijklmnopq", "rstuvwxyz"]
     );
 }
+
+// A stopped tunnel has no samples, and the rows kept for the chart were left
+// empty under its three lines of dashes. A note says why, where the chart
+// would be, and the layout does not move when the tunnel starts (#462)
+#[test]
+fn an_empty_chart_says_why_where_the_chart_would_be() {
+    let note_in = |status, samples: &[u64]| {
+        let mut app = App::new("dev");
+        let mut entry = TunnelEntry::new(access("db", 15432), status, TunnelKind::Managed);
+        for s in samples {
+            entry.history.record(*s);
+        }
+        app.entries = vec![entry];
+        joined(&text_of(&screen(&app, 104, 37)))
+    };
+    let stopped = note_in(TunnelStatus::Stopped, &[]);
+    assert!(stopped.contains("no samples until it runs"), "{stopped}");
+    let starting = note_in(TunnelStatus::Running, &[]);
+    assert!(starting.contains("no samples yet"), "{starting}");
+    let charted = note_in(TunnelStatus::Running, &[30_000, 42_000, 55_000]);
+    assert!(!charted.contains("no samples"), "{charted}");
+}

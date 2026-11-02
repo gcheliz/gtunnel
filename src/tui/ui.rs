@@ -2155,6 +2155,18 @@ fn render_metrics(f: &mut Frame, app: &App, area: Rect, chart_first: bool) {
 
     if !entry.history.is_empty() {
         render_chart(f, app, chunks[1]);
+    } else if chunks[1].height > 0 {
+        // The rows stay the chart's, so the pane does not move when the first
+        // sample lands; until then they say why they are empty
+        let why = if entry.status == TunnelStatus::Running {
+            "no samples yet"
+        } else {
+            "no samples until it runs"
+        };
+        f.render_widget(
+            Paragraph::new(Line::styled(why, Style::default().fg(theme::MUTED))),
+            chunks[1],
+        );
     }
 }
 
