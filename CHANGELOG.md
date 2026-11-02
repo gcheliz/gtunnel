@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.3.31](https://github.com/gcheliz/gtunnel/compare/v0.3.30...v0.3.31) - 2026-11-02
+
+### Added
+
+- a SOCKS tunnel kind, so the SSH session is gtunnel's and not the client's ([#476](https://github.com/gcheliz/gtunnel/pull/476))
+
 ## [0.3.30](https://github.com/gcheliz/gtunnel/compare/v0.3.29...v0.3.30) - 2026-11-02
 
 ### Added
