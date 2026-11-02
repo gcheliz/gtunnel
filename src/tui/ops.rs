@@ -300,14 +300,17 @@ pub const IDLE_PROBE_EVERY: Duration = Duration::from_secs(30);
 /// tunnel with clients connected is not probed, its clients are proving it;
 /// and one that is idle is probed every round only while it is the selected
 /// row, and otherwise once per [`IDLE_PROBE_EVERY`]. The first verdict is
-/// always owed. A jump or SOCKS tunnel's probe opens no IAP connection, so it
-/// keeps every round.
+/// always owed. A SOCKS tunnel's probe opens no IAP connection but is a session
+/// on the instance's sshd, so it follows the same rule; a jump tunnel's opens
+/// neither, so it keeps every round.
 pub fn probe_due(entry: &TunnelEntry, selected: bool, now: std::time::Instant) -> bool {
+    // A SOCKS tunnel's probe reaches the instance's sshd too (`probe_socks`)
     let direct = matches!(
         entry.tunnel.spec,
         TunnelSpec::Access {
             target: crate::state::AccessTarget::Instance { .. }
-                | crate::state::AccessTarget::DestGroup { .. },
+                | crate::state::AccessTarget::DestGroup { .. }
+                | crate::state::AccessTarget::Socks { .. },
             ..
         }
     );

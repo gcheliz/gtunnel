@@ -4527,3 +4527,28 @@ fn an_empty_chart_says_why_where_the_chart_would_be() {
     let charted = note_in(TunnelStatus::Running, &[30_000, 42_000, 55_000]);
     assert!(!charted.contains("no samples"), "{charted}");
 }
+
+// A SOCKS tunnel's steady sub-millisecond latency left the chart rows blank (#480)
+#[test]
+fn a_steady_sub_millisecond_latency_puts_a_chart_on_screen() {
+    let mut app = App::new("dev");
+    let mut entry = TunnelEntry::new(
+        access("db", 15432),
+        TunnelStatus::Running,
+        TunnelKind::Managed,
+    );
+    for _ in 0..20 {
+        entry.history.record(300);
+    }
+    app.entries = vec![entry];
+    // A short chart rounds a sliver to nothing; a tall one to one level
+    for height in [24u16, 30, 37] {
+        let rows = text_of(&screen(&app, 104, height));
+        assert!(
+            rows.iter()
+                .any(|r| r.chars().any(|c| SPARK_GLYPHS.contains(&c))),
+            "{height}:\n{}",
+            joined(&rows)
+        );
+    }
+}

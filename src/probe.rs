@@ -235,20 +235,37 @@ pub async fn probe_tunnel(addr: &str, timeout: Duration, log_path: &Path) -> Opt
 }
 
 /// The probe for a SOCKS tunnel's port: the SOCKS5 greeting offering no
-/// authentication, answered by accepting it. A SOCKS port sends nothing until
-/// spoken to, so the end-to-end probe would only see it close; and asking for a
-/// destination would open a connection through the instance each time. The
-/// greeting proves gtunnel's ssh is up and serving without leaving this
-/// machine; the session behind it is ssh's to keep (`ServerAliveInterval`).
+/// authentication, then a CONNECT to `127.0.0.1:22` as the instance sees it,
+/// which is its own sshd. ssh answers the CONNECT only once the instance has
+/// opened that connection, so the round trip covers IAP and the instance, over
+/// the session already up: no new IAP connection. The greeting alone was
+/// answered on this machine, and timed nothing remote.
+///
+/// Each probe is a pre-auth connection on the instance's sshd, so SOCKS tunnels
+/// share the direct tunnels' cadence (`tui::ops::probe_due`). The source port is
+/// registered like any probe's, so the supervisor writes no line for it.
 pub async fn probe_socks(addr: &str, timeout: Duration) -> Option<Duration> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let began = std::time::Instant::now();
     let exchange = async {
         let mut stream = tokio::net::TcpStream::connect(addr).await.ok()?;
+        if let Ok(local) = stream.local_addr() {
+            register_probe(addr, local.port());
+        }
         stream.write_all(&[5, 1, 0]).await.ok()?;
         let mut reply = [0u8; 2];
         stream.read_exact(&mut reply).await.ok()?;
-        (reply == [5, 0]).then(|| began.elapsed())
+        if reply != [5, 0] {
+            return None;
+        }
+        // CONNECT, IPv4 127.0.0.1, port 22
+        stream
+            .write_all(&[5, 1, 0, 1, 127, 0, 0, 1, 0, 22])
+            .await
+            .ok()?;
+        let mut granted = [0u8; 10];
+        stream.read_exact(&mut granted).await.ok()?;
+        (granted[0] == 5 && granted[1] == 0).then(|| began.elapsed())
     };
     tokio::time::timeout(timeout, exchange).await.ok().flatten()
 }
@@ -1955,7 +1972,14 @@ LISTEN 0      128    127.0.0.1:15432     0.0.0.0:*
     // A SOCKS port says nothing until spoken to, so it is asked the SOCKS5
     // greeting: no authentication offered, no authentication accepted. The
     // question never leaves this machine (#457)
-    async fn socks_peer(reply: &'static [u8]) -> std::net::SocketAddr {
+    // A SOCKS peer that answers the greeting with `greeting`, then a CONNECT to
+    // the instance's own sshd with `connect` after `delay`, the time the far
+    // side takes to open it
+    async fn socks_peer(
+        greeting: &'static [u8],
+        connect: &'static [u8],
+        delay: Duration,
+    ) -> std::net::SocketAddr {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind");
@@ -1963,9 +1987,16 @@ LISTEN 0      128    127.0.0.1:15432     0.0.0.0:*
         tokio::spawn(async move {
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
             if let Ok((mut s, _)) = listener.accept().await {
-                let mut greeting = [0u8; 3];
-                if s.read_exact(&mut greeting).await.is_ok() && greeting == [5, 1, 0] {
-                    let _ = s.write_all(reply).await;
+                let mut hello = [0u8; 3];
+                if s.read_exact(&mut hello).await.is_ok() && hello == [5, 1, 0] {
+                    let _ = s.write_all(greeting).await;
+                    let mut request = [0u8; 10];
+                    if s.read_exact(&mut request).await.is_ok()
+                        && request == [5, 1, 0, 1, 127, 0, 0, 1, 0, 22]
+                    {
+                        tokio::time::sleep(delay).await;
+                        let _ = s.write_all(connect).await;
+                    }
                 }
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
@@ -1973,17 +2004,28 @@ LISTEN 0      128    127.0.0.1:15432     0.0.0.0:*
         addr
     }
 
+    const GRANTED: &[u8] = &[5, 0, 0, 1, 127, 0, 0, 1, 0, 22];
+
+    // The round trip covers the far side: ssh answers a CONNECT only once the
+    // instance has opened it (#480)
     #[tokio::test]
-    async fn a_socks_port_that_accepts_the_greeting_answers() {
-        let addr = socks_peer(&[5, 0]).await;
-        assert!(probe_socks(&addr.to_string(), TCP_TIMEOUT).await.is_some());
+    async fn a_socks_probe_times_a_connect_through_to_the_instance() {
+        let addr = socks_peer(&[5, 0], GRANTED, Duration::from_millis(120)).await;
+        let rtt = probe_socks(&addr.to_string(), TCP_TIMEOUT)
+            .await
+            .expect("an answer");
+        assert!(rtt >= Duration::from_millis(120), "{rtt:?}");
     }
 
     #[tokio::test]
     async fn a_socks_port_that_refuses_or_stays_silent_does_not() {
-        let addr = socks_peer(&[5, 0xff]).await;
+        let addr = socks_peer(&[5, 0xff], GRANTED, Duration::ZERO).await;
         assert_eq!(probe_socks(&addr.to_string(), TCP_TIMEOUT).await, None);
-        let addr = socks_peer(&[]).await;
+        // the instance refused the connection: the session is not serving
+        let refused: &[u8] = &[5, 5, 0, 1, 0, 0, 0, 0, 0, 0];
+        let addr = socks_peer(&[5, 0], refused, Duration::ZERO).await;
+        assert_eq!(probe_socks(&addr.to_string(), TCP_TIMEOUT).await, None);
+        let addr = socks_peer(&[], GRANTED, Duration::ZERO).await;
         assert_eq!(
             probe_socks(&addr.to_string(), Duration::from_millis(300)).await,
             None

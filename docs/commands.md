@@ -253,7 +253,7 @@ resolves them on the bastion, so every replica-set member is reached and failove
 | Who holds the SSH session | The client | gtunnel's supervised ssh |
 | Client freezes past the server's keepalive budget (sshd `ClientAliveInterval` × `ClientAliveCountMax`) | sshd drops the session; the log shows IAP `4010` | Nothing drops: ssh answers the keepalives |
 | Client crashes and reconnects | A new SSH handshake through a new IAP connection | A new SOCKS request on the session that is already up |
-| Probe | One IAP connection to the instance's sshd per probe | A SOCKS5 greeting answered on this machine |
+| Probe | One IAP connection to the instance's sshd per probe | A SOCKS CONNECT to the instance's own sshd over the session already up: the real round trip, no new IAP connection |
 | Connections | One IAP connection | Every client shares the one session |
 
 Each client is a line in the log, with where it went:
