@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.3.37](https://github.com/gcheliz/gtunnel/compare/v0.3.36...v0.3.37) - 2026-11-04
+
+### Dependencies
+
+- update Cargo.lock dependencies
+
 ## [0.3.36](https://github.com/gcheliz/gtunnel/compare/v0.3.35...v0.3.36) - 2026-11-02
 
 ### Fixed
