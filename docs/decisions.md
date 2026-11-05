@@ -358,6 +358,10 @@ codegen unit), and a client built without `crate::http::client_builder` panics, 
 abort ends the process. `clippy.toml` forbids `reqwest::Client::new`, `Client::builder` and
 `ClientBuilder::new`, so CI rejects that door.
 
+`cargo build --profile release-fast` gives a local build back most of that time: it inherits
+`release` and swaps in thin LTO over 16 codegen units, at under half the build time and a
+larger binary (see CONTRIBUTING.md). It is never shipped; the tarballs and CI build `release`.
+
 ## 18. A run is stopped like a service and known by its start time
 
 **Status:** Accepted, 2026-10-27
