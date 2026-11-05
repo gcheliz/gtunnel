@@ -82,3 +82,11 @@ lto = "fat"
 codegen-units = 1
 # 6.72 -> 5.64 MB; no catch_unwind anywhere, see docs/decisions.md section 17
 panic = "abort"
+
+# A release build for this machine only: `cargo build --profile release-fast`. Thin LTO
+# over 16 codegen units runs in parallel where fat LTO runs on one core. A clean build on
+# a 6-core Linux x86_64 machine: 138 s -> 59 s, at 7.5 -> 10.7 MB. Never ship it.
+[profile.release-fast]
+inherits = "release"
+lto = "thin"
+codegen-units = 16
