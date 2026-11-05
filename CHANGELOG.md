@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.3.38](https://github.com/gcheliz/gtunnel/compare/v0.3.37...v0.3.38) - 2026-11-05
+
+### Fixed
+
+- *(daemon)* refresh ignores the calling shell's gcloud path and PATH ([#488](https://github.com/gcheliz/gtunnel/pull/488))
+
 ## [0.3.37](https://github.com/gcheliz/gtunnel/compare/v0.3.36...v0.3.37) - 2026-11-04
 
 ### Dependencies
