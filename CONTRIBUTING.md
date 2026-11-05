@@ -27,6 +27,10 @@ cargo run -- demo
 
 `demo` fills the TUI with synthetic data and reads no config file.
 
+For a release-mode binary to try locally, `cargo build --profile release-fast` builds in
+under half the time of `--release` and writes `target/release-fast/gtunnel`. It is larger
+than the shipped binary, so measure size, and anything CI checks, with `--release`.
+
 ## The gate
 
 Every pull request runs these checks; `main` requires all of them. Run the commands before
