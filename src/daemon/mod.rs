@@ -290,24 +290,49 @@ const _: () = assert!(TUNNEL_MAX_FILES > 256);
 const _: () = assert!(TUNNEL_MAX_FILES <= 61440);
 
 /// The definition `add`, `start` and `restart` write, from the live shell:
-/// this is the one place the shell's gcloud, proxy and CA values are taken.
-/// The refresh rewrites with [`keep_installed_forwarded`] on top, so a command
-/// typed in another shell cannot change what a running tunnel was set up with.
+/// this is the one place the shell's gcloud path, `PATH`, proxy and CA values
+/// are taken. The refresh rewrites with [`keep_installed_forwarded`] on top,
+/// so a command typed in another shell cannot change what a running tunnel was
+/// set up with.
 pub fn service_spec(cfg: &Config, t: &PersistentTunnel) -> Result<ServiceSpec> {
     service_spec_with(cfg, t, &|name| std::env::var(name).ok())
 }
 
-/// Puts the forwarded values `installed` already holds into `spec` in place
-/// of the ones the current shell supplied, and drops the ones it lacks. The
+/// Puts the values `installed` already holds into `spec` in place of the ones
+/// the current shell supplied, and drops the forwarded ones it lacks. The
 /// refresh rewrites a definition for a reason that has nothing to do with the
-/// proxy, and must not carry the refreshing shell's into a job that was set up
-/// with others. `gtunnel restart` is how a new value is taken.
-pub fn keep_installed_forwarded(spec: &mut ServiceSpec, installed: &str) {
+/// proxy or with where this shell finds gcloud, and must not carry the
+/// refreshing shell's into a job that was set up with others. `gtunnel
+/// restart` is how a new value is taken.
+///
+/// The installed gcloud path and the `PATH` built from its directory travel
+/// together, and only while that gcloud still exists: when it is gone the
+/// rewrite is the repair, so the caller's gcloud and `PATH` stay, because a
+/// `PATH` kept from the old directory would be wrong for the new gcloud.
+pub fn keep_installed_forwarded(
+    spec: &mut ServiceSpec,
+    installed: &str,
+    exists: impl Fn(&str) -> bool,
+) {
     spec.env
         .retain(|(k, _)| !FORWARDED_ENV_VARS.contains(&k.as_str()));
     for name in FORWARDED_ENV_VARS {
         if let Some(value) = forwarded_in(installed, name) {
             spec.env.push((name.to_string(), value));
+        }
+    }
+    let Some(gcloud) = refresh::gcloud_of(installed).filter(|g| exists(g)) else {
+        return;
+    };
+    if let Some(i) = spec.args.iter().position(|a| a == "--")
+        && let Some(slot) = spec.args.get_mut(i + 1)
+    {
+        *slot = gcloud;
+        if let Some(path) = forwarded_in(installed, "PATH") {
+            match spec.env.iter_mut().find(|(k, _)| k == "PATH") {
+                Some((_, v)) => *v = path,
+                None => spec.env.push(("PATH".to_string(), path)),
+            }
         }
     }
 }

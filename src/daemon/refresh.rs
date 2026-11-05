@@ -117,7 +117,7 @@ pub async fn refresh(host: &impl ServiceHost, tunnels: &[PersistentTunnel]) -> O
         let verdict = host.spec_for(t).ok().map(|mut spec| {
             // The shell that happens to run this is not the user's word on the
             // proxy: only add, start and restart take its values
-            super::keep_installed_forwarded(&mut spec, &installed);
+            super::keep_installed_forwarded(&mut spec, &installed, |p| host.program_exists(p));
             let behind = is_stale(&installed, &host.render(&spec), |p| host.program_exists(p));
             (spec, judge(&installed, behind, ours))
         });
@@ -290,8 +290,13 @@ async fn refresh_watchdog(
 /// runs a command is not the one that set the tunnel up, so a different proxy
 /// there must not rewrite and restart every running tunnel. A new value is
 /// taken by `add`, `start` or `restart`, and `doctor` reports the gap.
+/// The gcloud program path and the `PATH` entry are the same kind of value:
+/// they come from the directory the calling process found gcloud in, so two
+/// callers whose `PATH` order differs would otherwise judge each other's file
+/// behind and restart every idle tunnel on every command. A gcloud that no
+/// longer exists is judged separately, in [`is_stale`].
 fn shape(text: &str) -> Vec<String> {
-    let text = without_forwarded(text);
+    let text = without_shell_values(text);
     let mut out = Vec::new();
     let mut prev = String::new();
     let mut skip_value = false;
@@ -340,20 +345,25 @@ fn shape(text: &str) -> Vec<String> {
     out
 }
 
-/// The text with every forwarded variable's entry removed, key and value.
-/// Their values differ per shell, so a difference must not count (see
-/// [`shape`]), and a value may hold a space (a gcloud home under `Application
-/// Support`), which the whitespace split would turn into stray tokens, so
-/// this works a line at a time first.
-fn without_forwarded(text: &str) -> String {
+/// The text with the values the invoking shell decides taken out: every
+/// forwarded variable's entry (key and value), the `PATH` entry, and the
+/// gcloud token. Their values differ per shell, so a difference must not
+/// count (see [`shape`]), and a value may hold a space (a gcloud home or
+/// install under `Application Support`), which the whitespace split would
+/// turn into stray tokens, so this works a line at a time first.
+///
+/// Only the first `--` introduces gcloud: its own argv may hold another for
+/// ssh options, and those still count.
+fn without_shell_values(text: &str) -> String {
     let mut out = String::new();
     let mut lines = text.lines();
+    let mut masked_gcloud = false;
     while let Some(line) = lines.next() {
         let t = line.trim();
         let plist_key = t
             .strip_prefix("<key>")
             .and_then(|r| r.strip_suffix("</key>"));
-        if plist_key.is_some_and(|k| super::FORWARDED_ENV_VARS.contains(&k)) {
+        if plist_key.is_some_and(|k| k == "PATH" || super::FORWARDED_ENV_VARS.contains(&k)) {
             lines.next();
             continue;
         }
@@ -361,16 +371,85 @@ fn without_forwarded(text: &str) -> String {
             .strip_prefix("Environment=")
             .map(|r| r.trim_start_matches('"'));
         if unit.is_some_and(|r| {
-            super::FORWARDED_ENV_VARS
-                .iter()
-                .any(|n| r.strip_prefix(n).is_some_and(|x| x.starts_with('=')))
+            r.strip_prefix("PATH").is_some_and(|x| x.starts_with('='))
+                || super::FORWARDED_ENV_VARS
+                    .iter()
+                    .any(|n| r.strip_prefix(n).is_some_and(|x| x.starts_with('=')))
         }) {
+            continue;
+        }
+        if !masked_gcloud && t == "<string>--</string>" {
+            masked_gcloud = true;
+            out.push_str(line);
+            out.push('\n');
+            if lines.next().is_some() {
+                out.push_str("<string>*</string>\n");
+            }
+            continue;
+        }
+        if !masked_gcloud
+            && t.starts_with("ExecStart=")
+            && let Some(i) = line.find(" -- ")
+        {
+            let head = &line[..i + " -- ".len()];
+            let (_, rest) = split_arg(&line[i + " -- ".len()..]);
+            masked_gcloud = true;
+            out.push_str(head);
+            out.push('*');
+            out.push_str(rest);
+            out.push('\n');
             continue;
         }
         out.push_str(line);
         out.push('\n');
     }
     out
+}
+
+/// The first argument of a unit's `ExecStart=` tail, unquoted, and the text
+/// after it. Mirrors `systemd::quote`: a quoted argument escapes `\` and `"`.
+fn split_arg(s: &str) -> (String, &str) {
+    let Some(body) = s.strip_prefix('"') else {
+        let end = s.find(char::is_whitespace).unwrap_or(s.len());
+        return (s[..end].to_string(), &s[end..]);
+    };
+    let mut arg = String::new();
+    let mut chars = body.char_indices();
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '\\' => {
+                if let Some((_, n)) = chars.next() {
+                    arg.push(n);
+                }
+            }
+            '"' => return (arg, &body[i + 1..]),
+            _ => arg.push(c),
+        }
+    }
+    (arg, "")
+}
+
+/// The gcloud an installed definition runs: the token [`shape`] masks, in
+/// either format. `None` when the definition has no `--`, so a definition of
+/// another shape is never judged by it.
+pub(super) fn gcloud_of(text: &str) -> Option<String> {
+    let mut lines = text.lines();
+    while let Some(line) = lines.next() {
+        let t = line.trim();
+        if t == "<string>--</string>" {
+            return lines
+                .next()?
+                .trim()
+                .strip_prefix("<string>")?
+                .strip_suffix("</string>")
+                .map(str::to_string);
+        }
+        if t.starts_with("ExecStart=") {
+            let i = line.find(" -- ")?;
+            return Some(split_arg(&line[i + " -- ".len()..]).0);
+        }
+    }
+    None
 }
 
 /// The binary an installed definition runs, as written
@@ -396,11 +475,16 @@ fn program_of(text: &str) -> Option<String> {
 ///
 /// Stale means the argument list differs in shape (a flag added by an
 /// upgrade, such as `--crash-marker`, or one removed), or the binary the
-/// definition names no longer exists. Values that come from the invoking shell
+/// definition names, or the gcloud it runs, no longer exists. Values that come from the invoking shell
 /// do not count; see [`shape`]. Pure, so a test can hold it to both file
 /// formats without a service manager.
 pub fn is_stale(installed: &str, rendered: &str, program_exists: impl Fn(&str) -> bool) -> bool {
     if program_of(installed).is_some_and(|p| !program_exists(&p)) {
+        return true;
+    }
+    // A moved or uninstalled gcloud is repaired; a different one that exists
+    // is the caller's business, as for the program
+    if gcloud_of(installed).is_some_and(|g| !program_exists(&g)) {
         return true;
     }
     shape(installed) != shape(rendered)
@@ -638,6 +722,8 @@ mod tests {
         watchdog_now: String,
         // Program paths that no longer exist
         gone: Vec<String>,
+        // The gcloud this shell finds, written after `--` when set
+        gcloud: Option<String>,
         written: RefCell<Vec<ServiceSpec>>,
         calls: RefCell<Vec<String>>,
     }
@@ -702,6 +788,9 @@ mod tests {
                         a.extend(["--log-level".to_string(), level.clone()]);
                     }
                     a.extend(["--crash-marker".to_string(), "m".to_string()]);
+                    if let Some(g) = &self.gcloud {
+                        a.extend(["--".to_string(), g.clone(), "compute".to_string()]);
+                    }
                     a
                 },
                 log_path: "log".into(),
@@ -1393,6 +1482,69 @@ mod tests {
         assert!(!is_stale(&render("/a b"), &render("/c d"), |_| true));
     }
 
+    #[test]
+    fn a_definition_differing_only_in_gcloud_path_and_path_order_is_not_stale() {
+        let mk = |gcloud: &str, path: &str| {
+            let mut args = BASE.to_vec();
+            args.extend([gcloud, "compute"]);
+            unit(&args, &[("PATH", path)])
+        };
+        let a = mk("/a/gcloud", "/a:/opt/homebrew/bin:/usr/bin");
+        let b = mk("/b/gcloud", "/b:/opt/homebrew/bin:/usr/bin");
+        assert!(!is_stale(&a, &b, |_| true));
+        assert!(!is_stale(&b, &a, |_| true));
+        let spaced = mk(
+            "/Users/you/Application Support/sdk/bin/gcloud",
+            "/Users/you/Application Support/sdk/bin:/usr/bin",
+        );
+        assert!(!is_stale(&a, &spaced, |_| true));
+        assert!(!is_stale(&spaced, &a, |_| true));
+    }
+
+    #[test]
+    fn a_gcloud_that_no_longer_exists_makes_a_definition_stale() {
+        let mut args = BASE.to_vec();
+        args.extend(["/a/gcloud", "compute"]);
+        let text = unit(&args, &[("PATH", "/a:/usr/bin")]);
+        assert!(is_stale(&text, &text, |p| p != "/a/gcloud"));
+        assert!(!is_stale(&text, &text, |_| true));
+    }
+
+    #[test]
+    fn the_second_double_dash_belongs_to_ssh_and_is_not_masked() {
+        let mk = |forward: &str| {
+            let mut args = BASE.to_vec();
+            args.extend(["/a/gcloud", "compute", "ssh", "--", "-L", forward]);
+            unit(&args, &[])
+        };
+        assert!(is_stale(&mk("1:2:3"), &mk("9:9:9"), |_| true));
+        assert!(!is_stale(&mk("1:2:3"), &mk("1:2:3"), |_| true));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_plist_ignores_the_gcloud_path_and_path_order_and_notices_a_missing_gcloud() {
+        let render = |gcloud: &str, path: &str| {
+            let mut spec = Fake::default().spec_for(&tunnel("k8s")).unwrap();
+            spec.args = BASE.iter().map(|a| a.to_string()).collect();
+            spec.args
+                .extend([gcloud.to_string(), "compute".to_string()]);
+            spec.env = vec![("PATH".to_string(), path.to_string())];
+            super::super::launchd::render_plist(&spec)
+        };
+        let a = render("/a/gcloud", "/a:/opt/homebrew/bin:/usr/bin");
+        let b = render("/b/gcloud", "/b:/opt/homebrew/bin:/usr/bin");
+        let spaced = render(
+            "/Users/you/Application Support/sdk/bin/gcloud",
+            "/Users/you/Application Support/sdk/bin:/usr/bin",
+        );
+        assert!(!is_stale(&a, &b, |_| true));
+        assert!(!is_stale(&b, &a, |_| true));
+        assert!(!is_stale(&a, &spaced, |_| true));
+        assert!(is_stale(&a, &a, |p| p != "/a/gcloud"));
+        assert!(!is_stale(&a, &a, |_| true));
+    }
+
     #[tokio::test]
     async fn a_refresh_rewrite_keeps_the_forwarded_values_already_in_the_definition() {
         let mut installed = Fake::default().spec_for(&tunnel("k8s")).unwrap();
@@ -1430,6 +1582,89 @@ mod tests {
         );
         assert_eq!(get("HTTPS_PROXY"), None, "{env:?}");
         assert_eq!(get("PATH"), Some("/bin"));
+    }
+
+    fn after_double_dash(spec: &ServiceSpec) -> Option<&str> {
+        let i = spec.args.iter().position(|a| a == "--")?;
+        spec.args.get(i + 1).map(String::as_str)
+    }
+
+    /// A host in shell B (`/b/gcloud`) over a unit set up from shell A
+    fn host_b_over_installation_from_a(status: TunnelStatus) -> Fake {
+        let mut installed = Fake::default().spec_for(&tunnel("k8s")).unwrap();
+        installed.args = ["__supervise", "--", "/a/gcloud", "compute"]
+            .map(String::from)
+            .to_vec();
+        installed.env = vec![(
+            "PATH".to_string(),
+            "/a:/opt/homebrew/bin:/usr/bin".to_string(),
+        )];
+        let text = super::super::systemd::render_unit(&installed);
+        let mut host = Fake::with(LABEL, &text, status);
+        host.real_render = Some("info".to_string());
+        host.gcloud = Some("/b/gcloud".to_string());
+        host.env = vec![(
+            "PATH".to_string(),
+            "/b:/opt/homebrew/bin:/usr/bin".to_string(),
+        )];
+        host
+    }
+
+    fn path_of(spec: &ServiceSpec) -> Option<&str> {
+        spec.env
+            .iter()
+            .find(|(k, _)| k == "PATH")
+            .map(|(_, v)| v.as_str())
+    }
+
+    #[tokio::test]
+    async fn a_refresh_rewrite_keeps_the_installed_gcloud_and_path() {
+        let host = host_b_over_installation_from_a(TunnelStatus::Stopped);
+        let out = refresh(&host, &[tunnel("k8s")]).await;
+        assert_eq!(out.reinstalled.len(), 1, "{out:?}");
+        let written = host.written.borrow();
+        assert_eq!(after_double_dash(&written[0]), Some("/a/gcloud"));
+        assert_eq!(path_of(&written[0]), Some("/a:/opt/homebrew/bin:/usr/bin"));
+    }
+
+    #[tokio::test]
+    async fn a_rewrite_for_a_missing_gcloud_takes_the_callers() {
+        let mut host = host_b_over_installation_from_a(TunnelStatus::Running);
+        host.gone.push("/a/gcloud".to_string());
+        let out = refresh(&host, &[tunnel("k8s")]).await;
+        assert_eq!(out.reinstalled.len(), 1, "{out:?}");
+        let written = host.written.borrow();
+        assert_eq!(after_double_dash(&written[0]), Some("/b/gcloud"));
+        assert_eq!(path_of(&written[0]), Some("/b:/opt/homebrew/bin:/usr/bin"));
+        let calls = host.calls.borrow();
+        assert!(calls.iter().any(|c| c.starts_with("restart ")), "{calls:?}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_kept_gcloud_and_path_are_read_back_from_a_plist() {
+        let mut installed = Fake::default().spec_for(&tunnel("k8s")).unwrap();
+        installed.args = [
+            "__supervise",
+            "--",
+            "/Users/you/Application Support/a/gcloud",
+            "compute",
+        ]
+        .map(String::from)
+        .to_vec();
+        installed.env = vec![("PATH".to_string(), "/a & b:/usr/bin".to_string())];
+        let text = super::super::launchd::render_plist(&installed);
+        let mut spec = Fake::default().spec_for(&tunnel("k8s")).unwrap();
+        spec.args = ["__supervise", "--", "/b/gcloud", "compute"]
+            .map(String::from)
+            .to_vec();
+        spec.env = vec![("PATH".to_string(), "/b:/usr/bin".to_string())];
+        super::super::keep_installed_forwarded(&mut spec, &text, |_| true);
+        assert_eq!(
+            after_double_dash(&spec),
+            Some("/Users/you/Application Support/a/gcloud")
+        );
+        assert_eq!(path_of(&spec), Some("/a & b:/usr/bin"));
     }
 
     #[test]
