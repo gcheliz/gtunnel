@@ -3,6 +3,16 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.3.39](https://github.com/gcheliz/gtunnel/compare/v0.3.38...v0.3.39) - 2026-11-10
+
+### Documentation
+
+- *(decisions)* point the fat-LTO build cost at release-fast ([#489](https://github.com/gcheliz/gtunnel/pull/489))
+
+### Fixed
+
+- *(cli)* say --configuration is required with --project in account add --help ([#491](https://github.com/gcheliz/gtunnel/pull/491))
+
 ## [0.3.38](https://github.com/gcheliz/gtunnel/compare/v0.3.37...v0.3.38) - 2026-11-05
 
 ### Fixed
