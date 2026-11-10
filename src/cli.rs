@@ -663,14 +663,14 @@ pub enum AccountCommands {
         // runs under, but it stops supplying project and zone
         #[arg(
             long,
-            help = "gcloud configuration, e.g. default; list them with `gcloud config configurations list`. Supplies project and zone unless --project is given"
+            help = "gcloud configuration every call runs under, e.g. default; list them with `gcloud config configurations list`. Supplies project and zone unless --project is given, and then need not exist"
         )]
         configuration: String,
 
         // Skip the configuration lookup: needs no existing gcloud configuration
         #[arg(
             long,
-            help = "GCP project id, e.g. example-dev-1a2b; list them with `gcloud projects list`. The account is then built from flags, with no gcloud configuration needed"
+            help = "GCP project id, e.g. example-dev-1a2b; list them with `gcloud projects list`. Reads nothing from the configuration, which need not exist yet"
         )]
         project: Option<String>,
 
