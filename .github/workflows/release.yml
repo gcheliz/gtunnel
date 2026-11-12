@@ -59,7 +59,7 @@ jobs:
     if: >-
       github.ref_type == 'branch'
       && !startsWith(github.event.head_commit.message, 'chore(release):')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     outputs:
       release: ${{ steps.bump.outputs.release }}
       version: ${{ steps.bump.outputs.version }}
@@ -144,7 +144,7 @@ jobs:
   draft:
     needs: plan
     if: needs.plan.outputs.release == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: write
     steps:
@@ -201,7 +201,7 @@ jobs:
       needs.plan.outputs.release == 'true'
       && github.ref == 'refs/heads/main'
       && (github.event_name == 'push' || inputs.dry_run == false)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
     steps:
@@ -267,7 +267,7 @@ jobs:
   # A dry run builds whatever its ref holds, as proof, and publishes nothing.
   verify:
     if: github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && inputs.dry_run)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     outputs:
       tag: ${{ steps.check.outputs.tag }}
       publish: ${{ steps.check.outputs.publish }}
@@ -398,7 +398,7 @@ jobs:
   publish:
     needs: [verify, build]
     if: needs.verify.outputs.publish == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: write
     steps:
@@ -446,7 +446,7 @@ jobs:
   tap:
     needs: [verify, publish]
     if: needs.verify.outputs.publish == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
     steps:
