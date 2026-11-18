@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.3.40](https://github.com/gcheliz/gtunnel/compare/v0.3.39...v0.3.40) - 2026-11-18
+
+### Fixed
+
+- *(deps)* replace the unmaintained humantime with jiff ([#497](https://github.com/gcheliz/gtunnel/pull/497))
+
 ## [0.3.39](https://github.com/gcheliz/gtunnel/compare/v0.3.38...v0.3.39) - 2026-11-10
 
 ### Documentation
