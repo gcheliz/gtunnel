@@ -415,7 +415,7 @@ impl App {
         let last = lines
             .last()
             .and_then(|l| l.split(' ').next())
-            .and_then(|stamp| humantime::parse_rfc3339(stamp).ok());
+            .and_then(|stamp| crate::timefmt::parse_rfc3339(stamp).ok());
         let Some(last) = last else {
             return;
         };
@@ -428,7 +428,7 @@ impl App {
                 let at = last + Duration::from_secs(6);
                 format!(
                     "{} gtunnel: conn {id} open from 127.0.0.1:{port}",
-                    humantime::format_rfc3339_seconds(at)
+                    crate::timefmt::format_rfc3339_seconds(at)
                 )
             }
             Some((id, port)) => {
@@ -436,7 +436,7 @@ impl App {
                 let at = last + Duration::from_secs(tenths.div_ceil(10));
                 format!(
                     "{} gtunnel: conn {id} from 127.0.0.1:{port} closed after {}.{}s",
-                    humantime::format_rfc3339_seconds(at),
+                    crate::timefmt::format_rfc3339_seconds(at),
                     tenths / 10,
                     tenths % 10
                 )
@@ -651,7 +651,7 @@ mod tests {
             ticks(&mut app, EVENT_EVERY * 2);
             for line in &app.logs {
                 let (stamp, rest) = line.split_once(' ').expect("a stamp then text");
-                humantime::parse_rfc3339(stamp).unwrap_or_else(|_| panic!("{line}"));
+                crate::timefmt::parse_rfc3339(stamp).unwrap_or_else(|_| panic!("{line}"));
                 assert!(!rest.is_empty());
             }
         }
@@ -685,7 +685,9 @@ mod tests {
         let stamps: Vec<_> = app
             .logs
             .iter()
-            .map(|l| humantime::parse_rfc3339(l.split(' ').next().expect("stamp")).expect("parse"))
+            .map(|l| {
+                crate::timefmt::parse_rfc3339(l.split(' ').next().expect("stamp")).expect("parse")
+            })
             .collect();
         assert!(stamps.windows(2).all(|w| w[0] <= w[1]), "{:?}", app.logs);
     }

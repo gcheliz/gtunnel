@@ -756,7 +756,7 @@ pub fn log_event(path: &std::path::Path, message: &str) -> Result<()> {
         .chars()
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect();
-    let stamp = humantime::format_rfc3339_seconds(std::time::SystemTime::now());
+    let stamp = crate::timefmt::format_rfc3339_seconds(std::time::SystemTime::now());
     let line = format!("{stamp} gtunnel: {message}\n");
     std::fs::OpenOptions::new()
         .create(true)

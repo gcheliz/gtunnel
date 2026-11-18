@@ -1420,7 +1420,7 @@ const RELAY_IMAGE_MAX_AGE_DAYS: u64 = 90;
 // Days since `created` when that is past the limit. An unreadable timestamp
 // is no finding: guessing would tell the person to rebuild a healthy relay.
 fn relay_image_age_days(created: &str, now: std::time::SystemTime) -> Option<u64> {
-    let created = humantime::parse_rfc3339(created).ok()?;
+    let created = crate::timefmt::parse_rfc3339(created).ok()?;
     let days = now.duration_since(created).ok()?.as_secs() / 86_400;
     (days > RELAY_IMAGE_MAX_AGE_DAYS).then_some(days)
 }
@@ -3391,7 +3391,7 @@ mod tests {
 
     fn days_ago(days: u64) -> String {
         let at = std::time::SystemTime::now() - std::time::Duration::from_secs(days * 86_400);
-        humantime::format_rfc3339_seconds(at).to_string()
+        crate::timefmt::format_rfc3339_seconds(at).to_string()
     }
 
     #[test]

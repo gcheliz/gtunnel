@@ -187,7 +187,7 @@ pub(crate) fn parse_token_output(stdout: &str, now: SystemTime) -> Result<Issued
     };
     let token = field(&["token", "access_token"]).context("no token field")?;
     let valid_for = field(&["token_expiry", "expiry"])
-        .and_then(|stamp| humantime::parse_rfc3339(&stamp).ok())
+        .and_then(|stamp| crate::timefmt::parse_rfc3339(&stamp).ok())
         // An expiry already past is zero, not "unknown": the client must
         // fetch again, not trust it
         .map(|at| at.duration_since(now).unwrap_or(Duration::ZERO));
@@ -378,7 +378,7 @@ pub(crate) mod tests {
     use super::*;
 
     fn at(stamp: &str) -> SystemTime {
-        humantime::parse_rfc3339(stamp).expect("stamp")
+        crate::timefmt::parse_rfc3339(stamp).expect("stamp")
     }
 
     #[test]
