@@ -27,6 +27,7 @@ mod proc;
 mod restart_budget;
 mod settings;
 mod state;
+mod timefmt;
 mod tui;
 mod tunnel;
 mod update;

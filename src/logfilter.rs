@@ -707,7 +707,7 @@ pub fn format_line(line: &str) -> String {
         .chars()
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect();
-    let stamp = humantime::format_rfc3339_seconds(std::time::SystemTime::now());
+    let stamp = crate::timefmt::format_rfc3339_seconds(std::time::SystemTime::now());
     format!("{stamp} {sanitized}\n")
 }
 

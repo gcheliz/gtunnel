@@ -22,11 +22,11 @@ use crate::error::GtunnelError;
 pub const START_DEADLINE: Duration = Duration::from_secs(20);
 
 pub fn default_start_deadline() -> String {
-    humantime::format_duration(START_DEADLINE).to_string()
+    crate::timefmt::format_duration(START_DEADLINE).to_string()
 }
 
 pub fn default_service_call_timeout() -> String {
-    humantime::format_duration(crate::proc::SERVICE_BOUND).to_string()
+    crate::timefmt::format_duration(crate::proc::SERVICE_BOUND).to_string()
 }
 
 /// The wait for one `list` or TUI probe to connect and read an answer. Short
@@ -37,7 +37,7 @@ pub fn default_service_call_timeout() -> String {
 pub const LIST_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 
 pub fn default_list_probe_timeout() -> String {
-    humantime::format_duration(LIST_PROBE_TIMEOUT).to_string()
+    crate::timefmt::format_duration(LIST_PROBE_TIMEOUT).to_string()
 }
 
 /// How old the cached release answer may get before the next TUI or CLI start
@@ -46,7 +46,7 @@ pub fn default_list_probe_timeout() -> String {
 pub const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 
 pub fn default_update_check_interval() -> String {
-    humantime::format_duration(UPDATE_CHECK_INTERVAL).to_string()
+    crate::timefmt::format_duration(UPDATE_CHECK_INTERVAL).to_string()
 }
 
 pub fn default_discovery() -> bool {
@@ -68,7 +68,7 @@ pub const WATCH_DEGRADED_AFTER: i64 = 2;
 pub const WATCH_INTERVAL: Duration = Duration::from_secs(30);
 
 pub fn default_watch_probe_timeout() -> String {
-    humantime::format_duration(WATCH_PROBE_TIMEOUT).to_string()
+    crate::timefmt::format_duration(WATCH_PROBE_TIMEOUT).to_string()
 }
 
 pub fn default_watch_degraded_after() -> i64 {
@@ -76,7 +76,7 @@ pub fn default_watch_degraded_after() -> i64 {
 }
 
 pub fn default_watch_interval() -> String {
-    humantime::format_duration(WATCH_INTERVAL).to_string()
+    crate::timefmt::format_duration(WATCH_INTERVAL).to_string()
 }
 
 /// What a tunnel's log may reach before it is trimmed. Eight MiB is days of a
@@ -173,7 +173,7 @@ pub fn default_logs_lines_per_minute() -> i64 {
 }
 
 pub fn default_logs_auth_exit_window() -> String {
-    humantime::format_duration(LOGS_AUTH_EXIT_WINDOW).to_string()
+    crate::timefmt::format_duration(LOGS_AUTH_EXIT_WINDOW).to_string()
 }
 
 /// How long the TUI trusts the watchdog's last heartbeat: three passes, never
@@ -375,12 +375,9 @@ pub(crate) fn bad(source: &str, why: String) -> anyhow::Error {
 }
 
 pub(crate) fn parse_duration(source: &str, raw: &str) -> Result<Duration> {
-    let d = humantime::parse_duration(raw).map_err(|e| {
-        bad(
-            source,
-            format!("'{raw}' is not a duration like 30s or 1m ({e})"),
-        )
-    })?;
+    // jiff's own reason restates the example at length, so the example stands alone
+    let d = crate::timefmt::parse_duration(raw)
+        .map_err(|_| bad(source, format!("'{raw}' is not a duration like 30s or 1m")))?;
     if d.is_zero() {
         return Err(bad(source, format!("'{raw}' must be longer than zero")));
     }
@@ -406,7 +403,7 @@ fn parse_bool(source: &str, raw: &str) -> Result<bool> {
 }
 
 fn shown(d: Duration) -> String {
-    humantime::format_duration(d).to_string()
+    crate::timefmt::format_duration(d).to_string()
 }
 
 /// A duration key: the file's value is always checked, so a bad one is refused

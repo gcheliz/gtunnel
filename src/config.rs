@@ -409,7 +409,7 @@ impl RestartConfig {
         let base_backoff = duration("base_backoff", &self.base_backoff)?;
         let max_backoff = duration("max_backoff", &self.max_backoff)?;
         // A failure forgotten before its own wait ends could never add up
-        let shown = |d: std::time::Duration| humantime::format_duration(d).to_string();
+        let shown = |d: std::time::Duration| crate::timefmt::format_duration(d).to_string();
         if window < base_backoff {
             return Err(bad(
                 "[restart] window",

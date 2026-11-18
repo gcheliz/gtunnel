@@ -275,7 +275,7 @@ into it: it falls back to the file with the environment, then the file alone, th
 
 | Value | Rule |
 |---|---|
-| Durations | `humantime` text: `500ms`, `20s`, `1m30s`, `1h30m` |
+| Durations | a number and a unit, repeated: `500ms`, `20s`, `1m30s`, `1h30m`, `2 days` (a day is 24h; no months or years) |
 | Booleans | `true`, `false`, `yes`, `no`, `on`, `off`, `1` or `0` |
 | Sizes | bytes (`1048576`) or a number with `B`, `KiB`, `MiB` or `GiB`; no decimal units, so `8MB` is refused. A `keep_size` not below `max_size` fails with exit 2 naming both keys and the variable that set either |
 | Older variables | `GTUNNEL_START_DEADLINE_MS` and `GTUNNEL_SERVICE_BOUND_MS` are whole milliseconds above zero; `GTUNNEL_NO_DISCOVERY` and `GTUNNEL_NO_NOTIFY` turn the feature off when set to anything but empty or `0`. When both spellings are set the plain one wins. An empty variable counts as unset |
@@ -296,7 +296,7 @@ older spellings included, fails with exit 2 naming the variable:
 ```console
 $ GTUNNEL_START_DEADLINE=soon gtunnel list
 ? 2
-Error: GTUNNEL_START_DEADLINE: 'soon' is not a duration like 30s or 1m (expected number at 0)
+Error: GTUNNEL_START_DEADLINE: 'soon' is not a duration like 30s or 1m
 
 ```
 
@@ -422,7 +422,7 @@ that makes the file's other keys inconsistent is refused like any bad value:
 ```console
 $ GTUNNEL_RESTART_WINDOW=soon gtunnel list
 ? 2
-Error: GTUNNEL_RESTART_WINDOW: 'soon' is not a duration like 30s or 1m (expected number at 0)
+Error: GTUNNEL_RESTART_WINDOW: 'soon' is not a duration like 30s or 1m
 
 ```
 

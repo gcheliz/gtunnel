@@ -15,6 +15,12 @@ targets = [
 # binary `gtunnel update` installs should not ship either.
 unmaintained = "all"
 yanked = "deny"
+ignore = [
+    # humantime is unmaintained (it wraps chrono) with no fixed release. gtunnel
+    # itself formats time with jiff; the one copy left is trycmd's, a test-only
+    # dependency that never reaches a release binary. [bans] keeps it there.
+    { id = "RUSTSEC-2026-0542", reason = "only trycmd (dev-dependency) still uses humantime" },
+]
 
 [licenses]
 # Permissive licences only. A crate offering a choice (MIT OR Apache-2.0) passes
@@ -41,6 +47,11 @@ confidence-threshold = 0.9
 multiple-versions = "warn"
 wildcards = "deny"
 allow-wildcard-paths = true
+# The advisory above is ignored for trycmd's sake only: anything else pulling
+# humantime in, gtunnel included, fails here instead
+deny = [
+    { crate = "humantime", wrappers = ["trycmd", "humantime-serde"], reason = "unmaintained, RUSTSEC-2026-0542; use jiff" },
+]
 
 [sources]
 unknown-registry = "deny"

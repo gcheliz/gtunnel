@@ -1035,7 +1035,7 @@ pub async fn cmd_run(
     match ttl {
         Some(ttl) => console.say(format_args!(
             "Stops by itself in {}, or Ctrl+C",
-            humantime::format_duration(ttl)
+            crate::timefmt::format_duration(ttl)
         )),
         None => console.say(format_args!("Ctrl+C to stop")),
     }
