@@ -225,6 +225,11 @@ const NOTIFICATIONS_KEY: Key = Key {
     var: "GTUNNEL_NOTIFICATIONS",
     legacy: Some("GTUNNEL_NO_NOTIFY"),
 };
+const RESTART_TAKEOVER_FAILED_KEY: Key = Key {
+    name: "restart.takeover_failed",
+    var: "GTUNNEL_RESTART_TAKEOVER_FAILED",
+    legacy: None,
+};
 const NOTIFICATION_BACKEND_KEY: Key = Key {
     name: "notifications.backend",
     var: "GTUNNEL_NOTIFICATION_BACKEND",
@@ -342,6 +347,7 @@ pub struct Settings {
     pub notifications: bool,
     pub notification_style: crate::config::NotifyStyle,
     pub notification_osascript: bool,
+    pub restart_takeover_failed: bool,
     pub notification_backend: crate::config::NotifyBackend,
     pub watch_probe_timeout: Duration,
     pub watch_degraded_after: u32,
@@ -667,6 +673,12 @@ pub fn resolve(config: &Config, env: EnvFn) -> Result<Resolved> {
         config.notifications.enabled,
         &mut overrides,
     )?;
+    let restart_takeover_failed = switch_key(
+        env,
+        &RESTART_TAKEOVER_FAILED_KEY,
+        config.restart.takeover_failed,
+        &mut overrides,
+    )?;
     let notification_backend = plain_key(
         env,
         &NOTIFICATION_BACKEND_KEY,
@@ -843,6 +855,7 @@ pub fn resolve(config: &Config, env: EnvFn) -> Result<Resolved> {
             notifications,
             notification_style,
             notification_osascript,
+            restart_takeover_failed,
             notification_backend,
             watch_probe_timeout,
             watch_degraded_after,
@@ -1196,6 +1209,22 @@ mod tests {
         let text = format!("{err:#}");
         assert!(text.contains("GTUNNEL_NOTIFICATION_BACKEND"), "{text}");
         assert!(text.contains("is not auto or terminal"), "{text}");
+    }
+
+    #[test]
+    fn a_session_iap_would_not_resume_is_left_to_gcloud_unless_asked() {
+        assert!(!settings_of("", &[]).restart_takeover_failed);
+        let file = "[restart]\ntakeover_failed = true\n";
+        assert!(settings_of(file, &[]).restart_takeover_failed);
+        assert!(
+            !settings_of(file, &[("GTUNNEL_RESTART_TAKEOVER_FAILED", "off")])
+                .restart_takeover_failed
+        );
+        assert!(
+            settings_of("", &[("GTUNNEL_RESTART_TAKEOVER_FAILED", "on")]).restart_takeover_failed
+        );
+        let err = resolve_with("", &[("GTUNNEL_RESTART_TAKEOVER_FAILED", "later")]).unwrap_err();
+        assert!(format!("{err:#}").contains("GTUNNEL_RESTART_TAKEOVER_FAILED"));
     }
 
     #[test]

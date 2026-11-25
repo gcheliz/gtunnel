@@ -366,6 +366,11 @@ pub struct RestartConfig {
     pub min_uptime: String,
     pub base_backoff: String,
     pub max_backoff: String,
+    /// End a gcloud that IAP refused to resume after a network change, so a
+    /// fresh session starts at once. Off unless asked for, and not written
+    /// back when off.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub takeover_failed: bool,
 }
 
 impl Default for RestartConfig {
@@ -376,6 +381,7 @@ impl Default for RestartConfig {
             min_uptime: "60s".to_string(),
             base_backoff: "10s".to_string(),
             max_backoff: "5m".to_string(),
+            takeover_failed: false,
         }
     }
 }
