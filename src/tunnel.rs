@@ -297,6 +297,12 @@ pub fn diagnose_log_line(line: &str, credential_file: bool) -> Option<String> {
             "The instance does not exist or is stopped. Start it, or check its name and zone.",
         ),
         (
+            "[4077:",
+            "IAP refused to resume the session after a network change. gcloud keeps retrying \
+             for up to 15 minutes; `gtunnel restart` starts a fresh session now, at the cost \
+             of the connections that were open.",
+        ),
+        (
             "Unable to reconnect within",
             "gcloud gave up reconnecting to IAP after 15 minutes; clients on this tunnel were \
              cut. See Limits in docs/architecture.md.",
@@ -877,6 +883,19 @@ mod tests {
 
     // Review Focus 1 and 3: the log is the only place these failures surface
     // The two close codes the IAP FAQ lists that had no hint (#458)
+    #[test]
+    fn a_4077_says_the_session_could_not_be_resumed_and_what_starts_a_fresh_one() {
+        let hint = diagnose_log_line(
+            "WARNING: [3] Error while connecting [4077: 'Failed to takeover the existing session'].",
+            false,
+        )
+        .expect("a hint for 4077");
+        assert!(hint.contains("resume the session"), "{hint}");
+        assert!(hint.contains("gtunnel restart"), "{hint}");
+        // A close code is matched exactly: 40770 is not it
+        assert_eq!(diagnose_log_line("[40770: other]", false), None);
+    }
+
     #[test]
     fn a_4010_points_at_the_client_and_a_4047_at_the_instance() {
         let hint = diagnose_log_line(
