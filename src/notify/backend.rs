@@ -23,7 +23,11 @@ pub(super) enum Step {
     /// The freedesktop notification service on the session bus, which every
     /// Linux desktop runs, so nothing has to be installed for it
     #[cfg(target_os = "linux")]
-    Bus { title: String, body: String },
+    Bus {
+        title: String,
+        body: String,
+        hints: super::linux_bus::Hints,
+    },
 }
 
 impl Step {
@@ -56,8 +60,8 @@ impl Step {
                 ))
             }
             #[cfg(target_os = "linux")]
-            Step::Bus { title, body } => {
-                super::linux_bus::send(title, body, crate::proc::NOTIFY_BOUND)
+            Step::Bus { title, body, hints } => {
+                super::linux_bus::send(title, body, hints, crate::proc::NOTIFY_BOUND)
                     .map_err(|e| e.to_string())
             }
         }
@@ -102,7 +106,57 @@ pub(super) fn chain(title: &str, body: &str) -> Vec<Step> {
         Step::Bus {
             title: title.to_string(),
             body: body.to_string(),
+            hints: super::linux_bus::Hints::default(),
         },
         Step::new("notify-send", &[title, body]),
     ];
+}
+
+/// `chain` for `notifications.style = "rich"`: the same notifiers in the same
+/// order, each asked for the columns of the style it can show.
+pub(super) fn chain_rich(title: &str, body: &str, style: &super::style::Style) -> Vec<Step> {
+    #[cfg(target_os = "macos")]
+    return vec![
+        Step::new(
+            "terminal-notifier",
+            &[
+                "-title",
+                title,
+                "-subtitle",
+                style.label,
+                "-message",
+                body,
+                "-sound",
+                style.sound,
+            ],
+        ),
+        Step::new(
+            "osascript",
+            &["-e", &osascript_body_rich(title, body, style)],
+        ),
+    ];
+    #[cfg(not(target_os = "macos"))]
+    return vec![
+        #[cfg(target_os = "linux")]
+        Step::Bus {
+            title: title.to_string(),
+            body: body.to_string(),
+            hints: super::linux_bus::Hints {
+                urgency: Some(style.urgency),
+                category: Some(style.category),
+            },
+        },
+        Step::new("notify-send", &[title, body]),
+    ];
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn osascript_body_rich(title: &str, body: &str, style: &super::style::Style) -> String {
+    format!(
+        "display notification \"{}\" with title \"{}\" subtitle \"{}\" sound name \"{}\"",
+        applescript_quote(body),
+        applescript_quote(title),
+        applescript_quote(style.label),
+        applescript_quote(style.sound),
+    )
 }

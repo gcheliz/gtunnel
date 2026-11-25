@@ -447,6 +447,32 @@ impl RestartConfig {
 /// "it broke", "it is struggling", "it got better" and "it started", and a
 /// finer table is a config nobody reads. `up` is off because the person who
 /// ran `start` is looking at it.
+/// How a notification looks. `plain` is what notifications always looked like
+/// and is the default; `rich` adds a glyph, a severity-keyed urgency and
+/// category on Linux, and a subtitle and sound on macOS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NotifyStyle {
+    #[default]
+    Plain,
+    Rich,
+}
+
+impl NotifyStyle {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            NotifyStyle::Plain => "plain",
+            NotifyStyle::Rich => "rich",
+        }
+    }
+
+    // Plain is not written back, so a file that never named a style is not
+    // rewritten to name one
+    fn is_plain(&self) -> bool {
+        *self == NotifyStyle::Plain
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NotifyConfig {
@@ -457,6 +483,8 @@ pub struct NotifyConfig {
     pub degraded: bool,
     pub recovered: bool,
     pub failed: bool,
+    #[serde(skip_serializing_if = "NotifyStyle::is_plain")]
+    pub style: NotifyStyle,
 }
 
 impl Default for NotifyConfig {
@@ -467,6 +495,7 @@ impl Default for NotifyConfig {
             degraded: true,
             recovered: true,
             failed: true,
+            style: NotifyStyle::Plain,
         }
     }
 }

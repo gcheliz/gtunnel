@@ -82,6 +82,7 @@ fn a_bad_settings_variable_exits_2_naming_it_before_the_command_runs() {
         ("GTUNNEL_SERVICE_CALL_TIMEOUT", "0s"),
         ("GTUNNEL_DISCOVERY", "maybe"),
         ("GTUNNEL_NOTIFICATIONS", "2"),
+        ("GTUNNEL_NOTIFICATION_STYLE", "loud"),
     ] {
         let out = h.run_with_env(&["list"], &[(var, value)]);
         assert_eq!(out.status.code(), Some(2), "{var}: {}", stderr(&out));

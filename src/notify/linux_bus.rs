@@ -22,23 +22,37 @@ pub type NotifyArgs<'a> = (
     i32,
 );
 
-/// A new notification (`replaces_id` 0) that expires when the server
-/// decides (-1).
-pub fn args<'a>(title: &'a str, body: &'a str) -> NotifyArgs<'a> {
-    (
-        "gtunnel",
-        0,
-        "",
-        title,
-        body,
-        Vec::new(),
-        HashMap::new(),
-        -1,
-    )
+/// What a rich notification asks of the service beyond words. Both are
+/// optional hints in the specification: a server that ignores one still shows
+/// the notification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Hints {
+    /// 0 low, 1 normal, 2 critical
+    pub urgency: Option<u8>,
+    pub category: Option<&'static str>,
 }
 
-pub fn send(title: &str, body: &str, bound: Duration) -> Result<()> {
-    send_on(zbus::connection::Builder::session(), title, body, bound)
+/// A new notification (`replaces_id` 0) that expires when the server
+/// decides (-1).
+pub fn args<'a>(title: &'a str, body: &'a str, hints: &Hints) -> NotifyArgs<'a> {
+    let mut sent = HashMap::new();
+    if let Some(urgency) = hints.urgency {
+        sent.insert("urgency", Variant::from(urgency));
+    }
+    if let Some(category) = hints.category {
+        sent.insert("category", Variant::from(category));
+    }
+    ("gtunnel", 0, "", title, body, Vec::new(), sent, -1)
+}
+
+pub fn send(title: &str, body: &str, hints: &Hints, bound: Duration) -> Result<()> {
+    send_on(
+        zbus::connection::Builder::session(),
+        title,
+        body,
+        hints,
+        bound,
+    )
 }
 
 /// Whether something on the bus owns the notification service
@@ -81,6 +95,7 @@ pub fn send_on(
     bus: zbus::connection::Builder<'_>,
     title: &str,
     body: &str,
+    hints: &Hints,
     bound: Duration,
 ) -> Result<()> {
     within(bound, async {
@@ -90,7 +105,7 @@ pub fn send_on(
             PATH,
             Some(SERVICE),
             "Notify",
-            &args(title, body),
+            &args(title, body, hints),
         )
         .await?;
         Ok(())
