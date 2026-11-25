@@ -16,17 +16,20 @@ mod check;
 mod dispatch;
 #[cfg(target_os = "linux")]
 mod linux_bus;
+mod spool;
 mod style;
 mod terminal;
 #[cfg(test)]
 mod tests;
 
 pub use check::check;
-pub use dispatch::flush;
 
 /// How much a notification matters, least to most, so the most serious of
 /// several can stand for all of them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
 pub enum Severity {
     /// Something started
     Info,
@@ -85,7 +88,107 @@ pub fn notify(n: &Notification) {
         osascript: settings.notification_osascript,
         backend: settings.notification_backend,
     };
+    // A process with no terminal hands the notification to a TUI that is open
+    // and beating, which shows it by escape sequence; this process is the TUI
+    // when the terminal is its own, and then the terminal step is what runs
+    if how.backend == crate::config::NotifyBackend::Terminal
+        && !terminal::is_open()
+        && let Some(dir) = state_dir()
+        && spool::tui_fresh(&dir, now_secs())
+        && spool::write(&dir, n, now_secs()).is_ok()
+    {
+        return;
+    }
     dispatch::PENDING.track(dispatch::spawn_chain(steps_for(n, &how)));
+}
+
+fn state_dir() -> Option<std::path::PathBuf> {
+    crate::config::config_dir().ok()
+}
+
+fn now_secs() -> u64 {
+    crate::lifecycle::now_secs()
+}
+
+/// Lets the notifications already sent finish before the process exits, and
+/// says on stderr when one could not be delivered. Ahead of that, whatever a
+/// TUI was handed and never took is delivered the ordinary way: the TUI went
+/// away first, and an alert must not wait for the next one to be sent.
+pub fn flush() {
+    deliver_stale_spool();
+    dispatch::flush();
+}
+
+fn deliver_stale_spool() {
+    let settings = crate::settings::current();
+    if settings.notification_backend != crate::config::NotifyBackend::Terminal
+        || !settings.notifications
+    {
+        return;
+    }
+    let Some(dir) = state_dir() else {
+        return;
+    };
+    let how = Options {
+        style: settings.notification_style,
+        osascript: settings.notification_osascript,
+        // The terminal is the TUI's, and it did not take these
+        backend: crate::config::NotifyBackend::Auto,
+    };
+    for entry in spool::take_stale(&dir, now_secs()) {
+        let n = entry.into_notification();
+        dispatch::PENDING.track(dispatch::spawn_chain(steps_for(&n, &how)));
+    }
+}
+
+/// Whether this TUI is to take notifications from the watchdog: the person
+/// asked for the terminal, notifications are on, and this terminal can show
+/// one. Read once when the TUI starts, so a setting changed meanwhile applies
+/// to the next one, and a TUI that is not asked pays nothing per tick.
+pub fn terminal_handoff_wanted() -> bool {
+    let settings = crate::settings::current();
+    settings.notifications
+        && settings.notification_backend == crate::config::NotifyBackend::Terminal
+        && terminal::detect(&|name| std::env::var(name).ok()).is_some()
+}
+
+/// What such a TUI does on each tick: says it is here, and shows what a
+/// process without a terminal left for it.
+pub fn terminal_tick() {
+    let Some(dir) = state_dir() else {
+        return;
+    };
+    let _ = spool::beat(&dir, now_secs());
+    let entries = spool::take_all(&dir);
+    if entries.is_empty() {
+        return;
+    }
+    let settings = crate::settings::current();
+    for entry in entries {
+        let n = entry.into_notification();
+        let (title, body) = shown(&n, settings.notification_style);
+        // A failed step here is a terminal that stopped being one; the entry
+        // is already taken, so it is the desktop's now
+        if terminal::deliver(&title, &body).is_err() {
+            let how = Options {
+                style: settings.notification_style,
+                osascript: settings.notification_osascript,
+                backend: crate::config::NotifyBackend::Auto,
+            };
+            dispatch::PENDING.track(dispatch::spawn_chain(steps_for(&n, &how)));
+        }
+    }
+}
+
+/// The title and the words a notification is shown with
+fn shown(n: &Notification, how: crate::config::NotifyStyle) -> (String, String) {
+    match how {
+        crate::config::NotifyStyle::Plain => (n.title().to_string(), n.body.clone()),
+        crate::config::NotifyStyle::Rich => (
+            style::title(&style::of(n.severity), n.title()),
+            n.body.clone(),
+        ),
+    }
 }
 
 /// How a notification is delivered, as the settings resolve it

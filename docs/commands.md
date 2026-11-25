@@ -915,6 +915,14 @@ are never in a terminal) or the terminal is not one of these:
 | iTerm2, Ghostty | `OSC 9` |
 | WezTerm, foot | `OSC 777` |
 
+With a watchdog installed the watchdog is the one that notices a change, and it is never in a
+terminal. So an open TUI that was started with `terminal` beats `run/tui.heartbeat` once a second,
+and the watchdog leaves its notification in `run/notify-spool/` instead of starting a notifier; the
+TUI shows it. A notification the TUI has not taken within 20 seconds (it was closed in between) is
+delivered by the platform's notifiers by whichever gtunnel command ends next, the watchdog's next
+pass included, so a hand-off can delay an alert and cannot lose one. The TUI reads the setting when
+it starts, so change it and reopen.
+
 Terminal.app, VS Code's terminal, a plain `xterm` and a Linux console are not known to show
 notifications and fall back. Inside tmux the sequence is wrapped for passthrough, which tmux
 drops unless `set -g allow-passthrough on`. A terminal shows the notification as its own: its
