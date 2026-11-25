@@ -32,9 +32,25 @@ pub struct Hints {
     pub category: Option<&'static str>,
 }
 
-/// A new notification (`replaces_id` 0) that expires when the server
-/// decides (-1).
-pub fn args<'a>(title: &'a str, body: &'a str, hints: &Hints) -> NotifyArgs<'a> {
+/// What a rich notification looks like beyond its words: an icon, and the
+/// banner it stands in for. The default is neither, which is what plain sends.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Look<'a> {
+    /// A file path or an icon name; empty is the server's own choice
+    pub icon: &'a str,
+    pub replaces_id: u32,
+}
+
+/// A notification that expires when the server decides (-1). `replaces_id` 0 is a
+/// new one, as is any id the server no longer knows; `icon` is empty for the
+/// server's own choice.
+pub fn args<'a>(
+    title: &'a str,
+    body: &'a str,
+    hints: &Hints,
+    icon: &'a str,
+    replaces_id: u32,
+) -> NotifyArgs<'a> {
     let mut sent = HashMap::new();
     if let Some(urgency) = hints.urgency {
         sent.insert("urgency", Variant::from(urgency));
@@ -42,15 +58,25 @@ pub fn args<'a>(title: &'a str, body: &'a str, hints: &Hints) -> NotifyArgs<'a> 
     if let Some(category) = hints.category {
         sent.insert("category", Variant::from(category));
     }
-    ("gtunnel", 0, "", title, body, Vec::new(), sent, -1)
+    (
+        "gtunnel",
+        replaces_id,
+        icon,
+        title,
+        body,
+        Vec::new(),
+        sent,
+        -1,
+    )
 }
 
-pub fn send(title: &str, body: &str, hints: &Hints, bound: Duration) -> Result<()> {
+pub fn send(title: &str, body: &str, hints: &Hints, look: &Look, bound: Duration) -> Result<u32> {
     send_on(
         zbus::connection::Builder::session(),
         title,
         body,
         hints,
+        look,
         bound,
     )
 }
@@ -96,18 +122,21 @@ pub fn send_on(
     title: &str,
     body: &str,
     hints: &Hints,
+    look: &Look,
     bound: Duration,
-) -> Result<()> {
+) -> Result<u32> {
     within(bound, async {
         let bus = bus.build().await?;
-        bus.call_method(
-            Some(SERVICE),
-            PATH,
-            Some(SERVICE),
-            "Notify",
-            &args(title, body, hints),
-        )
-        .await?;
-        Ok(())
+        let reply = bus
+            .call_method(
+                Some(SERVICE),
+                PATH,
+                Some(SERVICE),
+                "Notify",
+                &args(title, body, hints, look.icon, look.replaces_id),
+            )
+            .await?;
+        // The id the server gave it, which a later notification can replace
+        reply.body().deserialize::<u32>()
     })
 }

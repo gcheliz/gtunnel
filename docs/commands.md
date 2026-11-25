@@ -929,6 +929,14 @@ drops unless `set -g allow-passthrough on`. A terminal shows the notification as
 icon, its permission prompt, and nothing while that terminal has focus if it is set to hold
 back notifications from the window in front.
 
+On Linux `rich` also gives a notification gtunnel's icon and lets it replace the banner it is about,
+so a tunnel that flaps updates one banner and does not stack a new one each time. The icon is a small
+SVG written once to `~/.local/share/gtunnel/gtunnel.svg` (the data directory of the desktop), and the
+id of each tunnel's last banner is kept in `run/notify-ids/`. A server that has forgotten an id shows a
+new banner, and one that ignores the icon shows its own. macOS shows neither: `osascript` and
+`terminal-notifier` have no way to carry an icon of their own, so the banner keeps the icon of the
+program that showed it.
+
 A critical notification stays on screen until dismissed in some desktops (GNOME does this), which
 is why `rich` is a choice and not the default. A notification server that ignores a hint still
 shows the notification.

@@ -14,6 +14,10 @@
 mod backend;
 mod check;
 mod dispatch;
+// Only the freedesktop notifier carries an icon or replaces a banner; the code is
+// not platform specific, so it is built and tested everywhere
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod identity;
 #[cfg(target_os = "linux")]
 mod linux_bus;
 mod spool;
@@ -224,7 +228,8 @@ fn steps_for(n: &Notification, how: &Options) -> Vec<backend::Step> {
         crate::config::NotifyStyle::Rich => {
             let style = style::of(n.severity);
             let title = style::title(&style, n.title());
-            let steps = backend::chain_rich(&title, &n.body, &style, how.osascript);
+            let steps =
+                backend::chain_rich(&title, &n.body, &style, n.group.as_deref(), how.osascript);
             (title, steps)
         }
     };
