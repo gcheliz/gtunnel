@@ -891,6 +891,21 @@ Notifications are off until you turn them on: press `N` in the TUI, or set `enab
 `enabled = false`. `GTUNNEL_NOTIFICATIONS=true` turns them on for one run and
 `GTUNNEL_NOTIFICATIONS=false` forces them off, whatever the file says.
 
+`style` is how a notification looks, `plain` unless you set it: `plain` is what notifications
+always were, and `rich` (`style = "rich"` under `[notifications]`, or `GTUNNEL_NOTIFICATION_STYLE=rich`)
+adds what each platform can show.
+
+| Severity | Glyph | Linux urgency, category | macOS subtitle, sound |
+|---|---|---|---|
+| Failed or stopped | `✖` | critical, `network.error` | `Failed`, Basso |
+| Unhealthy | `⚠` | normal, `network.disconnected` | `Unhealthy`, Sosumi |
+| Recovered | `✔` | low, `network.connected` | `Recovered`, Glass |
+| Started | `●` | low, `network.connected` | `Started`, Pop |
+
+A critical notification stays on screen until dismissed in some desktops (GNOME does this), which
+is why `rich` is a choice and not the default. A notification server that ignores a hint still
+shows the notification.
+
 A `config.toml` written before `config_version = 2` was switched off once, on the first
 command that read it, and says so on stderr from an interactive command (not from the
 watchdog or `mcp`). Setting `enabled = true` afterwards stays on.

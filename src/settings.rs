@@ -225,6 +225,11 @@ const NOTIFICATIONS_KEY: Key = Key {
     var: "GTUNNEL_NOTIFICATIONS",
     legacy: Some("GTUNNEL_NO_NOTIFY"),
 };
+const NOTIFICATION_STYLE_KEY: Key = Key {
+    name: "notifications.style",
+    var: "GTUNNEL_NOTIFICATION_STYLE",
+    legacy: None,
+};
 const WATCH_PROBE_TIMEOUT_KEY: Key = Key {
     name: "watch.probe_timeout",
     var: "GTUNNEL_WATCH_PROBE_TIMEOUT",
@@ -320,6 +325,7 @@ pub struct Settings {
     pub update_check_interval: Duration,
     pub discovery: bool,
     pub notifications: bool,
+    pub notification_style: crate::config::NotifyStyle,
     pub watch_probe_timeout: Duration,
     pub watch_degraded_after: u32,
     pub watch_reconnect_grace: bool,
@@ -406,6 +412,19 @@ fn parse_bool(source: &str, raw: &str) -> Result<bool> {
         "false" | "no" | "off" | "0" => Ok(false),
         _ => Err(bad(source, format!("'{raw}' is not true or false"))),
     }
+}
+
+fn parse_notify_style(source: &str, raw: &str) -> Result<crate::config::NotifyStyle> {
+    use crate::config::NotifyStyle;
+    match raw.to_ascii_lowercase().as_str() {
+        "plain" => Ok(NotifyStyle::Plain),
+        "rich" => Ok(NotifyStyle::Rich),
+        _ => Err(bad(source, format!("'{raw}' is not plain or rich"))),
+    }
+}
+
+fn show_notify_style(style: crate::config::NotifyStyle) -> String {
+    style.as_str().to_string()
 }
 
 fn shown(d: Duration) -> String {
@@ -617,6 +636,14 @@ pub fn resolve(config: &Config, env: EnvFn) -> Result<Resolved> {
         config.notifications.enabled,
         &mut overrides,
     )?;
+    let notification_style = plain_key(
+        env,
+        &NOTIFICATION_STYLE_KEY,
+        config.notifications.style.as_str(),
+        parse_notify_style,
+        show_notify_style,
+        &mut overrides,
+    )?;
     let watch = &config.watch;
     let watch_probe_timeout = plain_key(
         env,
@@ -763,6 +790,7 @@ pub fn resolve(config: &Config, env: EnvFn) -> Result<Resolved> {
             update_check_interval,
             discovery,
             notifications,
+            notification_style,
             watch_probe_timeout,
             watch_degraded_after,
             watch_reconnect_grace,
@@ -1057,6 +1085,35 @@ mod tests {
         assert!(settings_of("", &[("GTUNNEL_WATCH_RECONNECT_GRACE", "on")]).watch_reconnect_grace);
         let err = resolve_with("", &[("GTUNNEL_WATCH_RECONNECT_GRACE", "sometimes")]).unwrap_err();
         assert!(format!("{err:#}").contains("GTUNNEL_WATCH_RECONNECT_GRACE"));
+    }
+
+    #[test]
+    fn a_notification_is_plain_unless_the_file_or_a_variable_says_rich() {
+        use crate::config::NotifyStyle;
+        assert_eq!(settings_of("", &[]).notification_style, NotifyStyle::Plain);
+        let file = "[notifications]\nstyle = \"rich\"\n";
+        assert_eq!(settings_of(file, &[]).notification_style, NotifyStyle::Rich);
+        // A variable beats the file, either way round, and doctor can name it
+        let r = resolve_with(file, &[("GTUNNEL_NOTIFICATION_STYLE", "plain")]).expect("resolves");
+        assert_eq!(r.settings.notification_style, NotifyStyle::Plain);
+        let seen: Vec<_> = r.overrides.iter().map(|o| (o.key, o.variable)).collect();
+        assert_eq!(
+            seen,
+            vec![("notifications.style", "GTUNNEL_NOTIFICATION_STYLE")]
+        );
+        assert_eq!(
+            settings_of("", &[("GTUNNEL_NOTIFICATION_STYLE", "Rich")]).notification_style,
+            NotifyStyle::Rich,
+            "the value is not case sensitive"
+        );
+    }
+
+    #[test]
+    fn a_style_that_is_neither_plain_nor_rich_is_refused_and_named() {
+        let err = resolve_with("", &[("GTUNNEL_NOTIFICATION_STYLE", "loud")]).unwrap_err();
+        let (_, text) = exit_and_text(&err);
+        assert!(text.contains("GTUNNEL_NOTIFICATION_STYLE"), "{text}");
+        assert!(text.contains("'loud' is not plain or rich"), "{text}");
     }
 
     #[test]

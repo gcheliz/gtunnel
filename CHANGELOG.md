@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.3.43](https://github.com/gcheliz/gtunnel/compare/v0.3.42...v0.3.43) - 2026-11-25
+
+### Fixed
+
+- *(tunnel)* explain the 4077 close when IAP cannot resume a session ([#501](https://github.com/gcheliz/gtunnel/pull/501))
+
 ## [0.3.42](https://github.com/gcheliz/gtunnel/compare/v0.3.41...v0.3.42) - 2026-11-25
 
 ### Changed

@@ -16,6 +16,7 @@ mod check;
 mod dispatch;
 #[cfg(target_os = "linux")]
 mod linux_bus;
+mod style;
 #[cfg(test)]
 mod tests;
 
@@ -77,7 +78,20 @@ pub fn notify(n: &Notification) {
     if !crate::settings::current().notifications {
         return;
     }
-    dispatch::PENDING.track(dispatch::spawn_chain(backend::chain(n.title(), &n.body)));
+    let steps = steps_for(n, crate::settings::current().notification_style);
+    dispatch::PENDING.track(dispatch::spawn_chain(steps));
+}
+
+/// The notifiers to try for `n`. Plain is what notifications always were; rich
+/// reads the style of the notification's severity.
+fn steps_for(n: &Notification, how: crate::config::NotifyStyle) -> Vec<backend::Step> {
+    match how {
+        crate::config::NotifyStyle::Plain => backend::chain(n.title(), &n.body),
+        crate::config::NotifyStyle::Rich => {
+            let style = style::of(n.severity);
+            backend::chain_rich(&style::title(&style, n.title()), &n.body, &style)
+        }
+    }
 }
 
 /// What lifecycle code talks to, so a test can assert on what would have been
