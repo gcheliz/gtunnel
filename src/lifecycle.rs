@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::config::NotifyConfig;
-use crate::notify::Notifier;
+use crate::notify::{Notification, Notifier, Severity};
 use crate::state::TunnelStatus;
 
 /// How old the watchdog's heartbeat may be before the TUI stops trusting it to
@@ -78,22 +78,41 @@ enum Kind {
     Up,
 }
 
+/// One edge's worth saying: what it counts as when several are said at once,
+/// and what is said.
+struct Said {
+    kind: Kind,
+    notification: Notification,
+}
+
 /// What an edge is worth saying, and how it counts when several are said at
 /// once.
-fn classify(edge: &Edge, cfg: &NotifyConfig) -> Option<(Kind, String)> {
+fn classify(edge: &Edge, cfg: &NotifyConfig) -> Option<Said> {
     use State::*;
     if edge.cause == Cause::User {
         return None;
     }
     let name = format!("{} ({})", edge.tunnel, edge.account);
+    let said = |kind, severity, words: String| Said {
+        kind,
+        notification: Notification::new(severity, words)
+            .about(format!("{}/{}", edge.account, edge.tunnel)),
+    };
     match (edge.from, edge.to) {
-        (Starting, Up) => cfg.up.then(|| (Kind::Up, format!("{name} is up"))),
-        (Starting, Failed) => cfg
-            .failed
-            .then(|| (Kind::Unhealthy, format!("{name} failed to start"))),
-        (Starting, Degraded) => cfg.degraded.then(|| {
-            (
+        (Starting, Up) => cfg
+            .up
+            .then(|| said(Kind::Up, Severity::Info, format!("{name} is up"))),
+        (Starting, Failed) => cfg.failed.then(|| {
+            said(
                 Kind::Unhealthy,
+                Severity::Failure,
+                format!("{name} failed to start"),
+            )
+        }),
+        (Starting, Degraded) => cfg.degraded.then(|| {
+            said(
+                Kind::Unhealthy,
+                Severity::Warning,
                 format!("{name} started but is not answering"),
             )
         }),
@@ -102,18 +121,30 @@ fn classify(edge: &Edge, cfg: &NotifyConfig) -> Option<(Kind, String)> {
         (Starting, Stopped) => None,
         // Still unhealthy: said once already
         (Degraded, Degraded) | (Failed, Degraded) => None,
-        (_, Degraded) => cfg
-            .degraded
-            .then(|| (Kind::Unhealthy, format!("{name} is unhealthy"))),
-        (Degraded | Failed, Up) => cfg
-            .recovered
-            .then(|| (Kind::Recovered, format!("{name} is healthy again"))),
+        (_, Degraded) => cfg.degraded.then(|| {
+            said(
+                Kind::Unhealthy,
+                Severity::Warning,
+                format!("{name} is unhealthy"),
+            )
+        }),
+        (Degraded | Failed, Up) => cfg.recovered.then(|| {
+            said(
+                Kind::Recovered,
+                Severity::Recovered,
+                format!("{name} is healthy again"),
+            )
+        }),
         (_, Failed) => cfg
             .failed
-            .then(|| (Kind::Unhealthy, format!("{name} failed"))),
-        (Up | Degraded, Stopped) => cfg
-            .failed
-            .then(|| (Kind::Unhealthy, format!("{name} stopped unexpectedly"))),
+            .then(|| said(Kind::Unhealthy, Severity::Failure, format!("{name} failed"))),
+        (Up | Degraded, Stopped) => cfg.failed.then(|| {
+            said(
+                Kind::Unhealthy,
+                Severity::Failure,
+                format!("{name} stopped unexpectedly"),
+            )
+        }),
         _ => None,
     }
 }
@@ -121,7 +152,7 @@ fn classify(edge: &Edge, cfg: &NotifyConfig) -> Option<(Kind, String)> {
 /// The words for one edge, or `None` when it is not worth interrupting for.
 #[cfg(test)]
 pub fn policy(edge: &Edge, cfg: &NotifyConfig) -> Option<String> {
-    classify(edge, cfg).map(|(_, message)| message)
+    classify(edge, cfg).map(|said| said.notification.body)
 }
 
 /// One pass's edges, one notification.
@@ -129,12 +160,12 @@ pub fn policy(edge: &Edge, cfg: &NotifyConfig) -> Option<String> {
 /// The pass is the unit: a laptop waking from sleep finds every tunnel
 /// changed at once, and five alerts in a row say less than one that counts.
 pub fn announce_with(notifier: &dyn Notifier, edges: &[Edge], cfg: &NotifyConfig) {
-    let said: Vec<(Kind, String)> = edges.iter().filter_map(|e| classify(e, cfg)).collect();
+    let said: Vec<Said> = edges.iter().filter_map(|e| classify(e, cfg)).collect();
     match said.as_slice() {
         [] => {}
-        [(_, message)] => notifier.send("gtunnel", message),
+        [one] => notifier.send(&one.notification),
         many => {
-            let count = |want: fn(&Kind) -> bool| many.iter().filter(|(k, _)| want(k)).count();
+            let count = |want: fn(&Kind) -> bool| many.iter().filter(|s| want(&s.kind)).count();
             let parts: Vec<String> = [
                 (count(|k| matches!(k, Kind::Unhealthy)), "unhealthy"),
                 (count(|k| matches!(k, Kind::Recovered)), "recovered"),
@@ -144,10 +175,17 @@ pub fn announce_with(notifier: &dyn Notifier, edges: &[Edge], cfg: &NotifyConfig
             .filter(|(n, _)| *n > 0)
             .map(|(n, what)| format!("{n} {what}"))
             .collect();
-            notifier.send(
-                "gtunnel",
-                &format!("{} tunnels: {}", many.len(), parts.join(", ")),
-            );
+            // The worst of them stands for all, and a summary is about no one
+            // tunnel in particular
+            let worst = many
+                .iter()
+                .map(|s| s.notification.severity)
+                .max()
+                .unwrap_or(Severity::Info);
+            notifier.send(&Notification::new(
+                worst,
+                format!("{} tunnels: {}", many.len(), parts.join(", ")),
+            ));
         }
     }
 }
@@ -404,8 +442,8 @@ mod tests {
     pub struct Recorder(RefCell<Vec<String>>);
 
     impl Notifier for Recorder {
-        fn send(&self, _title: &str, body: &str) {
-            self.0.borrow_mut().push(body.to_string());
+        fn send(&self, n: &Notification) {
+            self.0.borrow_mut().push(n.body.clone());
         }
     }
 
@@ -713,6 +751,87 @@ mod tests {
         assert_eq!(
             rec.0.borrow().as_slice(),
             ["3 tunnels: 2 unhealthy, 1 recovered"]
+        );
+    }
+
+    /// Keeps the whole notification, where `Recorder` keeps only the words
+    #[derive(Default)]
+    struct Full(RefCell<Vec<Notification>>);
+
+    impl Notifier for Full {
+        fn send(&self, n: &Notification) {
+            self.0.borrow_mut().push(n.clone());
+        }
+    }
+
+    fn severity_of(from: State, to: State) -> Option<Severity> {
+        classify(&edge(from, to, Cause::Observed), &NotifyConfig::default())
+            .map(|said| said.notification.severity)
+    }
+
+    #[test]
+    fn each_edge_carries_how_serious_it_is() {
+        assert_eq!(
+            severity_of(State::Up, State::Failed),
+            Some(Severity::Failure)
+        );
+        assert_eq!(
+            severity_of(State::Up, State::Stopped),
+            Some(Severity::Failure)
+        );
+        assert_eq!(
+            severity_of(State::Starting, State::Failed),
+            Some(Severity::Failure)
+        );
+        assert_eq!(
+            severity_of(State::Up, State::Degraded),
+            Some(Severity::Warning)
+        );
+        assert_eq!(
+            severity_of(State::Starting, State::Degraded),
+            Some(Severity::Warning)
+        );
+        assert_eq!(
+            severity_of(State::Degraded, State::Up),
+            Some(Severity::Recovered)
+        );
+        let up = NotifyConfig {
+            up: true,
+            ..Default::default()
+        };
+        let started = classify(&edge(State::Starting, State::Up, Cause::Observed), &up);
+        assert_eq!(
+            started.map(|said| said.notification.severity),
+            Some(Severity::Info)
+        );
+    }
+
+    #[test]
+    fn one_edge_is_about_its_tunnel_and_a_summary_is_about_none() {
+        let full = Full::default();
+        announce_with(
+            &full,
+            &[edge(State::Up, State::Failed, Cause::Observed)],
+            &NotifyConfig::default(),
+        );
+        assert_eq!(full.0.borrow()[0].group.as_deref(), Some("dev/kubernetes"));
+
+        let summary = Full::default();
+        announce_with(
+            &summary,
+            &[
+                edge(State::Degraded, State::Up, Cause::Observed),
+                edge(State::Up, State::Degraded, Cause::Observed),
+            ],
+            &NotifyConfig::default(),
+        );
+        let said = summary.0.borrow();
+        assert_eq!(said.len(), 1);
+        assert_eq!(said[0].group, None);
+        assert_eq!(
+            said[0].severity,
+            Severity::Warning,
+            "the worst of a recovery and a warning is the warning"
         );
     }
 
