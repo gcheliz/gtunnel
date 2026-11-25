@@ -55,7 +55,8 @@ fn linux_speaks_the_bus_first_and_never_tries_the_macos_programs() {
         vec![
             Step::Bus {
                 title: "t".into(),
-                body: "b".into()
+                body: "b".into(),
+                hints: linux_bus::Hints::default(),
             },
             Step::new("notify-send", &["t", "b"]),
         ]
@@ -70,7 +71,8 @@ fn the_bus_call_has_the_signature_the_specification_names() {
         <linux_bus::NotifyArgs as Type>::SIGNATURE.to_string(),
         "(susssasa{sv}i)"
     );
-    let (app, replaces, _, summary, body, _, _, timeout) = linux_bus::args("t", "b");
+    let (app, replaces, _, summary, body, _, _, timeout) =
+        linux_bus::args("t", "b", &linux_bus::Hints::default());
     assert_eq!(
         (app, replaces, summary, body, timeout),
         ("gtunnel", 0, "t", "b", -1)
@@ -82,7 +84,14 @@ fn the_bus_call_has_the_signature_the_specification_names() {
 fn the_bus_step_fails_fast_when_there_is_no_bus() {
     let started = std::time::Instant::now();
     let missing = zbus::connection::Builder::address("unix:path=/nonexistent/gtunnel-bus");
-    let err = linux_bus::send_on(missing, "t", "b", std::time::Duration::from_secs(2)).unwrap_err();
+    let err = linux_bus::send_on(
+        missing,
+        "t",
+        "b",
+        &linux_bus::Hints::default(),
+        std::time::Duration::from_secs(2),
+    )
+    .unwrap_err();
     assert!(
         started.elapsed() < std::time::Duration::from_secs(3),
         "{err:#}"
@@ -245,4 +254,91 @@ fn a_notification_is_titled_for_the_program_and_grouped_only_when_asked() {
     let about = plain.about("dev/db");
     assert_eq!(about.group.as_deref(), Some("dev/db"));
     assert_eq!(about.body, "db is unhealthy");
+}
+
+#[test]
+fn every_severity_has_a_style_that_a_server_will_accept() {
+    use super::{style, Severity::*};
+    for severity in [Info, Recovered, Warning, Failure] {
+        let s = style::of(severity);
+        assert!(s.urgency <= 2, "{severity:?}: urgency is 0, 1 or 2");
+        assert!(s.category.starts_with("network."), "{severity:?}");
+        assert!(!s.glyph.is_empty() && !s.label.is_empty() && !s.sound.is_empty());
+    }
+    // Only a failure is critical, so only a failure outlasts its banner
+    assert_eq!(style::of(Failure).urgency, 2);
+    assert!([Info, Recovered, Warning]
+        .into_iter()
+        .all(|s| style::of(s).urgency < 2));
+}
+
+#[test]
+fn the_title_leads_with_the_glyph_of_the_severity() {
+    use super::{style, Severity};
+    let s = style::of(Severity::Failure);
+    assert_eq!(style::title(&s, "gtunnel"), format!("{} gtunnel", s.glyph));
+}
+
+#[test]
+fn plain_is_the_chain_notifications_always_had() {
+    use super::{steps_for, Notification, Severity};
+    for severity in [Severity::Info, Severity::Warning, Severity::Failure] {
+        let n = Notification::new(severity, "db is unhealthy");
+        assert_eq!(
+            steps_for(&n, crate::config::NotifyStyle::Plain),
+            chain("gtunnel", "db is unhealthy"),
+            "{severity:?}"
+        );
+    }
+}
+
+#[test]
+fn rich_asks_the_same_notifiers_in_the_same_order_but_not_the_same_words() {
+    use super::{steps_for, Notification, Severity};
+    let n = Notification::new(Severity::Failure, "db failed");
+    let plain = steps_for(&n, crate::config::NotifyStyle::Plain);
+    let rich = steps_for(&n, crate::config::NotifyStyle::Rich);
+    assert_eq!(plain.len(), rich.len());
+    let names = |steps: &[Step]| {
+        steps
+            .iter()
+            .map(|s| s.name().to_string())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(names(&plain), names(&rich));
+    assert_ne!(plain, rich);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_rich_macos_notification_carries_a_subtitle_and_a_sound() {
+    use super::backend::osascript_body_rich;
+    use super::{style, Severity};
+    let s = style::of(Severity::Warning);
+    let script = osascript_body_rich("t", "he said \"hi\"", &s);
+    assert!(script.starts_with("display notification"), "{script}");
+    assert!(script.contains("\\\"hi\\\""), "{script}");
+    assert!(
+        script.contains(&format!("subtitle \"{}\"", s.label)),
+        "{script}"
+    );
+    assert!(
+        script.contains(&format!("sound name \"{}\"", s.sound)),
+        "{script}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_rich_linux_notification_sends_urgency_and_category_as_hints() {
+    let hints = linux_bus::Hints {
+        urgency: Some(2),
+        category: Some("network.error"),
+    };
+    let (_, _, _, _, _, _, sent, _) = linux_bus::args("t", "b", &hints);
+    let mut keys: Vec<_> = sent.keys().copied().collect();
+    keys.sort_unstable();
+    assert_eq!(keys, ["category", "urgency"]);
+    let (_, _, _, _, _, _, none, _) = linux_bus::args("t", "b", &linux_bus::Hints::default());
+    assert!(none.is_empty(), "plain sends no hints, as before");
 }

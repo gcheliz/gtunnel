@@ -552,6 +552,7 @@ mod tests {
             degraded: false,
             recovered: false,
             failed: false,
+            ..Default::default()
         };
         for (from, to) in [
             (State::Up, State::Degraded),
