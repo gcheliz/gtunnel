@@ -260,6 +260,14 @@ A relay serves one laptop per account. The relay ports are handed out from the l
 holds, and `relay down` from either would remove the shared load balancer under the other's
 URLs. A second laptop on the same account is not supported.
 
+Measuring a machine's own cost is one command, `scripts/measure-tunnels.py PORT [PORT ...]` (and
+`--start NAME PORT` for the time from `gtunnel start` to a listening port). It reports, per local
+port, how many processes hold the tunnel and what resident memory they add up to, and the median,
+95th percentile and worst time to connect. A direct tunnel's connect is one IAP connection, so it
+takes `--samples` of them (20 by default). It measures what this machine runs and not what IAP
+allows, and the numbers below this paragraph are still missing: run it against 1, 5 and 10
+tunnels of each shape and keep the output with the gtunnel and gcloud versions it came from.
+
 Capacity is unmeasured. No test has recorded how many concurrent visitor connections one exposed
 URL carries, or what a large transfer does to the rest: every connection of a tunnel shares one
 ssh connection over one IAP WebSocket into the relay, which is an `e2-micro` unless
