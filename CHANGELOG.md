@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.3.47](https://github.com/gcheliz/gtunnel/compare/v0.3.46...v0.3.47) - 2026-11-25
+
+### Added
+
+- *(watch)* read most tunnels failing at once as the network ([#505](https://github.com/gcheliz/gtunnel/pull/505))
+
 ## [0.3.46](https://github.com/gcheliz/gtunnel/compare/v0.3.45...v0.3.46) - 2026-11-25
 
 ### Added
