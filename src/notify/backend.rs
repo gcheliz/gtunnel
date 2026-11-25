@@ -20,6 +20,8 @@ pub(super) fn osascript_body(title: &str, body: &str) -> String {
 pub(super) enum Step {
     /// A program and its arguments
     Program { program: String, args: Vec<String> },
+    /// The terminal the TUI is open in, by escape sequence
+    Terminal { title: String, body: String },
     /// The freedesktop notification service on the session bus, which every
     /// Linux desktop runs, so nothing has to be installed for it
     #[cfg(target_os = "linux")]
@@ -42,6 +44,7 @@ impl Step {
     pub(super) fn name(&self) -> &str {
         match self {
             Step::Program { program, .. } => program,
+            Step::Terminal { .. } => "terminal",
             #[cfg(target_os = "linux")]
             Step::Bus { .. } => "session bus",
         }
@@ -59,6 +62,7 @@ impl Step {
                     program,
                 ))
             }
+            Step::Terminal { title, body } => super::terminal::deliver(title, body),
             #[cfg(target_os = "linux")]
             Step::Bus { title, body, hints } => {
                 super::linux_bus::send(title, body, hints, crate::proc::NOTIFY_BOUND)

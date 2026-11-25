@@ -281,11 +281,11 @@ fn the_title_leads_with_the_glyph_of_the_severity() {
 
 #[test]
 fn plain_is_the_chain_notifications_always_had() {
-    use super::{steps_for, Notification, Severity};
+    use super::{steps_for, Notification, Options, Severity};
     for severity in [Severity::Info, Severity::Warning, Severity::Failure] {
         let n = Notification::new(severity, "db is unhealthy");
         assert_eq!(
-            steps_for(&n, crate::config::NotifyStyle::Plain, true),
+            steps_for(&n, &Options::default()),
             chain("gtunnel", "db is unhealthy", true),
             "{severity:?}"
         );
@@ -294,10 +294,16 @@ fn plain_is_the_chain_notifications_always_had() {
 
 #[test]
 fn rich_asks_the_same_notifiers_in_the_same_order_but_not_the_same_words() {
-    use super::{steps_for, Notification, Severity};
+    use super::{steps_for, Notification, Options, Severity};
     let n = Notification::new(Severity::Failure, "db failed");
-    let plain = steps_for(&n, crate::config::NotifyStyle::Plain, true);
-    let rich = steps_for(&n, crate::config::NotifyStyle::Rich, true);
+    let plain = steps_for(&n, &Options::default());
+    let rich = steps_for(
+        &n,
+        &Options {
+            style: crate::config::NotifyStyle::Rich,
+            ..Options::default()
+        },
+    );
     assert_eq!(plain.len(), rich.len());
     let names = |steps: &[Step]| {
         steps
@@ -398,4 +404,75 @@ fn on_path_finds_an_executable_file_and_nothing_else() {
     std::fs::remove_file(&tool).unwrap();
     std::fs::create_dir(&tool).unwrap();
     assert!(!super::check::on_path("terminal-notifier", Some(&path)));
+}
+
+#[test]
+fn auto_is_the_chain_notifications_always_had_and_terminal_goes_first() {
+    use super::{steps_for, Notification, Options, Severity};
+    let n = Notification::new(Severity::Failure, "db failed");
+    let auto = steps_for(&n, &Options::default());
+    let terminal = steps_for(
+        &n,
+        &Options {
+            backend: crate::config::NotifyBackend::Terminal,
+            ..Options::default()
+        },
+    );
+    assert_eq!(terminal.len(), auto.len() + 1);
+    assert_eq!(
+        terminal[0],
+        Step::Terminal {
+            title: "gtunnel".into(),
+            body: "db failed".into()
+        }
+    );
+    // Behind it, the same notifiers in the same order: a terminal that cannot
+    // show the notification costs nothing
+    assert_eq!(terminal[1..], auto[..]);
+}
+
+#[test]
+fn a_rich_terminal_notification_carries_the_glyph_in_its_title() {
+    use super::{steps_for, style, Notification, Options, Severity};
+    let n = Notification::new(Severity::Warning, "db is unhealthy");
+    let steps = steps_for(
+        &n,
+        &Options {
+            style: crate::config::NotifyStyle::Rich,
+            backend: crate::config::NotifyBackend::Terminal,
+            ..Options::default()
+        },
+    );
+    let glyph = style::of(Severity::Warning).glyph;
+    assert_eq!(
+        steps[0],
+        Step::Terminal {
+            title: format!("{glyph} gtunnel"),
+            body: "db is unhealthy".into()
+        }
+    );
+}
+
+#[test]
+fn a_terminal_step_that_cannot_deliver_says_why_and_the_chain_goes_on() {
+    // No TUI is open in a test, so the step fails with its reason, and the
+    // chain that follows it is what delivers
+    let steps = vec![
+        Step::Terminal {
+            title: "t".into(),
+            body: "b".into(),
+        },
+        Step::new("true", &[]),
+    ];
+    assert_eq!(spawn_chain(steps).join().unwrap(), None);
+    let alone = spawn_chain(vec![Step::Terminal {
+        title: "t".into(),
+        body: "b".into(),
+    }])
+    .join()
+    .unwrap();
+    assert_eq!(
+        alone.as_deref(),
+        Some("notification not delivered: terminal: the TUI is not open")
+    );
 }
