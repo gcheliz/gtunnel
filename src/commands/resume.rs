@@ -204,7 +204,13 @@ pub fn announce_login_expired(
         return;
     }
     for (account, count) in counts {
-        notifier.send("gtunnel", &login_expired_line(account, *count));
+        notifier.send(
+            &crate::notify::Notification::new(
+                crate::notify::Severity::Failure,
+                login_expired_line(account, *count),
+            )
+            .about(account),
+        );
     }
 }
 
@@ -556,8 +562,8 @@ mod tests {
     fn the_account_notice_says_it_once_and_honours_the_failure_switch() {
         struct Recorder(RefCell<Vec<String>>);
         impl crate::notify::Notifier for Recorder {
-            fn send(&self, _title: &str, body: &str) {
-                self.0.borrow_mut().push(body.to_string());
+            fn send(&self, n: &crate::notify::Notification) {
+                self.0.borrow_mut().push(n.body.clone());
             }
         }
         let counts = BTreeMap::from([("dev".to_string(), 4), ("prod".to_string(), 1)]);

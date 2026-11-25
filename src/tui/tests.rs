@@ -206,8 +206,8 @@ pub(super) fn app_with_two() -> App {
 struct Said(std::cell::RefCell<Vec<String>>);
 
 impl crate::notify::Notifier for Said {
-    fn send(&self, _title: &str, body: &str) {
-        self.0.borrow_mut().push(body.to_string());
+    fn send(&self, n: &crate::notify::Notification) {
+        self.0.borrow_mut().push(n.body.clone());
     }
 }
 
