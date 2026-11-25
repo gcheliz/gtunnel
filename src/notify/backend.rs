@@ -15,6 +15,14 @@ pub(super) fn osascript_body(title: &str, body: &str) -> String {
     )
 }
 
+/// What makes a rich notification look like gtunnel's: it carries the icon,
+/// and replaces the last banner about the same thing instead of stacking a new one.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Rich {
+    pub group: Option<String>,
+}
+
 /// One notifier to try.
 #[derive(Debug, PartialEq)]
 pub(super) enum Step {
@@ -29,6 +37,8 @@ pub(super) enum Step {
         title: String,
         body: String,
         hints: super::linux_bus::Hints,
+        /// Set for a rich notification: its icon, and the banner it replaces
+        rich: Option<Rich>,
     },
 }
 
@@ -64,10 +74,12 @@ impl Step {
             }
             Step::Terminal { title, body } => super::terminal::deliver(title, body),
             #[cfg(target_os = "linux")]
-            Step::Bus { title, body, hints } => {
-                super::linux_bus::send(title, body, hints, crate::proc::NOTIFY_BOUND)
-                    .map_err(|e| e.to_string())
-            }
+            Step::Bus {
+                title,
+                body,
+                hints,
+                rich,
+            } => send_on_bus(title, body, hints, rich.as_ref()),
         }
     }
 }
@@ -80,6 +92,39 @@ fn killed_by(status: &std::process::ExitStatus) -> Option<i32> {
 #[cfg(not(unix))]
 fn killed_by(_: &std::process::ExitStatus) -> Option<i32> {
     None
+}
+
+#[cfg(target_os = "linux")]
+fn send_on_bus(
+    title: &str,
+    body: &str,
+    hints: &super::linux_bus::Hints,
+    rich: Option<&Rich>,
+) -> Result<(), String> {
+    let bound = crate::proc::NOTIFY_BOUND;
+    let Some(rich) = rich else {
+        return super::linux_bus::send(title, body, hints, &Default::default(), bound)
+            .map(|_| ())
+            .map_err(|e| e.to_string());
+    };
+    // Without an icon or a remembered id the notification is still shown
+    let icon = super::identity::ensure_icon()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    let dir = crate::config::config_dir().ok();
+    let replaces_id = match (&dir, &rich.group) {
+        (Some(dir), Some(group)) => super::identity::last_id_in(dir, group),
+        _ => 0,
+    };
+    let look = super::linux_bus::Look {
+        icon: &icon,
+        replaces_id,
+    };
+    let id = super::linux_bus::send(title, body, hints, &look, bound).map_err(|e| e.to_string())?;
+    if let (Some(dir), Some(group)) = (&dir, &rich.group) {
+        let _ = super::identity::remember_id_in(dir, group, id);
+    }
+    Ok(())
 }
 
 pub(super) fn run_outcome(out: anyhow::Result<std::process::Output>) -> Result<(), String> {
@@ -134,6 +179,7 @@ pub(super) fn chain(title: &str, body: &str, osascript: bool) -> Vec<Step> {
             title: title.to_string(),
             body: body.to_string(),
             hints: super::linux_bus::Hints::default(),
+            rich: None,
         },
         Step::new("notify-send", &[title, body]),
     ];
@@ -156,10 +202,14 @@ pub(super) fn chain_rich(
     title: &str,
     body: &str,
     style: &super::style::Style,
+    group: Option<&str>,
     osascript: bool,
 ) -> Vec<Step> {
     #[cfg(not(target_os = "macos"))]
     let _ = osascript;
+    // Only the freedesktop service can carry an icon or replace a banner
+    #[cfg(not(target_os = "linux"))]
+    let _ = group;
     #[cfg(target_os = "macos")]
     return with_osascript(
         vec![Step::new(
@@ -191,6 +241,9 @@ pub(super) fn chain_rich(
                 urgency: Some(style.urgency),
                 category: Some(style.category),
             },
+            rich: Some(Rich {
+                group: group.map(str::to_string),
+            }),
         },
         Step::new("notify-send", &[title, body]),
     ];

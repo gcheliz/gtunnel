@@ -57,6 +57,7 @@ fn linux_speaks_the_bus_first_and_never_tries_the_macos_programs() {
                 title: "t".into(),
                 body: "b".into(),
                 hints: linux_bus::Hints::default(),
+                rich: None,
             },
             Step::new("notify-send", &["t", "b"]),
         ]
@@ -72,7 +73,7 @@ fn the_bus_call_has_the_signature_the_specification_names() {
         "(susssasa{sv}i)"
     );
     let (app, replaces, _, summary, body, _, _, timeout) =
-        linux_bus::args("t", "b", &linux_bus::Hints::default());
+        linux_bus::args("t", "b", &linux_bus::Hints::default(), "", 0);
     assert_eq!(
         (app, replaces, summary, body, timeout),
         ("gtunnel", 0, "t", "b", -1)
@@ -89,6 +90,7 @@ fn the_bus_step_fails_fast_when_there_is_no_bus() {
         "t",
         "b",
         &linux_bus::Hints::default(),
+        &linux_bus::Look::default(),
         std::time::Duration::from_secs(2),
     )
     .unwrap_err();
@@ -341,11 +343,12 @@ fn a_rich_linux_notification_sends_urgency_and_category_as_hints() {
         urgency: Some(2),
         category: Some("network.error"),
     };
-    let (_, _, _, _, _, _, sent, _) = linux_bus::args("t", "b", &hints);
+    let (_, _, _, _, _, _, sent, _) = linux_bus::args("t", "b", &hints, "", 0);
     let mut keys: Vec<_> = sent.keys().copied().collect();
     keys.sort_unstable();
     assert_eq!(keys, ["category", "urgency"]);
-    let (_, _, _, _, _, _, none, _) = linux_bus::args("t", "b", &linux_bus::Hints::default());
+    let (_, _, _, _, _, _, none, _) =
+        linux_bus::args("t", "b", &linux_bus::Hints::default(), "", 0);
     assert!(none.is_empty(), "plain sends no hints, as before");
 }
 
@@ -364,7 +367,7 @@ fn osascript_is_the_last_notifier_and_only_when_allowed() {
     assert_eq!(names(&without), ["terminal-notifier"]);
     // Rich takes the same decision
     let rich = super::style::of(super::Severity::Failure);
-    let rich_without = super::backend::chain_rich("t", "b", &rich, false);
+    let rich_without = super::backend::chain_rich("t", "b", &rich, None, false);
     assert_eq!(names(&rich_without), ["terminal-notifier"]);
 }
 
@@ -474,5 +477,47 @@ fn a_terminal_step_that_cannot_deliver_says_why_and_the_chain_goes_on() {
     assert_eq!(
         alone.as_deref(),
         Some("notification not delivered: terminal: the TUI is not open")
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_rich_linux_notification_carries_the_icon_and_the_banner_it_replaces() {
+    let (app, replaces, icon, ..) = linux_bus::args(
+        "t",
+        "b",
+        &linux_bus::Hints::default(),
+        "/home/you/.local/share/gtunnel/gtunnel.svg",
+        41,
+    );
+    assert_eq!(app, "gtunnel");
+    assert_eq!(replaces, 41);
+    assert_eq!(icon, "/home/you/.local/share/gtunnel/gtunnel.svg");
+    // Plain sends neither
+    let (_, replaces, icon, ..) = linux_bus::args("t", "b", &linux_bus::Hints::default(), "", 0);
+    assert_eq!((replaces, icon), (0, ""));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn only_a_rich_bus_step_is_asked_to_carry_an_icon_and_replace_a_banner() {
+    use super::{steps_for, Notification, Options, Severity};
+    let n = Notification::new(Severity::Failure, "db failed").about("dev/db");
+    let plain = steps_for(&n, &Options::default());
+    let rich = steps_for(
+        &n,
+        &Options {
+            style: crate::config::NotifyStyle::Rich,
+            ..Options::default()
+        },
+    );
+    let rich_of = |steps: &[Step]| match &steps[0] {
+        Step::Bus { rich, .. } => rich.clone(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(rich_of(&plain), None);
+    assert_eq!(
+        rich_of(&rich).and_then(|r| r.group).as_deref(),
+        Some("dev/db")
     );
 }
