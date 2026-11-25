@@ -89,6 +89,112 @@ fn judge(
     observe(status, probe_ok, gained_error)
 }
 
+/// The fewest tunnels that can make a partial outage. With one or two, every
+/// tunnel failing is as likely to be that tunnel as the network, and a single
+/// tunnel must always be judged as it was.
+const PARTIAL_OUTAGE_MIN: usize = 3;
+
+/// More than half of the tunnels probed this pass failed, and there were
+/// enough of them for that to mean something.
+fn mostly_failed(failed: usize, total: usize) -> bool {
+    total >= PARTIAL_OUTAGE_MIN && failed * 2 > total
+}
+
+fn partial_outage_line(failed: usize, total: usize) -> String {
+    format!("{failed} of {total} tunnels stopped answering at once, which reads as this machine's network")
+}
+
+/// What a pass found, against what the last one found.
+#[derive(Debug, PartialEq, Eq)]
+enum OutageEdge {
+    Began,
+    Ended,
+}
+
+fn outage_edge(was: bool, now: bool) -> Option<OutageEdge> {
+    match (was, now) {
+        (false, true) => Some(OutageEdge::Began),
+        (true, false) => Some(OutageEdge::Ended),
+        _ => None,
+    }
+}
+
+/// Probes every running, unparked tunnel once, together, and counts the ones
+/// that did not answer. The visits probe again: the cost is one more connection
+/// per tunnel per pass, which is why this is a setting and not the default.
+async fn probe_round(watched: &[&PersistentTunnel], settings: &Settings) -> (usize, usize) {
+    let mut probes = tokio::task::JoinSet::new();
+    for tunnel in watched {
+        let Some(port) = tunnel.spec.local_port() else {
+            continue;
+        };
+        let label = daemon::platform_label(&tunnel.account_name, &tunnel.name);
+        if crate::config::config_dir().is_ok_and(|dir| parked(&dir, &label)) {
+            continue;
+        }
+        let Ok(log_path) = tunnel.log_path() else {
+            continue;
+        };
+        let socks = tunnel.is_socks();
+        let timeout = settings.watch_probe_timeout;
+        probes.spawn(async move {
+            if daemon::status_checked(&label).await != Some(TunnelStatus::Running) {
+                return None;
+            }
+            let addr = format!("127.0.0.1:{port}");
+            Some(
+                probe::probe_access_port(socks, &addr, timeout, &log_path)
+                    .await
+                    .is_some(),
+            )
+        });
+    }
+    let (mut failed, mut total) = (0, 0);
+    while let Some(done) = probes.join_next().await {
+        if let Ok(Some(answered)) = done {
+            total += 1;
+            failed += usize::from(!answered);
+        }
+    }
+    (failed, total)
+}
+
+/// Says once that a partial outage began and once that it ended. The marker
+/// is what the next pass reads, so a notification is only sent when it could
+/// be written: otherwise every pass would say it again.
+fn announce_partial_outage(mostly: bool, failed: usize, total: usize) {
+    use crate::notify::{Desktop, Notification, Notifier, Severity};
+    let Ok(dir) = crate::config::config_dir() else {
+        return;
+    };
+    let marker = dir.join("run").join("watch.partial-outage");
+    let cfg = crate::config::load_config()
+        .map(|c| c.notifications)
+        .unwrap_or_default();
+    match outage_edge(marker.exists(), mostly) {
+        Some(OutageEdge::Began) => {
+            let written = marker
+                .parent()
+                .is_some_and(|run| std::fs::create_dir_all(run).is_ok())
+                && crate::fsutil::write_atomic(&marker, "1\n").is_ok();
+            if written && cfg.degraded {
+                Desktop.send(
+                    &Notification::new(Severity::Warning, partial_outage_line(failed, total))
+                        .about("network"),
+                );
+            }
+        }
+        Some(OutageEdge::Ended) if std::fs::remove_file(&marker).is_ok() && cfg.recovered => {
+            Desktop.send(
+                &Notification::new(Severity::Recovered, "tunnels are answering again")
+                    .about("network"),
+            );
+        }
+        Some(OutageEdge::Ended) => {}
+        None => {}
+    }
+}
+
 /// What gcloud logs for each attempt to resume a dropped IAP session.
 const RECONNECT_MARK: &str = "Reconnecting with URL";
 /// A failed probe is not counted while the newest attempt is this recent, and
@@ -442,9 +548,25 @@ pub async fn one_pass(verbose: bool) -> Result<()> {
     let live: Vec<String> = watched.iter().map(|t| key(t)).collect();
 
     // Asked once, before any tunnel: offline, every probe fails together
-    let network_up = watched.is_empty() || probe::network_reachable(NETWORK_GATE_TIMEOUT).await;
+    let mut network_up = watched.is_empty() || probe::network_reachable(NETWORK_GATE_TIMEOUT).await;
     if verbose && !network_up {
         println!("the network is unreachable: no tunnel is judged this pass");
+    }
+    // Reachable is not the same as answering: when most tunnels stop answering
+    // at once the cause is the machine's network, not each tunnel
+    if network_up && settings.watch_partial_outage {
+        let (failed, total) = probe_round(&watched, &settings).await;
+        let mostly = mostly_failed(failed, total);
+        announce_partial_outage(mostly, failed, total);
+        if mostly {
+            network_up = false;
+            if verbose {
+                println!(
+                    "{}: no tunnel is judged this pass",
+                    partial_outage_line(failed, total)
+                );
+            }
+        }
     }
 
     // Before the visits: a tunnel brought back here is a start in flight when
@@ -1407,6 +1529,37 @@ mod tests {
                 2
             ),
             None
+        );
+    }
+
+    #[test]
+    fn more_than_half_of_at_least_three_is_a_partial_outage() {
+        // One or two tunnels are judged as they always were
+        assert!(!mostly_failed(1, 1));
+        assert!(!mostly_failed(2, 2));
+        assert!(!mostly_failed(0, 0));
+        // Exactly half is not more than half
+        assert!(!mostly_failed(2, 4));
+        assert!(mostly_failed(2, 3));
+        assert!(mostly_failed(3, 4));
+        assert!(mostly_failed(3, 5));
+        assert!(!mostly_failed(2, 5));
+        assert!(mostly_failed(5, 5));
+    }
+
+    #[test]
+    fn a_partial_outage_is_announced_when_it_begins_and_when_it_ends_not_between() {
+        assert_eq!(outage_edge(false, true), Some(OutageEdge::Began));
+        assert_eq!(outage_edge(true, true), None, "still going: said already");
+        assert_eq!(outage_edge(true, false), Some(OutageEdge::Ended));
+        assert_eq!(outage_edge(false, false), None);
+    }
+
+    #[test]
+    fn the_partial_outage_line_counts_both_numbers() {
+        assert_eq!(
+            partial_outage_line(3, 4),
+            "3 of 4 tunnels stopped answering at once, which reads as this machine's network"
         );
     }
 

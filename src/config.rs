@@ -252,6 +252,10 @@ pub struct WatchConfig {
     /// reconnecting. Off unless asked for, and not written back when off.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub reconnect_grace: bool,
+    /// A pass in which most tunnels fail their probe at once is read as this
+    /// machine's network. Off unless asked for, and not written back when off.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub partial_outage: bool,
 }
 
 impl Default for WatchConfig {
@@ -261,6 +265,7 @@ impl Default for WatchConfig {
             degraded_after: settings::default_watch_degraded_after(),
             interval: settings::default_watch_interval(),
             reconnect_grace: false,
+            partial_outage: false,
         }
     }
 }

@@ -483,6 +483,28 @@ probe. It is off by default, so nothing changes until you turn it on. With it on
 The times come from the log's own timestamps, so a log read late does not make an old attempt look
 recent. Only a tunnel whose service is running is excused; a stopped one is judged as before.
 
+## A partial outage
+
+The watchdog already stops judging when this machine cannot reach IAP at all. A flaky Wi-Fi or a
+captive portal is worse: IAP still connects, but some tunnels stop answering and others carry on,
+so nothing looks like an outage and the tunnels that failed are counted, restarted and notified
+one by one.
+
+`watch.partial_outage = true` (or `GTUNNEL_WATCH_PARTIAL_OUTAGE=true`) adds a check to every pass.
+It is off by default, so nothing changes until you turn it on. With it on, the pass first probes
+every running tunnel once, together.
+
+| What the pass finds | What it does |
+|---|---|
+| More than half of three or more tunnels failed | Counts nothing this pass, restarts nothing, and says once `N of M tunnels stopped answering at once, which reads as this machine's network` (the `degraded` switch) |
+| Half or fewer, or fewer than three tunnels | Judges each tunnel as before. One or two tunnels are never read as a network, because a tunnel failing on its own looks the same |
+| The next pass is back under the line | Says once `tunnels are answering again` (the `recovered` switch) and judges as before |
+
+The first notification is written down in `run/watch.partial-outage`, so a long outage is one
+alert and not one per pass. A refusal counts as a failure here: the check cannot tell a tunnel IAP
+refused from one that went quiet, which is why a tunnel the supervisor parked for credentials is
+left out. The cost is one more probe per running tunnel per pass, each an IAP connection.
+
 ## What a network outage does
 
 With the machine awake and the network gone (a flight, a VPN flap, a captive portal), watched
