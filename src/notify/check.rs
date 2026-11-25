@@ -8,6 +8,20 @@ use super::backend::run_outcome;
 pub fn check() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
+        // Without osascript the chain is terminal-notifier alone, and running
+        // the interpreter here would be the very thing the setting avoids
+        if !crate::settings::current().notification_osascript {
+            return if on_path("terminal-notifier", std::env::var_os("PATH").as_deref()) {
+                Ok(())
+            } else {
+                Err(
+                    "osascript is switched off (notifications.osascript = false) and \
+                     terminal-notifier is not installed, so nothing can show a notification; \
+                     `brew install terminal-notifier`, or turn osascript back on"
+                        .to_string(),
+                )
+            };
+        }
         let mut cmd = Command::new("osascript");
         cmd.args(["-e", "return"]);
         run_outcome(crate::proc::output_within_blocking(
@@ -86,4 +100,18 @@ pub(super) fn bus_unseen_by_manager<'a>(
         (Some(shell), None) => Some(shell),
         _ => None,
     }
+}
+
+/// Whether `name` is an executable file in one of the directories of `path`,
+/// looked up without running anything.
+#[cfg(target_os = "macos")]
+pub(super) fn on_path(name: &str, path: Option<&std::ffi::OsStr>) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    let Some(path) = path else {
+        return false;
+    };
+    std::env::split_paths(path).any(|dir| {
+        std::fs::metadata(dir.join(name))
+            .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    })
 }

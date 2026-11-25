@@ -78,18 +78,27 @@ pub fn notify(n: &Notification) {
     if !crate::settings::current().notifications {
         return;
     }
-    let steps = steps_for(n, crate::settings::current().notification_style);
+    let settings = crate::settings::current();
+    let steps = steps_for(
+        n,
+        settings.notification_style,
+        settings.notification_osascript,
+    );
     dispatch::PENDING.track(dispatch::spawn_chain(steps));
 }
 
 /// The notifiers to try for `n`. Plain is what notifications always were; rich
 /// reads the style of the notification's severity.
-fn steps_for(n: &Notification, how: crate::config::NotifyStyle) -> Vec<backend::Step> {
+fn steps_for(
+    n: &Notification,
+    how: crate::config::NotifyStyle,
+    osascript: bool,
+) -> Vec<backend::Step> {
     match how {
-        crate::config::NotifyStyle::Plain => backend::chain(n.title(), &n.body),
+        crate::config::NotifyStyle::Plain => backend::chain(n.title(), &n.body, osascript),
         crate::config::NotifyStyle::Rich => {
             let style = style::of(n.severity);
-            backend::chain_rich(&style::title(&style, n.title()), &n.body, &style)
+            backend::chain_rich(&style::title(&style, n.title()), &n.body, &style, osascript)
         }
     }
 }

@@ -68,9 +68,25 @@ impl Step {
     }
 }
 
+#[cfg(unix)]
+fn killed_by(status: &std::process::ExitStatus) -> Option<i32> {
+    std::os::unix::process::ExitStatusExt::signal(status)
+}
+
+#[cfg(not(unix))]
+fn killed_by(_: &std::process::ExitStatus) -> Option<i32> {
+    None
+}
+
 pub(super) fn run_outcome(out: anyhow::Result<std::process::Output>) -> Result<(), String> {
     match out {
         Ok(out) if out.status.success() => Ok(()),
+        // A program ended by a signal it never raised itself was ended by
+        // someone: this is how an endpoint security product blocks one
+        Ok(out) if killed_by(&out.status).is_some() => Err(format!(
+            "killed by signal {}, which is how endpoint security software ends a program it blocks",
+            killed_by(&out.status).unwrap_or_default()
+        )),
         Ok(out) => {
             let stderr = String::from_utf8_lossy(&out.stderr);
             let first = stderr.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
@@ -94,12 +110,19 @@ pub(super) fn run_outcome(out: anyhow::Result<std::process::Output>) -> Result<(
 /// because its notifications are attributed to it rather than to Script
 /// Editor. On Linux the bus is spoken directly: `notify-send` comes from a
 /// package minimal installs leave out, so it is only the fallback.
-pub(super) fn chain(title: &str, body: &str) -> Vec<Step> {
+pub(super) fn chain(title: &str, body: &str, osascript: bool) -> Vec<Step> {
+    // Only macOS has an interpreter to leave out
+    #[cfg(not(target_os = "macos"))]
+    let _ = osascript;
     #[cfg(target_os = "macos")]
-    return vec![
-        Step::new("terminal-notifier", &["-title", title, "-message", body]),
+    return with_osascript(
+        vec![Step::new(
+            "terminal-notifier",
+            &["-title", title, "-message", body],
+        )],
         Step::new("osascript", &["-e", &osascript_body(title, body)]),
-    ];
+        osascript,
+    );
     #[cfg(not(target_os = "macos"))]
     return vec![
         #[cfg(target_os = "linux")]
@@ -112,12 +135,30 @@ pub(super) fn chain(title: &str, body: &str) -> Vec<Step> {
     ];
 }
 
+/// The interpreter goes last and only when allowed: a security product that
+/// watches for `osascript` run by an unsigned program has no quarrel with
+/// `terminal-notifier`, and a person can choose which of the two they accept.
+#[cfg(target_os = "macos")]
+fn with_osascript(mut steps: Vec<Step>, osascript: Step, allowed: bool) -> Vec<Step> {
+    if allowed {
+        steps.push(osascript);
+    }
+    steps
+}
+
 /// `chain` for `notifications.style = "rich"`: the same notifiers in the same
 /// order, each asked for the columns of the style it can show.
-pub(super) fn chain_rich(title: &str, body: &str, style: &super::style::Style) -> Vec<Step> {
+pub(super) fn chain_rich(
+    title: &str,
+    body: &str,
+    style: &super::style::Style,
+    osascript: bool,
+) -> Vec<Step> {
+    #[cfg(not(target_os = "macos"))]
+    let _ = osascript;
     #[cfg(target_os = "macos")]
-    return vec![
-        Step::new(
+    return with_osascript(
+        vec![Step::new(
             "terminal-notifier",
             &[
                 "-title",
@@ -129,12 +170,13 @@ pub(super) fn chain_rich(title: &str, body: &str, style: &super::style::Style) -
                 "-sound",
                 style.sound,
             ],
-        ),
+        )],
         Step::new(
             "osascript",
             &["-e", &osascript_body_rich(title, body, style)],
         ),
-    ];
+        osascript,
+    );
     #[cfg(not(target_os = "macos"))]
     return vec![
         #[cfg(target_os = "linux")]

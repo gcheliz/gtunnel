@@ -710,6 +710,21 @@ while the TUI is closed, so `gtunnel watch install` must have run.
 | macOS | `osascript`, part of macOS. Notifications for Script Editor (or `terminal-notifier`) allowed in System Settings, Notifications | `osascript -e 'display notification "test"'` |
 | Linux | A session D-Bus and a notification service on it: every desktop environment runs one; a bare window manager needs one such as `dunst` or `mako`. No package is needed for gtunnel itself | `busctl --user list \| grep org.freedesktop.Notifications` |
 
+### Blocked by endpoint security software
+
+On macOS `osascript` is a script interpreter started with an inline script by an unsigned program,
+which security products watch for. A notification that could not be delivered then reads
+`osascript: killed by signal 9, which is how endpoint security software ends a program it blocks`,
+and the product's own console shows the detection. Two ways out, the first one better:
+
+| What | How |
+|---|---|
+| Ask the security team to allow it | By path (`command -v gtunnel`, or the Homebrew `bin` it links to) or by the release's SHA-256, which is in the `.sha256` file beside the download and changes every release. gtunnel is not code-signed with an Apple Developer ID, so there is no signing identity to allow |
+| Stop using `osascript` | `brew install terminal-notifier`, then `notifications.osascript = false` in `config.toml` (or `GTUNNEL_NOTIFICATION_OSASCRIPT=false`). Without `terminal-notifier` nothing is shown, and `doctor` says so |
+
+With `osascript` switched off, `doctor` checks that `terminal-notifier` is on `PATH` and does not
+start `osascript`.
+
 `gtunnel doctor` runs these checks while notifications are on (see [doctor](commands.md#doctor)).
 A notification that could not be delivered leaves one line on stderr when the command ends,
 naming each notifier tried; for the watchdog that is its log, `<config>/logs/watchdog.log`

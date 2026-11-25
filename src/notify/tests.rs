@@ -34,7 +34,7 @@ fn notify_returns_before_the_notifier_finishes() {
 #[cfg(target_os = "macos")]
 #[test]
 fn macos_tries_terminal_notifier_then_osascript() {
-    let steps = chain("t", "b");
+    let steps = chain("t", "b", true);
     assert_eq!(steps.len(), 2, "{steps:?}");
     assert_eq!(
         steps[0],
@@ -49,7 +49,7 @@ fn macos_tries_terminal_notifier_then_osascript() {
 #[cfg(target_os = "linux")]
 #[test]
 fn linux_speaks_the_bus_first_and_never_tries_the_macos_programs() {
-    let steps = chain("t", "b");
+    let steps = chain("t", "b", true);
     assert_eq!(
         steps,
         vec![
@@ -285,8 +285,8 @@ fn plain_is_the_chain_notifications_always_had() {
     for severity in [Severity::Info, Severity::Warning, Severity::Failure] {
         let n = Notification::new(severity, "db is unhealthy");
         assert_eq!(
-            steps_for(&n, crate::config::NotifyStyle::Plain),
-            chain("gtunnel", "db is unhealthy"),
+            steps_for(&n, crate::config::NotifyStyle::Plain, true),
+            chain("gtunnel", "db is unhealthy", true),
             "{severity:?}"
         );
     }
@@ -296,8 +296,8 @@ fn plain_is_the_chain_notifications_always_had() {
 fn rich_asks_the_same_notifiers_in_the_same_order_but_not_the_same_words() {
     use super::{steps_for, Notification, Severity};
     let n = Notification::new(Severity::Failure, "db failed");
-    let plain = steps_for(&n, crate::config::NotifyStyle::Plain);
-    let rich = steps_for(&n, crate::config::NotifyStyle::Rich);
+    let plain = steps_for(&n, crate::config::NotifyStyle::Plain, true);
+    let rich = steps_for(&n, crate::config::NotifyStyle::Rich, true);
     assert_eq!(plain.len(), rich.len());
     let names = |steps: &[Step]| {
         steps
@@ -341,4 +341,61 @@ fn a_rich_linux_notification_sends_urgency_and_category_as_hints() {
     assert_eq!(keys, ["category", "urgency"]);
     let (_, _, _, _, _, _, none, _) = linux_bus::args("t", "b", &linux_bus::Hints::default());
     assert!(none.is_empty(), "plain sends no hints, as before");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn osascript_is_the_last_notifier_and_only_when_allowed() {
+    let with = chain("t", "b", true);
+    let without = chain("t", "b", false);
+    let names = |steps: &[Step]| {
+        steps
+            .iter()
+            .map(|s| s.name().to_string())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(names(&with), ["terminal-notifier", "osascript"]);
+    assert_eq!(names(&without), ["terminal-notifier"]);
+    // Rich takes the same decision
+    let rich = super::style::of(super::Severity::Failure);
+    let rich_without = super::backend::chain_rich("t", "b", &rich, false);
+    assert_eq!(names(&rich_without), ["terminal-notifier"]);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_osascript_switch_changes_nothing_on_linux() {
+    assert_eq!(chain("t", "b", true), chain("t", "b", false));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_notifier_ended_by_a_signal_is_reported_as_probably_blocked() {
+    let step = Step::new("sh", &["-c", "kill -KILL $$"]);
+    let why = step.run().unwrap_err();
+    assert!(why.starts_with("killed by signal 9"), "{why}");
+    assert!(why.contains("endpoint security"), "{why}");
+    // An ordinary non-zero exit is still just its status
+    let plain = Step::new("sh", &["-c", "exit 3"]).run().unwrap_err();
+    assert_eq!(plain, "exit status: 3");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn on_path_finds_an_executable_file_and_nothing_else() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let tool = dir.path().join("terminal-notifier");
+    std::fs::write(&tool, "#!/bin/sh\n").unwrap();
+    let path = std::env::join_paths([dir.path()]).unwrap();
+    // Present but not executable is not installed
+    assert!(!super::check::on_path("terminal-notifier", Some(&path)));
+    std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(super::check::on_path("terminal-notifier", Some(&path)));
+    assert!(!super::check::on_path("other", Some(&path)));
+    assert!(!super::check::on_path("terminal-notifier", None));
+    // A directory of that name is not a program
+    std::fs::remove_file(&tool).unwrap();
+    std::fs::create_dir(&tool).unwrap();
+    assert!(!super::check::on_path("terminal-notifier", Some(&path)));
 }

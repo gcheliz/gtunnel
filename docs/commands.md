@@ -920,7 +920,7 @@ watchdog or `mcp`). Setting `enabled = true` afterwards stays on.
 
 | Platform | How a notification is delivered |
 |---|---|
-| macOS | `terminal-notifier` when installed, otherwise `osascript`, which ships with macOS |
+| macOS | `terminal-notifier` when installed, then `osascript`, which ships with macOS. `notifications.osascript = false` drops the second; see [decision 23](decisions.md#23-osascript-is-the-last-notifier-and-can-be-switched-off) |
 | Linux | The desktop's notification service on the session D-Bus (`org.freedesktop.Notifications`), which every desktop environment runs; nothing to install. `notify-send` is tried when the bus call fails |
 
 A command waits up to 5 seconds for its notification before it exits, so a watchdog pass
