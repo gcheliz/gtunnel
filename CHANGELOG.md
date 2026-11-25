@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.3.45](https://github.com/gcheliz/gtunnel/compare/v0.3.44...v0.3.45) - 2026-11-25
+
+### Added
+
+- *(watch)* do not count a failed probe while gcloud is reconnecting ([#503](https://github.com/gcheliz/gtunnel/pull/503))
+
 ## [0.3.44](https://github.com/gcheliz/gtunnel/compare/v0.3.43...v0.3.44) - 2026-11-25
 
 ### Added
