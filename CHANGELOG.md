@@ -3,6 +3,12 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.3.51](https://github.com/gcheliz/gtunnel/compare/v0.3.50...v0.3.51) - 2026-11-25
+
+### Added
+
+- *(supervise)* restart gcloud when IAP will not resume its session, if asked ([#511](https://github.com/gcheliz/gtunnel/pull/511))
+
 ## [0.3.50](https://github.com/gcheliz/gtunnel/compare/v0.3.49...v0.3.50) - 2026-11-25
 
 ### Added
