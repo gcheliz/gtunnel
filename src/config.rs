@@ -248,6 +248,10 @@ pub struct WatchConfig {
     pub probe_timeout: String,
     pub degraded_after: i64,
     pub interval: String,
+    /// Not counted against a tunnel while gcloud's own log says it is
+    /// reconnecting. Off unless asked for, and not written back when off.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub reconnect_grace: bool,
 }
 
 impl Default for WatchConfig {
@@ -256,6 +260,7 @@ impl Default for WatchConfig {
             probe_timeout: settings::default_watch_probe_timeout(),
             degraded_after: settings::default_watch_degraded_after(),
             interval: settings::default_watch_interval(),
+            reconnect_grace: false,
         }
     }
 }

@@ -70,6 +70,7 @@ fn judge(
     gained_error: bool,
     network_up: bool,
     starting: bool,
+    reconnecting: bool,
 ) -> Observation {
     let Some(status) = status else {
         return Observation::Unknown;
@@ -80,7 +81,58 @@ fn judge(
     if starting && status == TunnelStatus::Running && !probe_ok {
         return Observation::Unknown;
     }
+    // gcloud is already doing what a restart would do: it reconnects to IAP on
+    // its own, and a probe that fails meanwhile says nothing about the tunnel
+    if reconnecting && status == TunnelStatus::Running && !probe_ok {
+        return Observation::Unknown;
+    }
     observe(status, probe_ok, gained_error)
+}
+
+/// What gcloud logs for each attempt to resume a dropped IAP session.
+const RECONNECT_MARK: &str = "Reconnecting with URL";
+/// A failed probe is not counted while the newest attempt is this recent, and
+/// attempts closer together than this are one streak.
+const RECONNECT_GRACE: std::time::Duration = std::time::Duration::from_secs(60);
+/// A streak older than this is no longer grace: a tunnel that cannot reconnect
+/// in five minutes is reported like any other that fails.
+const RECONNECT_CAP: std::time::Duration = std::time::Duration::from_secs(300);
+/// How much of the end of the log is read for attempts. gcloud logs one line
+/// per attempt, 1.5 to 20 seconds apart, so this holds far more than the cap.
+const RECONNECT_TAIL: u64 = 64 * 1024;
+
+/// When the reconnect streak that is still going on began, or `None` when
+/// gcloud is not reconnecting, or has been for longer than `cap`.
+///
+/// The log's own timestamps say when, not the clock at the time of reading:
+/// a log read late must not make an old attempt look recent.
+fn reconnect_streak(
+    tail: &str,
+    now: SystemTime,
+    grace: std::time::Duration,
+    cap: std::time::Duration,
+) -> Option<SystemTime> {
+    let mut stamps: Vec<SystemTime> = tail
+        .lines()
+        .filter(|line| line.contains(RECONNECT_MARK))
+        .filter_map(|line| line.split_whitespace().next())
+        .filter_map(|stamp| crate::timefmt::parse_rfc3339(stamp).ok())
+        .collect();
+    stamps.sort();
+    let newest = *stamps.last()?;
+    let age = |t: SystemTime| now.duration_since(t).unwrap_or_default();
+    if age(newest) > grace {
+        return None;
+    }
+    let mut start = newest;
+    for pair in stamps.windows(2).rev() {
+        let gap = pair[1].duration_since(pair[0]).unwrap_or_default();
+        if gap > grace {
+            break;
+        }
+        start = pair[0];
+    }
+    (age(start) < cap).then_some(start)
 }
 
 /// Whether a tunnel with no ready file is simply not up yet.
@@ -693,7 +745,35 @@ async fn visit(
     let starting = status == Some(TunnelStatus::Running)
         && !probe_ok
         && starting_now(&label, settings.start_deadline);
-    let obs = judge(status, probe_ok, gained, network_up, starting);
+    // Only when asked for, and only for a probe that failed: the healthy path
+    // reads nothing more than it did
+    let reconnect =
+        (settings.watch_reconnect_grace && !probe_ok && status == Some(TunnelStatus::Running))
+            .then(|| {
+                let tail = daemon::read_from(&log_path, len.saturating_sub(RECONNECT_TAIL));
+                reconnect_streak(&tail, SystemTime::now(), RECONNECT_GRACE, RECONNECT_CAP)
+            })
+            .flatten();
+    let obs = judge(
+        status,
+        probe_ok,
+        gained,
+        network_up,
+        starting,
+        reconnect.is_some(),
+    );
+    if let Some(since) = reconnect
+        && network_up
+        && !starting
+    {
+        let _ = daemon::log_event(
+            &log_path,
+            &format!(
+                "probe failed, not counted: gcloud has been reconnecting since {}",
+                crate::timefmt::format_rfc3339_seconds(since)
+            ),
+        );
+    }
     let reason = match obs {
         Observation::Failed(reason) => Some(reason),
         _ => None,
@@ -1230,7 +1310,14 @@ mod tests {
         let before = rows.clone();
         for pass in 1..=20 {
             for breaker in &mut rows {
-                let obs = judge(Some(TunnelStatus::Running), false, false, false, false);
+                let obs = judge(
+                    Some(TunnelStatus::Running),
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                );
                 let at = SystemTime::UNIX_EPOCH + secs(pass * 30);
                 assert_eq!(breaker.observe(obs, at, secs(60)), Action::Nothing);
             }
@@ -1246,7 +1333,7 @@ mod tests {
             TunnelStatus::Error,
         ] {
             assert_eq!(
-                judge(Some(status), false, true, false, false),
+                judge(Some(status), false, true, false, false, false),
                 Observation::Unknown,
                 "{status:?}"
             );
@@ -1256,15 +1343,29 @@ mod tests {
     #[test]
     fn an_open_gate_judges_as_before() {
         assert_eq!(
-            judge(Some(TunnelStatus::Running), true, false, true, false),
+            judge(Some(TunnelStatus::Running), true, false, true, false, false),
             Observation::Pass
         );
         assert_eq!(
-            judge(Some(TunnelStatus::Running), false, false, true, false),
+            judge(
+                Some(TunnelStatus::Running),
+                false,
+                false,
+                true,
+                false,
+                false
+            ),
             Observation::Failed(Reason::ProbeRefused)
         );
         assert_eq!(
-            judge(Some(TunnelStatus::Stopped), false, false, true, false),
+            judge(
+                Some(TunnelStatus::Stopped),
+                false,
+                false,
+                true,
+                false,
+                false
+            ),
             Observation::NotRunning
         );
     }
@@ -1274,7 +1375,7 @@ mod tests {
     // that was running the whole time
     #[test]
     fn a_launchctl_timeout_yields_unknown_and_no_stopped_unexpectedly_event() {
-        let obs = judge(None, false, false, true, false);
+        let obs = judge(None, false, false, true, false, false);
         assert_eq!(obs, Observation::Unknown);
         assert_eq!(
             edge_state(obs, None, false, 0, 2),
@@ -1309,16 +1410,110 @@ mod tests {
         );
     }
 
+    // A log line as gcloud's supervisor writes it: a UTC stamp, then the text
+    fn attempt(at: SystemTime) -> String {
+        format!(
+            "{} INFO: [3] Reconnecting with URL ['wss://tunnel.cloudproxy.app/v4/reconnect?sid=a4003b']",
+            crate::timefmt::format_rfc3339_seconds(at)
+        )
+    }
+
+    fn streak_in(attempts: &[u64], now: u64) -> Option<u64> {
+        // Seconds after an arbitrary epoch, so a test reads as a timeline
+        let epoch = SystemTime::UNIX_EPOCH + secs(1_800_000_000);
+        let log: Vec<String> = attempts.iter().map(|t| attempt(epoch + secs(*t))).collect();
+        reconnect_streak(
+            &log.join("\n"),
+            epoch + secs(now),
+            RECONNECT_GRACE,
+            RECONNECT_CAP,
+        )
+        .map(|start| start.duration_since(epoch).unwrap().as_secs())
+    }
+
+    #[test]
+    fn a_fresh_attempt_is_a_streak_that_began_with_it() {
+        assert_eq!(streak_in(&[100], 110), Some(100));
+        assert_eq!(streak_in(&[100, 105, 112], 115), Some(100));
+    }
+
+    #[test]
+    fn an_attempt_older_than_the_grace_is_not_reconnecting() {
+        assert_eq!(
+            streak_in(&[100], 160),
+            Some(100),
+            "exactly the grace still counts"
+        );
+        assert_eq!(streak_in(&[100], 161), None);
+    }
+
+    #[test]
+    fn a_streak_that_outlives_the_cap_stops_being_grace() {
+        // An attempt every 20 s from 100 to 380, so no gap is longer than the grace
+        let attempts: Vec<u64> = (0..=14).map(|i| 100 + i * 20).collect();
+        assert_eq!(
+            streak_in(&attempts, 399),
+            Some(100),
+            "299 s old: still grace"
+        );
+        assert_eq!(streak_in(&attempts, 400), None, "five minutes: reported");
+    }
+
+    #[test]
+    fn a_gap_longer_than_the_grace_starts_a_new_streak() {
+        // Reconnected at 100, fine for ten minutes, dropped again at 700
+        assert_eq!(streak_in(&[90, 100, 700, 710], 715), Some(700));
+    }
+
+    #[test]
+    fn no_attempt_lines_and_unreadable_stamps_are_not_reconnecting() {
+        let epoch = SystemTime::UNIX_EPOCH + secs(1_800_000_000);
+        for log in [
+            "",
+            "plain line\nanother",
+            "not-a-stamp INFO: [3] Reconnecting with URL ['x']",
+        ] {
+            assert_eq!(
+                reconnect_streak(log, epoch, RECONNECT_GRACE, RECONNECT_CAP),
+                None,
+                "{log:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_failed_probe_while_gcloud_reconnects_is_unknown_and_a_passing_one_is_not() {
+        let running = Some(TunnelStatus::Running);
+        assert_eq!(
+            judge(running, false, false, true, false, true),
+            Observation::Unknown
+        );
+        assert_eq!(
+            judge(running, true, false, true, false, true),
+            Observation::Pass
+        );
+        // Off, the same failed probe is the failure it always was
+        assert_eq!(
+            judge(running, false, false, true, false, false),
+            Observation::Failed(Reason::ProbeRefused)
+        );
+        // A stopped service is still a stopped service
+        assert_eq!(
+            judge(Some(TunnelStatus::Stopped), false, false, true, false, true),
+            Observation::NotRunning
+        );
+    }
+
     // A restarted gcloud takes longer than one pass to listen. Until its
     // grace is spent that is a tunnel on its way up, not a wedged one
     #[test]
     fn a_tunnel_still_inside_its_start_grace_is_unknown_not_failed() {
         assert_eq!(
-            judge(Some(TunnelStatus::Running), false, false, true, true),
+            judge(Some(TunnelStatus::Running), false, false, true, true, false),
             Observation::Unknown
         );
         assert_eq!(
-            judge(Some(TunnelStatus::Running), true, false, true, true),
+            judge(Some(TunnelStatus::Running), true, false, true, true, false),
             Observation::Pass,
             "a probe that answers is an answer, grace or not"
         );

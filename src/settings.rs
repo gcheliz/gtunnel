@@ -235,6 +235,11 @@ const WATCH_PROBE_TIMEOUT_KEY: Key = Key {
     var: "GTUNNEL_WATCH_PROBE_TIMEOUT",
     legacy: None,
 };
+const WATCH_RECONNECT_GRACE_KEY: Key = Key {
+    name: "watch.reconnect_grace",
+    var: "GTUNNEL_WATCH_RECONNECT_GRACE",
+    legacy: None,
+};
 const WATCH_DEGRADED_AFTER_KEY: Key = Key {
     name: "watch.degraded_after",
     var: "GTUNNEL_WATCH_DEGRADED_AFTER",
@@ -323,6 +328,7 @@ pub struct Settings {
     pub notification_style: crate::config::NotifyStyle,
     pub watch_probe_timeout: Duration,
     pub watch_degraded_after: u32,
+    pub watch_reconnect_grace: bool,
     /// Whole seconds: a launchd `StartInterval` and a systemd timer have no
     /// finer unit, so a finer value would be one the unit cannot honour.
     pub watch_interval: Duration,
@@ -647,6 +653,12 @@ pub fn resolve(config: &Config, env: EnvFn) -> Result<Resolved> {
         shown,
         &mut overrides,
     )?;
+    let watch_reconnect_grace = switch_key(
+        env,
+        &WATCH_RECONNECT_GRACE_KEY,
+        watch.reconnect_grace,
+        &mut overrides,
+    )?;
     let watch_degraded_after = plain_key(
         env,
         &WATCH_DEGRADED_AFTER_KEY,
@@ -781,6 +793,7 @@ pub fn resolve(config: &Config, env: EnvFn) -> Result<Resolved> {
             notification_style,
             watch_probe_timeout,
             watch_degraded_after,
+            watch_reconnect_grace,
             watch_interval,
             logs_max_size,
             logs_keep_size,
@@ -1059,6 +1072,19 @@ mod tests {
                 ("editor", "GTUNNEL_EDITOR"),
             ]
         );
+    }
+
+    #[test]
+    fn the_reconnect_grace_is_off_unless_the_file_or_a_variable_turns_it_on() {
+        assert!(!settings_of("", &[]).watch_reconnect_grace);
+        let file = "[watch]\nreconnect_grace = true\n";
+        assert!(settings_of(file, &[]).watch_reconnect_grace);
+        assert!(
+            !settings_of(file, &[("GTUNNEL_WATCH_RECONNECT_GRACE", "off")]).watch_reconnect_grace
+        );
+        assert!(settings_of("", &[("GTUNNEL_WATCH_RECONNECT_GRACE", "on")]).watch_reconnect_grace);
+        let err = resolve_with("", &[("GTUNNEL_WATCH_RECONNECT_GRACE", "sometimes")]).unwrap_err();
+        assert!(format!("{err:#}").contains("GTUNNEL_WATCH_RECONNECT_GRACE"));
     }
 
     #[test]
