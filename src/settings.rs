@@ -240,6 +240,11 @@ const WATCH_PROBE_TIMEOUT_KEY: Key = Key {
     var: "GTUNNEL_WATCH_PROBE_TIMEOUT",
     legacy: None,
 };
+const WATCH_PARTIAL_OUTAGE_KEY: Key = Key {
+    name: "watch.partial_outage",
+    var: "GTUNNEL_WATCH_PARTIAL_OUTAGE",
+    legacy: None,
+};
 const WATCH_RECONNECT_GRACE_KEY: Key = Key {
     name: "watch.reconnect_grace",
     var: "GTUNNEL_WATCH_RECONNECT_GRACE",
@@ -335,6 +340,7 @@ pub struct Settings {
     pub watch_probe_timeout: Duration,
     pub watch_degraded_after: u32,
     pub watch_reconnect_grace: bool,
+    pub watch_partial_outage: bool,
     /// Whole seconds: a launchd `StartInterval` and a systemd timer have no
     /// finer unit, so a finer value would be one the unit cannot honour.
     pub watch_interval: Duration,
@@ -665,6 +671,12 @@ pub fn resolve(config: &Config, env: EnvFn) -> Result<Resolved> {
         shown,
         &mut overrides,
     )?;
+    let watch_partial_outage = switch_key(
+        env,
+        &WATCH_PARTIAL_OUTAGE_KEY,
+        watch.partial_outage,
+        &mut overrides,
+    )?;
     let watch_reconnect_grace = switch_key(
         env,
         &WATCH_RECONNECT_GRACE_KEY,
@@ -807,6 +819,7 @@ pub fn resolve(config: &Config, env: EnvFn) -> Result<Resolved> {
             watch_probe_timeout,
             watch_degraded_after,
             watch_reconnect_grace,
+            watch_partial_outage,
             watch_interval,
             logs_max_size,
             logs_keep_size,
@@ -1085,6 +1098,19 @@ mod tests {
                 ("editor", "GTUNNEL_EDITOR"),
             ]
         );
+    }
+
+    #[test]
+    fn a_partial_outage_is_not_read_as_the_network_unless_asked() {
+        assert!(!settings_of("", &[]).watch_partial_outage);
+        let file = "[watch]\npartial_outage = true\n";
+        assert!(settings_of(file, &[]).watch_partial_outage);
+        assert!(
+            !settings_of(file, &[("GTUNNEL_WATCH_PARTIAL_OUTAGE", "off")]).watch_partial_outage
+        );
+        assert!(settings_of("", &[("GTUNNEL_WATCH_PARTIAL_OUTAGE", "on")]).watch_partial_outage);
+        let err = resolve_with("", &[("GTUNNEL_WATCH_PARTIAL_OUTAGE", "half")]).unwrap_err();
+        assert!(format!("{err:#}").contains("GTUNNEL_WATCH_PARTIAL_OUTAGE"));
     }
 
     #[test]
