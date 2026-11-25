@@ -525,3 +525,36 @@ cannot be started, stopped, edited or deleted by this version, and the config pa
 save a `tunnels.toml` that holds one, because it would parse the whole text. A record that
 cannot be parsed holds its ports until someone deletes the file, which `doctor` says to do only
 after stopping its process. What a user sees of it: [Newer files](troubleshooting.md#a-file-written-by-a-newer-gtunnel).
+
+## 23. osascript is the last notifier, and can be switched off
+
+**Status:** Accepted, 2026-11-25
+
+On macOS gtunnel has no bundle, so it cannot use the notification centre itself. It asks
+`terminal-notifier` when that is installed and otherwise runs `osascript -e 'display
+notification ...'`, a script interpreter started with an inline script by an unsigned program,
+often from a launchd job. That is also the shape of the macOS credential and information
+stealers that endpoint security products are tuned for: they watch for `osascript` run with
+`-e` by a parent nobody recognises. A product in protect mode can end the process, and
+gtunnel cannot tell a blocked `osascript` from a broken one.
+
+Three rules follow.
+
+| Rule | Why |
+|---|---|
+| `osascript` stays the last notifier tried, after `terminal-notifier` | The default is unchanged: nobody who has notifications today loses them on upgrade |
+| `notifications.osascript = false` (`GTUNNEL_NOTIFICATION_OSASCRIPT`) removes it | A person whose security team objects can decide, instead of waiting for a release. The cost is that a Mac with no `terminal-notifier` then shows nothing, and `doctor` says so |
+| A notifier ended by a signal is reported as probably blocked, and `doctor` does not start `osascript` when it is switched off | The failure line names the likeliest cause; a diagnostic that ran the blocked program would be the blocked program |
+
+Alternatives. A signed helper app using the user notification API would give gtunnel its own
+icon and an identity an administrator can allow by team id, and it is the right end state; it
+needs an Apple Developer ID the project does not have, so it is not built. The in-process
+crates that wrap the older notification API borrow another application's bundle id, which
+attributes a gtunnel alert to someone else's app and is no quieter to a security product.
+Escape sequences that a terminal turns into a notification spawn nothing, but need a terminal
+that is still open and one that understands them, so they cannot be the watchdog's route.
+
+The costs. The default is still the quietest-sounding shape for an EDR to dislike, and nothing
+here changes that for anyone who does not read this page. The switch trades a possible block
+for a possible silence. What a user sees of it: [Notifications do not
+appear](troubleshooting.md#notifications-do-not-appear).
