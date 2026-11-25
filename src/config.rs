@@ -490,6 +490,14 @@ pub struct NotifyConfig {
     pub failed: bool,
     #[serde(skip_serializing_if = "NotifyStyle::is_plain")]
     pub style: NotifyStyle,
+    /// Whether `osascript` is the last notifier tried on macOS. On unless
+    /// turned off, and not written back while on.
+    #[serde(skip_serializing_if = "is_true")]
+    pub osascript: bool,
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
 }
 
 impl Default for NotifyConfig {
@@ -501,6 +509,7 @@ impl Default for NotifyConfig {
             recovered: true,
             failed: true,
             style: NotifyStyle::Plain,
+            osascript: true,
         }
     }
 }

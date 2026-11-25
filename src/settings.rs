@@ -225,6 +225,11 @@ const NOTIFICATIONS_KEY: Key = Key {
     var: "GTUNNEL_NOTIFICATIONS",
     legacy: Some("GTUNNEL_NO_NOTIFY"),
 };
+const NOTIFICATION_OSASCRIPT_KEY: Key = Key {
+    name: "notifications.osascript",
+    var: "GTUNNEL_NOTIFICATION_OSASCRIPT",
+    legacy: None,
+};
 const NOTIFICATION_STYLE_KEY: Key = Key {
     name: "notifications.style",
     var: "GTUNNEL_NOTIFICATION_STYLE",
@@ -326,6 +331,7 @@ pub struct Settings {
     pub discovery: bool,
     pub notifications: bool,
     pub notification_style: crate::config::NotifyStyle,
+    pub notification_osascript: bool,
     pub watch_probe_timeout: Duration,
     pub watch_degraded_after: u32,
     pub watch_reconnect_grace: bool,
@@ -636,6 +642,12 @@ pub fn resolve(config: &Config, env: EnvFn) -> Result<Resolved> {
         config.notifications.enabled,
         &mut overrides,
     )?;
+    let notification_osascript = switch_key(
+        env,
+        &NOTIFICATION_OSASCRIPT_KEY,
+        config.notifications.osascript,
+        &mut overrides,
+    )?;
     let notification_style = plain_key(
         env,
         &NOTIFICATION_STYLE_KEY,
@@ -791,6 +803,7 @@ pub fn resolve(config: &Config, env: EnvFn) -> Result<Resolved> {
             discovery,
             notifications,
             notification_style,
+            notification_osascript,
             watch_probe_timeout,
             watch_degraded_after,
             watch_reconnect_grace,
@@ -1106,6 +1119,21 @@ mod tests {
             NotifyStyle::Rich,
             "the value is not case sensitive"
         );
+    }
+
+    #[test]
+    fn osascript_is_a_notifier_unless_the_file_or_a_variable_turns_it_off() {
+        assert!(settings_of("", &[]).notification_osascript);
+        let file = "[notifications]\nosascript = false\n";
+        assert!(!settings_of(file, &[]).notification_osascript);
+        assert!(
+            settings_of(file, &[("GTUNNEL_NOTIFICATION_OSASCRIPT", "true")]).notification_osascript
+        );
+        assert!(
+            !settings_of("", &[("GTUNNEL_NOTIFICATION_OSASCRIPT", "off")]).notification_osascript
+        );
+        let err = resolve_with("", &[("GTUNNEL_NOTIFICATION_OSASCRIPT", "maybe")]).unwrap_err();
+        assert!(format!("{err:#}").contains("GTUNNEL_NOTIFICATION_OSASCRIPT"));
     }
 
     #[test]
