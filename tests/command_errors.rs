@@ -85,6 +85,7 @@ fn a_bad_settings_variable_exits_2_naming_it_before_the_command_runs() {
         ("GTUNNEL_WATCH_RECONNECT_GRACE", "maybe"),
         ("GTUNNEL_WATCH_PARTIAL_OUTAGE", "half"),
         ("GTUNNEL_NOTIFICATION_STYLE", "loud"),
+        ("GTUNNEL_NOTIFICATION_BACKEND", "carrier-pigeon"),
         ("GTUNNEL_NOTIFICATION_OSASCRIPT", "maybe"),
     ] {
         let out = h.run_with_env(&["list"], &[(var, value)]);

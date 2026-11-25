@@ -225,6 +225,11 @@ const NOTIFICATIONS_KEY: Key = Key {
     var: "GTUNNEL_NOTIFICATIONS",
     legacy: Some("GTUNNEL_NO_NOTIFY"),
 };
+const NOTIFICATION_BACKEND_KEY: Key = Key {
+    name: "notifications.backend",
+    var: "GTUNNEL_NOTIFICATION_BACKEND",
+    legacy: None,
+};
 const NOTIFICATION_OSASCRIPT_KEY: Key = Key {
     name: "notifications.osascript",
     var: "GTUNNEL_NOTIFICATION_OSASCRIPT",
@@ -337,6 +342,7 @@ pub struct Settings {
     pub notifications: bool,
     pub notification_style: crate::config::NotifyStyle,
     pub notification_osascript: bool,
+    pub notification_backend: crate::config::NotifyBackend,
     pub watch_probe_timeout: Duration,
     pub watch_degraded_after: u32,
     pub watch_reconnect_grace: bool,
@@ -433,6 +439,19 @@ fn parse_notify_style(source: &str, raw: &str) -> Result<crate::config::NotifySt
         "rich" => Ok(NotifyStyle::Rich),
         _ => Err(bad(source, format!("'{raw}' is not plain or rich"))),
     }
+}
+
+fn parse_notify_backend(source: &str, raw: &str) -> Result<crate::config::NotifyBackend> {
+    use crate::config::NotifyBackend;
+    match raw.to_ascii_lowercase().as_str() {
+        "auto" => Ok(NotifyBackend::Auto),
+        "terminal" => Ok(NotifyBackend::Terminal),
+        _ => Err(bad(source, format!("'{raw}' is not auto or terminal"))),
+    }
+}
+
+fn show_notify_backend(backend: crate::config::NotifyBackend) -> String {
+    backend.as_str().to_string()
 }
 
 fn show_notify_style(style: crate::config::NotifyStyle) -> String {
@@ -648,6 +667,14 @@ pub fn resolve(config: &Config, env: EnvFn) -> Result<Resolved> {
         config.notifications.enabled,
         &mut overrides,
     )?;
+    let notification_backend = plain_key(
+        env,
+        &NOTIFICATION_BACKEND_KEY,
+        config.notifications.backend.as_str(),
+        parse_notify_backend,
+        show_notify_backend,
+        &mut overrides,
+    )?;
     let notification_osascript = switch_key(
         env,
         &NOTIFICATION_OSASCRIPT_KEY,
@@ -816,6 +843,7 @@ pub fn resolve(config: &Config, env: EnvFn) -> Result<Resolved> {
             notifications,
             notification_style,
             notification_osascript,
+            notification_backend,
             watch_probe_timeout,
             watch_degraded_after,
             watch_reconnect_grace,
@@ -1145,6 +1173,29 @@ mod tests {
             NotifyStyle::Rich,
             "the value is not case sensitive"
         );
+    }
+
+    #[test]
+    fn the_terminal_is_asked_first_only_when_the_file_or_a_variable_says_so() {
+        use crate::config::NotifyBackend;
+        assert_eq!(
+            settings_of("", &[]).notification_backend,
+            NotifyBackend::Auto
+        );
+        let file = "[notifications]\nbackend = \"terminal\"\n";
+        assert_eq!(
+            settings_of(file, &[]).notification_backend,
+            NotifyBackend::Terminal
+        );
+        assert_eq!(
+            settings_of(file, &[("GTUNNEL_NOTIFICATION_BACKEND", "auto")]).notification_backend,
+            NotifyBackend::Auto
+        );
+        let err =
+            resolve_with("", &[("GTUNNEL_NOTIFICATION_BACKEND", "carrier-pigeon")]).unwrap_err();
+        let text = format!("{err:#}");
+        assert!(text.contains("GTUNNEL_NOTIFICATION_BACKEND"), "{text}");
+        assert!(text.contains("is not auto or terminal"), "{text}");
     }
 
     #[test]

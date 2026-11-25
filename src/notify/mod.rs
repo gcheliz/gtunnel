@@ -17,6 +17,7 @@ mod dispatch;
 #[cfg(target_os = "linux")]
 mod linux_bus;
 mod style;
+mod terminal;
 #[cfg(test)]
 mod tests;
 
@@ -75,32 +76,79 @@ impl Notification {
 // tests; an integration test runs the real binary, whose announcements would
 // otherwise land on the desktop of whoever ran `cargo test`.
 pub fn notify(n: &Notification) {
-    if !crate::settings::current().notifications {
+    let settings = crate::settings::current();
+    if !settings.notifications {
         return;
     }
-    let settings = crate::settings::current();
-    let steps = steps_for(
-        n,
-        settings.notification_style,
-        settings.notification_osascript,
-    );
-    dispatch::PENDING.track(dispatch::spawn_chain(steps));
+    let how = Options {
+        style: settings.notification_style,
+        osascript: settings.notification_osascript,
+        backend: settings.notification_backend,
+    };
+    dispatch::PENDING.track(dispatch::spawn_chain(steps_for(n, &how)));
 }
 
-/// The notifiers to try for `n`. Plain is what notifications always were; rich
-/// reads the style of the notification's severity.
-fn steps_for(
-    n: &Notification,
-    how: crate::config::NotifyStyle,
+/// How a notification is delivered, as the settings resolve it
+#[derive(Debug, Clone, Copy)]
+struct Options {
+    style: crate::config::NotifyStyle,
     osascript: bool,
-) -> Vec<backend::Step> {
-    match how {
-        crate::config::NotifyStyle::Plain => backend::chain(n.title(), &n.body, osascript),
-        crate::config::NotifyStyle::Rich => {
-            let style = style::of(n.severity);
-            backend::chain_rich(&style::title(&style, n.title()), &n.body, &style, osascript)
+    backend: crate::config::NotifyBackend,
+}
+
+impl Default for Options {
+    /// What the settings resolve to when none is set
+    fn default() -> Self {
+        Self {
+            style: crate::config::NotifyStyle::Plain,
+            osascript: true,
+            backend: crate::config::NotifyBackend::Auto,
         }
     }
+}
+
+/// The notifiers to try for `n`, first to last. Plain is what notifications
+/// always were; rich reads the style of the notification's severity. The
+/// terminal, when asked for, goes ahead of them, and a TUI that is not open or
+/// a terminal that cannot show one is a failed step like any other: the chain
+/// moves on to the desktop.
+fn steps_for(n: &Notification, how: &Options) -> Vec<backend::Step> {
+    let (title, steps) = match how.style {
+        crate::config::NotifyStyle::Plain => (
+            n.title().to_string(),
+            backend::chain(n.title(), &n.body, how.osascript),
+        ),
+        crate::config::NotifyStyle::Rich => {
+            let style = style::of(n.severity);
+            let title = style::title(&style, n.title());
+            let steps = backend::chain_rich(&title, &n.body, &style, how.osascript);
+            (title, steps)
+        }
+    };
+    if how.backend == crate::config::NotifyBackend::Terminal {
+        let first = backend::Step::Terminal {
+            title,
+            body: n.body.clone(),
+        };
+        return std::iter::once(first).chain(steps).collect();
+    }
+    steps
+}
+
+/// The TUI has taken the terminal, and will write what is queued for it
+pub fn open_terminal() {
+    terminal::open();
+}
+
+/// The TUI has given the terminal back
+pub fn close_terminal() {
+    terminal::close();
+}
+
+/// The escape sequences queued for the terminal, for the TUI to write between
+/// two frames
+pub fn take_terminal_output() -> Vec<Vec<u8>> {
+    terminal::drain()
 }
 
 /// What lifecycle code talks to, so a test can assert on what would have been

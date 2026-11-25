@@ -136,9 +136,29 @@ pub async fn run_tui(initial_account: Option<&str>) -> Result<()> {
     schedule(&mut app, &mut timers, &tx);
 
     let mut terminal = enter_terminal();
+    // From here a notification can be shown by the terminal itself, if the
+    // person asked for that: the loop writes it between two frames
+    crate::notify::open_terminal();
     let result = event_loop(&mut terminal, &mut app, &tx, &mut rx).await;
+    crate::notify::close_terminal();
     leave_terminal();
     result
+}
+
+/// Writes what the terminal was asked to show, after a frame has been drawn
+/// and flushed, so it cannot land inside one. Nothing is queued unless
+/// `notifications.backend` is `terminal`.
+fn show_terminal_notifications() {
+    use std::io::Write;
+    let queued = crate::notify::take_terminal_output();
+    if queued.is_empty() {
+        return;
+    }
+    let mut out = std::io::stdout();
+    for bytes in queued {
+        let _ = out.write_all(&bytes);
+    }
+    let _ = out.flush();
 }
 
 /// Asks the terminal for button reports and nothing else: the wheel arrives as
@@ -606,6 +626,7 @@ async fn event_loop(
             }
         }
         terminal.draw(|f| ui::render(f, app))?;
+        show_terminal_notifications();
     }
     Ok(())
 }

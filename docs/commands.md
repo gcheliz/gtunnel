@@ -902,6 +902,25 @@ adds what each platform can show.
 | Recovered | `✔` | low, `network.connected` | `Recovered`, Glass |
 | Started | `●` | low, `network.connected` | `Started`, Pop |
 
+`backend` is where a notification is shown first: `auto` is the platform's notifiers below, as
+always. `terminal` (`backend = "terminal"` under `[notifications]`, or
+`GTUNNEL_NOTIFICATION_BACKEND=terminal`) asks the terminal the TUI is open in, by escape
+sequence: nothing is started, so no security product has a program to object to. It is tried
+first and falls back to the platform's notifiers when the TUI is not open (the watchdog's passes
+are never in a terminal) or the terminal is not one of these:
+
+| Terminal | Sequence |
+|---|---|
+| kitty | `OSC 99` |
+| iTerm2, Ghostty | `OSC 9` |
+| WezTerm, foot | `OSC 777` |
+
+Terminal.app, VS Code's terminal, a plain `xterm` and a Linux console are not known to show
+notifications and fall back. Inside tmux the sequence is wrapped for passthrough, which tmux
+drops unless `set -g allow-passthrough on`. A terminal shows the notification as its own: its
+icon, its permission prompt, and nothing while that terminal has focus if it is set to hold
+back notifications from the window in front.
+
 A critical notification stays on screen until dismissed in some desktops (GNOME does this), which
 is why `rich` is a choice and not the default. A notification server that ignores a hint still
 shows the notification.

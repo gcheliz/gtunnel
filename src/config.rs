@@ -457,6 +457,30 @@ impl RestartConfig {
 /// "it broke", "it is struggling", "it got better" and "it started", and a
 /// finer table is a config nobody reads. `up` is off because the person who
 /// ran `start` is looking at it.
+/// Where a notification is shown first. `auto` is the notifiers of the
+/// platform, as always; `terminal` asks the terminal the TUI is open in first,
+/// and falls back to those when there is no TUI or the terminal cannot show one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NotifyBackend {
+    #[default]
+    Auto,
+    Terminal,
+}
+
+impl NotifyBackend {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            NotifyBackend::Auto => "auto",
+            NotifyBackend::Terminal => "terminal",
+        }
+    }
+
+    fn is_auto(&self) -> bool {
+        *self == NotifyBackend::Auto
+    }
+}
+
 /// How a notification looks. `plain` is what notifications always looked like
 /// and is the default; `rich` adds a glyph, a severity-keyed urgency and
 /// category on Linux, and a subtitle and sound on macOS.
@@ -499,6 +523,8 @@ pub struct NotifyConfig {
     /// turned off, and not written back while on.
     #[serde(skip_serializing_if = "is_true")]
     pub osascript: bool,
+    #[serde(skip_serializing_if = "NotifyBackend::is_auto")]
+    pub backend: NotifyBackend,
 }
 
 fn is_true(value: &bool) -> bool {
@@ -515,6 +541,7 @@ impl Default for NotifyConfig {
             failed: true,
             style: NotifyStyle::Plain,
             osascript: true,
+            backend: NotifyBackend::Auto,
         }
     }
 }
