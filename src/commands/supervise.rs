@@ -12,6 +12,41 @@ pub struct Spend {
     pub budget: Budget,
 }
 
+/// How long gcloud is left to resume a session IAP refused to take over,
+/// counted from the first refusal. `None` when `restart.takeover_failed` is
+/// off, which is the default and leaves gcloud to retry for its fifteen minutes.
+fn takeover_grace() -> Option<Duration> {
+    if !crate::settings::current().restart_takeover_failed {
+        return None;
+    }
+    // A test cannot wait half a minute, and only a debug binary reads this
+    #[cfg(debug_assertions)]
+    if let Some(ms) = std::env::var("GTUNNEL_TEST_TAKEOVER_GRACE_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        return Some(Duration::from_millis(ms));
+    }
+    Some(TAKEOVER_GRACE)
+}
+
+/// Long enough for gcloud's own first retries to succeed, which they do when
+/// the refusal was a race, and short of the fifteen minutes it would go on for
+const TAKEOVER_GRACE: Duration = Duration::from_secs(30);
+
+/// Ends when the first 4077 is `grace` old; never, when there is no grace.
+async fn takeover_stalled(conn: &crate::logfilter::SharedCorrelator, grace: Option<Duration>) {
+    let Some(grace) = grace else {
+        return std::future::pending().await;
+    };
+    loop {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        if lock(conn).takeover_stalled(std::time::Instant::now(), grace) {
+            return;
+        }
+    }
+}
+
 /// Run a child process, pumping its stdout and stderr through the log filter, then exit with its status.
 #[allow(clippy::print_stdout, clippy::print_stderr)]
 pub async fn run(
@@ -58,6 +93,9 @@ pub async fn supervise(
     auth_marker: Option<PathBuf>,
     spend: Option<Spend>,
 ) -> Result<i32> {
+    // Read once, with the budget: a running supervisor keeps the choice it
+    // started with, and a person who turns it on restarts the tunnel
+    let takeover_grace = takeover_grace();
     if argv.is_empty() {
         bail!("__supervise requires at least one argument (the program to run)");
     }
@@ -169,12 +207,24 @@ pub async fn supervise(
     });
 
     let mut asked_to_stop = false;
+    let mut takeover_restart = false;
     let status = {
         let pgid = child.id().map(|id| id as i32);
         let status = tokio::select! {
             res = child.wait() => res.context("failed to wait on child")?,
             _ = stops.next() => {
                 asked_to_stop = true;
+                crate::proc::stop_group(&mut child, pgid, crate::proc::STOP_GRACE).await?
+            }
+            // IAP would not take the old session back and gcloud has gone on
+            // retrying for the whole grace: a new session starts the way a
+            // crash would start one
+            _ = takeover_stalled(&conn, takeover_grace) => {
+                takeover_restart = true;
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "IAP could not resume the session (4077): restarting gcloud to start a fresh one"
+                );
                 crate::proc::stop_group(&mut child, pgid, crate::proc::STOP_GRACE).await?
             }
         };
@@ -218,6 +268,12 @@ pub async fn supervise(
     }
     if let Some((dir, port)) = &probes {
         crate::probe::unwatch_probes(dir, *port);
+    }
+    // A restart this supervisor chose, for a stall that is not the tunnel's
+    // fault: outside the budget, and a non-zero exit so the service manager
+    // starts gcloud again
+    if takeover_restart && !asked_to_stop {
+        return Ok(1);
     }
     let busy = lock(&conn).listener_busy(std::time::Instant::now());
     let stopping = lock(&conn).stopping_failure(std::time::Instant::now());

@@ -29,6 +29,10 @@ impl Supervisor {
     }
 
     fn start_pinned(script: &str, extra: &[&str], jitter: &str) -> Self {
+        Self::start_env(script, extra, jitter, &[])
+    }
+
+    fn start_env(script: &str, extra: &[&str], jitter: &str, env: &[(&str, &str)]) -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().to_path_buf();
         let child = Command::new(env!("CARGO_BIN_EXE_gtunnel"))
@@ -47,6 +51,7 @@ impl Supervisor {
             .env("GTUNNEL_CONFIG_DIR", path.join("config"))
             .env("GTUNNEL_NO_NOTIFY", "1")
             .env("GTUNNEL_TEST_JITTER", jitter)
+            .envs(env.iter().copied())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -178,4 +183,67 @@ fn a_group_left_by_a_killed_supervisor_is_swept_before_the_next_spawn() {
         "the stale group's member survived the next supervisor"
     );
     assert!(!dir.path().join("com.gtunnel.dev.db.pgid").exists());
+}
+
+// gcloud's own account of a session IAP would not resume: one refusal, and then
+// nothing but retries for as long as it is left alone
+const REFUSED: &str = "echo \"WARNING: [3] Error while connecting [4077: 'takeover']\" >&2; \
+                       sleep 60 >/dev/null & echo $! > {dir}/member; wait";
+
+#[test]
+fn a_session_iap_would_not_resume_is_restarted_when_asked_and_costs_no_budget() {
+    let mut sup = Supervisor::start_env(
+        REFUSED,
+        &["--crash-marker", "{dir}/run/crash"],
+        "0",
+        &[
+            ("GTUNNEL_RESTART_TAKEOVER_FAILED", "true"),
+            ("GTUNNEL_TEST_TAKEOVER_GRACE_MS", "400"),
+        ],
+    );
+    assert!(poll(BOUND, || fs::read_to_string(sup.dir.join("member"))
+        .is_ok_and(|t| t.ends_with('\n'))));
+    let member: i32 = fs::read_to_string(sup.dir.join("member"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let began = Instant::now();
+    assert!(
+        poll(BOUND, || sup.child.try_wait().unwrap().is_some()),
+        "the supervisor left a stalled session alone"
+    );
+    assert!(
+        began.elapsed() >= Duration::from_millis(300),
+        "before the grace"
+    );
+    // A non-zero exit that is not the park code: the service manager starts it again
+    assert_eq!(sup.child.wait().unwrap().code(), Some(1));
+    assert!(
+        poll(Duration::from_secs(2), || !alive(member)),
+        "gcloud's group was left holding the port"
+    );
+    // Not a failure of the tunnel: nothing parked, nothing counted
+    assert!(!sup.dir.join("run/crash").exists());
+    assert!(!sup.dir.join("run/crash.restarts").exists());
+}
+
+#[test]
+fn a_session_iap_would_not_resume_is_left_to_gcloud_unless_asked() {
+    // Off, as it is by default: the refusal is only a line in the log
+    let mut sup = Supervisor::start_env(
+        REFUSED,
+        &[],
+        "0",
+        &[("GTUNNEL_TEST_TAKEOVER_GRACE_MS", "300")],
+    );
+    assert!(poll(BOUND, || fs::read_to_string(sup.dir.join("member"))
+        .is_ok_and(|t| t.ends_with('\n'))));
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(
+        sup.child.try_wait().unwrap().is_none(),
+        "the supervisor ended gcloud without being asked to"
+    );
+    sup.term();
+    assert!(poll(BOUND, || sup.child.try_wait().unwrap().is_some()));
 }

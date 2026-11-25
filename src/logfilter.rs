@@ -390,6 +390,8 @@ pub struct Correlator {
     /// Clients numbered so far. The tools' own ids are no use to a reader:
     /// gcloud's count the probes the log hides, and ssh reuses its channels.
     clients: u64,
+    /// When IAP first refused to take over the old session (close code 4077)
+    takeover_at: Option<Instant>,
 }
 
 pub type SharedCorrelator = Arc<Mutex<Correlator>>;
@@ -411,7 +413,15 @@ impl Correlator {
             last_classified: None,
             auth_exit_window: crate::settings::LOGS_AUTH_EXIT_WINDOW,
             clients: 0,
+            takeover_at: None,
         }
+    }
+
+    /// Whether IAP refused to resume the session `grace` ago or longer. A
+    /// correlator belongs to one run of gcloud, so a restart starts clean.
+    pub fn takeover_stalled(&self, now: Instant, grace: Duration) -> bool {
+        self.takeover_at
+            .is_some_and(|at| now.saturating_duration_since(at) >= grace)
     }
 
     /// The rate cap and the credential window the user configured. Separate
@@ -511,6 +521,11 @@ impl Correlator {
     /// One line in, the formatted lines it produces out.
     pub fn feed(&mut self, raw: &str, now: Instant) -> Vec<String> {
         let mut out = self.tick(now);
+        // The first one counts: gcloud goes on retrying, and the wait is for
+        // the whole stall, not for the latest attempt
+        if self.takeover_at.is_none() && raw.contains("[4077:") {
+            self.takeover_at = Some(now);
+        }
         if let Some(failure) = crate::failure::Failure::from_line(raw) {
             self.last_classified = Some((now, failure));
             if failure.is_stopping() {
@@ -859,6 +874,34 @@ pub fn lock(conn: &SharedCorrelator) -> std::sync::MutexGuard<'_, Correlator> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_session_iap_would_not_resume_is_stalled_only_after_the_grace_and_from_the_first_refusal() {
+        let mut c = Correlator::new(LogLevel::Info);
+        let t0 = Instant::now();
+        let grace = Duration::from_secs(30);
+        assert!(!c.takeover_stalled(t0, grace), "nothing refused yet");
+        c.feed(
+            "WARNING: [3] Error while connecting [4077: 'Failed to takeover the existing session'].",
+            t0,
+        );
+        assert!(!c.takeover_stalled(t0 + Duration::from_secs(29), grace));
+        assert!(c.takeover_stalled(t0 + Duration::from_secs(30), grace));
+        // Another refusal later does not move the clock
+        c.feed(
+            "WARNING: [3] Error while connecting [4077: 'again'].",
+            t0 + Duration::from_secs(20),
+        );
+        assert!(c.takeover_stalled(t0 + Duration::from_secs(30), grace));
+        // A line that only looks like it is not it
+        let mut other = Correlator::new(LogLevel::Info);
+        other.feed(
+            "INFO: [3] Reconnecting with URL ['wss://x/v4/reconnect?sid=4077']",
+            t0,
+        );
+        other.feed("[40770: not it]", t0);
+        assert!(!other.takeover_stalled(t0 + Duration::from_secs(300), grace));
+    }
+
     use super::*;
     use crate::failure::Failure;
     use crate::loglevel::LogLevel;
