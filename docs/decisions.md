@@ -558,3 +558,48 @@ The costs. The default is still the quietest-sounding shape for an EDR to dislik
 here changes that for anyone who does not read this page. The switch trades a possible block
 for a possible silence. What a user sees of it: [Notifications do not
 appear](troubleshooting.md#notifications-do-not-appear).
+
+## 24. Tunnels to one relay or bastion may share one SSH session
+
+**Status:** Proposed, 2026-11-25. Not built: the numbers below that would justify it are missing.
+
+Every tunnel that goes through an instance by SSH, an exposed URL's reverse forward and a jump
+tunnel's local forward, is a `gcloud compute ssh` of its own. On one machine that was three
+processes and about 80 MB for one tunnel: `gcloud compute ssh` (32 MB of Python), the `ssh` it runs
+(6 MB) and the second gcloud that `ssh` uses as its proxy to IAP (41 MB), so ten tunnels to the same
+relay are thirty processes and an IAP WebSocket and a login each. OpenSSH can carry many forwards
+over one connection: a master session with a control socket, and `ssh -O forward`, `-O cancel` and
+`-O check` to add, remove and test a forward on it.
+
+The proposal, if the numbers say so. One supervised master per account and relay, started with
+`-M -S <socket> -N`, as a service like a tunnel is. `expose`, `start` and `stop` add and cancel a
+forward on it and no longer start a process of their own; health is `-O check` on the master and the
+existing probe on each forward. It is off by default, behind `expose.shared_session`, so nobody's
+tunnels change until they choose.
+
+What was checked, and what was not.
+
+| Question | Answer |
+|---|---|
+| Does a control socket path fit? | Not always. This macOS refuses a Unix socket path over 103 bytes, and the configuration directory here is already 56, before `run/` and a label that carries the account and the tunnel's name. The socket has to live in a short directory of its own, such as `/tmp/gtunnel-<uid>/` with a hashed name, mode 0700 |
+| Does it use less? | Not measured. `scripts/measure-tunnels.py` is the tool and nothing has run it on real tunnels |
+| Is it faster or slower per connection? | Not measured, and it cannot be known without a relay: forwards on one session share one IAP WebSocket |
+| What does one failure cost? | By construction every forward on a master. A network change that drops the session drops all of them at once, where today each tunnel fails and recovers alone, and the supervisor, breaker and watchdog assume that each does |
+
+The gate. It is built only if a run of `scripts/measure-tunnels.py` on 1, 5 and 10 tunnels to one
+relay shows a saving that justifies shared fate: at least halving the processes and the resident
+memory, with connect latency no worse. The run goes into `architecture.md` beside the figures it
+replaces. If it does not, this record is closed as rejected and the numbers stay.
+
+Alternatives. Replacing `gcloud` with a native IAP client removes the Python and the second process
+for every tunnel, direct ones included, and is the larger change: the protocol is unpublished
+(frames, acknowledgements and the reconnect call are known only from other clients' source), and
+gtunnel would own keeping up with it. It is worth considering only if the same run shows gcloud
+itself, not the number of sessions, is the cost. A user-level `~/.ssh/config` with `ControlMaster
+auto` gives the sharing for a hand-run `ssh` already and needs nothing from gtunnel, but not for the
+`gcloud compute ssh` gtunnel runs, which builds its own command line.
+
+The costs, if it is built. The one shared fate above; a service per relay where there was one per
+tunnel, so `list`, `doctor`, `delete` and the lifecycle ledger all learn that a tunnel can be a
+forward and not a process; and a socket that can outlive its master and must be swept.
+
