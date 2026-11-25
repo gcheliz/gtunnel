@@ -445,6 +445,9 @@ async fn event_loop(
 ) -> Result<()> {
     let mut timers = Timers::due();
     let mut logs_for: Option<String> = None;
+    // Asked once: a TUI that was not asked to take notifications from the
+    // watchdog does nothing for them on a tick
+    let hand_off = crate::notify::terminal_handoff_wanted();
     // Every op the keys have started. Kept, and not dropped as a handle, so
     // that a quit can wait for them: dropping the runtime cancels a task at
     // its next await, which is between two steps of a delete or a move
@@ -487,6 +490,10 @@ async fn event_loop(
                 }
             }
             Msg::Tick => {
+                // Says the TUI is here and shows what the watchdog left for it
+                if hand_off {
+                    crate::notify::terminal_tick();
+                }
                 // A task that ended without its result, a panic in an op,
                 // would otherwise be waited on for the whole bound
                 while running.try_join_next().is_some() {}
