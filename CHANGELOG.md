@@ -3,6 +3,17 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.3.50](https://github.com/gcheliz/gtunnel/compare/v0.3.49...v0.3.50) - 2026-11-25
+
+### Added
+
+- *(notify)* give a rich Linux notification gtunnel's icon and let it replace its banner ([#510](https://github.com/gcheliz/gtunnel/pull/510))
+
+### Documentation
+
+- *(architecture)* a script that measures what tunnels cost ([#508](https://github.com/gcheliz/gtunnel/pull/508))
+- *(decisions)* propose sharing one SSH session between tunnels to a relay ([#509](https://github.com/gcheliz/gtunnel/pull/509))
+
 ## [0.3.49](https://github.com/gcheliz/gtunnel/compare/v0.3.48...v0.3.49) - 2026-11-25
 
 ### Added
