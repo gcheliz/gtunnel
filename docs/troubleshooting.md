@@ -462,6 +462,26 @@ Local forwarding listening on 127.0.0.1 port 8443.
 | A count that rises while the machine stays awake | Not the wake case. Read the log with `gtunnel logs <name>` and look for the cause |
 | `Unable to reconnect within [900000] ms` | The network stayed down for gcloud's 15 minute window. The restart is the same one; see [Limits](architecture.md#limits) |
 
+## A tunnel that is reconnecting
+
+After a network change gcloud resumes its IAP session on its own and logs `Reconnecting with URL`
+for each attempt. A probe that runs meanwhile fails, and a few failures in a row make the
+watchdog call the tunnel degraded, restart it, or notify, although gcloud is already doing what a
+restart would do.
+
+`watch.reconnect_grace = true` (or `GTUNNEL_WATCH_RECONNECT_GRACE=true`) stops counting such a
+probe. It is off by default, so nothing changes until you turn it on. With it on:
+
+| Situation | What the watchdog does |
+|---|---|
+| A probe fails and the newest `Reconnecting with URL` is at most 60 seconds old | Does not count it, and writes `probe failed, not counted: gcloud has been reconnecting since <time>` to the tunnel's log |
+| The reconnect attempts have gone on for five minutes | Counts the failure again, so a tunnel that cannot reconnect is still reported |
+| Attempts more than 60 seconds apart | Are separate streaks: the five minutes start again |
+| A probe passes | Is a pass; the grace only ever excuses a failure |
+
+The times come from the log's own timestamps, so a log read late does not make an old attempt look
+recent. Only a tunnel whose service is running is excused; a stopped one is judged as before.
+
 ## What a network outage does
 
 With the machine awake and the network gone (a flight, a VPN flap, a captive portal), watched
