@@ -94,6 +94,11 @@ pub fn open() {
     *queue() = Some(Vec::new());
 }
 
+/// Whether this process is the one with a terminal open
+pub fn is_open() -> bool {
+    queue().is_some()
+}
+
 /// The TUI has given the terminal back
 pub fn close() {
     *queue() = None;
