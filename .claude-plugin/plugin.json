@@ -1,6 +1,6 @@
 {
   "name": "gtunnel",
-  "version": "0.3.52",
+  "version": "0.3.53",
   "description": "GCP IAP tunnels and public URLs for Claude Code: the gtunnel MCP server and the skill that tells the agent how to use it. Requires the gtunnel binary on PATH.",
   "author": {
     "name": "gcheliz",
