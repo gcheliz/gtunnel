@@ -1,0 +1,20 @@
+{
+  "name": "gtunnel",
+  "version": "0.3.51",
+  "description": "GCP IAP tunnels and public URLs for Claude Code: the gtunnel MCP server and the skill that tells the agent how to use it. Requires the gtunnel binary on PATH.",
+  "author": {
+    "name": "gcheliz",
+    "url": "https://github.com/gcheliz"
+  },
+  "homepage": "https://github.com/gcheliz/gtunnel",
+  "repository": "https://github.com/gcheliz/gtunnel",
+  "license": "MIT",
+  "keywords": ["gcp", "iap", "tunnel", "mcp"],
+  "skills": "./.agents/skills/",
+  "mcpServers": {
+    "gtunnel": {
+      "command": "gtunnel",
+      "args": ["mcp"]
+    }
+  }
+}
