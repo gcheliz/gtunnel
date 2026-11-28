@@ -20,8 +20,8 @@ git_release_enable = false
 
 changelog_update = true
 
-# Every prefix that changes the binary cuts a release, so a merge reaches users
-# without anyone dispatching anything. `docs` writes a changelog line but changes
+# Every prefix that changes the binary cuts a release at the next daily train, so
+# a merge reaches users without anyone dispatching anything. `docs` writes a changelog line but changes
 # nothing in the binary, so it waits and ships with the next release a code change
 # cuts. Tests, CI and chores write no line at all. Releasing either would ship
 # identical binaries under a new number.

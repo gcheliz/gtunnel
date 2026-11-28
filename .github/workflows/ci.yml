@@ -1,10 +1,13 @@
 name: CI
 
-# Pull requests run this directly. A push to main does not: release.yml calls it
-# as the first gate of the release train, so the tree on main is tested once, and
-# that call is also the run that writes the cache, because its ref is main.
+# Pull requests run this directly, and so does every push to main: a pull request
+# may merge without being up to date with main, so main is tested as merged, the
+# same day. release.yml also calls it as the first gate of the daily release
+# train. Runs on main write the cache, because their ref is main.
 on:
   pull_request:
+  push:
+    branches: [main]
   workflow_call:
 
 # Nothing here publishes or comments, so the token is read-only for every job

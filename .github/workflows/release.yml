@@ -1,11 +1,18 @@
 name: Release
 
-# One workflow, two halves, chosen by what was pushed.
+# One workflow, two halves, chosen by what started it.
 #
-# A push to main is the release train. CI runs once, and release-plz works out
-# whether the commits since the last tag deserve a version. When they do, a draft
-# release opens at once, and only when CI is green does one push land the bump
-# commit and its tag together. No release pull request and no second merge.
+# The release train runs once a day, at 08:00 UTC, on main. Everything merged
+# since the last tag ships in one release, so a day of merges is one version and
+# one bump commit, not one per merge (each bump moved main under every open pull
+# request and restarted its CI). CI runs once, and release-plz works out whether
+# the commits since the last tag deserve a version. When they do, a draft release
+# opens at once, and only when CI is green does one push land the bump commit and
+# its tag together. No release pull request and no second merge. A release that
+# cannot wait is a dispatch of this workflow with `dry_run` off.
+#
+# A push to main does not start the train. It runs CI on its own (ci.yml), so a
+# merge that breaks main shows the same day, not at the next train.
 #
 # A push of a v* tag is the build. The four targets are built from the tagged
 # commit, attested, uploaded to the draft, and the draft is published as latest.
@@ -19,8 +26,11 @@ name: Release
 # request, which is what lets the bump commit land on main without one.
 on:
   push:
-    branches: [main]
     tags: ["v*"]
+  # 08:00 UTC is 09:00 in Madrid in winter and 10:00 in summer. GitHub runs a
+  # schedule on the default branch only, and may start it some minutes late.
+  schedule:
+    - cron: "0 8 * * *"
   # A dry run walks the whole path without publishing: it computes the version,
   # runs CI, opens a draft named vX.Y.Z-dry-run and builds the four targets, then
   # stops before the bump commit, the tag, the attestations and the release. A
@@ -51,14 +61,12 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # ---- The train: push to main ------------------------------------------------
+  # ---- The train: the daily schedule, or a dispatch on a branch ---------------
 
   # Works out the next version without committing it. The bump commit this train
-  # pushes starts the workflow again, and the subject guard stops it here.
+  # pushes does not start it again: a push to main is no trigger of this file.
   plan:
-    if: >-
-      github.ref_type == 'branch'
-      && !startsWith(github.event.head_commit.message, 'chore(release):')
+    if: github.ref_type == 'branch'
     runs-on: ubuntu-26.04
     outputs:
       release: ${{ steps.bump.outputs.release }}
@@ -131,12 +139,9 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
 
-  # The same five jobs a pull request runs. This call is also the only run that
-  # saves the build cache, because its ref is main.
+  # The same five jobs a pull request runs, on the exact tree this train tags.
   ci:
-    if: >-
-      github.ref_type == 'branch'
-      && !startsWith(github.event.head_commit.message, 'chore(release):')
+    if: github.ref_type == 'branch'
     permissions:
       contents: read
     # The documented local form; actionlint and older runners do not read `$/`
@@ -203,7 +208,8 @@ jobs:
     if: >-
       needs.plan.outputs.release == 'true'
       && github.ref == 'refs/heads/main'
-      && (github.event_name == 'push' || inputs.dry_run == false)
+      && (github.event_name == 'schedule'
+          || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false))
     runs-on: ubuntu-26.04
     permissions:
       contents: read
@@ -228,12 +234,13 @@ jobs:
             exit 1
           fi
 
-          # A newer merge landed while this train ran. Its own train starts from
-          # that newer main and its changelog covers these commits too, so this
-          # one stands down rather than push a bump onto a main it never tested.
+          # A merge landed while this train ran. The next train (tomorrow's, or a
+          # dispatch) starts from that newer main and its changelog covers these
+          # commits too, so this one stands down rather than push a bump onto a
+          # main it never tested.
           git fetch --quiet origin main
           if [ "$(git rev-parse origin/main)" != "${GITHUB_SHA}" ]; then
-            echo "::notice::main moved past ${GITHUB_SHA}; the newer train releases instead"
+            echo "::notice::main moved past ${GITHUB_SHA}; dispatch this workflow, or the next scheduled train releases instead"
             exit 0
           fi
 

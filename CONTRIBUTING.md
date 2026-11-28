@@ -239,11 +239,12 @@ history. Write the pull request title as the commit message you want on `main`.
 
 ## Releases
 
-You do not pick versions. Every merge to `main` runs [`release.yml`](.github/workflows/release.yml):
-[`release-plz`](https://release-plz.dev) reads the commit subjects since the last tag,
-computes the version, and the workflow tests the merge, commits the bump (`Cargo.toml`,
-`Cargo.lock`, a `CHANGELOG.md` entry), tags it, builds and publishes. There is no release pull
-request. Why it works this way: [decision 14](docs/decisions.md#14-releases-are-computed-and-published-automatically).
+You do not pick versions. Every day at 08:00 UTC [`release.yml`](.github/workflows/release.yml)
+runs on `main`: [`release-plz`](https://release-plz.dev) reads the commit subjects since the
+last tag, computes the version, and the workflow tests the tree, commits the bump (`Cargo.toml`,
+`Cargo.lock`, a `CHANGELOG.md` entry), tags it, builds and publishes. Everything merged that day
+ships in one release. A release that cannot wait is a manual run of the workflow with `dry_run`
+off. There is no release pull request. Why it works this way: [decision 14](docs/decisions.md#14-releases-are-computed-and-published-automatically).
 
 Every GitHub API call in the train goes through [`gh-retry.sh`](.github/scripts/gh-retry.sh), which
 reruns it up to three times, after 5s and 15s, only on an HTTP 5xx, a reset connection or a
