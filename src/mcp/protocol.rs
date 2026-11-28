@@ -165,10 +165,88 @@ impl JsonRpcResponse {
     }
 }
 
+/// The usage rules every client gets, skill installed or not. They name only
+/// what a tool description cannot: which calls need the user's yes, which tool
+/// to reach for first, and what counts as success. Tool behaviour itself stays
+/// in the tool descriptions, so the two never disagree.
+pub const INSTRUCTIONS: &str = "gtunnel manages GCP IAP tunnels on this machine. \
+Confirm with the user before gtunnel_delete_tunnel, gtunnel_move_tunnel, \
+gtunnel_rename_tunnel, or gtunnel_expose_tunnel with public: true; each changes \
+something the user owns or publishes it to anyone. For one-off access prefer \
+gtunnel_run_tunnel with the shortest ttl_minutes that covers the task: it closes \
+by itself. Before reporting success, read isError on the result, then the tunnel's \
+health from gtunnel_get_status or gtunnel_list_tunnels; only \"healthy\" means it works.";
+
+/// Icons arrived in this revision (SEP-973). An older client validating
+/// `serverInfo` strictly would see an unknown field, so it is not sent one.
+const ICONS_SINCE: &str = "2025-11-25";
+
+const ICON_SVG: &str = include_str!("../notify/gtunnel.svg");
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ServerInfo {
     pub name: String,
+    /// What a client shows as the server's name; `name` stays the identifier.
+    pub title: String,
     pub version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icons: Option<Vec<Icon>>,
+}
+
+impl ServerInfo {
+    /// The identity for a negotiated revision. Revisions are dates, so string
+    /// order is release order.
+    pub fn for_version(protocol_version: &str) -> Self {
+        Self {
+            name: "gtunnel".to_string(),
+            title: "gtunnel".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            icons: (protocol_version >= ICONS_SINCE).then(|| vec![Icon::gtunnel()]),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Icon {
+    pub src: String,
+    #[serde(rename = "mimeType")]
+    pub mime_type: String,
+    pub sizes: Vec<String>,
+}
+
+impl Icon {
+    /// Inlined as a `data:` URI: the server has no URL to serve from, and a
+    /// file path means nothing to a client on another machine.
+    fn gtunnel() -> Self {
+        Self {
+            src: format!("data:image/svg+xml;base64,{}", base64(ICON_SVG.as_bytes())),
+            mime_type: "image/svg+xml".to_string(),
+            sizes: vec!["any".to_string()],
+        }
+    }
+}
+
+/// Standard padded base64 (RFC 4648). Hand-written because one small icon does
+/// not justify a dependency.
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(ALPHABET[(n >> (18 - 6 * i)) as usize & 63] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -200,6 +278,7 @@ pub struct InitializeResult {
     pub capabilities: ServerCapabilities,
     #[serde(rename = "serverInfo")]
     pub server_info: ServerInfo,
+    pub instructions: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -351,6 +430,39 @@ mod negotiation_tests {
     fn anything_else_gets_the_latest() {
         for v in [None, Some(""), Some("1900-01-01"), Some("2026-07-28")] {
             assert_eq!(negotiate_version(v), "2025-11-25");
+        }
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    #[test]
+    fn base64_matches_the_rfc_4648_vectors() {
+        for (plain, encoded) in [
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foob", "Zm9vYg=="),
+            ("fooba", "Zm9vYmE="),
+            ("foobar", "Zm9vYmFy"),
+        ] {
+            assert_eq!(base64(plain.as_bytes()), encoded);
+        }
+    }
+
+    #[test]
+    fn the_instructions_name_only_tools_the_server_has() {
+        let tools: Vec<String> = crate::mcp::tools::all_tools()
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+        for word in INSTRUCTIONS.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
+            if word.starts_with("gtunnel_") {
+                assert!(tools.iter().any(|t| t == word), "{word} is not a tool");
+            }
         }
     }
 }

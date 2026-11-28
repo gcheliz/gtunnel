@@ -708,6 +708,7 @@ in-repo Skill tells the agent how to use them.
 
 `gtunnel mcp` is a newline-delimited JSON-RPC 2.0 stdio server in the same binary: 14 tools and
 2 live resources, no external runtime.
+Its `initialize` result (and `server/discover`) carries `instructions` for any client, skill or not: confirm before a delete, move, rename or public expose, prefer `gtunnel_run_tunnel` with a short TTL, and read `isError` and `health` before reporting success. `serverInfo` has the title `gtunnel` and, from revision `2025-11-25`, its icon.
 
 <p align="center">
   <img src="demo-mcp.gif" alt="Real MCP calls to gtunnel mcp: the tools, gtunnel_run_tunnel opening db on bastion:5432 for 30 minutes, gtunnel list showing the run and its stop time, gtunnel_stop_tunnel closing it" width="720">

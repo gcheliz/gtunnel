@@ -21,7 +21,7 @@ Capabilities:
 When executing tunnel operations, select tools according to availability:
 
 ### 1. Primary: Native MCP Tools
-If `gtunnel_*` MCP tools are available, prefer them over the CLI:
+If `gtunnel_*` MCP tools are available, prefer them over the CLI. The server's `initialize` `instructions` carry the confirm-first and verify-before-success rules below, so a client without this skill still gets them:
 - `gtunnel_list_tunnels`: tunnels and live runs, each with `status`, `local_port` (`null` on a public tunnel) and `health` (`healthy`, `unhealthy`, `auth_expired`, `credentials_refused`, `stopped` or `unknown`). One call answers whether every tunnel works.
 - `gtunnel_start_tunnel`: start a tunnel, or with `auth_expired: true` (no `name`) every tunnel stopped on an expired login. The watchdog does this itself after `gcloud auth login`; a tunnel stopped on a denied impersonation, a bad key or a missing configuration is not resumed.
 - `gtunnel_stop_tunnel`: stop a tunnel, or a live run.
