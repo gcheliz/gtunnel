@@ -1,0 +1,15 @@
+{
+  "name": "gtunnel",
+  "description": "gtunnel's own marketplace: one plugin, the gtunnel MCP server and agent skill.",
+  "owner": {
+    "name": "gcheliz",
+    "url": "https://github.com/gcheliz"
+  },
+  "plugins": [
+    {
+      "name": "gtunnel",
+      "source": "./",
+      "description": "The gtunnel MCP server and agent skill. Install the gtunnel binary first."
+    }
+  ]
+}
