@@ -95,11 +95,12 @@ gtunnel add k8s-api 10.0.0.10:443 --via bastion
 ```
 
 ### 4. Client-Side Routing (MongoDB Compass and Bastion Forwarding)
-- One tunnel to the bastion, not one per backend host or shard. For MongoDB Compass, forward to the bastion's SSH port:
+- One `socks` tunnel to the bastion, not one per backend host or shard. gtunnel's supervised ssh holds the session and answers keepalives when the client freezes:
   ```bash
-  gtunnel add mongodb bastion:22 --local-port 10022
+  gtunnel add mongodb bastion --socks --local-port 1080
   ```
-- In Compass: SSH Tunnel via `localhost:10022` with your SSH key, cluster URI in Compass. Never SSL Proxy; never pin replica-set member hostnames.
+- In Compass: Advanced options, Proxy/SSH, Socks5, host `127.0.0.1`, port `1080`. Keep the cluster URI with its private hostnames: the proxy resolves them on the bastion, so replica-set failover works. Never SSL Proxy; never pin replica-set member hostnames.
+- Not Compass's own SSH over a tunnel to the bastion's port 22: when Compass freezes past sshd's keepalive budget, sshd drops the session and the log shows IAP `4010`. See [A SOCKS proxy](https://github.com/gcheliz/gtunnel/blob/main/docs/commands.md#a-socks-proxy-for-clients-that-pick-their-own-host).
 
 ## Account Scoping
 
@@ -166,8 +167,9 @@ gtunnel watch -v       # the restart loop in the foreground, saying what each pa
 Bare `gtunnel watch` runs the same loop quietly: nothing per pass on screen, and each action written to the tunnel's log. `gtunnel watch install` makes it run without a terminal.
 
 ### Inspecting Daemon Logs
-- Prefer `gtunnel logs <name> --lines 50` (`-f` follows).
-- The file is `<config>/logs/<account>-<name>.log`, where `<config>` is `~/.gtunnel` (or `GTUNNEL_CONFIG_DIR`).
+- Prefer `gtunnel logs <name> --lines 50` (`-f` follows) or `gtunnel_get_logs`: both find the file for a tunnel and for a run.
+- A tunnel's file is `<config>/logs/<account>-<name>.log`; a run's, launched by `gtunnel_run_tunnel`, is `<config>/logs/run-<account>-<name>.log`.
+- `<config>` is `GTUNNEL_CONFIG_DIR` when set, else `~/.gtunnel` if it exists, else the legacy `gtunnel` directory under the platform config dir (`~/.config/gtunnel` on Linux, `~/Library/Application Support/gtunnel` on macOS) if that exists, else `~/.gtunnel`.
 
 ## Tool Validation & Self-Testing
 
