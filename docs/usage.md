@@ -828,6 +828,30 @@ npx @modelcontextprotocol/inspector gtunnel mcp
 
 ### Client Configuration
 
+#### Claude Code plugin
+
+The plugin installs the MCP server and the agent skill together, so Claude Code gets the tools and the rules for using them in one step. The repository is its own marketplace:
+
+```text
+/plugin marketplace add gcheliz/gtunnel
+/plugin install gtunnel@gtunnel
+```
+
+The plugin does not install the binary. [Install gtunnel](#4-install-gtunnel) first: the plugin starts `gtunnel mcp` from `PATH`. Then check that the server is up:
+
+```console
+$ claude mcp list
+plugin:gtunnel:gtunnel: gtunnel mcp - ✔ Connected
+```
+
+| What the plugin adds | Name in Claude Code |
+|---|---|
+| MCP server | `plugin:gtunnel:gtunnel` |
+| Tools | `mcp__plugin_gtunnel_gtunnel__gtunnel_*` |
+| Skill | `gtunnel:gtunnel` |
+
+Use the plugin or one of the installs below, not both: each registers its own `gtunnel` server.
+
 #### One-line install
 
 Each client registers the server with one command. Add `--scope user` to make it available in every project; the default scope is this project only.

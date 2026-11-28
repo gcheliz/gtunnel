@@ -494,6 +494,7 @@ precedence are under [Settings the environment can override](#settings-the-envir
 | `GTUNNEL_RESTART_MAX_BACKOFF` | | `restart.max_backoff` | `5m` | The cap on that doubling wait. Not shorter than the base backoff |
 | `GTUNNEL_TEST_JITTER` | | nothing | none | Debug builds only, for tests: pins the random draw behind every retry wait and start spread to one value in `0` to `1`, so a test of the real binary can say how long a wait is. A release build does not read it |
 | `GTUNNEL_TEST_GCP_ENDPOINT` | | nothing | none | Debug builds only, for tests: points every Google API at one base URL, such as a wiremock server. A release build does not read it, and CI checks the name is absent from the release binary |
+| `GTUNNEL_TEST_TAKEOVER_GRACE_MS` | | nothing | none | Debug builds only, for tests: how many milliseconds the supervisor waits, in place of 30 seconds, before it treats IAP's refusal to resume a session as stalled. A release build does not read it |
 | `PATH` | | nothing: it is the shell's, shared with every other program | | Where `gcloud` is found at startup |
 
 ### Variables a service takes from your shell
