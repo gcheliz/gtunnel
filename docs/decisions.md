@@ -197,20 +197,26 @@ shipped with triple names and no users.
 
 ## 12. Changes land through a pull request, squashed
 
-**Status:** Accepted, 0.1.0 (2026-10-24)
+**Status:** Accepted, 0.1.0 (2026-10-24), amended 2026-11-28 (a branch need not be up to date)
 
 The published history is what a reader of a public repository sees, and a branch's working
 commits are not that.
 
 The `main` ruleset requires a pull request, allows squash as the only merge method, and
-requires six checks with the branch up to date: `test` on macOS and Ubuntu, `audit`,
+requires six checks: `test` on macOS and Ubuntu, `audit`,
 `msrv`, `zizmor` (the gate of [decision 10](#10-the-ci-gate-is-six-checks-and-each-one-exists-for-a-reason))
 and `pr-title`. A squash takes the pull request title as its commit message and the release train reads that
 message, so the title is checked too. Deletion and non-fast-forward pushes are blocked.
 
-The cost is that a one-line fix still needs a branch and a wait for CI. The benefit is that
-every commit on `main` is one reviewed idea with a message that explains it, and that no
-commit reaches `main` without the gate having run on that exact tree.
+A branch does not have to be up to date with `main` to merge. Requiring it threw away a
+green run each time another pull request merged, so open pull requests landed one CI run
+at a time. The tree on `main` is still tested as merged: every push to `main` runs CI, and
+the release train runs it again before it tags, so a combination that breaks only together
+cannot be released.
+
+The cost is that a one-line fix still needs a branch and a wait for CI, and that two pull
+requests green alone can break `main` together, which the push run reports. The benefit is
+that every commit on `main` is one reviewed idea with a message that explains it.
 
 ## 13. Documentation is a deliverable, not cleanup
 
@@ -228,24 +234,29 @@ describes a program that no longer exists.
 
 ## 14. Releases are computed and published automatically
 
-**Status:** Accepted, 0.1.1 (2026-10-24), amended 0.1.14 (2026-10-26), amended 2026-10-27, amended 2026-10-28 (docs no longer release)
+**Status:** Accepted, 0.1.1 (2026-10-24), amended 0.1.14 (2026-10-26), amended 2026-10-27, amended 2026-10-28 (docs no longer release), amended 2026-11-28 (one train a day)
 
 Deciding a version by hand means deciding it from memory, and a changelog written at
 release time is written from the diff rather than from the intent.
 
-One merge to `main` is one release. `release.yml` runs a train on the merge commit:
+One day of merges to `main` is one release. `release.yml` runs a train every day at 08:00
+UTC on the tip of `main`, and on a manual dispatch when a release cannot wait. A train per
+merge pushed a bump commit after every merge, which moved `main` under every open pull
+request and restarted its CI a second time; three pull requests took six CI runs to land.
+A push to `main` runs `ci.yml` on its own, so a merge that breaks `main` shows the same day.
+The train:
 
 | Job | What it does |
 |---|---|
 | plan | `release-plz update` in `git_only` mode computes the next version from the conventional-commit subjects and rewrites `Cargo.toml`, `Cargo.lock` and `CHANGELOG.md`; nothing to release ends the run |
-| ci | calls `ci.yml`, so the merged tree is tested once |
+| ci | calls `ci.yml`, so the exact tree it tags is tested |
 | draft | opens a draft release with the changelog section as notes |
 | tag | commits the bump as `chore(release): vX.Y.Z` and pushes it with the annotated tag in one atomic push |
 | verify | runs on the tag: it must point at a commit on `main` and name the version that commit declares |
 | build, publish | four targets, a `.sha256` each, an attestation each, then the draft is published as latest |
 
-Every merge that changes the binary, `feat`, `fix`, `perf` or `refactor`, cuts a release
-(`release_commits` in `release-plz.toml`). A `docs` merge writes a changelog line but ships
+A train whose commits include one that changes the binary, `feat`, `fix`, `perf` or
+`refactor`, cuts a release (`release_commits` in `release-plz.toml`). A `docs` merge writes a changelog line but ships
 identical binaries, so it cuts none: its line ships in the notes of the next release. A
 merge of tests, CI or chores alone writes no line and changes no version. A merge that
 changes only `Cargo.lock` is invisible to that filter, because release-plz drops
