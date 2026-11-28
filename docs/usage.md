@@ -837,6 +837,8 @@ The plugin installs the MCP server and the agent skill together, so Claude Code 
 /plugin install gtunnel@gtunnel
 ```
 
+On Claude Code 2.1.275 or later, one line does both: `/plugin install gtunnel --marketplace gcheliz/gtunnel`.
+
 The plugin does not install the binary. [Install gtunnel](#4-install-gtunnel) first: the plugin starts `gtunnel mcp` from `PATH`. Then check that the server is up:
 
 ```console

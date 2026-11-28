@@ -64,6 +64,12 @@ shasum -a 256 -c "$F.sha256" && tar -xzf "$F" && sudo mv gtunnel /usr/local/bin/
 Other machines, `cargo install`, the build attestation and upgrades (`gtunnel update` for a download or cargo install): [docs/usage.md](docs/usage.md#4-install-gtunnel).
 The crates.io `gtunnel` is an unrelated crate ([install](docs/usage.md#4-install-gtunnel)). Run `gtunnel doctor` next.
 
+For Claude Code, the plugin adds the MCP server and the agent skill in one step, once the binary is installed:
+
+```
+/plugin install gtunnel --marketplace gcheliz/gtunnel
+```
+
 ## Quick start
 
 A private port to a GCP instance:
