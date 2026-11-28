@@ -3,6 +3,16 @@
 Notable changes per release. Dates are the release date; an unreleased section is
 what is on `main` and not yet tagged.
 
+## [0.3.52](https://github.com/gcheliz/gtunnel/compare/v0.3.51...v0.3.52) - 2026-11-28
+
+### Added
+
+- *(plugin)* ship gtunnel as a Claude Code plugin with its skill and MCP server ([#519](https://github.com/gcheliz/gtunnel/pull/519))
+
+### Documentation
+
+- *(skill)* route Compass through a socks tunnel and name every log path ([#518](https://github.com/gcheliz/gtunnel/pull/518))
+
 ## [0.3.51](https://github.com/gcheliz/gtunnel/compare/v0.3.50...v0.3.51) - 2026-11-25
 
 ### Added
