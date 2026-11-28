@@ -125,7 +125,10 @@ jobs:
             README.md
             docs/usage.md
             site/index.html
+            .claude-plugin/plugin.json
             notes.md
+          # .claude-plugin is a dot directory, which upload-artifact skips unless told
+          include-hidden-files: true
           if-no-files-found: error
 
   # The same five jobs a pull request runs. This call is also the only run that
@@ -237,6 +240,7 @@ jobs:
           cp bump/Cargo.toml bump/Cargo.lock bump/CHANGELOG.md bump/README.md .
           cp bump/docs/usage.md docs/usage.md
           cp bump/site/index.html site/index.html
+          cp bump/.claude-plugin/plugin.json .claude-plugin/plugin.json
 
           # The commit is the token owner's, as a push from their laptop would be.
           # A 401 fails at once; only a transient 5xx is retried.
@@ -250,7 +254,8 @@ jobs:
           git config user.email "${noreply}@users.noreply.github.com"
 
           # The landing page rides in the same commit, so its push redeploys it
-          git add Cargo.toml Cargo.lock CHANGELOG.md README.md docs/usage.md site/index.html
+          git add Cargo.toml Cargo.lock CHANGELOG.md README.md docs/usage.md site/index.html \
+            .claude-plugin/plugin.json
           git commit --quiet -m "chore(release): ${TAG}"
           git tag -a "${TAG}" -m "${TAG}"
 

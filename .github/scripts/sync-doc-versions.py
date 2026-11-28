@@ -1,6 +1,9 @@
 """Rewrite the version strings the docs quote to the version being released.
 
 The docs are README.md, docs/usage.md and the landing page, site/index.html.
+The Claude Code plugin manifest, .claude-plugin/plugin.json, rides along: a
+plugin with a pinned version is only updated for its users when that string
+changes, so it must move with every release.
 The release train runs this after release-plz has bumped Cargo.toml, so the
 bump commit carries the docs with it, its push redeploys the landing page, and
 the "Verify documentation versions"
@@ -21,6 +24,9 @@ def sync(text: str, version: str, kind: str) -> str:
     # that happens to look like a version can be rewritten by accident
     if kind == "site":
         return re.sub(r"(data-gtunnel-version>)[0-9.]+(<)", rf"\g<1>{version}\g<2>", text)
+    # The manifest's own version is its first "version" key
+    if kind == "plugin":
+        return re.sub(r'("version": ")[0-9.]+(")', rf"\g<1>{version}\g<2>", text, count=1)
     text = re.sub(r'VERSION="v[0-9.]+"', f'VERSION="v{version}"', text)
     if kind == "usage":
         text = re.sub(
@@ -39,6 +45,7 @@ def main() -> int:
         ("README.md", "readme"),
         ("docs/usage.md", "usage"),
         ("site/index.html", "site"),
+        (".claude-plugin/plugin.json", "plugin"),
     ):
         path = Path(name)
         before = path.read_text()
