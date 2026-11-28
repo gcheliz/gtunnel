@@ -4478,7 +4478,7 @@ fn the_details_column_needs_room_for_all_of_details_and_a_figure_row() {
     assert_eq!(ui::column_heights(0, 9), None);
 }
 
-// In the 32-column stacked Details a host broke as `private-cluster-b` over
+// In the 32-column stacked Details a host broke as `example-cluster-b` over
 // `astion:22`: a word too long for the column breaks after its punctuation
 #[test]
 fn a_word_too_long_for_the_value_column_breaks_after_its_punctuation() {
@@ -4490,14 +4490,14 @@ fn a_word_too_long_for_the_value_column_breaks_after_its_punctuation() {
     assert_eq!(
         values(ui::wrap_detail(
             "target",
-            "private-cluster-bastion:22 (europe-west1-b)",
+            "example-cluster-bastion:22 (europe-west1-b)",
             28
         )),
-        ["private-cluster-", "bastion:22", "(europe-west1-b)"]
+        ["example-cluster-", "bastion:22", "(europe-west1-b)"]
     );
     assert_eq!(
-        values(ui::wrap_detail("project", "holded-app-dev-a612", 28)),
-        ["holded-app-dev-", "a612"]
+        values(ui::wrap_detail("project", "sample-app-dev-1a2b", 28)),
+        ["sample-app-dev-", "1a2b"]
     );
     // nothing to break after: the column's edge, as before
     assert_eq!(
