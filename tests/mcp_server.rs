@@ -1547,3 +1547,56 @@ fn a_line_that_is_not_utf8_gets_a_parse_error_and_the_server_keeps_answering() {
     assert!(replies[2]["result"].is_object(), "{}", replies[2]);
     assert!(ok, "end of input is a clean exit: {stderr}");
 }
+
+fn initialize_result(h: &Harness, version: &str) -> serde_json::Value {
+    let req = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"protocolVersion":"{version}"}}}}"#
+    );
+    one_frame(h, &req)["result"].clone()
+}
+
+#[test]
+fn initialize_carries_instructions_and_a_title_in_every_revision() {
+    let h = Harness::new();
+    for version in ["2024-11-05", "2025-06-18", "2025-11-25"] {
+        let r = initialize_result(&h, version);
+        let instructions = r["instructions"]
+            .as_str()
+            .expect("instructions is a string");
+        assert!(!instructions.trim().is_empty(), "{version}");
+        assert!(
+            instructions.contains("gtunnel_run_tunnel"),
+            "{instructions}"
+        );
+        assert_eq!(r["serverInfo"]["title"], "gtunnel", "{version}");
+    }
+}
+
+#[test]
+fn server_discover_carries_the_same_instructions_as_initialize() {
+    let h = Harness::new();
+    let req = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{{{MODERN_META}}}}}"#
+    );
+    let discovered = one_frame(&h, &req)["result"]["instructions"].clone();
+    let initialized = initialize_result(&h, "2025-11-25")["instructions"].clone();
+    assert!(discovered.as_str().is_some_and(|s| !s.trim().is_empty()));
+    assert_eq!(discovered, initialized);
+}
+
+#[test]
+fn icons_are_offered_only_to_a_client_that_knows_them() {
+    let h = Harness::new();
+    for version in ["2024-11-05", "2025-06-18"] {
+        let r = initialize_result(&h, version);
+        assert!(r["serverInfo"].get("icons").is_none(), "{version}: {r}");
+    }
+    let r = initialize_result(&h, "2025-11-25");
+    let icons = r["serverInfo"]["icons"]
+        .as_array()
+        .expect("icons is an array");
+    assert_eq!(icons.len(), 1);
+    assert_eq!(icons[0]["mimeType"], "image/svg+xml");
+    let src = icons[0]["src"].as_str().unwrap();
+    assert!(src.starts_with("data:image/svg+xml;base64,"), "{src}");
+}

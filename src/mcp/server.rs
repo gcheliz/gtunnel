@@ -4,8 +4,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use super::protocol::{
     modern_version, stamp_modern, InitializeResult, JsonRpcError, JsonRpcRequest, JsonRpcResponse,
-    ResourcesCapability, ServerCapabilities, ServerInfo, ToolsCapability, INVALID_PARAMS,
-    INVALID_REQUEST, METHOD_NOT_FOUND, MODERN_PROTOCOL_VERSIONS, PARSE_ERROR,
+    ResourcesCapability, ServerCapabilities, ServerInfo, ToolsCapability, INSTRUCTIONS,
+    INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, MODERN_PROTOCOL_VERSIONS, PARSE_ERROR,
 };
 use super::tools::{all_resources, all_tools, execute_tool, read_resource};
 use super::validator::ToolValidator;
@@ -66,6 +66,7 @@ pub async fn handle_message(line: &str) -> Option<JsonRpcResponse> {
             stamp_modern(json!({
                 "supportedVersions": MODERN_PROTOCOL_VERSIONS,
                 "capabilities": capabilities(),
+                "instructions": INSTRUCTIONS,
             })),
         ));
     }
@@ -99,13 +100,12 @@ async fn dispatch(req: JsonRpcRequest, id: Option<serde_json::Value>) -> Option<
                 .as_ref()
                 .and_then(|p| p.get("protocolVersion"))
                 .and_then(serde_json::Value::as_str);
+            let version = super::protocol::negotiate_version(requested);
             let result = InitializeResult {
-                protocol_version: super::protocol::negotiate_version(requested).to_string(),
+                protocol_version: version.to_string(),
                 capabilities: capabilities(),
-                server_info: ServerInfo {
-                    name: "gtunnel".to_string(),
-                    version: env!("CARGO_PKG_VERSION").to_string(),
-                },
+                server_info: ServerInfo::for_version(version),
+                instructions: INSTRUCTIONS.to_string(),
             };
             Some(JsonRpcResponse::success(id, json!(result)))
         }
