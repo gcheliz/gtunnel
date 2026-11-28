@@ -1714,7 +1714,7 @@ fn wrap_words(text: &str, width: usize) -> Vec<String> {
             rows.push(std::mem::take(&mut row));
         }
         // A word wider than the row breaks after the last punctuation that
-        // fits, so a host reads `private-cluster-` over `bastion:22`; only a
+        // fits, so a host reads `example-cluster-` over `bastion:22`; only a
         // word with none breaks at the edge
         let mut rest: Vec<char> = word.chars().collect();
         while rest.len() > width {
